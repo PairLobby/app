@@ -1,5 +1,5 @@
 import type { UserRecord } from "../types/auth";
-import type { Env } from "../types/env";
+import type { Env, KvStore } from "../types/env";
 
 const USER_KEY_PREFIX = "user:";
 const EMAIL_KEY_PREFIX = "user_email:";
@@ -12,7 +12,7 @@ function emailKey(email: string): string {
   return `${EMAIL_KEY_PREFIX}${email.toLowerCase()}`;
 }
 
-function requireUsersKv(env: Env): KVNamespace {
+function requireUsersKv(env: Env): KvStore {
   if (!env.USERS) {
     throw new Error("USERS KV namespace is not configured");
   }
