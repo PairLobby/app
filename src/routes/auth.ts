@@ -38,7 +38,7 @@ export async function signup(request: Request, env: Env): Promise<Response> {
 
   if (!email || !email.includes("@")) return badRequest("A valid email is required");
   if (!password || password.length < 8) return badRequest("Password must be at least 8 characters");
-  if (getUserByEmail(email)) return json({ error: "Email already registered" }, { status: 409 });
+  if (await getUserByEmail(env, email)) return json({ error: "Email already registered" }, { status: 409 });
 
   const now = new Date().toISOString();
   const user = {
@@ -49,7 +49,7 @@ export async function signup(request: Request, env: Env): Promise<Response> {
     createdAt: now
   };
 
-  saveUser(user);
+  await saveUser(env, user);
 
   const secret = requireSecret(env);
   const iat = Math.floor(Date.now() / 1000);
@@ -72,7 +72,7 @@ export async function login(request: Request, env: Env): Promise<Response> {
 
   if (!email || !password) return badRequest("Email and password are required");
 
-  const user = getUserByEmail(email);
+  const user = await getUserByEmail(env, email);
   if (!user) return json({ error: "Invalid credentials" }, { status: 401 });
 
   const ok = await verifyPassword(password, user.passwordHash);
