@@ -1,0 +1,14 @@
+{
+  "name": "parking-backend",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-02-10",
+
+  // Add this after creating KV namespaces:
+  // "kv_namespaces": [
+  //   {
+  //     "binding": "USERS",
+  //     "id": "<prod-namespace-id>",
+  //     "preview_id": "<preview-namespace-id>"
+  //   }
+  // ]
+}
