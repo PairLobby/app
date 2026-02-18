@@ -3,7 +3,7 @@ import type { Env } from "../types/env";
 export function buildCorsHeaders(env: Env): HeadersInit {
   return {
     "Access-Control-Allow-Origin": env.CORS_ORIGIN ?? "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type,Authorization",
     "Access-Control-Max-Age": "86400"
   };
