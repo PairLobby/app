@@ -1,6 +1,6 @@
 # Parking Backend (Cloudflare Worker)
 
-TypeScript Cloudflare Worker backend with JWT auth and Cloudflare KV (NoSQL) user storage.
+TypeScript Cloudflare Worker backend with JWT auth and Cloudflare KV (NoSQL) storage.
 
 ## Endpoints
 
@@ -8,6 +8,15 @@ TypeScript Cloudflare Worker backend with JWT auth and Cloudflare KV (NoSQL) use
 - `POST /auth/signup`
 - `POST /auth/login`
 - `GET /auth/me`
+- `PATCH /profile`
+- `POST /profile/payment-method`
+- `POST /profile/payout-account`
+- `GET /listings?search=<query>`
+- `POST /listings`
+- `GET /listings/:id`
+- `GET /bookings`
+- `POST /bookings`
+- `POST /bookings/:id/cancel`
 
 ## Local setup
 
@@ -30,7 +39,9 @@ TypeScript Cloudflare Worker backend with JWT auth and Cloudflare KV (NoSQL) use
 
 ## Notes
 
-- Users are stored in KV under two key spaces:
-  - `user:<id>` => full user record JSON
-  - `user_email:<email>` => user ID index
-- KV is eventually consistent. This is acceptable for MVP auth flows but can allow rare race conditions on concurrent signups with same email.
+- User, listing, and booking records are persisted in KV with dedicated key prefixes.
+- Booking payment status starts as `scheduled` and is intended to be captured when parking starts.
+- Cancellation policy implemented:
+  - `>=2h` before start: no penalty
+  - `<2h` before start: `10%` penalty withheld
+- KV is eventually consistent. This is acceptable for MVP flows but can allow rare race conditions.

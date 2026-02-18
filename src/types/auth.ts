@@ -1,20 +1,17 @@
 export interface SignupRequest {
   email: string;
   password: string;
-  name?: string;
+  firstName: string;
+  lastName: string;
+  dateOfBirth: string;
+  phoneNumber: string;
+  address?: string;
+  plateNumber: string;
 }
 
 export interface LoginRequest {
   email: string;
   password: string;
-}
-
-export interface UserRecord {
-  id: string;
-  email: string;
-  name: string;
-  passwordHash: string;
-  createdAt: string;
 }
 
 export interface JwtPayload {
