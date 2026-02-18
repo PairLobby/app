@@ -1,6 +1,6 @@
 # Parking Backend (Cloudflare Worker)
 
-TypeScript Cloudflare Worker backend with JWT auth and Cloudflare KV storage.
+TypeScript Cloudflare Worker backend with JWT auth and Cloudflare KV (NoSQL) storage.
 
 ## Endpoints
 
@@ -39,8 +39,9 @@ TypeScript Cloudflare Worker backend with JWT auth and Cloudflare KV storage.
 
 ## Notes
 
-- User, listing, and booking records are persisted in KV under dedicated key prefixes.
+- User, listing, and booking records are persisted in KV with dedicated key prefixes.
 - Booking payment status starts as `scheduled` and is intended to be captured when parking starts.
 - Cancellation policy implemented:
   - `>=2h` before start: no penalty
   - `<2h` before start: `10%` penalty withheld
+- KV is eventually consistent. This is acceptable for MVP flows but can allow rare race conditions.
