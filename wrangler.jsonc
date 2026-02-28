@@ -2,13 +2,11 @@
   "name": "backend",
   "main": "src/index.ts",
   "compatibility_date": "2026-02-10",
-
-  // Add this after creating KV namespaces:
-  // "kv_namespaces": [
-  //   {
-  //     "binding": "USERS",
-  //     "id": "<prod-namespace-id>",
-  //     "preview_id": "<preview-namespace-id>"
-  //   }
-  // ]
+  "kv_namespaces": [
+    {
+      "binding": "USERS",
+      "id": "30a397826dd2418ea5e6bc969c680144",
+      "preview_id": "24605f0995d64356a36069d991de8957"
+    }
+  ]
 }
