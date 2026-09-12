@@ -31,7 +31,7 @@ No managed adapter exists yet. Building one is gated on the Phase A spike descri
 ## Setup
 
 ```sh
-cd packages/cli && npm link && cd -            # puts `pairlobby` on PATH
+npm run install:cli                            # puts `pairlobby` on PATH
 
 mkdir -p ~/.claude/skills/pairlobby            # Claude Code
 cp integrations/claude-code/SKILL.md ~/.claude/skills/pairlobby/SKILL.md

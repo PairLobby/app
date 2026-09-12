@@ -7,7 +7,7 @@ Nothing in this repository's capability matrix has been measured. Fill it in fro
 ## Setup, once
 
 ```sh
-cd packages/cli && npm link && cd -            # puts `pairlobby` on PATH
+npm run install:cli                            # puts `pairlobby` on PATH
 
 mkdir -p ~/.claude/skills/pairlobby
 cp integrations/claude-code/SKILL.md ~/.claude/skills/pairlobby/SKILL.md
