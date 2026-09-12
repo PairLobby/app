@@ -1,0 +1,215 @@
+//! Room state transitions. Each returns one atomic mutation for a storage
+//! adapter to apply together with its idempotency record.
+
+import {DEFAULT_ROOM_POLICY, ProtocolError, newId} from '@pairlobby/protocol';
+import type {AdapterCapabilities, EventSubmission, HandoverRecord, ParticipantKind, ParticipantRecord, ParticipantRole, RoomPolicy, RoomRecord, SendEventRequest} from '@pairlobby/protocol';
+
+import {appendEvent} from './append.js';
+import {assertActiveMember, assertController, assertRecipientExists, assertRoomWritable, authenticate, type Actor} from './authorize.js';
+import {applyHandoverAccepted, applyHandoverDeclined, applyHandoverOffered} from './handover.js';
+import {activeParticipants, controlFor, emptyMutation, findParticipant, isActive, type CoreContext, type Mutation, type RoomView} from './state.js';
+
+export interface Identity {
+    displayName: string;
+    kind: ParticipantKind;
+    sessionId: string | null;
+    capabilities: AdapterCapabilities | null;
+}
+
+export interface CreateRoomInput extends Identity {
+    name: string;
+    roomId: string;
+    controllerCredentialHash: string;
+    participantCredentialHash: string;
+    policy?: RoomPolicy;
+}
+
+export interface CreatedRoom {
+    room: RoomRecord;
+    participant: ParticipantRecord;
+    mutation: Mutation;
+}
+
+export function createRoom(input: CreateRoomInput, ctx: CoreContext): CreatedRoom {
+    const policy = input.policy ?? DEFAULT_ROOM_POLICY;
+    const room: RoomRecord = {
+        roomId: input.roomId,
+        name: input.name,
+        createdAt: ctx.now,
+        expiresAt: ctx.now + policy.roomLifetimeMs,
+        closedAt: null,
+        lifecycle: 'open',
+        policy,
+        controllerCredentialHash: input.controllerCredentialHash,
+        controlRevision: 0,
+        nextSeq: 1,
+        retainedEventBytes: 0,
+        retainedEvents: 0,
+    };
+    const participant = buildParticipant(input.roomId, input, 'member', input.participantCredentialHash, ctx);
+    const {room: afterEvent, event} = appendEvent(room, {
+        senderId: participant.participantId,
+        idempotencyKey: null,
+        recipientId: null,
+        replyTo: null,
+        body: {type: 'participant.joined', payload: joinPayload(participant)},
+    }, ctx);
+    return {room: afterEvent, participant, mutation: {...emptyMutation(afterEvent, event), upsertParticipants: [participant]}};
+}
+
+export interface JoinRoomInput extends Identity {
+    role: ParticipantRole;
+    credentialHash: string;
+}
+
+export interface JoinedRoom {
+    participant: ParticipantRecord;
+    mutation: Mutation;
+}
+
+/** Called by invite redemption once the invite object has bound this attempt. */
+export function joinRoom(view: RoomView, input: JoinRoomInput, ctx: CoreContext): JoinedRoom {
+    assertRoomWritable(view, ctx.now);
+    const existing = view.participants.find((candidate) => candidate.credentialHash === input.credentialHash);
+    if (existing) throw new ProtocolError('idempotency_conflict', 'this credential already belongs to a participant of this room');
+    if (activeParticipants(view).length >= view.room.policy.maxParticipants) {
+        throw new ProtocolError('participant_limit_reached', `this room already holds its limit of ${view.room.policy.maxParticipants} participants`);
+    }
+    const participant = buildParticipant(view.room.roomId, input, input.role, input.credentialHash, ctx);
+    const {room, event} = appendEvent(view.room, {
+        senderId: participant.participantId,
+        idempotencyKey: null,
+        recipientId: null,
+        replyTo: null,
+        body: {type: 'participant.joined', payload: joinPayload(participant)},
+    }, ctx);
+    return {participant, mutation: {...emptyMutation(room, event), upsertParticipants: [participant]}};
+}
+
+export function sendEvent(view: RoomView, credentialHash: string, request: SendEventRequest, ctx: CoreContext): Mutation {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertRoomWritable(view, ctx.now);
+    const sender = assertActiveMember(actor);
+    const recipientId = request.recipientId ?? null;
+    if (recipientId !== null) assertRecipientExists(view, recipientId);
+    const submission: EventSubmission = {type: request.type, payload: request.payload} as EventSubmission;
+    const upsertHandovers: HandoverRecord[] = [];
+    const upsertControls = [];
+
+    switch (submission.type) {
+        case 'handover.offered':  upsertHandovers.push(applyHandoverOffered(view, sender, submission.payload, recipientId, ctx)); break;
+        case 'handover.accepted': upsertHandovers.push(applyHandoverAccepted(view, sender, submission.payload)); break;
+        case 'handover.declined': upsertHandovers.push(applyHandoverDeclined(view, sender, submission.payload)); break;
+        case 'control.ack':       upsertControls.push(applyControlAck(view, sender, submission.payload, ctx)); break;
+        case 'message':           break;
+    }
+
+    const {room, event} = appendEvent(view.room, {
+        senderId: sender.participantId,
+        idempotencyKey: request.idempotencyKey,
+        recipientId,
+        replyTo: request.replyTo ?? null,
+        body: submission,
+    }, ctx);
+
+    // A handover offer records the event that carried it, so the offer is traceable from the record alone.
+    const handovers = upsertHandovers.map((handover) => (submission.type === 'handover.offered' ? {...handover, offeredEventId: event.eventId} : {...handover, resolvedEventId: event.eventId, resolvedAt: ctx.now}));
+    return {...emptyMutation(room, event), upsertHandovers: handovers, upsertControls};
+}
+
+export function requestControl(view: RoomView, credentialHash: string, targetParticipantId: string, paused: boolean, ctx: CoreContext): Mutation {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    const target = findParticipant(view, targetParticipantId);
+    if (!target || !isActive(target)) throw new ProtocolError('invalid_request', 'control target is not an active participant of this room');
+    const revision = view.room.controlRevision + 1;
+    const previous = controlFor(view, targetParticipantId);
+    const control = {
+        roomId: view.room.roomId,
+        targetParticipantId,
+        paused,
+        revision,
+        requestedAt: ctx.now,
+        acknowledgedRevision: previous?.acknowledgedRevision ?? 0,
+        acknowledgedOutcome: previous?.acknowledgedOutcome ?? null,
+        acknowledgedAt: previous?.acknowledgedAt ?? null,
+    };
+    const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
+    const body = paused
+        ? {type: 'control.pause' as const, payload: {targetParticipantId, revision}}
+        : {type: 'control.resume' as const, payload: {targetParticipantId, revision}};
+    const {room, event} = appendEvent({...view.room, controlRevision: revision}, {senderId, idempotencyKey: null, recipientId: targetParticipantId, replyTo: null, body}, ctx);
+    return {...emptyMutation(room, event), upsertControls: [control]};
+}
+
+export function revokeParticipant(view: RoomView, credentialHash: string, targetParticipantId: string, ctx: CoreContext): Mutation {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    const target = findParticipant(view, targetParticipantId);
+    if (!target) throw new ProtocolError('invalid_request', 'no such participant in this room');
+    if (target.revokedAt !== null) throw new ProtocolError('idempotency_conflict', 'this participant was already removed');
+    const revoked: ParticipantRecord = {...target, revokedAt: ctx.now};
+    const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
+    const {room, event} = appendEvent(view.room, {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'participant.revoked', payload: {participantId: targetParticipantId}}}, ctx);
+    return {...emptyMutation(room, event), upsertParticipants: [revoked]};
+}
+
+export function leaveRoom(view: RoomView, credentialHash: string, ctx: CoreContext): Mutation {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    const participant = assertActiveMember(actor);
+    assertRoomWritable(view, ctx.now);
+    const left: ParticipantRecord = {...participant, leftAt: ctx.now};
+    const {room, event} = appendEvent(view.room, {senderId: participant.participantId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'participant.left', payload: {participantId: participant.participantId}}}, ctx);
+    return {...emptyMutation(room, event), upsertParticipants: [left]};
+}
+
+export function closeRoom(view: RoomView, credentialHash: string, ctx: CoreContext): Mutation {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    const closed: RoomRecord = {...view.room, lifecycle: 'closed', closedAt: ctx.now};
+    const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
+    const {room, event} = appendEvent(closed, {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'room.closed', payload: {exportWindowEndsAt: ctx.now + view.room.policy.exportWindowMs}}}, ctx);
+    return emptyMutation(room, event);
+}
+
+function applyControlAck(view: RoomView, sender: ParticipantRecord, payload: {targetParticipantId: string; revision: number; outcome: string}, ctx: CoreContext) {
+    if (payload.targetParticipantId !== sender.participantId) throw new ProtocolError('unauthorized', 'a participant may only acknowledge control requests addressed to itself');
+    const control = controlFor(view, sender.participantId);
+    if (!control) throw new ProtocolError('invalid_request', 'no control request is outstanding for this participant');
+    if (payload.revision > control.revision) throw new ProtocolError('invalid_request', 'acknowledged a control revision the server never issued');
+    // A late acknowledgement is still true history, so it is accepted and appended.
+    // It simply does not overwrite state that a newer revision already set.
+    if (payload.revision < control.revision || payload.revision < control.acknowledgedRevision) return control;
+    return {...control, acknowledgedRevision: payload.revision, acknowledgedOutcome: payload.outcome as never, acknowledgedAt: ctx.now};
+}
+
+function buildParticipant(roomId: string, identity: Identity, role: ParticipantRole, credentialHash: string, ctx: CoreContext): ParticipantRecord {
+    return {
+        participantId: newId('participant'),
+        roomId,
+        displayName: identity.displayName,
+        kind: identity.kind,
+        role,
+        sessionId: identity.sessionId,
+        credentialHash,
+        capabilities: identity.capabilities,
+        joinedAt: ctx.now,
+        revokedAt: null,
+        leftAt: null,
+    };
+}
+
+function joinPayload(participant: ParticipantRecord) {
+    return {
+        participantId: participant.participantId,
+        displayName: participant.displayName,
+        kind: participant.kind,
+        role: participant.role,
+        ...(participant.capabilities ? {capabilities: participant.capabilities} : {}),
+    };
+}
+
+export type {Actor};

@@ -1,0 +1,396 @@
+//! The room contract. Every storage adapter must satisfy it; a test that passes
+//! here states what the Durable Object and the Node/SQLite server must also do.
+//!
+//! Call `runRoomContract` from a test file, passing a factory for the store
+//! under test.
+
+import {DEFAULT_ROOM_POLICY, ProtocolError, newId} from '@pairlobby/protocol';
+import type {ErrorCode} from '@pairlobby/protocol';
+import {afterEach, beforeEach, describe, expect, test} from 'vitest';
+
+import {FakeAgent} from './fake-agent.js';
+import {RoomHarness, fixedClock} from './harness.js';
+import type {Clock, TestableRoomStore} from './harness.js';
+import {sampleHandover} from './handover-samples.js';
+
+async function expectError(code: ErrorCode, run: () => Promise<unknown>): Promise<ProtocolError> {
+    try {
+        await run();
+    } catch (error) {
+        expect(error).toBeInstanceOf(ProtocolError);
+        expect((error as ProtocolError).code).toBe(code);
+        return error as ProtocolError;
+    }
+    throw new Error(`expected ${code} but the call succeeded`);
+}
+
+export type StoreFactory = () => TestableRoomStore;
+
+export function runRoomContract(label: string, makeStore: StoreFactory): void {
+describe(label, () => {
+    const opened: RoomHarness[] = [];
+    function track(harness: RoomHarness): RoomHarness {
+        opened.push(harness);
+        return harness;
+    }
+    afterEach(() => {
+        while (opened.length > 0) opened.pop()!.dispose();
+    });
+
+    describe('room lifecycle', () => {
+        let server: RoomHarness;
+        let alice: FakeAgent;
+        let bob: FakeAgent;
+
+        beforeEach(async () => {
+            server = track(new RoomHarness(makeStore()));
+            alice = new FakeAgent(server, 'claude', {capabilities: {deliverUnsolicited: true, cancelTurn: true, cancelTool: false, runtime: 'claude-code'}});
+            bob = new FakeAgent(server, 'codex', {capabilities: {deliverUnsolicited: false, cancelTurn: false, cancelTool: false, runtime: 'codex-cli'}});
+            const created = await alice.create('my-project');
+            await bob.join(created.inviteCode);
+        });
+
+        test('test_join_produces_distinct_identities_and_cursors', async () => {
+            expect(alice.participantId).not.toBe(bob.participantId);
+            expect(alice.credential).not.toBe(bob.credential);
+            expect(alice.sessionId).not.toBe(bob.sessionId);
+            await alice.say('hello codex', bob.participantId);
+            expect(await bob.poll()).toHaveLength(1);
+            expect(bob.cursor).toBeGreaterThan(0);
+            expect(alice.cursor).toBe(0);
+        });
+
+        test('test_only_addressed_events_reach_an_agent_inbox', async () => {
+            await alice.say('thinking out loud');
+            await alice.say('codex, take this', bob.participantId);
+            const addressed = await bob.poll();
+            expect(addressed).toHaveLength(1);
+            expect(addressed[0]!.type).toBe('message');
+            // Room-wide chatter is still readable by every member; it just does not activate them.
+            const page = await server.read(bob.credential, 0);
+            expect(page.events.filter((event) => event.type === 'message')).toHaveLength(2);
+        });
+
+        test('test_two_sessions_of_one_runtime_stay_isolated', async () => {
+            const secondClaude = new FakeAgent(server, 'claude', {});
+            await secondClaude.join(await server.mintInvite('member'));
+            expect(secondClaude.participantId).not.toBe(alice.participantId);
+            expect(secondClaude.sessionId).not.toBe(alice.sessionId);
+            await alice.say('for the first session only', alice.participantId);
+            expect(await secondClaude.poll()).toHaveLength(0);
+        });
+    });
+
+    describe('idempotency and retries', () => {
+        test('test_repeated_key_with_identical_content_returns_the_original_event', async () => {
+            const server = track(new RoomHarness(makeStore()));
+            const alice = new FakeAgent(server, 'claude');
+            await alice.create('retry-room');
+            const key = newId('event');
+            const first = await server.send(alice.credential, {type: 'message', payload: {text: 'once', priority: 'normal'}, idempotencyKey: key});
+            const second = await server.send(alice.credential, {type: 'message', payload: {text: 'once', priority: 'normal'}, idempotencyKey: key});
+            expect(second.deduplicated).toBe(true);
+            expect(second.event.seq).toBe(first.event.seq);
+            expect(second.event.eventId).toBe(first.event.eventId);
+            const page = await server.read(alice.credential, 0);
+            expect(page.events.filter((event) => event.type === 'message')).toHaveLength(1);
+        });
+
+        test('test_repeated_key_with_different_content_is_a_conflict', async () => {
+            const server = track(new RoomHarness(makeStore()));
+            const alice = new FakeAgent(server, 'claude');
+            await alice.create('retry-room');
+            const key = newId('event');
+            await server.send(alice.credential, {type: 'message', payload: {text: 'first', priority: 'normal'}, idempotencyKey: key});
+            await expectError('idempotency_conflict', () => server.send(alice.credential, {type: 'message', payload: {text: 'different', priority: 'normal'}, idempotencyKey: key}));
+        });
+
+        test('test_repeated_redemption_of_one_attempt_creates_one_member', async () => {
+            const server = track(new RoomHarness(makeStore()));
+            const alice = new FakeAgent(server, 'claude');
+            const created = await alice.create('join-room');
+            const attemptId = newId('attempt');
+            const credential = `plp_${newId('room')}`;
+            const identity = {displayName: 'codex', kind: 'agent' as const};
+            const first = await server.redeemInvite(created.inviteCode, identity, attemptId, credential);
+            const second = await server.redeemInvite(created.inviteCode, identity, attemptId, credential);
+            expect(second.participantId).toBe(first.participantId);
+            expect(second.replayed).toBe(true);
+            const snapshot = await server.snapshot(created.controllerCredential);
+            expect(snapshot.participants).toHaveLength(2);
+        });
+
+        test('test_a_different_attempt_cannot_claim_a_used_invite', async () => {
+            const server = track(new RoomHarness(makeStore()));
+            const alice = new FakeAgent(server, 'claude');
+            const created = await alice.create('join-room');
+            await server.redeemInvite(created.inviteCode, {displayName: 'codex', kind: 'agent'}, newId('attempt'), `plp_${newId('room')}`);
+            await expectError('invite_already_redeemed', () => server.redeemInvite(created.inviteCode, {displayName: 'stranger', kind: 'agent'}, newId('attempt'), `plp_${newId('room')}`));
+        });
+
+        test('test_an_expired_invite_cannot_be_redeemed', async () => {
+            const clock = fixedClock();
+            const server = track(new RoomHarness(makeStore(), clock));
+            const alice = new FakeAgent(server, 'claude');
+            const created = await alice.create('join-room');
+            clock.advance(DEFAULT_ROOM_POLICY.inviteLifetimeMs + 1);
+            await expectError('invite_expired', () => server.redeemInvite(created.inviteCode, {displayName: 'codex', kind: 'agent'}, newId('attempt'), `plp_${newId('room')}`));
+        });
+    });
+
+    describe('handover', () => {
+        let server: RoomHarness;
+        let alice: FakeAgent;
+        let bob: FakeAgent;
+        let controller: string;
+
+        beforeEach(async () => {
+            server = track(new RoomHarness(makeStore()));
+            alice = new FakeAgent(server, 'claude');
+            bob = new FakeAgent(server, 'codex');
+            const created = await alice.create('handover-room');
+            controller = created.controllerCredential;
+            await bob.join(created.inviteCode);
+        });
+
+        test('test_recipient_accepts_the_offered_revision', async () => {
+            const handoverId = await alice.offerHandover(bob.participantId, sampleHandover());
+            await bob.acceptHandover(handoverId, 1);
+            const page = await server.read(bob.credential, 0);
+            expect(page.events.some((event) => event.type === 'handover.accepted')).toBe(true);
+        });
+
+        test('test_a_non_recipient_cannot_accept', async () => {
+            const carol = new FakeAgent(server, 'gemini');
+            await carol.join(await server.mintInvite('member'));
+            const handoverId = await alice.offerHandover(bob.participantId, sampleHandover());
+            await expectError('unauthorized', () => carol.acceptHandover(handoverId, 1));
+        });
+
+        test('test_a_sender_cannot_hand_over_to_itself', async () => {
+            await expectError('invalid_request', () => alice.offerHandover(alice.participantId, sampleHandover()));
+        });
+
+        test('test_accepting_a_revision_that_is_not_current_fails', async () => {
+            const handoverId = await alice.offerHandover(bob.participantId, sampleHandover());
+            const error = await expectError('stale_handover_revision', () => bob.acceptHandover(handoverId, 2));
+            expect(error.details.currentRevision).toBe(1);
+        });
+
+        test('test_decline_then_amend_then_accept_the_new_revision', async () => {
+            const handoverId = await alice.offerHandover(bob.participantId, sampleHandover());
+            await bob.declineHandover(handoverId, 1, 'the dirty changes are not reachable from here');
+            await alice.offerHandover(bob.participantId, sampleHandover({nextAction: 'Pull branch feature/room-core first'}), handoverId, 2);
+            // The stale revision can never be accepted, before or after the amendment.
+            await expectError('stale_handover_revision', () => bob.acceptHandover(handoverId, 1));
+            await bob.acceptHandover(handoverId, 2);
+        });
+
+        test('test_a_declined_revision_cannot_later_be_accepted', async () => {
+            const handoverId = await alice.offerHandover(bob.participantId, sampleHandover());
+            await bob.declineHandover(handoverId, 1, 'the dirty changes are not reachable from here');
+            // Reversing a decline would leave the sender believing the work was refused.
+            await expectError('handover_already_resolved', () => bob.acceptHandover(handoverId, 1));
+            await expectError('handover_already_resolved', () => bob.declineHandover(handoverId, 1));
+        });
+
+        test('test_an_accepted_handover_cannot_be_amended_or_re_resolved', async () => {
+            const handoverId = await alice.offerHandover(bob.participantId, sampleHandover());
+            await bob.acceptHandover(handoverId, 1);
+            await expectError('handover_already_resolved', () => alice.offerHandover(bob.participantId, sampleHandover(), handoverId, 2));
+            await expectError('handover_already_resolved', () => bob.acceptHandover(handoverId, 1));
+        });
+
+        test('test_an_amendment_by_another_participant_is_refused', async () => {
+            const handoverId = await alice.offerHandover(bob.participantId, sampleHandover());
+            await expectError('unauthorized', () => bob.offerHandover(alice.participantId, sampleHandover(), handoverId, 2));
+        });
+    });
+
+    describe('human control', () => {
+        let server: RoomHarness;
+        let alice: FakeAgent;
+        let bob: FakeAgent;
+        let controller: string;
+
+        beforeEach(async () => {
+            server = track(new RoomHarness(makeStore()));
+            alice = new FakeAgent(server, 'claude', {capabilities: {deliverUnsolicited: true, cancelTurn: true, cancelTool: false}});
+            bob = new FakeAgent(server, 'codex', {capabilities: {deliverUnsolicited: false, cancelTurn: false, cancelTool: false}});
+            const created = await alice.create('control-room');
+            controller = created.controllerCredential;
+            await bob.join(created.inviteCode);
+        });
+
+        test('test_pause_is_acknowledged_with_what_actually_happened', async () => {
+            await server.control(controller, alice.participantId, true);
+            await alice.poll();
+            const snapshot = await server.snapshot(controller);
+            const view = snapshot.participants.find((participant) => participant.participantId === alice.participantId)!;
+            expect(view.paused).toBe(true);
+            expect(view.acknowledgedOutcome).toBe('current_turn_cancelled');
+        });
+
+        test('test_an_adapter_without_cancellation_reports_paused_between_turns', async () => {
+            await server.control(controller, bob.participantId, true);
+            await bob.poll();
+            const snapshot = await server.snapshot(controller);
+            expect(snapshot.participants.find((participant) => participant.participantId === bob.participantId)!.acknowledgedOutcome).toBe('paused_between_turns');
+        });
+
+        test('test_a_member_cannot_pause_another_member', async () => {
+            await expectError('unauthorized', () => server.control(alice.credential, bob.participantId, true));
+        });
+
+        test('test_a_participant_cannot_acknowledge_control_for_someone_else', async () => {
+            await server.control(controller, bob.participantId, true);
+            await expectError('unauthorized', () => server.send(alice.credential, {type: 'control.ack', payload: {targetParticipantId: bob.participantId, revision: 1, outcome: 'paused_between_turns'}, idempotencyKey: newId('event')}));
+        });
+
+        test('test_a_late_acknowledgement_does_not_overwrite_a_newer_revision', async () => {
+            const pause = await server.control(controller, bob.participantId, true);
+            const pauseRevision = pause.type === 'control.pause' ? pause.payload.revision : 0;
+            await server.control(controller, bob.participantId, false);
+            await bob.poll();
+            const afterResume = await server.snapshot(controller);
+            expect(afterResume.participants.find((participant) => participant.participantId === bob.participantId)!.acknowledgedOutcome).toBe('resumed');
+
+            // The stale pause acknowledgement arrives now. It is recorded as history but must not win.
+            await server.send(bob.credential, {type: 'control.ack', payload: {targetParticipantId: bob.participantId, revision: pauseRevision, outcome: 'paused_between_turns'}, idempotencyKey: newId('event')});
+            const snapshot = await server.snapshot(controller);
+            const view = snapshot.participants.find((participant) => participant.participantId === bob.participantId)!;
+            expect(view.paused).toBe(false);
+            expect(view.acknowledgedOutcome).toBe('resumed');
+            // Two acknowledgements from the poll plus the late one: all three are history.
+            const page = await server.read(controller, 0);
+            expect(page.events.filter((event) => event.type === 'control.ack')).toHaveLength(3);
+            expect(page.events.at(-1)!.type).toBe('control.ack');
+        });
+
+        test('test_acknowledging_a_revision_the_server_never_issued_fails', async () => {
+            await server.control(controller, bob.participantId, true);
+            await expectError('invalid_request', () => server.send(bob.credential, {type: 'control.ack', payload: {targetParticipantId: bob.participantId, revision: 99, outcome: 'paused_between_turns'}, idempotencyKey: newId('event')}));
+        });
+    });
+
+    describe('revocation, closure, and expiry', () => {
+        let server: RoomHarness;
+        let alice: FakeAgent;
+        let bob: FakeAgent;
+        let controller: string;
+
+        beforeEach(async () => {
+            server = track(new RoomHarness(makeStore(), fixedClock()));
+            alice = new FakeAgent(server, 'claude');
+            bob = new FakeAgent(server, 'codex');
+            const created = await alice.create('revoke-room');
+            controller = created.controllerCredential;
+            await bob.join(created.inviteCode);
+        });
+
+        test('test_a_revoked_participant_can_neither_read_nor_write', async () => {
+            await server.revoke(controller, bob.participantId);
+            await expectError('participant_revoked', () => bob.say('still here?'));
+            await expectError('participant_revoked', () => server.read(bob.credential, 0));
+        });
+
+        test('test_revoking_twice_is_refused', async () => {
+            await server.revoke(controller, bob.participantId);
+            await expectError('idempotency_conflict', () => server.revoke(controller, bob.participantId));
+        });
+
+        test('test_a_closed_room_rejects_new_work_but_stays_readable', async () => {
+            const unusedInvite = await server.mintInvite('member');
+            await server.close(controller);
+            await expectError('room_closed', () => alice.say('one more'));
+            await expectError('room_closed', () => server.mintInvite('member'));
+            await expectError('room_closed', () => server.redeemInvite(unusedInvite, {displayName: 'latecomer', kind: 'agent'}, newId('attempt'), `plp_${newId('room')}`));
+            const page = await server.read(alice.credential, 0);
+            expect(page.events.some((event) => event.type === 'room.closed')).toBe(true);
+            expect((await server.snapshot(controller)).lifecycle).toBe('closed');
+        });
+
+        test('test_a_closed_room_becomes_unreadable_once_its_export_window_ends', async () => {
+            const windowClock = fixedClock();
+            const closing = track(new RoomHarness(makeStore(), windowClock));
+            const carol = new FakeAgent(closing, 'claude');
+            const created = await carol.create('closing-room');
+            await closing.close(created.controllerCredential);
+            windowClock.advance(DEFAULT_ROOM_POLICY.exportWindowMs - 1);
+            expect((await closing.read(carol.credential, 0)).events.length).toBeGreaterThan(0);
+            windowClock.advance(2);
+            await expectError('room_expired', () => closing.read(carol.credential, 0));
+        });
+
+        test('test_expiry_is_enforced_on_reads_and_writes_before_any_cleanup', async () => {
+            const clock = fixedClock();
+            const expiring = track(new RoomHarness(makeStore(), clock));
+            const carol = new FakeAgent(expiring, 'claude');
+            const created = await carol.create('expiring-room');
+            clock.advance(DEFAULT_ROOM_POLICY.roomLifetimeMs + 1);
+            await expectError('room_expired', () => carol.say('anyone there?'));
+            await expectError('room_expired', () => expiring.read(carol.credential, 0));
+            await expectError('room_expired', () => expiring.snapshot(created.controllerCredential));
+        });
+
+        test('test_an_unknown_credential_is_unauthorized', async () => {
+            await expectError('unauthorized', () => server.read('plp_not-a-real-credential', 0));
+        });
+    });
+
+    describe('bounds', () => {
+        test('test_an_oversized_payload_is_refused', async () => {
+            const server = track(new RoomHarness(makeStore()));
+            const alice = new FakeAgent(server, 'claude');
+            await alice.create('bounds-room');
+            await expectError('payload_too_large', () => alice.say('x'.repeat(DEFAULT_ROOM_POLICY.maxEventPayloadBytes + 1)));
+        });
+
+        test('test_the_participant_limit_is_enforced', async () => {
+            const server = track(new RoomHarness(makeStore()));
+            const alice = new FakeAgent(server, 'claude');
+            const created = await alice.create('crowded-room');
+            for (let index = 1; index < DEFAULT_ROOM_POLICY.maxParticipants; index += 1) {
+                await new FakeAgent(server, `agent-${index}`).join(await server.mintInvite('member'));
+            }
+            const overflowCode = await server.mintInvite('member');
+            await expectError('participant_limit_reached', () => new FakeAgent(server, 'one-too-many').join(overflowCode));
+            expect((await server.snapshot(created.controllerCredential)).participants).toHaveLength(DEFAULT_ROOM_POLICY.maxParticipants);
+        });
+
+        test('test_quota_exhaustion_bounds_ordinary_writes_but_leaves_control_and_close_usable', async () => {
+            const server = track(new RoomHarness(makeStore()));
+            const alice = new FakeAgent(server, 'claude');
+            const bob = new FakeAgent(server, 'codex');
+            const created = await server.createRoom('tiny-room', {displayName: 'claude', kind: 'agent'}, {...DEFAULT_ROOM_POLICY, maxRetainedEvents: 4});
+            alice.participantId = created.participantId;
+            alice.credential = created.participantCredential;
+            await bob.join(created.inviteCode);
+            // participant.joined x2 already counted; two more ordinary writes reach the cap.
+            await alice.say('one');
+            await alice.say('two');
+            await expectError('quota_exceeded', () => alice.say('three'));
+
+            // Control, revocation, and closure stay usable at quota.
+            await server.control(created.controllerCredential, bob.participantId, true);
+            await bob.poll();
+            expect((await server.snapshot(created.controllerCredential)).participants.find((participant) => participant.participantId === bob.participantId)!.paused).toBe(true);
+            await server.revoke(created.controllerCredential, bob.participantId);
+            await server.close(created.controllerCredential);
+            expect((await server.read(created.controllerCredential, 0)).events.some((event) => event.type === 'room.closed')).toBe(true);
+        });
+
+        test('test_a_cursor_older_than_retained_history_returns_a_gap', async () => {
+            const server = track(new RoomHarness(makeStore()));
+            const alice = new FakeAgent(server, 'claude');
+            await alice.create('gap-room');
+            for (let index = 0; index < 5; index += 1) await alice.say(`message ${index}`);
+            server.dropHistoryBefore(4);
+            const error = await expectError('cursor_gap', () => server.read(alice.credential, 1));
+            expect(error.details.earliestAvailableSeq).toBe(4);
+            const fresh = await server.read(alice.credential, 4);
+            expect(fresh.events.length).toBeGreaterThan(0);
+        });
+    });
+});
+}

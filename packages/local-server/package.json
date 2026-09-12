@@ -1,0 +1,22 @@
+{
+  "name": "@pairlobby/local-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@pairlobby/protocol": "*",
+    "@pairlobby/room-core": "*",
+    "@pairlobby/server-core": "*"
+  },
+  "devDependencies": {
+    "@pairlobby/fixtures": "*"
+  }
+}

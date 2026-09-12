@@ -1,17 +1,22 @@
 {
-  "name": "parking-backend",
-  "version": "0.1.0",
+  "name": "pairlobby-workspace",
   "private": true,
   "type": "module",
+  "engines": {"node": ">=22"},
+  "workspaces": [
+    "packages/*",
+    "fixtures"
+  ],
   "scripts": {
-    "dev": "wrangler dev",
-    "build": "npm run typecheck",
-    "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit"
+    "build": "tsc --build",
+    "clean": "tsc --build --clean",
+    "test": "tsc --build && vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --build --force"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260210.0",
-    "typescript": "^5.7.3",
-    "wrangler": "^4.64.0"
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.11"
   }
 }

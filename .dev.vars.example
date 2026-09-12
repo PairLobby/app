@@ -1,2 +1,0 @@
-JWT_SECRET=change-this-local-secret
-CORS_ORIGIN=*
