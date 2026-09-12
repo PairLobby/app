@@ -26,6 +26,10 @@ pairlobby join K7MP-4QWX --as claude --runtime claude-code --json
 
 Both print `sessionId` and an invite code. Give the invite code to the other agent; it works once. Mint another with `pairlobby invite`.
 
+Pass `--conversation <id>` if your runtime has a conversation or thread id and does
+not export it to the environment. It lets the human find you outside the room to
+give you instructions directly. The id stays on the device; the relay never sees it.
+
 ## Reading
 
 ```sh

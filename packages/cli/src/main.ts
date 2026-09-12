@@ -14,7 +14,8 @@ import {ProtocolError, newId} from '@pairlobby/protocol';
 import type {AdapterCapabilities} from '@pairlobby/protocol';
 
 import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
-import {UsageError, controllerCredential, resolveRecipient, resolveRoom, resolveServer, select} from './context.js';
+import {detectRuntime} from './runtime-detect.js';
+import {UsageError, controllerCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
 import {json, note, out, renderEvents, renderRooms, renderSnapshot} from './render.js';
 
 const OPTIONS = {
@@ -32,6 +33,9 @@ const OPTIONS = {
     'handover-id': {type: 'string'},
     reason:     {type: 'string'},
     outcome:    {type: 'string'},
+    conversation: {type: 'string'},
+    follow:     {type: 'boolean'},
+    interval:   {type: 'string'},
     runtime:    {type: 'string'},
     human:      {type: 'boolean'},
     template:   {type: 'boolean'},
@@ -48,6 +52,8 @@ const HELP = `pairlobby — a private room for your agents
   pairlobby join <code>              join a room with an invite code
   pairlobby send <text> --to <who>   send a message to one participant
   pairlobby read                     read new events for this session
+  pairlobby watch                    follow the room live as events arrive
+  pairlobby session                  this session's id and runtime conversation
   pairlobby handover --to <who> --file <path>
   pairlobby handover --to <who> --file <path> --handover-id <id> --revision <n>
   pairlobby accept <handover-id> --revision <n>
@@ -64,6 +70,8 @@ Common options
   --session <id>        required when one room holds more than one local session
   --server <url>        choose the relay; --local means http://127.0.0.1:8790
   --json                machine-readable output on stdout
+  --conversation <id>   the runtime's own conversation id, so a human can find
+                        this agent outside the room (auto-detected where possible)
 
 Two agents in one checkout get separate identities. After joining, an agent
 should pass --session (or set PAIRLOBBY_SESSION) on every later command.
@@ -84,6 +92,8 @@ async function main(argv: string[]): Promise<number> {
         case 'join':     return joinRoom(store, values, positionals[1]);
         case 'send':     return sendMessage(store, values, positionals.slice(1).join(' '));
         case 'read':     return readEvents(store, values);
+        case 'watch':    return watchRoom(store, values);
+        case 'session':  return sessionInfo(store, values);
         case 'status':   return status(store, values);
         case 'invite':   return invite(store, values);
         case 'handover': return offerHandover(store, values);
@@ -121,7 +131,8 @@ function listRooms(store: LocalStore, values: Values): number {
 }
 
 function identityFrom(values: Values, fallbackName: string): {displayName: string; kind: 'agent' | 'human'; sessionId: string; capabilities?: AdapterCapabilities} {
-    const runtime = str(values, 'runtime');
+    const detected = detectRuntime();
+    const runtime = str(values, 'runtime') ?? detected.runtime;
     const capabilities: AdapterCapabilities | undefined = runtime ? {deliverUnsolicited: false, cancelTurn: false, cancelTool: false, runtime} : undefined;
     return {
         displayName: str(values, 'as') ?? fallbackName,
@@ -129,6 +140,24 @@ function identityFrom(values: Values, fallbackName: string): {displayName: strin
         sessionId: newId('session'),
         ...(capabilities ? {capabilities} : {}),
     };
+}
+
+/**
+ * Local-only detail about where this session is running. It goes in the device
+ * registry and never to the relay: a runtime conversation id is how the owner
+ * finds their own agent, not something other participants need.
+ */
+function localDetail(values: Values): {runtime?: string; conversationId?: string; terminal?: string; pid?: number} {
+    const detected = detectRuntime();
+    // A conversation id is only inherited when this really is the detected runtime
+    // talking. A human, or an agent declaring a different runtime, would otherwise
+    // be labelled with whichever session happened to spawn the shell — exactly the
+    // confusion the field exists to remove.
+    const declared = str(values, 'runtime');
+    const detectionApplies = !flag(values, 'human') && (declared === undefined || declared === detected.runtime);
+    const conversationId = str(values, 'conversation') ?? (detectionApplies ? detected.conversationId : undefined);
+    const runtime = declared ?? (flag(values, 'human') ? undefined : detected.runtime);
+    return {...(runtime ? {runtime} : {}), ...(conversationId ? {conversationId} : {}), ...(detected.terminal ? {terminal: detected.terminal} : {}), pid: detected.pid};
 }
 
 async function createRoom(store: LocalStore, values: Values): Promise<number> {
@@ -143,15 +172,17 @@ async function createRoom(store: LocalStore, values: Values): Promise<number> {
     // The controller credential stays on disk and out of the result an agent sees.
     store.putCredential(created.roomId, 'controller', created.controllerCredential);
     store.putCredential(created.roomId, identity.sessionId, created.participantCredential);
-    store.addSession(created.roomId, {participantId: created.participantId, sessionId: identity.sessionId, displayName: identity.displayName, kind: identity.kind, role: 'member', joinedAt: created.room.createdAt, lastReadSeq: 0, cwd: process.cwd(), ...(str(values, 'runtime') ? {runtime: str(values, 'runtime')!} : {})});
+    store.addSession(created.roomId, {participantId: created.participantId, sessionId: identity.sessionId, displayName: identity.displayName, kind: identity.kind, role: 'member', joinedAt: created.room.createdAt, lastReadSeq: 0, cwd: process.cwd(), ...localDetail(values)});
 
     if (flag(values, 'json')) {
-        json({roomId: created.roomId, name, serverUrl, participantId: created.participantId, sessionId: identity.sessionId, invite: created.invite});
+        json({roomId: created.roomId, name, serverUrl, participantId: created.participantId, sessionId: identity.sessionId, invite: created.invite, ...localDetail(values)});
         return 0;
     }
+    const detail = localDetail(values);
     out(`Room: ${name}`);
     out(`Invite: ${created.invite.code}  (single use)`);
     out(`Session: ${identity.sessionId}`);
+    if (detail.conversationId) out(`Conversation: ${detail.conversationId}`);
     out('');
     out(`  pairlobby join ${created.invite.code} --server ${serverUrl}`);
     note('The controller credential for this room was stored on this device and is not printed.');
@@ -167,14 +198,16 @@ async function joinRoom(store: LocalStore, values: Values, code?: string): Promi
 
     store.upsertRoom({roomId: joined.roomId, name: joined.room.name, serverUrl, createdAt: joined.room.createdAt, expiresAt: joined.room.expiresAt, controls: store.room(joined.roomId)?.controls ?? false, sessions: store.room(joined.roomId)?.sessions ?? []});
     store.putCredential(joined.roomId, identity.sessionId, joined.participantCredential);
-    store.addSession(joined.roomId, {participantId: joined.participantId, sessionId: identity.sessionId, displayName: identity.displayName, kind: identity.kind, role: joined.role, joinedAt: Date.now(), lastReadSeq: 0, cwd: process.cwd(), ...(str(values, 'runtime') ? {runtime: str(values, 'runtime')!} : {})});
+    store.addSession(joined.roomId, {participantId: joined.participantId, sessionId: identity.sessionId, displayName: identity.displayName, kind: identity.kind, role: joined.role, joinedAt: Date.now(), lastReadSeq: 0, cwd: process.cwd(), ...localDetail(values)});
 
     if (flag(values, 'json')) {
-        json({roomId: joined.roomId, name: joined.room.name, serverUrl, participantId: joined.participantId, sessionId: identity.sessionId, role: joined.role, participants: joined.room.participants.map((participant) => ({participantId: participant.participantId, displayName: participant.displayName}))});
+        json({roomId: joined.roomId, name: joined.room.name, serverUrl, participantId: joined.participantId, sessionId: identity.sessionId, role: joined.role, ...localDetail(values), participants: joined.room.participants.map((participant) => ({participantId: participant.participantId, displayName: participant.displayName}))});
         return 0;
     }
+    const detail = localDetail(values);
     out(`Joined ${joined.room.name} as ${identity.displayName}`);
     out(`Session: ${identity.sessionId}`);
+    if (detail.conversationId) out(`Conversation: ${detail.conversationId}`);
     out('');
     renderSnapshot(joined.room);
     return 0;
@@ -216,6 +249,94 @@ async function readEvents(store: LocalStore, values: Values): Promise<number> {
     }
     renderEvents(page.events, names);
     if (page.hasMore) note(`more events remain; run read again`);
+    return 0;
+}
+
+/**
+ * Follows a room live. This polls, because there is no push channel yet: the
+ * relay knows about a new event long before this loop asks for it. A WebSocket
+ * is the right fix and is not built; until then the interval is the latency.
+ */
+async function watchRoom(store: LocalStore, values: Values): Promise<number> {
+    const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    const intervalMs = str(values, 'interval') !== undefined ? Number(str(values, 'interval')) : 1000;
+    const machine = flag(values, 'json');
+    let cursor = str(values, 'after') !== undefined ? Number(str(values, 'after')) : 0;
+
+    const snapshot = await client.snapshot(room.roomId, credential);
+    const names = new Map(snapshot.participants.map((participant) => [participant.participantId, participant.displayName] as const));
+    if (!machine) {
+        renderSnapshot(snapshot);
+        out('');
+        note(`following ${room.name} as ${session.displayName}; Ctrl+C to stop`);
+        out('');
+    }
+
+    let stopped = false;
+    const stop = () => {stopped = true;};
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+
+    while (!stopped) {
+        let page;
+        try {
+            page = await client.readEvents(room.roomId, credential, cursor);
+        } catch (error) {
+            // A relay that went away should not end the watch; a room that ended should.
+            if (error instanceof ProtocolError && (error.code === 'room_expired' || error.code === 'room_closed' || error.code === 'participant_revoked')) throw error;
+            if (error instanceof ProtocolError && error.code === 'server_unavailable') {
+                note('relay unreachable, retrying');
+                await sleep(intervalMs * 2);
+                continue;
+            }
+            throw error;
+        }
+        if (page.events.length > 0) {
+            cursor = page.events.at(-1)!.seq;
+            store.updateCursor(room.roomId, session.sessionId, cursor);
+            for (const event of page.events) {
+                if (event.senderId && !names.has(event.senderId)) {
+                    const refreshed = await client.snapshot(room.roomId, credential);
+                    for (const participant of refreshed.participants) names.set(participant.participantId, participant.displayName);
+                }
+            }
+            if (machine) for (const event of page.events) process.stdout.write(`${JSON.stringify(event)}\n`);
+            else renderEvents(page.events, names);
+        }
+        if (page.hasMore) continue;
+        await sleep(intervalMs);
+    }
+    return 0;
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Shows what a human needs to go find this agent outside the room. */
+async function sessionInfo(store: LocalStore, values: Values): Promise<number> {
+    const room = resolveRoom(store, str(values, 'room'));
+    const conversation = str(values, 'conversation');
+    if (conversation) {
+        const target = resolveSession(room, str(values, 'session'));
+        if (!store.setConversation(room.roomId, target.sessionId, conversation)) throw new UsageError('could not update that session');
+        out(`Session ${target.sessionId} is conversation ${conversation}`);
+        return 0;
+    }
+    const sessions = str(values, 'session') ? [resolveSession(room, str(values, 'session'))] : room.sessions;
+    if (flag(values, 'json')) {
+        json({roomId: room.roomId, name: room.name, sessions});
+        return 0;
+    }
+    for (const entry of sessions) {
+        out(`${entry.displayName}  ${entry.sessionId}`);
+        out(`  participant   ${entry.participantId}`);
+        out(`  runtime       ${entry.runtime ?? 'unreported'}`);
+        out(`  conversation  ${entry.conversationId ?? 'unknown — pairlobby session --session ' + entry.sessionId + ' --conversation <id>'}`);
+        if (entry.terminal) out(`  terminal      ${entry.terminal}`);
+        if (entry.pid) out(`  invoked by pid ${entry.pid}`);
+        out(`  cwd           ${entry.cwd}`);
+    }
     return 0;
 }
 

@@ -15,6 +15,16 @@ export interface SessionEntry {
     kind: 'agent' | 'human';
     /** The runtime that created this session, when it identified itself. A claim, never a verified fact. */
     runtime?: string;
+    /**
+     * The runtime's own conversation id, so a human can leave the room and go
+     * instruct this agent directly. Read from the environment or passed in; the
+     * relay never sees it.
+     */
+    conversationId?: string;
+    /** Terminal session the agent is running in, to help find its pane. */
+    terminal?: string;
+    /** Process that invoked the CLI. */
+    pid?: number;
     role: 'member' | 'controller';
     joinedAt: number;
     lastReadSeq: number;
@@ -97,6 +107,16 @@ export class LocalStore {
         room.sessions = room.sessions.filter((candidate) => candidate.sessionId !== session.sessionId);
         room.sessions.push(session);
         this.upsertRoom(room);
+    }
+
+    /** Attaches or corrects the runtime conversation id for a session already in the registry. */
+    setConversation(roomId: string, sessionId: string, conversationId: string): boolean {
+        const room = this.room(roomId);
+        const session = room?.sessions.find((candidate) => candidate.sessionId === sessionId);
+        if (!room || !session) return false;
+        session.conversationId = conversationId;
+        this.upsertRoom(room);
+        return true;
     }
 
     updateCursor(roomId: string, sessionId: string, lastReadSeq: number): void {

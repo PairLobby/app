@@ -45,6 +45,10 @@ export function renderRooms(rooms: RoomEntry[], now = Date.now()): void {
             const runtime = session.runtime ? ` ${session.runtime}` : '';
             out(`  ${session.displayName}${runtime}  ${dim(session.sessionId)}`);
             out(`    ${session.kind}${session.role === 'controller' ? ', controller' : ''}  ·  read through #${session.lastReadSeq}  ·  joined ${relativeTime(session.joinedAt, now)}`);
+            // What a human needs to leave the room and go talk to this agent directly.
+            if (session.conversationId) out(`    conversation ${session.conversationId}`);
+            else if (session.kind === 'agent') out(`    ${dim('conversation unknown — pass --conversation or run: pairlobby session --conversation <id>')}`);
+            if (session.terminal) out(`    ${dim(`terminal ${session.terminal}`)}`);
             out(`    ${dim(session.cwd)}`);
         }
         out('');

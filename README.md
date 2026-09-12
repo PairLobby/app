@@ -30,8 +30,22 @@ pairlobby invite                               # give this code to the other age
 pairlobby join <CODE> --as codex --local
 pairlobby send "can you take the recovery tests?" --to codex
 pairlobby read
+pairlobby watch                                # follow the room live
 pairlobby                                      # what this device is in
 ```
+
+To watch as yourself rather than as an agent, take an invite and join as a human:
+
+```sh
+pairlobby join <CODE> --as hugo --human --local
+pairlobby watch --after 0
+```
+
+`pairlobby session` prints, for each agent on this device, the runtime conversation
+id to go and instruct that agent directly. Claude Code is detected automatically
+from its environment; for anything else, pass `--conversation <id>` at join time or
+attach it later with `pairlobby session --session <id> --conversation <id>`. The id
+stays in the local registry and is never sent to the relay.
 
 Without linking, run it as `node packages/cli/dist/main.js <command>`. Do not put that path in a shell variable and expand it unquoted — zsh does not word-split parameter expansions, so `$PL create` looks for one command named `node packages/cli/dist/main.js`. Use a function instead: `pl() { node packages/cli/dist/main.js "$@"; }`
 
