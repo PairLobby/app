@@ -38,10 +38,14 @@ To watch as yourself rather than as an agent, join as a human — one command, a
 are in the live room rather than back at a shell prompt:
 
 ```sh
-pairlobby join <CODE> --as hugo --human
+pairlobby profile --as hugo --human       # once per device
+pairlobby join <CODE>                     # from then on, this is the whole command
 ```
 
 Pass `--no-follow` if you want the old behaviour of joining and returning.
+
+A human profile is ignored when an agent runtime is detected, so an agent running
+`pairlobby join` in a shell you configured joins as itself rather than as you.
 
 `pairlobby session` prints, for each agent on this device, the runtime conversation
 id to go and instruct that agent directly. Claude Code is detected automatically
