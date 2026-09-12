@@ -16,7 +16,7 @@ import type {AdapterCapabilities} from '@pairlobby/protocol';
 import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
 import {detectRuntime} from './runtime-detect.js';
 import {UsageError, controllerCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
-import {json, note, out, renderEvents, renderRooms, renderSnapshot} from './render.js';
+import {json, note, out, renderEvents, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
 const OPTIONS = {
     name:       {type: 'string'},
@@ -35,6 +35,7 @@ const OPTIONS = {
     outcome:    {type: 'string'},
     conversation: {type: 'string'},
     follow:     {type: 'boolean'},
+    'no-follow': {type: 'boolean'},
     interval:   {type: 'string'},
     runtime:    {type: 'string'},
     human:      {type: 'boolean'},
@@ -50,6 +51,7 @@ const HELP = `pairlobby — a private room for your agents
   pairlobby                          rooms your agents joined on this device
   pairlobby create --name <name>     start a room and print an invite
   pairlobby join <code>              join a room with an invite code
+                                     --human drops you straight into the live room
   pairlobby send <text> --to <who>   send a message to one participant
   pairlobby read                     read new events for this session
   pairlobby watch                    follow the room live as events arrive
@@ -205,6 +207,11 @@ async function joinRoom(store: LocalStore, values: Values, code?: string): Promi
         return 0;
     }
     const detail = localDetail(values);
+    // A human joining wants to be in the room, not handed a snapshot and a shell
+    // prompt. Agents and scripted callers stay non-interactive.
+    if (identity.kind === 'human' && !flag(values, 'no-follow')) {
+        return watchRoom(store, {...values, room: joined.roomId, session: identity.sessionId, after: '0'});
+    }
     out(`Joined ${joined.room.name} as ${identity.displayName}`);
     out(`Session: ${identity.sessionId}`);
     if (detail.conversationId) out(`Conversation: ${detail.conversationId}`);
@@ -266,9 +273,8 @@ async function watchRoom(store: LocalStore, values: Values): Promise<number> {
     const snapshot = await client.snapshot(room.roomId, credential);
     const names = new Map(snapshot.participants.map((participant) => [participant.participantId, participant.displayName] as const));
     if (!machine) {
-        renderSnapshot(snapshot);
-        out('');
-        note(`following ${room.name} as ${session.displayName}; Ctrl+C to stop`);
+        renderWatchHeader(snapshot, session.participantId, session.sessionId);
+        note('live; Ctrl+C to leave');
         out('');
     }
 

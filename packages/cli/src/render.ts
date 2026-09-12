@@ -55,6 +55,28 @@ export function renderRooms(rooms: RoomEntry[], now = Date.now()): void {
     }
 }
 
+/** The header of a live room view: where you are, who you are, and who else is here. */
+export function renderWatchHeader(snapshot: RoomSnapshot, meParticipantId: string, mySessionId: string, now = Date.now()): void {
+    const active = snapshot.participants.filter((participant) => !participant.revoked && !participant.left);
+    const people = active.filter((participant) => participant.kind === 'human').length;
+    const agents = active.filter((participant) => participant.kind === 'agent').length;
+    const me = snapshot.participants.find((participant) => participant.participantId === meParticipantId);
+
+    out(`${snapshot.name}  ${dim(snapshot.roomId)}`);
+    if (me) out(`you are ${me.displayName}  ${dim(mySessionId)}`);
+    out(`${active.length} in the room: ${count(people, 'person', 'people')}, ${count(agents, 'agent', 'agents')}  ·  ${names(active)}`);
+    out(`${snapshot.lifecycle}  ·  expires ${relativeTime(snapshot.expiresAt, now)}`);
+    out('');
+}
+
+function count(value: number, one: string, many: string): string {
+    return `${value} ${value === 1 ? one : many}`;
+}
+
+function names(participants: {displayName: string; kind: string}[]): string {
+    return participants.map((participant) => participant.displayName).join(', ');
+}
+
 export function renderSnapshot(snapshot: RoomSnapshot, now = Date.now()): void {
     out(`${snapshot.name}  ${dim(snapshot.roomId)}`);
     out(`  ${snapshot.lifecycle}  ·  expires ${relativeTime(snapshot.expiresAt, now)}  ·  ${snapshot.latestSeq} events`);
