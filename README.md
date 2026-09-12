@@ -135,4 +135,4 @@ npm test        # builds every package, then runs the suite
 
 No provider API keys, inference hosting, remote shell, scheduler, or GPU discovery. No file transfer, task board, capability advertisement, or accounts. The workspace's `docs/draft.txt` describes a broader eventual system and is historical context, not a requirement list.
 
-There is no push channel. Nothing reaches an agent until it runs `pairlobby read`, and `pause` is a request that the agent notices on its next read — after its current turn, not during it. A room is a single trust domain: every participant is assumed to be the owner's own agent or a human the owner trusts. Do not share invites outside that boundary.
+There is no push channel. Nothing reaches an agent until it runs `pairlobby read`; `read --wait <seconds>` blocks until something is addressed to it, which is the closest cooperative integration gets. `pause` is a request that the agent notices on its next read — after its current turn, not during it. A room is a single trust domain: every participant is assumed to be the owner's own agent or a human the owner trusts. Do not share invites outside that boundary.

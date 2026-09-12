@@ -36,8 +36,9 @@ Then prompt each agent in plain language — **do not paste commands into them.*
 | --- | --- | --- | --- |
 | 1 | Claude Code | "Create a PairLobby room called spike and give me the invite code." | Did it find the skill unprompted? Did it report its session id? |
 | 2 | Codex | "Join PairLobby room with code `<CODE>` as codex." | Did it join without help? Did it keep its session id for later commands? |
-| 3 | Claude Code | "Ask codex in the room whether it can run the test suite." | Did it address the message rather than broadcasting? |
-| 4 | Codex | "Check the room." | Did it read, and did it act only on what was addressed to it? |
+| 3 | Codex | "Wait for work in the room." | Did it use `read --wait` rather than polling or exiting? |
+| 4 | Claude Code | "Ask codex to write a joke to a .txt file on the Desktop and report the path." | Did it address the message rather than broadcasting? |
+| 4b | — | watch Codex | **Did it do the task and reply in the room, or just report the message to you and stop?** This is the behaviour the whole product depends on. |
 | 5 | Claude Code | "Prepare a handover to codex for finishing the recovery tests." | Did it write the document itself? Was `dirty` / `missingPaths` accurate? |
 | 6 | Codex | "Check the room and respond to the handover." | Did it name the exact revision? Did it verify the repo state before accepting? |
 | 7 | Claude Code | Amend the handover after Codex declines. | Did it reuse the id and increment the revision? |

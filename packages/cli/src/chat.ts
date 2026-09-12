@@ -146,6 +146,10 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
 
     let cursor = options.fromStart ? 0 : snapshot.latestSeq;
     if (options.fromStart) cursor = 0;
+    // An unreachable relay is reported once, not once per poll, and retried with
+    // widening gaps. The old behaviour filled the screen and buried the room.
+    let outageSince: number | null = null;
+    let backoffMs = intervalMs;
 
     while (!closed) {
         try {
@@ -163,16 +167,26 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                     emit(format(event, names, participantId, showIds));
                 }
             }
+            if (outageSince !== null) {
+                emit(`${DIM}  relay is back${RESET}`);
+                outageSince = null;
+                backoffMs = intervalMs;
+            }
             if (page.hasMore) continue;
         } catch (error) {
             if (error instanceof ProtocolError && (error.code === 'room_expired' || error.code === 'room_closed' || error.code === 'participant_revoked')) {
                 emit(`${DIM}  ${error.message}${RESET}`);
                 break;
             }
-            if (error instanceof ProtocolError && error.code === 'server_unavailable') emit(`${DIM}  relay unreachable, retrying${RESET}`);
-            else throw error;
+            if (error instanceof ProtocolError && error.code === 'server_unavailable') {
+                if (outageSince === null) {
+                    outageSince = Date.now();
+                    emit(`${DIM}  relay unreachable — still here, retrying quietly${RESET}`);
+                }
+                backoffMs = Math.min(backoffMs * 2, 30_000);
+            } else throw error;
         }
-        await Promise.race([sleep(intervalMs), finished]);
+        await Promise.race([sleep(outageSince === null ? intervalMs : backoffMs), finished]);
     }
 
     terminal.close();

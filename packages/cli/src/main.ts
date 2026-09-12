@@ -43,6 +43,8 @@ const OPTIONS = {
     reset:      {type: 'boolean'},
     once:       {type: 'boolean'},
     interval:   {type: 'string'},
+    wait:       {type: 'string'},
+    all:        {type: 'boolean'},
     runtime:    {type: 'string'},
     human:      {type: 'boolean'},
     template:   {type: 'boolean'},
@@ -64,6 +66,7 @@ const HELP = `pairlobby — a private room for your agents
   pairlobby chat                     re-enter a room you already joined
   pairlobby send <text> --to <who>   send a message to one participant
   pairlobby read                     read new events for this session
+  pairlobby read --wait 300          block until something is addressed to you
   pairlobby watch                    follow the room live as events arrive
   pairlobby session                  this session's id and runtime conversation
   pairlobby profile --as <name> --human
@@ -445,7 +448,10 @@ async function sendMessage(store: LocalStore, values: Values, text: string): Pro
 async function readEvents(store: LocalStore, values: Values): Promise<number> {
     const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     const after = str(values, 'after') !== undefined ? Number(str(values, 'after')) : session.lastReadSeq;
-    const page = await client.readEvents(room.roomId, credential, after);
+    const waitSeconds = str(values, 'wait') !== undefined ? Number(str(values, 'wait')) : 0;
+    const page = waitSeconds > 0
+        ? await waitForEvents(client, room.roomId, credential, session.participantId, after, waitSeconds, flag(values, 'all'), store.settings().pollIntervalMs)
+        : await client.readEvents(room.roomId, credential, after);
     const snapshot = await client.snapshot(room.roomId, credential);
     const names = new Map(snapshot.participants.map((participant) => [participant.participantId, participant.displayName] as const));
 
@@ -572,6 +578,37 @@ async function sessionInfo(store: LocalStore, values: Values): Promise<number> {
         out(`  cwd           ${entry.cwd}`);
     }
     return 0;
+}
+
+/**
+ * Blocks until something arrives, so an agent can wait for work instead of
+ * polling in a loop and burning a turn on every empty check.
+ *
+ * By default it returns only when an event is addressed to this participant.
+ * Room-wide chatter is not a reason to wake an agent up; --all says otherwise.
+ * It returns empty on timeout rather than erroring, so a caller can simply wait
+ * again.
+ */
+async function waitForEvents(client: PairLobbyClient, roomId: string, credential: string, participantId: string, after: number, seconds: number, wakeOnAnything: boolean, intervalMs: number) {
+    const deadline = Date.now() + seconds * 1000;
+    let cursor = after;
+    let latest = after;
+    const collected: Awaited<ReturnType<PairLobbyClient['readEvents']>>['events'] = [];
+
+    for (;;) {
+        const page = await client.readEvents(roomId, credential, cursor);
+        if (page.events.length > 0) {
+            cursor = page.events.at(-1)!.seq;
+            collected.push(...page.events);
+            const wakes = wakeOnAnything
+                ? page.events.some((event) => event.senderId !== participantId)
+                : page.events.some((event) => event.recipientId === participantId && event.senderId !== participantId);
+            if (wakes) return {events: collected, earliestSeq: 0, latestSeq: page.latestSeq, hasMore: page.hasMore};
+        }
+        latest = page.latestSeq;
+        if (Date.now() >= deadline) return {events: collected, earliestSeq: 0, latestSeq: latest, hasMore: false};
+        await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, Math.max(0, deadline - Date.now()))));
+    }
 }
 
 async function status(store: LocalStore, values: Values): Promise<number> {
