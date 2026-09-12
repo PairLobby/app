@@ -130,6 +130,24 @@ describe('local registry', () => {
         expect(statSync(join(directory, 'profile.json')).mode & 0o777).toBe(0o600);
     });
 
+    test('test_settings_fall_back_to_defaults_and_merge', () => {
+        expect(store.settings().confirmDelete).toBe(true);
+        store.setSettings({confirmDelete: false});
+        expect(store.settings().confirmDelete).toBe(false);
+        // An unset key keeps its default rather than becoming undefined.
+        expect(store.settings().pollIntervalMs).toBe(700);
+        store.resetSettings();
+        expect(store.settings().confirmDelete).toBe(true);
+    });
+
+    test('test_forgetting_a_room_is_what_makes_an_unreachable_relay_recoverable', () => {
+        store.upsertRoom(room({serverUrl: 'http://127.0.0.1:1'}));
+        store.putCredential(room().roomId, 'controller', 'plc_token');
+        store.forgetRoom(room().roomId);
+        expect(store.rooms()).toEqual([]);
+        expect(store.credential(room().roomId, 'controller')).toBeUndefined();
+    });
+
     test('test_a_corrupt_registry_reads_as_empty_rather_than_throwing', () => {
         store.upsertRoom(room());
         rmSync(join(directory, 'rooms.json'));

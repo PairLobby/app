@@ -40,6 +40,7 @@ const OPTIONS = {
     agent:      {type: 'boolean'},
     clear:      {type: 'boolean'},
     force:      {type: 'boolean'},
+    reset:      {type: 'boolean'},
     interval:   {type: 'string'},
     runtime:    {type: 'string'},
     human:      {type: 'boolean'},
@@ -55,6 +56,8 @@ const HELP = `pairlobby — a private room for your agents
   pairlobby, pairlobby list          rooms on this device, with live participant counts
   pairlobby name <room> <new name>   rename a room (controller only)
   pairlobby delete <room>            delete a room (controller only)
+  pairlobby forget <room>            drop the local record, leave the server alone
+  pairlobby settings                 show or change preferences
   pairlobby create --name <name>     start a room and print an invite
   pairlobby join <code>              join a room and enter it
   pairlobby chat                     re-enter a room you already joined
@@ -109,6 +112,8 @@ async function main(argv: string[]): Promise<number> {
         case 'chat':     return chatRoom(store, values);
         case 'session':  return sessionInfo(store, values);
         case 'profile':  return profileCommand(store, values);
+        case 'settings': return settingsCommand(store, values, positionals[1], positionals[2]);
+        case 'forget':   return forgetRoom(store, values, positionals[1]);
         case 'status':   return status(store, values);
         case 'invite':   return invite(store, values);
         case 'handover': return offerHandover(store, values);
@@ -185,7 +190,8 @@ async function deleteRoom(store: LocalStore, values: Values, reference: string |
     if (!reference) throw new UsageError('pairlobby delete needs a room');
     const room = resolveRoom(store, reference);
     const credential = controllerCredential(store, room);
-    if (!flag(values, 'force') && !flag(values, 'json') && process.stdin.isTTY) {
+    const confirm = store.settings().confirmDelete && !flag(values, 'force') && !flag(values, 'json') && process.stdin.isTTY;
+    if (confirm) {
         const {createInterface} = await import('node:readline/promises');
         const terminal = createInterface({input: process.stdin, output: process.stdout});
         const answer = await terminal.question(`Delete ${room.name} (${room.roomId}) and its history? This cannot be undone. [y/N] `);
@@ -195,7 +201,21 @@ async function deleteRoom(store: LocalStore, values: Values, reference: string |
             return 0;
         }
     }
-    await new PairLobbyClient(room.serverUrl).delete(room.roomId, credential);
+    try {
+        await new PairLobbyClient(room.serverUrl).delete(room.roomId, credential);
+    } catch (error) {
+        // A dead relay must not strand the entry forever. Deleting needs the server
+        // to answer; dropping the local record does not, so say which is which.
+        if (error instanceof ProtocolError && error.code === 'server_unavailable') {
+            throw new UsageError(`could not reach ${room.serverUrl}, so the room was not deleted.\n  Start the server and try again, or drop this device's record of it:\n    pairlobby forget ${room.roomId}`);
+        }
+        if (error instanceof ProtocolError && (error.code === 'room_not_found' || error.code === 'room_expired')) {
+            store.forgetRoom(room.roomId);
+            out(`${room.name} was already gone; removed it from this device.`);
+            return 0;
+        }
+        throw error;
+    }
     store.forgetRoom(room.roomId);
 
     if (flag(values, 'json')) {
@@ -225,6 +245,74 @@ function identityFrom(store: LocalStore, values: Values, fallbackName: string): 
     const runtime = str(values, 'runtime') ?? (kind === 'human' ? undefined : profile.runtime ?? detected.runtime);
     const capabilities: AdapterCapabilities | undefined = runtime ? {deliverUnsolicited: false, cancelTurn: false, cancelTool: false, runtime} : undefined;
     return {displayName, kind, sessionId: newId('session'), ...(capabilities ? {capabilities} : {})};
+}
+
+const SETTING_KEYS = {
+    'confirm-delete': {field: 'confirmDelete', kind: 'boolean', help: 'ask before deleting a room'},
+    'poll-interval':  {field: 'pollIntervalMs', kind: 'number', help: 'milliseconds between live-room polls'},
+    'show-ids':       {field: 'showIds', kind: 'boolean', help: 'print ids next to names in the live room'},
+} as const;
+
+function settingsCommand(store: LocalStore, values: Values, key?: string, value?: string): number {
+    if (flag(values, 'reset')) {
+        store.resetSettings();
+        note('settings reset to defaults');
+        return 0;
+    }
+    if (key !== undefined) {
+        const definition = SETTING_KEYS[key as keyof typeof SETTING_KEYS];
+        if (!definition) throw new UsageError(`unknown setting "${key}"; known settings: ${Object.keys(SETTING_KEYS).join(', ')}`);
+        if (value === undefined) throw new UsageError(`pairlobby settings ${key} <value>`);
+        const parsed = definition.kind === 'boolean' ? parseBoolean(key, value) : parseCount(key, value);
+        store.setSettings({[definition.field]: parsed} as never);
+        note(`${key} is now ${parsed}`);
+        return 0;
+    }
+    const settings = store.settings();
+    if (flag(values, 'json')) {
+        json(settings);
+        return 0;
+    }
+    const width = Math.max(...Object.keys(SETTING_KEYS).map((name) => name.length));
+    for (const [name, definition] of Object.entries(SETTING_KEYS)) {
+        out(`${name.padEnd(width)}  ${String(settings[definition.field])}`);
+        out(`${' '.repeat(width)}  ${definition.help}`);
+    }
+    out('');
+    note('pairlobby settings <name> <value>   ·   pairlobby settings --reset');
+    return 0;
+}
+
+function parseBoolean(key: string, value: string): boolean {
+    const normalized = value.trim().toLowerCase();
+    if (['true', 'yes', 'on', '1'].includes(normalized)) return true;
+    if (['false', 'no', 'off', '0'].includes(normalized)) return false;
+    throw new UsageError(`${key} takes true or false, not "${value}"`);
+}
+
+function parseCount(key: string, value: string): number {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) throw new UsageError(`${key} takes a positive number, not "${value}"`);
+    return parsed;
+}
+
+/**
+ * Drops a room from this device without touching the server. The room may still
+ * exist and other participants are unaffected — this is how you get rid of a
+ * record for a relay that is gone, which `delete` cannot do because `delete`
+ * needs the server to answer.
+ */
+function forgetRoom(store: LocalStore, values: Values, reference: string | undefined): number {
+    if (!reference) throw new UsageError('pairlobby forget needs a room');
+    const room = resolveRoom(store, reference);
+    store.forgetRoom(room.roomId);
+    if (flag(values, 'json')) {
+        json({roomId: room.roomId, forgotten: true});
+        return 0;
+    }
+    out(`Forgot ${room.name} on this device.`);
+    note('the room itself is untouched; it expires on its own schedule');
+    return 0;
 }
 
 /** Shows or sets this device's default identity. */
@@ -392,7 +480,8 @@ async function chatRoom(store: LocalStore, values: Values): Promise<number> {
         sessionId: session.sessionId,
         participantId: session.participantId,
         controllerCredential: store.credential(room.roomId, 'controller'),
-        ...(str(values, 'interval') !== undefined ? {intervalMs: Number(str(values, 'interval'))} : {}),
+        intervalMs: str(values, 'interval') !== undefined ? Number(str(values, 'interval')) : store.settings().pollIntervalMs,
+        showIds: store.settings().showIds,
         fromStart: true,
     });
 }

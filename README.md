@@ -53,6 +53,15 @@ pairlobby name <room> "new name"          # rename (controller only)
 pairlobby delete <room>                   # delete (controller only, asks first)
 ```
 
+```sh
+pairlobby forget <room>                   # drop the local record, leave the server alone
+pairlobby settings                        # show preferences
+pairlobby settings confirm-delete false   # stop asking before delete
+```
+
+`forget` is the escape hatch for a room whose relay is gone: `delete` needs the
+server to answer, dropping this device's record does not.
+
 `list` says whether each room is private or open. Every room is private today —
 guest access by room id is specified in the workspace open-questions document and
 not implemented.

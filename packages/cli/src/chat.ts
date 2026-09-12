@@ -23,6 +23,8 @@ export interface ChatOptions {
     /** Present when this device holds the controller credential, enabling /pause and /resume. */
     controllerCredential?: string | undefined;
     intervalMs?: number;
+    /** Print participant ids beside names, which matters when two agents share one. */
+    showIds?: boolean;
     /** Start from the beginning of retained history rather than from the live edge. */
     fromStart?: boolean;
 }
@@ -41,6 +43,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
     const {client, roomId, credential, store, sessionId, participantId} = options;
     const intervalMs = options.intervalMs ?? 700;
 
+    const showIds = options.showIds === true;
     let snapshot = await client.snapshot(roomId, credential);
     const names = new Map<string, string>();
     absorbNames(snapshot, names);
@@ -83,7 +86,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             const result = await client.send(roomId, credential, {type: 'message', payload: {text, priority: 'normal'}, idempotencyKey: newId('event'), ...(to ? {recipientId: to} : {})});
             // Shown immediately and marked seen, so the poll does not print it twice.
             seen.add(result.event.eventId);
-            emit(format(result.event, names, participantId));
+            emit(format(result.event, names, participantId, showIds));
         } catch (error) {
             emit(`${DIM}  not sent — ${error instanceof ProtocolError ? error.message : String(error)}${RESET}`);
         }
@@ -112,7 +115,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
 
         if (line === '/quit' || line === '/exit') {closed = true; terminal.close(); return;}
         if (line === '/help') {emit(HELP); return;}
-        if (line === '/who') {emit(who(snapshot)); return;}
+        if (line === '/who') {emit(who(snapshot, showIds)); return;}
         if (line === '/to') {recipient = null; setPrompt(); emit(`${DIM}  addressing the room${RESET}`); terminal.prompt(true); return;}
         if (line.startsWith('/to ')) {
             const found = resolveName(line.slice(4).trim());
@@ -155,7 +158,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 for (const event of page.events) {
                     if (seen.has(event.eventId)) continue;
                     seen.add(event.eventId);
-                    emit(format(event, names, participantId));
+                    emit(format(event, names, participantId, showIds));
                 }
             }
             if (page.hasMore) continue;
@@ -188,17 +191,18 @@ function header(snapshot: RoomSnapshot, participantId: string, sessionId: string
     emit('');
 }
 
-function who(snapshot: RoomSnapshot): string {
+function who(snapshot: RoomSnapshot, showIds = false): string {
     return snapshot.participants
         .filter((participant) => !participant.revoked && !participant.left)
         .map((participant) => {
             const control = participant.controlRevision > 0 ? `  ${DIM}control ${participant.controlRevision}: ${participant.acknowledgedOutcome ?? 'no acknowledgement yet'}${RESET}` : '';
-            return `  ${participant.displayName}  ${DIM}${participant.kind}${participant.paused ? ', paused' : ''}${RESET}${control}`;
+            const id = showIds ? `  ${DIM}${participant.participantId}${RESET}` : '';
+            return `  ${participant.displayName}${id}  ${DIM}${participant.kind}${participant.paused ? ', paused' : ''}${RESET}${control}`;
         })
         .join('\n');
 }
 
-function format(event: RoomEvent, names: Map<string, string>, meParticipantId: string): string {
+function format(event: RoomEvent, names: Map<string, string>, meParticipantId: string, showIds = false): string {
     const time = `${DIM}${new Date(event.at).toTimeString().slice(0, 5)}${RESET}`;
     const sender = event.senderId ? names.get(event.senderId) ?? event.senderId : 'room';
     const mine = event.senderId === meParticipantId;
@@ -206,7 +210,8 @@ function format(event: RoomEvent, names: Map<string, string>, meParticipantId: s
     if (event.type === 'message') {
         const to = event.recipientId ? `${DIM} → ${names.get(event.recipientId) ?? event.recipientId}${RESET}` : '';
         const who = mine ? `${DIM}${sender}${RESET}` : `${BOLD}${sender}${RESET}`;
-        return `${time}  ${who}${to}  ${event.payload.text}`;
+        const id = showIds && event.senderId ? `${DIM} ${event.senderId}${RESET}` : '';
+        return `${time}  ${who}${id}${to}  ${event.payload.text}`;
     }
     return `${time}  ${DIM}· ${systemLine(event, names, sender)}${RESET}`;
 }

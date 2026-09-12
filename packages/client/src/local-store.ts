@@ -51,6 +51,18 @@ export interface Profile {
     server?: string;
 }
 
+/** Behavioural preferences for this device. Distinct from the profile, which is identity. */
+export interface Settings {
+    /** Ask before deleting a room. */
+    confirmDelete: boolean;
+    /** How often the live room asks for new events, in milliseconds. */
+    pollIntervalMs: number;
+    /** Print participant and room ids next to names in the live room. */
+    showIds: boolean;
+}
+
+export const DEFAULT_SETTINGS: Settings = {confirmDelete: true, pollIntervalMs: 700, showIds: false};
+
 export function dataDirectory(): string {
     const override = process.env['PAIRLOBBY_DATA_DIR'];
     if (override) return override;
@@ -97,6 +109,25 @@ export class LocalStore {
 
     clearProfile(): void {
         writeJsonPrivate(this.profileFile, {});
+    }
+
+    private get settingsFile(): string {
+        return join(this.directory, 'settings.json');
+    }
+
+    settings(): Settings {
+        return {...DEFAULT_SETTINGS, ...readJson<Partial<Settings>>(this.settingsFile, {})};
+    }
+
+    setSettings(update: Partial<Settings>): Settings {
+        const merged = {...this.settings(), ...update};
+        writeJsonPrivate(this.settingsFile, merged);
+        return merged;
+    }
+
+    resetSettings(): Settings {
+        writeJsonPrivate(this.settingsFile, {});
+        return DEFAULT_SETTINGS;
     }
 
     rooms(): RoomEntry[] {
