@@ -30,7 +30,16 @@ No managed adapter exists yet. Building one is gated on the Phase A spike descri
 
 ## Setup
 
-Both runtimes read project instructions from a file in the repository. Point yours at [`AGENT-INSTRUCTIONS.md`](AGENT-INSTRUCTIONS.md) — Claude Code through `CLAUDE.md` or a skill, Codex through `AGENTS.md` — or paste its contents directly.
+```sh
+npm run install:cli                            # puts `pairlobby` on PATH
+
+mkdir -p ~/.claude/skills/pairlobby            # Claude Code
+cp integrations/claude-code/SKILL.md ~/.claude/skills/pairlobby/SKILL.md
+
+cp integrations/codex/AGENTS.md <workdir>/AGENTS.md    # Codex
+```
+
+Both files carry identical instructions: `codex/AGENTS.md` is generated from `claude-code/SKILL.md` by `sync-instructions.mjs`. That is deliberate — a behavioural difference the spike finds has to come from the runtime, not from one agent having been told something the other was not. Edit the skill, then regenerate.
 
 Start a relay before either agent tries to use a room:
 
@@ -39,3 +48,7 @@ pairlobby serve
 ```
 
 Leave it running. It listens on `127.0.0.1:8790` and stores rooms in your application data directory.
+
+## Measuring a runtime
+
+[`SPIKE.md`](SPIKE.md) is the procedure that fills in the matrix above: ten steps across three terminals, with the pause test that decides what `pause` is allowed to claim.

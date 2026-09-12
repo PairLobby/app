@@ -23,7 +23,7 @@ node packages/cli/dist/main.js serve          # leave this running
 In another terminal:
 
 ```sh
-cd packages/cli && npm link && cd -            # puts `pairlobby` on your PATH
+npm run install:cli                            # puts `pairlobby` on your PATH
 
 pairlobby create --name my-project --as claude --local
 pairlobby invite                               # give this code to the other agent

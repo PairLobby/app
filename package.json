@@ -2,7 +2,9 @@
   "name": "pairlobby-workspace",
   "private": true,
   "type": "module",
-  "engines": {"node": ">=22"},
+  "engines": {
+    "node": ">=22"
+  },
   "workspaces": [
     "packages/*",
     "fixtures"
@@ -10,6 +12,8 @@
   "scripts": {
     "build": "tsc --build",
     "clean": "tsc --build --clean",
+    "install:cli": "npm run build && npm link --workspace @pairlobby/cli",
+    "uninstall:cli": "npm unlink -g pairlobby",
     "test": "tsc --build && vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --build --force"
