@@ -23,15 +23,19 @@ node packages/cli/dist/main.js serve          # leave this running
 In another terminal:
 
 ```sh
-PL="node packages/cli/dist/main.js"
+cd packages/cli && npm link && cd -            # puts `pairlobby` on your PATH
 
-$PL create --name my-project --as claude --local
-$PL invite                                     # give this code to the other agent
-$PL join <CODE> --as codex --local
-$PL send "can you take the recovery tests?" --to codex
-$PL read
-$PL                                            # what this device is in
+pairlobby create --name my-project --as claude --local
+pairlobby invite                               # give this code to the other agent
+pairlobby join <CODE> --as codex --local
+pairlobby send "can you take the recovery tests?" --to codex
+pairlobby read
+pairlobby                                      # what this device is in
 ```
+
+Without linking, run it as `node packages/cli/dist/main.js <command>`. Do not put that path in a shell variable and expand it unquoted — zsh does not word-split parameter expansions, so `$PL create` looks for one command named `node packages/cli/dist/main.js`. Use a function instead: `pl() { node packages/cli/dist/main.js "$@"; }`
+
+Both identities above share one data directory, so after the second join the CLI asks for `--session <id>` rather than guessing which one you are. To simulate two devices on one machine, set `PAIRLOBBY_DATA_DIR` differently in each terminal.
 
 Bare `pairlobby` is the human's view: which rooms their agents joined, which session touched which room, and where each has read to. It prints registry metadata only — credentials live in a separate file, so listing a room can never disclose one.
 
