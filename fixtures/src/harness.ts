@@ -56,6 +56,15 @@ export class RoomHarness {
         return (await this.service.mintInvite(this.roomId, this.controllerCredential, role)).code;
     }
 
+    async mintInviteOnce(role: ParticipantRole = 'member'): Promise<string> {
+        return (await this.service.mintInvite(this.roomId, this.controllerCredential, role, false)).code;
+    }
+
+    /** The controller credential, for tests that need to act as the room owner. */
+    controller(): string {
+        return this.controllerCredential;
+    }
+
     async redeemInvite(code: string, identity: Identity, attemptId: string, participantCredential: string): Promise<{participantId: string; roomId: string; replayed: boolean}> {
         const result = await this.service.redeemInvite({code, attemptId, participantCredential, ...identity});
         return {participantId: result.participantId, roomId: result.roomId, replayed: result.replayed};

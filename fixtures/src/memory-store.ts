@@ -63,11 +63,17 @@ export class MemoryStore implements RoomStore {
         return this.invites.get(digest) ?? null;
     }
 
-    async reserveInvite(digest: string, attemptId: string, credentialHash: string): Promise<InviteRecord | null> {
+    async reserveInvite(digest: string, attemptId: string, credentialHash: string, expectedOccupantId: string | null): Promise<InviteRecord | null> {
         const invite = this.invites.get(digest);
         if (!invite) return null;
-        if (invite.state === 'redeemed') return invite.boundAttemptId === attemptId ? invite : null;
-        if (invite.state === 'reserved' && invite.boundAttemptId !== attemptId) return null;
+        if (invite.boundAttemptId === attemptId) return invite;
+        if (invite.state === 'reserved') return null;
+        if (invite.state === 'redeemed') {
+            if (!invite.reusable) return null;
+            if (invite.redeemedParticipantId !== expectedOccupantId) return null;
+        } else if (expectedOccupantId !== null) {
+            return null;
+        }
         const reserved: InviteRecord = {...invite, state: 'reserved', boundAttemptId: attemptId, boundCredentialHash: credentialHash};
         this.invites.set(digest, reserved);
         return reserved;

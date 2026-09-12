@@ -137,6 +137,8 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
     });
 
     const finished = new Promise<void>((resolve) => terminal.once('close', resolve));
+    // readline intercepts Ctrl+C, so the interface is where the signal arrives.
+    terminal.on('SIGINT', () => {closed = true; terminal.close();});
     process.once('SIGINT', () => {closed = true; terminal.close();});
 
     setPrompt();
@@ -174,8 +176,24 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
     }
 
     terminal.close();
-    process.stdout.write('\n');
-    return 0;
+    // Closing the interface is not enough to end the process: stdin stays open and
+    // referenced, so the event loop never drains and the command appears to hang.
+    if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    process.stdin.pause();
+
+    // Tell the room you are gone. Membership is durable, so without this the room
+    // shows you present indefinitely and your invite seat never reopens.
+    try {
+        await client.leave(roomId, credential);
+    } catch {
+        // Leaving is best effort: the room may already be closed, expired, or the
+        // relay gone. None of those should turn quitting into an error.
+    }
+    // Node's fetch keeps pooled sockets referenced, so the event loop does not
+    // drain on its own and the command appears to hang after you quit. Leave
+    // deliberately, once output is flushed.
+    await new Promise<void>((resolve) => process.stdout.write('\n', () => resolve()));
+    process.exit(0);
 }
 
 function header(snapshot: RoomSnapshot, participantId: string, sessionId: string, emit: (line: string) => void): void {

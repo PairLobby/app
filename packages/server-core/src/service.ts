@@ -83,7 +83,7 @@ export class RoomService {
         return {roomId: created.room.roomId, participantId: created.participant.participantId, invite, snapshot: toSnapshot(view)};
     }
 
-    async mintInvite(roomId: string, credential: string, role: ParticipantRole): Promise<{code: string; expiresAt: number}> {
+    async mintInvite(roomId: string, credential: string, role: ParticipantRole, reusable = true): Promise<{code: string; expiresAt: number; reusable: boolean}> {
         const view = await this.view(roomId);
         const actor = authenticate(view, await hashCredential(credential), this.now());
         if (actor.kind !== 'controller' && actor.participant.role !== 'controller' && actor.participant.kind !== 'agent') {
@@ -100,12 +100,13 @@ export class RoomService {
             createdAt: now,
             expiresAt: now + view.room.policy.inviteLifetimeMs,
             state: 'unused',
+            reusable,
             boundAttemptId: null,
             boundCredentialHash: null,
             redeemedParticipantId: null,
             recoverableUntil: now + view.room.policy.inviteLifetimeMs * 2,
         });
-        return {code, expiresAt: now + view.room.policy.inviteLifetimeMs};
+        return {code, expiresAt: now + view.room.policy.inviteLifetimeMs, reusable};
     }
 
     /**
@@ -120,19 +121,31 @@ export class RoomService {
         const invite = await this.store.inviteByDigest(digest);
         if (!invite) throw new ProtocolError('invite_unknown', 'that invite code is not valid');
         const now = this.now();
+        let expectedOccupantId: string | null = null;
         const credentialHash = await hashCredential(input.participantCredential);
 
         if (invite.state === 'redeemed') {
-            if (invite.boundAttemptId !== input.attemptId) throw new ProtocolError('invite_already_redeemed', 'that invite code was already used');
-            const view = await this.view(invite.roomId);
-            return {roomId: invite.roomId, participantId: invite.redeemedParticipantId!, role: invite.role, replayed: true, snapshot: toSnapshot(view)};
+            // The same attempt retrying gets its original membership back.
+            if (invite.boundAttemptId === input.attemptId) {
+                const view = await this.view(invite.roomId);
+                return {roomId: invite.roomId, participantId: invite.redeemedParticipantId!, role: invite.role, replayed: true, snapshot: toSnapshot(view)};
+            }
+            if (!invite.reusable) throw new ProtocolError('invite_already_redeemed', 'that invite code was already used');
+            // A reusable code is a seat. It reopens when its occupant leaves, but a
+            // revoked participant's seat stays shut: removal is a deliberate act and
+            // must not be undone by reusing the code that let them in.
+            const occupant = invite.redeemedParticipantId ? (await this.view(invite.roomId)).participants.find((participant) => participant.participantId === invite.redeemedParticipantId) : undefined;
+            if (occupant && occupant.revokedAt !== null) throw new ProtocolError('invite_already_redeemed', 'that invite code belongs to a participant who was removed from the room');
+            if (occupant && occupant.leftAt === null) throw new ProtocolError('invite_already_redeemed', `${occupant.displayName} is currently in the room using that code`);
+            expectedOccupantId = invite.redeemedParticipantId;
+        } else if (now >= invite.expiresAt) {
+            throw new ProtocolError('invite_expired', 'that invite code has expired');
         }
-        if (now >= invite.expiresAt) throw new ProtocolError('invite_expired', 'that invite code has expired');
 
         const view = await this.view(invite.roomId);
         assertRoomWritable(view, now);
 
-        const reserved = await this.store.reserveInvite(digest, input.attemptId, credentialHash);
+        const reserved = await this.store.reserveInvite(digest, input.attemptId, credentialHash, expectedOccupantId);
         if (!reserved) throw new ProtocolError('invite_already_redeemed', 'that invite code is being redeemed by another attempt');
 
         // Recovery path: the previous attempt created membership but lost its response.

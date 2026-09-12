@@ -64,8 +64,8 @@ export const RedeemInviteResponse = z.object({
 });
 export type RedeemInviteResponse = z.infer<typeof RedeemInviteResponse>;
 
-export const CreateInviteRequest = z.object({role: ParticipantRole.default('member')});
-export const CreateInviteResponse = z.object({code: z.string(), expiresAt: z.number().int().nonnegative()});
+export const CreateInviteRequest = z.object({role: ParticipantRole.default('member'), reusable: z.boolean().default(true)});
+export const CreateInviteResponse = z.object({code: z.string(), expiresAt: z.number().int().nonnegative(), reusable: z.boolean()});
 export type CreateInviteResponse = z.infer<typeof CreateInviteResponse>;
 
 export const ReadEventsQuery = z.object({

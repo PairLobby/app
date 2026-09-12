@@ -67,8 +67,8 @@ async function route(request: Request, service: RoomService): Promise<Response> 
 
     switch (`${method} ${segments[3]}`) {
         case 'POST invites': {
-            const {role} = CreateInviteRequest.parse(await readOptionalJson(request));
-            return json(await service.mintInvite(roomId, credential, role), 201);
+            const {role, reusable} = CreateInviteRequest.parse(await readOptionalJson(request));
+            return json(await service.mintInvite(roomId, credential, role, reusable), 201);
         }
         case 'GET events': {
             const query = ReadEventsQuery.parse(Object.fromEntries(new URL(request.url).searchParams));

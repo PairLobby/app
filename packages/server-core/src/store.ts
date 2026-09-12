@@ -35,11 +35,17 @@ export interface RoomStore {
     inviteByDigest(digest: string): Promise<InviteRecord | null>;
 
     /**
-     * Atomically binds an unused invite to one redemption attempt. A competing
-     * attempt must fail here rather than racing into membership creation.
+     * Atomically binds an invite to one redemption attempt. A competing attempt
+     * must fail here rather than racing into membership creation.
+     *
+     * `expectedOccupantId` is the participant the caller believes currently holds
+     * the seat, or null when it believes the code is unused. The reservation only
+     * applies if that is still true, so several callers who each saw the same
+     * departed occupant cannot all claim the seat.
+     *
      * Returns the bound invite, or null when another attempt already holds it.
      */
-    reserveInvite(digest: string, attemptId: string, credentialHash: string): Promise<InviteRecord | null>;
+    reserveInvite(digest: string, attemptId: string, credentialHash: string, expectedOccupantId: string | null): Promise<InviteRecord | null>;
 
     /** Marks a reserved invite consumed and records which participant it produced. */
     completeInvite(digest: string, participantId: string): Promise<void>;

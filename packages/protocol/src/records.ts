@@ -67,6 +67,12 @@ export const InviteRecord = z.object({
     createdAt: z.number().int().nonnegative(),
     expiresAt: z.number().int().nonnegative(),
     state: InviteRedemption,
+    /**
+     * A reusable code behaves as a seat: it admits one participant at a time and
+     * becomes available again when that participant leaves. A single-use code is
+     * spent on first redemption.
+     */
+    reusable: z.boolean().default(true),
     /** Set once an attempt reserves the invite, so a retry of that attempt recovers the same membership. */
     boundAttemptId: AttemptId.nullable(),
     boundCredentialHash: z.string().length(64).nullable(),

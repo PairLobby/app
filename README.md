@@ -59,6 +59,12 @@ pairlobby settings                        # show preferences
 pairlobby settings confirm-delete false   # stop asking before delete
 ```
 
+An invite code is a **seat**: it admits one participant at a time and frees up when
+that participant leaves, so closing your session and rejoining with the same code
+works. `pairlobby invite --once` mints a code spent on first use instead. A revoked
+participant's seat stays shut — removal is deliberate and reusing their code must not
+undo it.
+
 `forget` is the escape hatch for a room whose relay is gone: `delete` needs the
 server to answer, dropping this device's record does not.
 

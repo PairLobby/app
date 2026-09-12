@@ -81,6 +81,78 @@ describe(label, () => {
         });
     });
 
+    describe('invite seats', () => {
+        let server: RoomHarness;
+        let alice: FakeAgent;
+
+        beforeEach(async () => {
+            server = track(new RoomHarness(makeStore()));
+            alice = new FakeAgent(server, 'claude');
+            await alice.create('seat-room');
+        });
+
+        test('test_a_code_is_refused_while_its_occupant_is_still_in_the_room', async () => {
+            const code = await server.mintInvite('member');
+            await new FakeAgent(server, 'hugo').join(code);
+            await expectError('invite_already_redeemed', () => new FakeAgent(server, 'someone-else').join(code));
+        });
+
+        test('test_a_code_works_again_once_its_occupant_leaves', async () => {
+            const code = await server.mintInvite('member');
+            const first = new FakeAgent(server, 'hugo');
+            await first.join(code);
+            await server.leave(first.credential);
+
+            const second = new FakeAgent(server, 'hugo');
+            await second.join(code);
+            expect(second.participantId).not.toBe(first.participantId);
+            const snapshot = await server.snapshot(second.credential);
+            expect(snapshot.participants.filter((participant) => !participant.left && !participant.revoked)).toHaveLength(2);
+        });
+
+        test('test_leaving_frees_the_seat_for_the_participant_cap_too', async () => {
+            const code = await server.mintInvite('member');
+            const first = new FakeAgent(server, 'hugo');
+            await first.join(code);
+            await server.leave(first.credential);
+            const snapshot = await server.snapshot(first.credential);
+            expect(snapshot.participants.find((participant) => participant.participantId === first.participantId)!.left).toBe(true);
+        });
+
+        // The occupancy check and the reservation have to be one atomic step, or
+        // every racer sees the same departed occupant and they all claim the seat.
+        test('test_racing_claims_on_one_vacated_seat_admit_exactly_one', async () => {
+            const code = await server.mintInvite('member');
+            const first = new FakeAgent(server, 'hugo');
+            await first.join(code);
+            await server.leave(first.credential);
+
+            const claimants = Array.from({length: 8}, (_, index) => new FakeAgent(server, `claimant-${index}`));
+            const results = await Promise.allSettled(claimants.map((claimant) => claimant.join(code)));
+            expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+
+            const snapshot = await server.snapshot(first.credential);
+            expect(snapshot.participants.filter((participant) => !participant.left && !participant.revoked)).toHaveLength(2);
+        });
+
+        test('test_a_revoked_participants_seat_stays_shut', async () => {
+            const code = await server.mintInvite('member');
+            const evicted = new FakeAgent(server, 'hugo');
+            await evicted.join(code);
+            await server.revoke(server.controller(), evicted.participantId);
+            // Removal is deliberate; reusing the code that admitted them must not undo it.
+            await expectError('invite_already_redeemed', () => new FakeAgent(server, 'hugo-again').join(code));
+        });
+
+        test('test_a_single_use_code_stays_spent_after_its_holder_leaves', async () => {
+            const code = await server.mintInviteOnce();
+            const first = new FakeAgent(server, 'hugo');
+            await first.join(code);
+            await server.leave(first.credential);
+            await expectError('invite_already_redeemed', () => new FakeAgent(server, 'hugo-again').join(code));
+        });
+    });
+
     describe('idempotency and retries', () => {
         test('test_repeated_key_with_identical_content_returns_the_original_event', async () => {
             const server = track(new RoomHarness(makeStore()));

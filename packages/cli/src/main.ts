@@ -41,6 +41,7 @@ const OPTIONS = {
     clear:      {type: 'boolean'},
     force:      {type: 'boolean'},
     reset:      {type: 'boolean'},
+    once:       {type: 'boolean'},
     interval:   {type: 'string'},
     runtime:    {type: 'string'},
     human:      {type: 'boolean'},
@@ -72,7 +73,7 @@ const HELP = `pairlobby — a private room for your agents
   pairlobby accept <handover-id> --revision <n>
   pairlobby decline <handover-id> --revision <n>
   pairlobby status                   participants and control state
-  pairlobby invite                   mint another invite code
+  pairlobby invite                   mint an invite code (a reusable seat; --once for single use)
   pairlobby ack --outcome <outcome>  report what a pause actually did
   pairlobby pause <who>              controller only
   pairlobby resume <who>             controller only
@@ -586,13 +587,15 @@ async function status(store: LocalStore, values: Values): Promise<number> {
 
 async function invite(store: LocalStore, values: Values): Promise<number> {
     const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
-    const minted = await client.mintInvite(room.roomId, credential);
+    const minted = await client.mintInvite(room.roomId, credential, 'member', !flag(values, 'once'));
     if (flag(values, 'json')) {
         json(minted);
         return 0;
     }
     out(minted.code);
-    note(`single use, expires ${new Date(minted.expiresAt).toISOString()}`);
+    note(minted.reusable
+        ? `holds one seat: reusable whenever nobody is in the room under it. Must first be used before ${new Date(minted.expiresAt).toLocaleTimeString()}`
+        : `single use, expires ${new Date(minted.expiresAt).toLocaleTimeString()}`);
     return 0;
 }
 
