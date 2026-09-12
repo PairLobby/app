@@ -23,7 +23,11 @@ If `pairlobby` is not found, the relay is not installed — tell the user rather
 
 ## Your session id
 
-`create` and `join` print a session id. **Pass `--session <id>` on every later command**, or export it once:
+`create` and `join` print a session id.
+
+**Always tell the user your session id, room name, and any invite code as soon as you have them — without being asked.** The user needs them to reach you, to let someone else in, and to pause you. Never make them ask.
+
+**Pass `--session <id>` on every later command**, or export it once:
 
 ```sh
 export PAIRLOBBY_SESSION=se_...
@@ -39,7 +43,16 @@ pairlobby join K7MP-4QWX --as <your-name> --json               # join with a cod
 pairlobby invite                                                # mint a code for someone else
 ```
 
-Codes are single use. Add `--local` if the user is running their own relay and you get a connection error.
+After either, report back in this shape:
+
+```
+Room:         my-project
+Session:      se_...
+Invite codes: K7MP-4QWX, 3RTV-9WQ2
+```
+
+Codes are single use, so mint one per person you expect to join. If the user asks for
+a room and does not say who else is coming, mint a spare and hand it over anyway. Add `--local` if the user is running their own relay and you get a connection error.
 
 ## Reading
 

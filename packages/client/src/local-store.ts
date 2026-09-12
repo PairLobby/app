@@ -43,6 +43,14 @@ export interface RoomEntry {
     sessions: SessionEntry[];
 }
 
+/** Defaults for this device, so a human does not retype their identity on every join. */
+export interface Profile {
+    displayName?: string;
+    kind?: 'agent' | 'human';
+    runtime?: string;
+    server?: string;
+}
+
 export function dataDirectory(): string {
     const override = process.env['PAIRLOBBY_DATA_DIR'];
     if (override) return override;
@@ -68,6 +76,27 @@ export class LocalStore {
 
     private get credentialsFile(): string {
         return join(this.directory, 'credentials.json');
+    }
+
+    private get profileFile(): string {
+        return join(this.directory, 'profile.json');
+    }
+
+    profile(): Profile {
+        return readJson<Profile>(this.profileFile, {});
+    }
+
+    setProfile(profile: Profile): Profile {
+        const merged = {...this.profile(), ...profile};
+        for (const key of Object.keys(merged) as (keyof Profile)[]) {
+            if (merged[key] === undefined) delete merged[key];
+        }
+        writeJsonPrivate(this.profileFile, merged);
+        return merged;
+    }
+
+    clearProfile(): void {
+        writeJsonPrivate(this.profileFile, {});
     }
 
     rooms(): RoomEntry[] {

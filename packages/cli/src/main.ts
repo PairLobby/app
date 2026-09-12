@@ -15,8 +15,9 @@ import type {AdapterCapabilities} from '@pairlobby/protocol';
 
 import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
 import {detectRuntime} from './runtime-detect.js';
+import {runChatRoom} from './chat.js';
 import {UsageError, controllerCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
-import {json, note, out, renderEvents, renderRooms, renderSnapshot} from './render.js';
+import {json, note, out, renderEvents, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
 const OPTIONS = {
     name:       {type: 'string'},
@@ -35,6 +36,9 @@ const OPTIONS = {
     outcome:    {type: 'string'},
     conversation: {type: 'string'},
     follow:     {type: 'boolean'},
+    'no-follow': {type: 'boolean'},
+    agent:      {type: 'boolean'},
+    clear:      {type: 'boolean'},
     interval:   {type: 'string'},
     runtime:    {type: 'string'},
     human:      {type: 'boolean'},
@@ -49,11 +53,14 @@ const HELP = `pairlobby — a private room for your agents
 
   pairlobby                          rooms your agents joined on this device
   pairlobby create --name <name>     start a room and print an invite
-  pairlobby join <code>              join a room with an invite code
+  pairlobby join <code>              join a room and enter it
+  pairlobby chat                     re-enter a room you already joined
   pairlobby send <text> --to <who>   send a message to one participant
   pairlobby read                     read new events for this session
   pairlobby watch                    follow the room live as events arrive
   pairlobby session                  this session's id and runtime conversation
+  pairlobby profile --as <name> --human
+                                     set defaults so plain "join <code>" works
   pairlobby handover --to <who> --file <path>
   pairlobby handover --to <who> --file <path> --handover-id <id> --revision <n>
   pairlobby accept <handover-id> --revision <n>
@@ -93,7 +100,9 @@ async function main(argv: string[]): Promise<number> {
         case 'send':     return sendMessage(store, values, positionals.slice(1).join(' '));
         case 'read':     return readEvents(store, values);
         case 'watch':    return watchRoom(store, values);
+        case 'chat':     return chatRoom(store, values);
         case 'session':  return sessionInfo(store, values);
+        case 'profile':  return profileCommand(store, values);
         case 'status':   return status(store, values);
         case 'invite':   return invite(store, values);
         case 'handover': return offerHandover(store, values);
@@ -130,16 +139,58 @@ function listRooms(store: LocalStore, values: Values): number {
     return 0;
 }
 
-function identityFrom(values: Values, fallbackName: string): {displayName: string; kind: 'agent' | 'human'; sessionId: string; capabilities?: AdapterCapabilities} {
+/**
+ * Resolves who is joining: explicit flags first, then the device profile, then
+ * what the environment reveals.
+ *
+ * The profile is deliberately ignored when a runtime is detected and the profile
+ * is a human's. Otherwise an agent running `pairlobby join` in a shell its owner
+ * configured would join wearing the owner's name and human role — quietly
+ * granting itself an identity the room has no other way to question.
+ */
+function identityFrom(store: LocalStore, values: Values, fallbackName: string): {displayName: string; kind: 'agent' | 'human'; sessionId: string; capabilities?: AdapterCapabilities} {
     const detected = detectRuntime();
-    const runtime = str(values, 'runtime') ?? detected.runtime;
+    const profile = store.profile();
+    const profileApplies = !(detected.runtime !== undefined && profile.kind === 'human');
+
+    const kind = flag(values, 'human') ? 'human' : flag(values, 'agent') ? 'agent' : (profileApplies && profile.kind) || (detected.runtime ? 'agent' : 'agent');
+    const displayName = str(values, 'as') ?? (profileApplies ? profile.displayName : undefined) ?? fallbackName;
+    const runtime = str(values, 'runtime') ?? (kind === 'human' ? undefined : profile.runtime ?? detected.runtime);
     const capabilities: AdapterCapabilities | undefined = runtime ? {deliverUnsolicited: false, cancelTurn: false, cancelTool: false, runtime} : undefined;
-    return {
-        displayName: str(values, 'as') ?? fallbackName,
-        kind: flag(values, 'human') ? 'human' : 'agent',
-        sessionId: newId('session'),
-        ...(capabilities ? {capabilities} : {}),
+    return {displayName, kind, sessionId: newId('session'), ...(capabilities ? {capabilities} : {})};
+}
+
+/** Shows or sets this device's default identity. */
+function profileCommand(store: LocalStore, values: Values): number {
+    if (flag(values, 'clear')) {
+        store.clearProfile();
+        note('profile cleared');
+        return 0;
+    }
+    const update = {
+        ...(str(values, 'as') !== undefined ? {displayName: str(values, 'as')!} : {}),
+        ...(flag(values, 'human') ? {kind: 'human' as const} : flag(values, 'agent') ? {kind: 'agent' as const} : {}),
+        ...(str(values, 'runtime') !== undefined ? {runtime: str(values, 'runtime')!} : {}),
+        ...(str(values, 'server') !== undefined ? {server: str(values, 'server')!} : {}),
     };
+    const profile = Object.keys(update).length > 0 ? store.setProfile(update) : store.profile();
+
+    if (flag(values, 'json')) {
+        json(profile);
+        return 0;
+    }
+    if (Object.keys(profile).length === 0) {
+        out('No profile set on this device.');
+        out('');
+        out('  pairlobby profile --as hugo --human      then plain "pairlobby join <code>" works');
+        return 0;
+    }
+    out(`name     ${profile.displayName ?? '(unset)'}`);
+    out(`kind     ${profile.kind ?? '(unset)'}`);
+    if (profile.runtime) out(`runtime  ${profile.runtime}`);
+    if (profile.server) out(`server   ${profile.server}`);
+    if (profile.kind === 'human') note('a detected agent runtime ignores this profile, so agents never join as you');
+    return 0;
 }
 
 /**
@@ -163,8 +214,8 @@ function localDetail(values: Values): {runtime?: string; conversationId?: string
 async function createRoom(store: LocalStore, values: Values): Promise<number> {
     const name = str(values, 'name');
     if (!name) throw new UsageError('pairlobby create needs --name');
-    const serverUrl = resolveServer({server: str(values, 'server'), local: flag(values, 'local')});
-    const identity = identityFrom(values, 'agent');
+    const serverUrl = resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')});
+    const identity = identityFrom(store, values, 'agent');
     const client = new PairLobbyClient(serverUrl);
     const created = await client.createRoom(name, identity);
 
@@ -191,8 +242,8 @@ async function createRoom(store: LocalStore, values: Values): Promise<number> {
 
 async function joinRoom(store: LocalStore, values: Values, code?: string): Promise<number> {
     if (!code) throw new UsageError('pairlobby join needs an invite code');
-    const serverUrl = resolveServer({server: str(values, 'server'), local: flag(values, 'local')});
-    const identity = identityFrom(values, 'agent');
+    const serverUrl = resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')});
+    const identity = identityFrom(store, values, 'agent');
     const client = new PairLobbyClient(serverUrl);
     const joined = await client.redeemInvite(code, identity);
 
@@ -205,6 +256,12 @@ async function joinRoom(store: LocalStore, values: Values, code?: string): Promi
         return 0;
     }
     const detail = localDetail(values);
+    // Joining a room means being in it. Only a machine caller — --json, a pipe,
+    // or an explicit --no-follow — gets a printed snapshot and its prompt back.
+    if (isInteractive(values)) {
+        note(`joined ${joined.room.name} as ${identity.displayName}`);
+        return chatRoom(store, {...values, room: joined.roomId, session: identity.sessionId});
+    }
     out(`Joined ${joined.room.name} as ${identity.displayName}`);
     out(`Session: ${identity.sessionId}`);
     if (detail.conversationId) out(`Conversation: ${detail.conversationId}`);
@@ -252,6 +309,27 @@ async function readEvents(store: LocalStore, values: Values): Promise<number> {
     return 0;
 }
 
+function isInteractive(values: Values): boolean {
+    return !flag(values, 'json') && !flag(values, 'no-follow') && process.stdin.isTTY === true && process.stdout.isTTY === true;
+}
+
+/** Enters a room already joined on this device. */
+async function chatRoom(store: LocalStore, values: Values): Promise<number> {
+    const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    if (!isInteractive(values)) return watchRoom(store, values);
+    return runChatRoom({
+        store,
+        client,
+        roomId: room.roomId,
+        credential,
+        sessionId: session.sessionId,
+        participantId: session.participantId,
+        controllerCredential: store.credential(room.roomId, 'controller'),
+        ...(str(values, 'interval') !== undefined ? {intervalMs: Number(str(values, 'interval'))} : {}),
+        fromStart: true,
+    });
+}
+
 /**
  * Follows a room live. This polls, because there is no push channel yet: the
  * relay knows about a new event long before this loop asks for it. A WebSocket
@@ -266,9 +344,8 @@ async function watchRoom(store: LocalStore, values: Values): Promise<number> {
     const snapshot = await client.snapshot(room.roomId, credential);
     const names = new Map(snapshot.participants.map((participant) => [participant.participantId, participant.displayName] as const));
     if (!machine) {
-        renderSnapshot(snapshot);
-        out('');
-        note(`following ${room.name} as ${session.displayName}; Ctrl+C to stop`);
+        renderWatchHeader(snapshot, session.participantId, session.sessionId);
+        note('live; Ctrl+C to leave');
         out('');
     }
 

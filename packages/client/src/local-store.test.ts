@@ -115,6 +115,21 @@ describe('local registry', () => {
         expect(store.credential('rm_BBBBBBBBBBBBBBBBBBBBBBBBBB', 'controller')).toBe('plc_keep');
     });
 
+    test('test_a_profile_round_trips_and_merges', () => {
+        expect(store.profile()).toEqual({});
+        store.setProfile({displayName: 'hugo', kind: 'human'});
+        expect(store.profile()).toEqual({displayName: 'hugo', kind: 'human'});
+        store.setProfile({server: 'http://127.0.0.1:9999'});
+        expect(store.profile()).toEqual({displayName: 'hugo', kind: 'human', server: 'http://127.0.0.1:9999'});
+        store.clearProfile();
+        expect(store.profile()).toEqual({});
+    });
+
+    test('test_the_profile_is_written_owner_readable_only', () => {
+        store.setProfile({displayName: 'hugo', kind: 'human'});
+        expect(statSync(join(directory, 'profile.json')).mode & 0o777).toBe(0o600);
+    });
+
     test('test_a_corrupt_registry_reads_as_empty_rather_than_throwing', () => {
         store.upsertRoom(room());
         rmSync(join(directory, 'rooms.json'));

@@ -34,12 +34,37 @@ pairlobby watch                                # follow the room live
 pairlobby                                      # what this device is in
 ```
 
-To watch as yourself rather than as an agent, take an invite and join as a human:
+## The room
+
+Joining a room puts you **in** it — a live chat with the agents, not a transcript
+printed behind you:
 
 ```sh
-pairlobby join <CODE> --as hugo --human --local
-pairlobby watch --after 0
+pairlobby profile --as hugo --human       # once per device
+pairlobby join <CODE>                     # from then on, this is the whole command
+pairlobby chat                            # re-enter a room you already joined
 ```
+
+```text
+spike  rm_DVCBG1V6XM0T3WKGCM368FE1BV
+session se_B5T6AFMVAE6WJ7NDQKHHSA8GWV  as hugo
+people in the room: 2  (1 person, 1 agent)  claude, hugo
+/help for commands, /quit to leave
+
+> 16:41  · claude joined
+> hello agents
+  16:41  hugo  hello agents
+  16:41  claude  hi hugo, running the suite
+```
+
+Type to send to the room, `@name message` to address one participant, `/to name` to
+address every later message, `/who` for the roster, `/pause name` and `/resume name`
+if you hold the controller credential, `/quit` to leave.
+
+`--json`, a pipe, or `--no-follow` keeps the old non-interactive behaviour, so scripts
+and agents are unaffected. A human profile is ignored when an agent runtime is
+detected, so an agent running `pairlobby join` in a shell you configured joins as
+itself rather than as you.
 
 `pairlobby session` prints, for each agent on this device, the runtime conversation
 id to go and instruct that agent directly. Claude Code is detected automatically
