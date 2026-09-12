@@ -1,0 +1,15 @@
+{
+  "name": "@pairlobby/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {"pairlobby": "./dist/main.js"},
+  "main": "./dist/main.js",
+  "types": "./dist/main.d.ts",
+  "dependencies": {
+    "@pairlobby/client": "*",
+    "@pairlobby/local-server": "*",
+    "@pairlobby/protocol": "*",
+    "yaml": "^2.7.0"
+  }
+}
