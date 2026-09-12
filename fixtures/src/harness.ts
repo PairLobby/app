@@ -77,6 +77,10 @@ export class RoomHarness {
         return this.service.leave(this.roomId, credential);
     }
 
+    async rename(credential: string, name: string): Promise<RoomEvent> {
+        return this.service.rename(this.roomId, credential, name);
+    }
+
     async close(credential: string): Promise<RoomEvent> {
         return this.service.close(this.roomId, credential);
     }

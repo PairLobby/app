@@ -299,6 +299,32 @@ describe(label, () => {
             await expectError('idempotency_conflict', () => server.revoke(controller, bob.participantId));
         });
 
+        test('test_the_controller_can_rename_a_room_and_history_records_it', async () => {
+            await server.rename(controller, 'invite recovery work');
+            expect((await server.snapshot(controller)).name).toBe('invite recovery work');
+            const page = await server.read(alice.credential, 0);
+            const renamed = page.events.find((event) => event.type === 'room.renamed');
+            expect(renamed).toBeDefined();
+            expect(renamed!.type === 'room.renamed' && renamed!.payload.previousName).toBe('revoke-room');
+        });
+
+        test('test_a_member_cannot_rename_a_room', async () => {
+            await expectError('unauthorized', () => server.rename(alice.credential, 'hijacked'));
+        });
+
+        test('test_renaming_to_the_same_name_is_refused', async () => {
+            await expectError('invalid_request', () => server.rename(controller, 'revoke-room'));
+        });
+
+        test('test_a_room_is_invite_only_unless_told_otherwise', async () => {
+            expect((await server.snapshot(controller)).policy.joinPolicy).toBe('invite_only');
+        });
+
+        test('test_a_closed_room_cannot_be_renamed', async () => {
+            await server.close(controller);
+            await expectError('room_closed', () => server.rename(controller, 'too late'));
+        });
+
         test('test_a_closed_room_rejects_new_work_but_stays_readable', async () => {
             const unusedInvite = await server.mintInvite('member');
             await server.close(controller);

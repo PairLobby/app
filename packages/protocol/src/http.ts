@@ -19,6 +19,7 @@ export const ROUTES = {
     connect:           {method: 'GET',    path: '/v1/rooms/:roomId/connect'},
     control:           {method: 'POST',   path: '/v1/rooms/:roomId/control'},
     revokeParticipant: {method: 'DELETE', path: '/v1/rooms/:roomId/participants/:participantId'},
+    renameRoom:        {method: 'POST',   path: '/v1/rooms/:roomId/name'},
     closeRoom:         {method: 'POST',   path: '/v1/rooms/:roomId/close'},
     exportRoom:        {method: 'GET',    path: '/v1/rooms/:roomId/export'},
     deleteRoom:        {method: 'DELETE', path: '/v1/rooms/:roomId'},
@@ -98,6 +99,9 @@ export type SendEventResponse = z.infer<typeof SendEventResponse>;
  */
 export const ConnectTicketResponse = z.object({ticket: z.string(), expiresAt: z.number().int().nonnegative()});
 export type ConnectTicketResponse = z.infer<typeof ConnectTicketResponse>;
+
+export const RenameRoomRequest = z.object({name: z.string().min(1).max(64)});
+export type RenameRoomRequest = z.infer<typeof RenameRoomRequest>;
 
 export const ControlRequest = z.object({targetParticipantId: ParticipantId, paused: z.boolean()});
 export type ControlRequest = z.infer<typeof ControlRequest>;

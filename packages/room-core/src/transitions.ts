@@ -165,6 +165,17 @@ export function leaveRoom(view: RoomView, credentialHash: string, ctx: CoreConte
     return {...emptyMutation(room, event), upsertParticipants: [left]};
 }
 
+export function renameRoom(view: RoomView, credentialHash: string, name: string, ctx: CoreContext): Mutation {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    const previousName = view.room.name;
+    if (previousName === name) throw new ProtocolError('invalid_request', 'the room already has that name');
+    const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
+    const {room, event} = appendEvent({...view.room, name}, {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'room.renamed', payload: {name, previousName}}}, ctx);
+    return emptyMutation(room, event);
+}
+
 export function closeRoom(view: RoomView, credentialHash: string, ctx: CoreContext): Mutation {
     const actor = authenticate(view, credentialHash, ctx.now);
     assertController(actor);

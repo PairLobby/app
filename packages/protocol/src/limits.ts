@@ -1,7 +1,15 @@
 //! Starting product limits. These are product choices to validate, not platform
 //! limits and not commercial entitlements.
 
+/**
+ * How a room may be joined. Only `invite_only` is implemented; `open_to_guests`
+ * is reserved so the field means something today rather than being added later
+ * as a breaking change. Nothing reads it as permission yet.
+ */
+export type JoinPolicy = 'invite_only' | 'open_to_guests';
+
 export interface RoomPolicy {
+    joinPolicy: JoinPolicy;
     maxParticipants: number;
     maxEventPayloadBytes: number;
     maxRetainedEventBytes: number;
@@ -24,6 +32,7 @@ const HOUR = 60 * MINUTE;
  * explicit event-count companion so both bounds are legible.
  */
 export const DEFAULT_ROOM_POLICY: RoomPolicy = {
+    joinPolicy: 'invite_only',
     maxParticipants: 16,
     maxEventPayloadBytes: 32 * KIB,
     maxRetainedEventBytes: 32 * MIB,
@@ -35,7 +44,7 @@ export const DEFAULT_ROOM_POLICY: RoomPolicy = {
 };
 
 /** Control, close, and export paths stay usable after ordinary writes hit quota. */
-export const QUOTA_EXEMPT_EVENT_TYPES = ['control.pause', 'control.resume', 'control.ack', 'participant.revoked', 'room.closed'] as const;
+export const QUOTA_EXEMPT_EVENT_TYPES = ['control.pause', 'control.resume', 'control.ack', 'participant.revoked', 'room.closed', 'room.renamed'] as const;
 
 export function isQuotaExempt(eventType: string): boolean {
     return (QUOTA_EXEMPT_EVENT_TYPES as readonly string[]).includes(eventType);

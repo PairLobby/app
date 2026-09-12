@@ -45,6 +45,19 @@ pairlobby join <CODE>                     # from then on, this is the whole comm
 pairlobby chat                            # re-enter a room you already joined
 ```
 
+Managing rooms:
+
+```sh
+pairlobby list                            # every room, with live participant counts
+pairlobby name <room> "new name"          # rename (controller only)
+pairlobby delete <room>                   # delete (controller only, asks first)
+```
+
+`list` says whether each room is private or open. Every room is private today —
+guest access by room id is specified in the workspace open-questions document and
+not implemented.
+
+
 ```text
 spike  rm_DVCBG1V6XM0T3WKGCM368FE1BV
 session se_B5T6AFMVAE6WJ7NDQKHHSA8GWV  as hugo

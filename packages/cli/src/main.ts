@@ -17,7 +17,7 @@ import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
 import {detectRuntime} from './runtime-detect.js';
 import {runChatRoom} from './chat.js';
 import {UsageError, controllerCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
-import {json, note, out, renderEvents, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
+import {json, note, out, renderEvents, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
 const OPTIONS = {
     name:       {type: 'string'},
@@ -39,6 +39,7 @@ const OPTIONS = {
     'no-follow': {type: 'boolean'},
     agent:      {type: 'boolean'},
     clear:      {type: 'boolean'},
+    force:      {type: 'boolean'},
     interval:   {type: 'string'},
     runtime:    {type: 'string'},
     human:      {type: 'boolean'},
@@ -51,7 +52,9 @@ const OPTIONS = {
 
 const HELP = `pairlobby — a private room for your agents
 
-  pairlobby                          rooms your agents joined on this device
+  pairlobby, pairlobby list          rooms on this device, with live participant counts
+  pairlobby name <room> <new name>   rename a room (controller only)
+  pairlobby delete <room>            delete a room (controller only)
   pairlobby create --name <name>     start a room and print an invite
   pairlobby join <code>              join a room and enter it
   pairlobby chat                     re-enter a room you already joined
@@ -94,7 +97,10 @@ async function main(argv: string[]): Promise<number> {
     const store = new LocalStore();
 
     switch (command) {
-        case 'rooms':    return listRooms(store, values);
+        case 'rooms':
+        case 'list':     return listRooms(store, values);
+        case 'name':     return renameRoom(store, values, positionals[1], positionals.slice(2).join(' '));
+        case 'delete':   return deleteRoom(store, values, positionals[1]);
         case 'create':   return createRoom(store, values);
         case 'join':     return joinRoom(store, values, positionals[1]);
         case 'send':     return sendMessage(store, values, positionals.slice(1).join(' '));
@@ -129,13 +135,74 @@ function flag(values: Values, key: keyof typeof OPTIONS): boolean {
     return values[key] === true;
 }
 
-function listRooms(store: LocalStore, values: Values): number {
+/**
+ * Lists rooms with live counts. Each room is asked its own server, so a room on
+ * an unreachable relay is reported as unreachable rather than silently shown
+ * with stale local numbers.
+ */
+async function listRooms(store: LocalStore, values: Values): Promise<number> {
     const rooms = store.rooms();
+    const detailed = await Promise.all(rooms.map(async (room) => {
+        const credential = store.credential(room.roomId, 'controller') ?? room.sessions.map((session) => store.credential(room.roomId, session.sessionId)).find(Boolean);
+        if (!credential) return {room, reachable: false as const};
+        try {
+            return {room, reachable: true as const, snapshot: await new PairLobbyClient(room.serverUrl).snapshot(room.roomId, credential)};
+        } catch (error) {
+            return {room, reachable: false as const, why: error instanceof ProtocolError ? error.code : 'unreachable'};
+        }
+    }));
+
     if (flag(values, 'json')) {
-        json({rooms});
+        json({count: rooms.length, rooms: detailed.map((entry) => ({...entry.room, live: 'snapshot' in entry ? entry.snapshot : null}))});
         return 0;
     }
-    renderRooms(rooms);
+    renderRoomList(detailed);
+    return 0;
+}
+
+async function renameRoom(store: LocalStore, values: Values, reference: string | undefined, name: string): Promise<number> {
+    if (!reference) throw new UsageError('pairlobby name needs a room and a new name');
+    const room = resolveRoom(store, reference);
+    if (name.trim().length === 0) throw new UsageError(`pairlobby name ${reference} <new name>`);
+    const credential = controllerCredential(store, room);
+    await new PairLobbyClient(room.serverUrl).rename(room.roomId, credential, name.trim());
+    store.upsertRoom({...room, name: name.trim()});
+
+    if (flag(values, 'json')) {
+        json({roomId: room.roomId, name: name.trim(), previousName: room.name});
+        return 0;
+    }
+    out(`${room.name} is now ${name.trim()}`);
+    return 0;
+}
+
+/**
+ * Deletes a room. The server makes it inaccessible immediately; physical cleanup
+ * may lag, which is why the local registry entry goes at the same time rather
+ * than waiting for a later confirmation.
+ */
+async function deleteRoom(store: LocalStore, values: Values, reference: string | undefined): Promise<number> {
+    if (!reference) throw new UsageError('pairlobby delete needs a room');
+    const room = resolveRoom(store, reference);
+    const credential = controllerCredential(store, room);
+    if (!flag(values, 'force') && !flag(values, 'json') && process.stdin.isTTY) {
+        const {createInterface} = await import('node:readline/promises');
+        const terminal = createInterface({input: process.stdin, output: process.stdout});
+        const answer = await terminal.question(`Delete ${room.name} (${room.roomId}) and its history? This cannot be undone. [y/N] `);
+        terminal.close();
+        if (answer.trim().toLowerCase() !== 'y') {
+            note('left alone');
+            return 0;
+        }
+    }
+    await new PairLobbyClient(room.serverUrl).delete(room.roomId, credential);
+    store.forgetRoom(room.roomId);
+
+    if (flag(values, 'json')) {
+        json({roomId: room.roomId, deleted: true});
+        return 0;
+    }
+    out(`Deleted ${room.name}`);
     return 0;
 }
 

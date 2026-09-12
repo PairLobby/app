@@ -3,7 +3,7 @@
 
 import {DEFAULT_ROOM_POLICY, ProtocolError, hashCredential, newId, newInviteCode, normalizeInviteCode} from '@pairlobby/protocol';
 import type {AdapterCapabilities, ExportResponse, ParticipantKind, ParticipantRole, ReadEventsResponse, RoomEvent, RoomPolicy, RoomSnapshot, SendEventRequest} from '@pairlobby/protocol';
-import {assertRoomWritable, authenticate, closeRoom, createRoom, joinRoom, leaveRoom, requestControl, revokeParticipant, sendEvent, toSnapshot} from '@pairlobby/room-core';
+import {assertRoomWritable, authenticate, closeRoom, createRoom, joinRoom, leaveRoom, renameRoom, requestControl, revokeParticipant, sendEvent, toSnapshot} from '@pairlobby/room-core';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 
 import {stableStringify} from './stable-json.js';
@@ -179,6 +179,10 @@ export class RoomService {
 
     async leave(roomId: string, credential: string): Promise<RoomEvent> {
         return this.applyOne(leaveRoom(await this.view(roomId), await hashCredential(credential), this.ctx()));
+    }
+
+    async rename(roomId: string, credential: string, name: string): Promise<RoomEvent> {
+        return this.applyOne(renameRoom(await this.view(roomId), await hashCredential(credential), name, this.ctx()));
     }
 
     async close(roomId: string, credential: string): Promise<RoomEvent> {

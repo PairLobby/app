@@ -80,6 +80,10 @@ export class PairLobbyClient {
         return this.call('POST', `/v1/rooms/${roomId}/leave`, credential, {});
     }
 
+    rename(roomId: string, credential: string, name: string): Promise<{event: RoomEvent}> {
+        return this.call('POST', `/v1/rooms/${roomId}/name`, credential, {name});
+    }
+
     close(roomId: string, credential: string): Promise<{event: RoomEvent}> {
         return this.call('POST', `/v1/rooms/${roomId}/close`, credential, {});
     }

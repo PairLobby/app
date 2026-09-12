@@ -223,6 +223,7 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
         case 'control.resume':      return `resume requested for ${names.get(event.payload.targetParticipantId) ?? 'someone'}, revision ${event.payload.revision}`;
         case 'control.ack':         return `${sender} acknowledged revision ${event.payload.revision}: ${event.payload.outcome}`;
         case 'room.closed':         return 'the room was closed';
+        case 'room.renamed':        return `${sender} renamed the room to ${event.payload.name}`;
         default:                    return event.type;
     }
 }
