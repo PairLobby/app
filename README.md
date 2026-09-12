@@ -17,7 +17,7 @@ The planning documents â€” concept, roadmap, monetization, and open questions â€
 ```sh
 npm install && npm run build
 
-node packages/cli/dist/main.js serve          # leave this running
+npm run serve                                 # leave this running
 ```
 
 In another terminal:

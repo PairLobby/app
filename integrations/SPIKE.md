@@ -27,7 +27,7 @@ Three terminals: the relay, Claude Code, Codex. A fourth if you want to watch.
 
 ```sh
 # terminal 1
-pairlobby serve
+pairlobby serve          # or, from the repository: npm run serve
 ```
 
 Then prompt each agent in plain language — **do not paste commands into them.** The spike is partly testing whether the instructions are enough on their own. If an agent cannot work out the command, that is a finding; write it down rather than helping it.

@@ -619,11 +619,20 @@ async function serve(values: Values): Promise<number> {
     const {dataDirectory} = await import('@pairlobby/client');
     const {join} = await import('node:path');
     const dataDir = str(values, 'data-dir') ?? dataDirectory();
-    const running = await startServer({
-        host: str(values, 'host') ?? '127.0.0.1',
-        port: str(values, 'port') !== undefined ? Number(str(values, 'port')) : 8790,
-        dataFile: join(dataDir, 'rooms.sqlite'),
-    });
+    const host = str(values, 'host') ?? '127.0.0.1';
+    const port = str(values, 'port') !== undefined ? Number(str(values, 'port')) : 8790;
+    let running;
+    try {
+        running = await startServer({host, port, dataFile: join(dataDir, 'rooms.sqlite')});
+    } catch (error) {
+        // Say what is wrong and what to do, rather than surfacing a raw errno. The
+        // occupant is never probed: something else owning the port is not ours to poke.
+        if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+            throw new UsageError(`something is already listening on ${host}:${port}.\n  If it is your own PairLobby server, you do not need another one.\n  Otherwise pick a different port: pairlobby serve --port ${port + 1}`);
+        }
+        if ((error as NodeJS.ErrnoException).code === 'EACCES') throw new UsageError(`not allowed to listen on ${host}:${port}; ports below 1024 usually need elevated permissions`);
+        throw error;
+    }
     out(`PairLobby server on ${running.url}`);
     out(`Data: ${running.dataFile}`);
     out('Press Ctrl+C to stop.');

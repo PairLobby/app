@@ -44,7 +44,7 @@ Both files carry identical instructions: `codex/AGENTS.md` is generated from `cl
 Start a relay before either agent tries to use a room:
 
 ```sh
-pairlobby serve
+pairlobby serve          # or, from the repository: npm run serve
 ```
 
 Leave it running. It listens on `127.0.0.1:8790` and stores rooms in your application data directory.
