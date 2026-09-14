@@ -19,6 +19,8 @@ export interface Identity {
 export interface CreateRoomInput extends Identity {
     name: string;
     roomId: string;
+    /** Explicit expiry, overriding the policy lifetime. Null means it never expires. */
+    expiresAt?: number | null;
     controllerCredentialHash: string;
     participantCredentialHash: string;
     policy?: RoomPolicy;
@@ -36,7 +38,7 @@ export function createRoom(input: CreateRoomInput, ctx: CoreContext): CreatedRoo
         roomId: input.roomId,
         name: input.name,
         createdAt: ctx.now,
-        expiresAt: ctx.now + policy.roomLifetimeMs,
+        expiresAt: input.expiresAt !== undefined ? input.expiresAt : policy.roomLifetimeMs === null ? null : ctx.now + policy.roomLifetimeMs,
         closedAt: null,
         lifecycle: 'open',
         policy,
@@ -173,6 +175,19 @@ export function renameRoom(view: RoomView, credentialHash: string, name: string,
     if (previousName === name) throw new ProtocolError('invalid_request', 'the room already has that name');
     const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
     const {room, event} = appendEvent({...view.room, name}, {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'room.renamed', payload: {name, previousName}}}, ctx);
+    return emptyMutation(room, event);
+}
+
+/** Sets or clears when a room expires. Null stops it expiring at all. */
+export function setExpiry(view: RoomView, credentialHash: string, expiresAt: number | null, ctx: CoreContext): Mutation {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    if (expiresAt !== null && expiresAt <= ctx.now) throw new ProtocolError('invalid_request', 'that expiry time is already in the past');
+    const previousExpiresAt = view.room.expiresAt;
+    if (previousExpiresAt === expiresAt) throw new ProtocolError('invalid_request', expiresAt === null ? 'this room already does not expire' : 'the room already expires then');
+    const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
+    const {room, event} = appendEvent({...view.room, expiresAt}, {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'room.expiry_changed', payload: {expiresAt, previousExpiresAt}}}, ctx);
     return emptyMutation(room, event);
 }
 

@@ -16,6 +16,11 @@ export function json(value: unknown): void {
     process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+/** Renders an expiry, including the case of a room that has none. */
+export function expiryLine(expiresAt: number | null, now = Date.now()): string {
+    return expiresAt === null ? 'never expires' : `expires ${relativeTime(expiresAt, now)}`;
+}
+
 export function relativeTime(at: number, now = Date.now()): string {
     const seconds = Math.round((at - now) / 1000);
     if (seconds === 0) return 'just now';
@@ -37,7 +42,7 @@ export function renderRooms(rooms: RoomEntry[], now = Date.now()): void {
     }
     const sorted = [...rooms].sort((a, b) => b.createdAt - a.createdAt);
     for (const room of sorted) {
-        const expiry = room.expiresAt <= now ? 'expired' : `expires ${relativeTime(room.expiresAt, now)}`;
+        const expiry = room.expiresAt !== null && room.expiresAt <= now ? 'expired' : expiryLine(room.expiresAt, now);
         out(`${room.name}  ${dim(room.roomId)}`);
         out(`  ${room.serverUrl}  ·  ${expiry}${room.controls ? '  ·  you control this room' : ''}`);
         if (room.sessions.length === 0) out('  no sessions on this device');
@@ -65,7 +70,7 @@ export function renderWatchHeader(snapshot: RoomSnapshot, meParticipantId: strin
     out(`${snapshot.name}  ${dim(snapshot.roomId)}`);
     if (me) out(`you are ${me.displayName}  ${dim(mySessionId)}`);
     out(`${active.length} in the room: ${count(people, 'person', 'people')}, ${count(agents, 'agent', 'agents')}  ·  ${names(active)}`);
-    out(`${snapshot.lifecycle}  ·  expires ${relativeTime(snapshot.expiresAt, now)}`);
+    out(`${snapshot.lifecycle}  ·  ${expiryLine(snapshot.expiresAt, now)}`);
     out('');
 }
 
@@ -104,7 +109,7 @@ export function renderRoomList(entries: RoomListEntry[], now = Date.now()): void
             const agents = active.filter((participant) => participant.kind === 'agent').length;
             out(`    ${active.length} in the room: ${people} ${people === 1 ? 'person' : 'people'}, ${agents} ${agents === 1 ? 'agent' : 'agents'}  ${dim(active.map((participant) => participant.displayName).join(', '))}`);
             out(`    ${joinPolicyLine(snapshot)}`);
-            out(`    ${snapshot.lifecycle}  ·  expires ${relativeTime(snapshot.expiresAt, now)}${room.controls ? '  ·  you control this room' : ''}`);
+            out(`    ${snapshot.lifecycle}  ·  ${expiryLine(snapshot.expiresAt, now)}${room.controls ? '  ·  you control this room' : ''}`);
         } else {
             out(`    ${dim(`unreachable (${entry.why ?? 'no credential on this device'}) — showing local record only`)}`);
             out(`    ${room.sessions.length} local ${room.sessions.length === 1 ? 'session' : 'sessions'}  ·  ${room.serverUrl}`);
@@ -122,7 +127,7 @@ function joinPolicyLine(snapshot: RoomSnapshot): string {
 
 export function renderSnapshot(snapshot: RoomSnapshot, now = Date.now()): void {
     out(`${snapshot.name}  ${dim(snapshot.roomId)}`);
-    out(`  ${snapshot.lifecycle}  ·  expires ${relativeTime(snapshot.expiresAt, now)}  ·  ${snapshot.latestSeq} events`);
+    out(`  ${snapshot.lifecycle}  ·  ${expiryLine(snapshot.expiresAt, now)}  ·  ${snapshot.latestSeq} events`);
     out('');
     for (const participant of snapshot.participants) {
         const flags = [participant.revoked ? 'removed' : null, participant.left ? 'left' : null, participant.paused ? 'paused' : null, participant.role === 'controller' ? 'controller' : null].filter(Boolean);
@@ -157,6 +162,7 @@ function describe(event: RoomEvent): string {
         case 'control.ack':         return `acknowledged revision ${event.payload.revision}: ${event.payload.outcome}`;
         case 'room.closed':         return 'the room was closed';
         case 'room.renamed':        return `renamed from ${event.payload.previousName} to ${event.payload.name}`;
+        case 'room.expiry_changed':  return event.payload.expiresAt === null ? 'the room no longer expires' : `the room now expires ${relativeTime(event.payload.expiresAt)}`;
     }
 }
 

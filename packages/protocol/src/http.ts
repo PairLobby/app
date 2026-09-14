@@ -20,6 +20,7 @@ export const ROUTES = {
     control:           {method: 'POST',   path: '/v1/rooms/:roomId/control'},
     revokeParticipant: {method: 'DELETE', path: '/v1/rooms/:roomId/participants/:participantId'},
     renameRoom:        {method: 'POST',   path: '/v1/rooms/:roomId/name'},
+    setExpiry:         {method: 'POST',   path: '/v1/rooms/:roomId/expiry'},
     closeRoom:         {method: 'POST',   path: '/v1/rooms/:roomId/close'},
     exportRoom:        {method: 'GET',    path: '/v1/rooms/:roomId/export'},
     deleteRoom:        {method: 'DELETE', path: '/v1/rooms/:roomId'},
@@ -34,6 +35,8 @@ const identity = z.object({
 
 export const CreateRoomRequest = z.intersection(identity, z.object({
     name: z.string().min(1).max(64),
+    /** Overrides the server default. Null, or omitted with no server default, means no expiry. */
+    expiresAt: z.number().int().nonnegative().nullable().optional(),
     /** Client-generated so a lost response never strands a credential the caller does not hold. */
     controllerCredential: z.string().min(32).max(256),
     participantCredential: z.string().min(32).max(256),
@@ -102,6 +105,10 @@ export type ConnectTicketResponse = z.infer<typeof ConnectTicketResponse>;
 
 export const RenameRoomRequest = z.object({name: z.string().min(1).max(64)});
 export type RenameRoomRequest = z.infer<typeof RenameRoomRequest>;
+
+/** `expiresAt: null` means the room stops expiring. */
+export const SetExpiryRequest = z.object({expiresAt: z.number().int().nonnegative().nullable()});
+export type SetExpiryRequest = z.infer<typeof SetExpiryRequest>;
 
 export const ControlRequest = z.object({targetParticipantId: ParticipantId, paused: z.boolean()});
 export type ControlRequest = z.infer<typeof ControlRequest>;

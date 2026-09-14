@@ -14,7 +14,8 @@ export interface RoomPolicy {
     maxEventPayloadBytes: number;
     maxRetainedEventBytes: number;
     maxRetainedEvents: number;
-    roomLifetimeMs: number;
+    /** Milliseconds a new room lives, or null for a room that does not expire. */
+    roomLifetimeMs: number | null;
     inviteLifetimeMs: number;
     exportWindowMs: number;
     connectTicketLifetimeMs: number;
@@ -26,6 +27,10 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
 /**
+ * Rooms do not expire by default. The roadmap proposed a 24-hour lifetime; in
+ * practice a room ending underneath a working pair is worse than one that
+ * outlives its usefulness, so expiry is opt-in per room or per device.
+ *
  * The roadmap's proposed pairing of a 32 KiB payload cap with 10 MiB of retained
  * payload admits only ~320 maximum-size events, which one 16-participant session
  * exchanging handovers can reach. Retention is raised to 32 MiB and given an
@@ -37,14 +42,14 @@ export const DEFAULT_ROOM_POLICY: RoomPolicy = {
     maxEventPayloadBytes: 32 * KIB,
     maxRetainedEventBytes: 32 * MIB,
     maxRetainedEvents: 20_000,
-    roomLifetimeMs: 24 * HOUR,
+    roomLifetimeMs: null,
     inviteLifetimeMs: 10 * MINUTE,
     exportWindowMs: 24 * HOUR,
     connectTicketLifetimeMs: 30_000,
 };
 
 /** Control, close, and export paths stay usable after ordinary writes hit quota. */
-export const QUOTA_EXEMPT_EVENT_TYPES = ['control.pause', 'control.resume', 'control.ack', 'participant.revoked', 'room.closed', 'room.renamed'] as const;
+export const QUOTA_EXEMPT_EVENT_TYPES = ['control.pause', 'control.resume', 'control.ack', 'participant.revoked', 'room.closed', 'room.renamed', 'room.expiry_changed'] as const;
 
 export function isQuotaExempt(eventType: string): boolean {
     return (QUOTA_EXEMPT_EVENT_TYPES as readonly string[]).includes(eventType);

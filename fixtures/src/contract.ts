@@ -420,15 +420,58 @@ describe(label, () => {
             await expectError('room_expired', () => closing.read(carol.credential, 0));
         });
 
+        test('test_a_room_does_not_expire_unless_told_to', async () => {
+            const clock = fixedClock();
+            const permanent = track(new RoomHarness(makeStore(), clock));
+            const carol = new FakeAgent(permanent, 'claude');
+            const created = await carol.create('permanent-room');
+            expect((await permanent.snapshot(created.controllerCredential)).expiresAt).toBeNull();
+            clock.advance(365 * 24 * 60 * 60 * 1000);
+            await carol.say('still here a year later');
+        });
+
         test('test_expiry_is_enforced_on_reads_and_writes_before_any_cleanup', async () => {
             const clock = fixedClock();
             const expiring = track(new RoomHarness(makeStore(), clock));
             const carol = new FakeAgent(expiring, 'claude');
             const created = await carol.create('expiring-room');
-            clock.advance(DEFAULT_ROOM_POLICY.roomLifetimeMs + 1);
+            await expiring.setExpiry(created.controllerCredential, clock.now() + 60_000);
+            clock.advance(60_001);
             await expectError('room_expired', () => carol.say('anyone there?'));
             await expectError('room_expired', () => expiring.read(carol.credential, 0));
             await expectError('room_expired', () => expiring.snapshot(created.controllerCredential));
+        });
+
+        test('test_expiry_can_be_lifted_again', async () => {
+            const clock = fixedClock();
+            const harness = track(new RoomHarness(makeStore(), clock));
+            const carol = new FakeAgent(harness, 'claude');
+            const created = await carol.create('reprieve-room');
+            await harness.setExpiry(created.controllerCredential, clock.now() + 60_000);
+            await harness.setExpiry(created.controllerCredential, null);
+            clock.advance(120_000);
+            await carol.say('reprieved');
+            expect((await harness.snapshot(created.controllerCredential)).expiresAt).toBeNull();
+        });
+
+        test('test_only_the_controller_can_change_expiry', async () => {
+            await expectError('unauthorized', () => server.setExpiry(alice.credential, Date.now() + 60_000));
+        });
+
+        test('test_an_expiry_in_the_past_is_refused', async () => {
+            const clock = fixedClock();
+            const harness = track(new RoomHarness(makeStore(), clock));
+            const carol = new FakeAgent(harness, 'claude');
+            const created = await carol.create('past-room');
+            await expectError('invalid_request', () => harness.setExpiry(created.controllerCredential, clock.now() - 1));
+        });
+
+        test('test_changing_expiry_is_recorded_in_history', async () => {
+            const deadline = Date.now() + 3_600_000;
+            await server.setExpiry(controller, deadline);
+            const page = await server.read(alice.credential, 0);
+            const changed = page.events.find((event) => event.type === 'room.expiry_changed');
+            expect(changed?.type === 'room.expiry_changed' && changed.payload.expiresAt).toBe(deadline);
         });
 
         test('test_an_unknown_credential_is_unauthorized', async () => {

@@ -3,7 +3,7 @@
 
 import {DEFAULT_ROOM_POLICY, ProtocolError, hashCredential, newId, newInviteCode, normalizeInviteCode} from '@pairlobby/protocol';
 import type {AdapterCapabilities, ExportResponse, ParticipantKind, ParticipantRole, ReadEventsResponse, RoomEvent, RoomPolicy, RoomSnapshot, SendEventRequest} from '@pairlobby/protocol';
-import {assertRoomWritable, authenticate, closeRoom, createRoom, joinRoom, leaveRoom, renameRoom, requestControl, revokeParticipant, sendEvent, toSnapshot} from '@pairlobby/room-core';
+import {assertRoomWritable, authenticate, closeRoom, createRoom, joinRoom, leaveRoom, renameRoom, requestControl, revokeParticipant, sendEvent, setExpiry, toSnapshot} from '@pairlobby/room-core';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 
 import {stableStringify} from './stable-json.js';
@@ -20,6 +20,7 @@ export interface CreateRoomInput extends Identity {
     name: string;
     controllerCredential: string;
     participantCredential: string;
+    expiresAt?: number | null | undefined;
     policy?: RoomPolicy;
 }
 
@@ -75,6 +76,7 @@ export class RoomService {
             kind: input.kind,
             sessionId: input.sessionId ?? null,
             capabilities: input.capabilities ?? null,
+            ...(input.expiresAt !== undefined ? {expiresAt: input.expiresAt} : {}),
             ...(input.policy ? {policy: input.policy} : {}),
         }, this.ctx());
         await this.store.createRoom(created.mutation.room, created.participant, created.mutation.appendEvent);
@@ -196,6 +198,10 @@ export class RoomService {
 
     async rename(roomId: string, credential: string, name: string): Promise<RoomEvent> {
         return this.applyOne(renameRoom(await this.view(roomId), await hashCredential(credential), name, this.ctx()));
+    }
+
+    async setExpiry(roomId: string, credential: string, expiresAt: number | null): Promise<RoomEvent> {
+        return this.applyOne(setExpiry(await this.view(roomId), await hashCredential(credential), expiresAt, this.ctx()));
     }
 
     async close(roomId: string, credential: string): Promise<RoomEvent> {

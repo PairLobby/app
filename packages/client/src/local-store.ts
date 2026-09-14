@@ -37,7 +37,8 @@ export interface RoomEntry {
     name: string;
     serverUrl: string;
     createdAt: number;
-    expiresAt: number;
+    /** Null for a room that does not expire. */
+    expiresAt: number | null;
     /** True when this device holds the controller credential for the room. */
     controls: boolean;
     sessions: SessionEntry[];
@@ -59,9 +60,11 @@ export interface Settings {
     pollIntervalMs: number;
     /** Print participant and room ids next to names in the live room. */
     showIds: boolean;
+    /** How long a new room lives, in milliseconds, or null for no expiry. */
+    defaultRoomLifetimeMs: number | null;
 }
 
-export const DEFAULT_SETTINGS: Settings = {confirmDelete: true, pollIntervalMs: 700, showIds: false};
+export const DEFAULT_SETTINGS: Settings = {confirmDelete: true, pollIntervalMs: 700, showIds: false, defaultRoomLifetimeMs: null};
 
 export function dataDirectory(): string {
     const override = process.env['PAIRLOBBY_DATA_DIR'];
@@ -151,7 +154,7 @@ export class LocalStore {
 
     /** The only room when there is exactly one open room on this device. */
     soleRoom(now = Date.now()): RoomEntry | null {
-        const open = this.rooms().filter((entry) => entry.expiresAt > now);
+        const open = this.rooms().filter((entry) => entry.expiresAt === null || entry.expiresAt > now);
         return open.length === 1 ? open[0]! : null;
     }
 

@@ -1,7 +1,7 @@
 //! Transport-agnostic routing over Web `Request`/`Response`, so the Node server
 //! and the Cloudflare Worker share one implementation of the HTTP contract.
 
-import {CreateInviteRequest, CreateRoomRequest, PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, ReadEventsQuery, RedeemInviteRequest, RenameRoomRequest, SendEventRequest, ControlRequest} from '@pairlobby/protocol';
+import {CreateInviteRequest, CreateRoomRequest, PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, ReadEventsQuery, RedeemInviteRequest, RenameRoomRequest, SendEventRequest, SetExpiryRequest, ControlRequest} from '@pairlobby/protocol';
 import type {ErrorCode} from '@pairlobby/protocol';
 
 import type {RoomService} from './service.js';
@@ -87,6 +87,10 @@ async function route(request: Request, service: RoomService): Promise<Response> 
         case 'POST name': {
             const {name} = RenameRoomRequest.parse(await request.json());
             return json({event: await service.rename(roomId, credential, name)});
+        }
+        case 'POST expiry': {
+            const {expiresAt} = SetExpiryRequest.parse(await request.json());
+            return json({event: await service.setExpiry(roomId, credential, expiresAt)});
         }
         case 'POST close':   return json({event: await service.close(roomId, credential)});
         case 'POST leave':   return json({event: await service.leave(roomId, credential)});

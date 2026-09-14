@@ -11,7 +11,7 @@ export type Actor = {kind: 'participant'; participant: ParticipantRecord} | {kin
 /** Room lifecycle is checked at request time; physical cleanup is maintenance, not the access boundary. */
 export function assertRoomReadable(view: RoomView, now: number): void {
     if (view.room.lifecycle === 'deleted') throw new ProtocolError('room_not_found', 'this room no longer exists');
-    if (view.room.lifecycle === 'expired' || now >= view.room.expiresAt) throw new ProtocolError('room_expired', 'this room has expired');
+    if (view.room.lifecycle === 'expired' || (view.room.expiresAt !== null && now >= view.room.expiresAt)) throw new ProtocolError('room_expired', 'this room has expired');
     if (view.room.lifecycle === 'closed' && view.room.closedAt !== null && now >= view.room.closedAt + view.room.policy.exportWindowMs) {
         throw new ProtocolError('room_expired', 'this room was closed and its export window has ended');
     }

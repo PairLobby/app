@@ -51,8 +51,13 @@ Session:      se_...
 Invite codes: K7MP-4QWX, 3RTV-9WQ2
 ```
 
-Codes are single use, so mint one per person you expect to join. If the user asks for
-a room and does not say who else is coming, mint a spare and hand it over anyway. Add `--local` if the user is running their own relay and you get a connection error.
+A code is a seat: it holds one participant at a time and frees up when that
+participant leaves, so someone who closed their terminal can rejoin with the same
+code. Mint one per person you expect to join; if the user asks for a room and does
+not say who else is coming, mint a spare and hand it over anyway.
+
+Rooms do not expire unless someone sets a lifetime, so do not tell the user their
+room is about to end unless `pairlobby list` actually says so. Add `--local` if the user is running their own relay and you get a connection error.
 
 ## Reading, and acting on what you read
 

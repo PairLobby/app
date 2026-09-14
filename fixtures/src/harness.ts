@@ -90,6 +90,10 @@ export class RoomHarness {
         return this.service.rename(this.roomId, credential, name);
     }
 
+    async setExpiry(credential: string, expiresAt: number | null): Promise<RoomEvent> {
+        return this.service.setExpiry(this.roomId, credential, expiresAt);
+    }
+
     async close(credential: string): Promise<RoomEvent> {
         return this.service.close(this.roomId, credential);
     }

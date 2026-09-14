@@ -261,6 +261,7 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
         case 'control.ack':         return `${sender} acknowledged revision ${event.payload.revision}: ${event.payload.outcome}`;
         case 'room.closed':         return 'the room was closed';
         case 'room.renamed':        return `${sender} renamed the room to ${event.payload.name}`;
+        case 'room.expiry_changed':  return event.payload.expiresAt === null ? `${sender} made the room permanent` : `${sender} set the room to expire ${new Date(event.payload.expiresAt).toLocaleString()}`;
         default:                    return event.type;
     }
 }

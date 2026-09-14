@@ -16,6 +16,7 @@ import type {AdapterCapabilities} from '@pairlobby/protocol';
 import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
 import {detectRuntime} from './runtime-detect.js';
 import {runChatRoom} from './chat.js';
+import {WhenError, formatDuration, parseDuration, parseExpiry} from './when.js';
 import {UsageError, controllerCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
 import {json, note, out, renderEvents, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
@@ -42,6 +43,7 @@ const OPTIONS = {
     force:      {type: 'boolean'},
     reset:      {type: 'boolean'},
     once:       {type: 'boolean'},
+    expiry:     {type: 'string'},
     interval:   {type: 'string'},
     wait:       {type: 'string'},
     all:        {type: 'boolean'},
@@ -58,6 +60,7 @@ const HELP = `pairlobby — a private room for your agents
 
   pairlobby, pairlobby list          rooms on this device, with live participant counts
   pairlobby name <room> <new name>   rename a room (controller only)
+  pairlobby expiry [room] <when>     never | in 10 hours | at 2026-09-20 18:00
   pairlobby delete <room>            delete a room (controller only)
   pairlobby forget <room>            drop the local record, leave the server alone
   pairlobby settings                 show or change preferences
@@ -107,6 +110,7 @@ async function main(argv: string[]): Promise<number> {
         case 'rooms':
         case 'list':     return listRooms(store, values);
         case 'name':     return renameRoom(store, values, positionals[1], positionals.slice(2).join(' '));
+        case 'expiry':   return expiryCommand(store, values, positionals.slice(1));
         case 'delete':   return deleteRoom(store, values, positionals[1]);
         case 'create':   return createRoom(store, values);
         case 'join':     return joinRoom(store, values, positionals[1]);
@@ -166,6 +170,49 @@ async function listRooms(store: LocalStore, values: Values): Promise<number> {
         return 0;
     }
     renderRoomList(detailed);
+    return 0;
+}
+
+function parseExpirySpec(spec: string): number | null {
+    try {
+        return parseExpiry(spec);
+    } catch (error) {
+        throw new UsageError(error instanceof WhenError ? error.message : String(error));
+    }
+}
+
+/** Shows or sets when a room expires. */
+async function expiryCommand(store: LocalStore, values: Values, args: string[]): Promise<number> {
+    // The room is optional, so `expiry in 2 days` works when only one room is
+    // active. A first word that parses as part of a time spec is not a room name.
+    const looksLikeSpec = (word: string | undefined) => word !== undefined && /^(never|none|off|no|permanent|forever|in|at|on|\d)/i.test(word);
+    const reference = looksLikeSpec(args[0]) ? undefined : args[0];
+    const spec = (looksLikeSpec(args[0]) ? args : args.slice(1)).join(' ').trim();
+    const room = resolveRoom(store, reference ?? str(values, 'room'));
+
+    if (spec.length === 0) {
+        const client = new PairLobbyClient(room.serverUrl);
+        const credential = store.credential(room.roomId, 'controller') ?? room.sessions.map((session) => store.credential(room.roomId, session.sessionId)).find(Boolean);
+        if (!credential) throw new UsageError(`no credential for ${room.name} on this device`);
+        const snapshot = await client.snapshot(room.roomId, credential);
+        if (flag(values, 'json')) {
+            json({roomId: room.roomId, expiresAt: snapshot.expiresAt});
+            return 0;
+        }
+        out(snapshot.expiresAt === null ? `${room.name} never expires` : `${room.name} expires ${new Date(snapshot.expiresAt).toLocaleString()}`);
+        return 0;
+    }
+
+    const expiresAt = parseExpirySpec(spec);
+    const credential = controllerCredential(store, room);
+    await new PairLobbyClient(room.serverUrl).setExpiry(room.roomId, credential, expiresAt);
+    store.upsertRoom({...room, expiresAt});
+
+    if (flag(values, 'json')) {
+        json({roomId: room.roomId, expiresAt});
+        return 0;
+    }
+    out(expiresAt === null ? `${room.name} will not expire` : `${room.name} expires ${new Date(expiresAt).toLocaleString()}`);
     return 0;
 }
 
@@ -255,6 +302,7 @@ const SETTING_KEYS = {
     'confirm-delete': {field: 'confirmDelete', kind: 'boolean', help: 'ask before deleting a room'},
     'poll-interval':  {field: 'pollIntervalMs', kind: 'number', help: 'milliseconds between live-room polls'},
     'show-ids':       {field: 'showIds', kind: 'boolean', help: 'print ids next to names in the live room'},
+    'default-expiry': {field: 'defaultRoomLifetimeMs', kind: 'duration', help: 'how long a new room lives: never, or a duration like 24h'},
 } as const;
 
 function settingsCommand(store: LocalStore, values: Values, key?: string, value?: string): number {
@@ -267,9 +315,9 @@ function settingsCommand(store: LocalStore, values: Values, key?: string, value?
         const definition = SETTING_KEYS[key as keyof typeof SETTING_KEYS];
         if (!definition) throw new UsageError(`unknown setting "${key}"; known settings: ${Object.keys(SETTING_KEYS).join(', ')}`);
         if (value === undefined) throw new UsageError(`pairlobby settings ${key} <value>`);
-        const parsed = definition.kind === 'boolean' ? parseBoolean(key, value) : parseCount(key, value);
+        const parsed = definition.kind === 'boolean' ? parseBoolean(key, value) : definition.kind === 'duration' ? parseLifetime(value) : parseCount(key, value);
         store.setSettings({[definition.field]: parsed} as never);
-        note(`${key} is now ${parsed}`);
+        note(`${key} is now ${definition.kind === 'duration' ? describeLifetime(parsed as number | null) : parsed}`);
         return 0;
     }
     const settings = store.settings();
@@ -279,7 +327,8 @@ function settingsCommand(store: LocalStore, values: Values, key?: string, value?
     }
     const width = Math.max(...Object.keys(SETTING_KEYS).map((name) => name.length));
     for (const [name, definition] of Object.entries(SETTING_KEYS)) {
-        out(`${name.padEnd(width)}  ${String(settings[definition.field])}`);
+        const raw = settings[definition.field];
+        out(`${name.padEnd(width)}  ${definition.kind === 'duration' ? describeLifetime(raw as number | null) : String(raw)}`);
         out(`${' '.repeat(width)}  ${definition.help}`);
     }
     out('');
@@ -292,6 +341,20 @@ function parseBoolean(key: string, value: string): boolean {
     if (['true', 'yes', 'on', '1'].includes(normalized)) return true;
     if (['false', 'no', 'off', '0'].includes(normalized)) return false;
     throw new UsageError(`${key} takes true or false, not "${value}"`);
+}
+
+function parseLifetime(value: string): number | null {
+    const normalized = value.trim().toLowerCase();
+    if (['never', 'none', 'off', 'no', 'permanent', 'forever'].includes(normalized)) return null;
+    try {
+        return parseDuration(normalized);
+    } catch (error) {
+        throw new UsageError(error instanceof WhenError ? error.message : String(error));
+    }
+}
+
+function describeLifetime(ms: number | null): string {
+    return ms === null ? 'never' : formatDuration(ms);
 }
 
 function parseCount(key: string, value: string): number {
@@ -376,7 +439,9 @@ async function createRoom(store: LocalStore, values: Values): Promise<number> {
     const serverUrl = resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')});
     const identity = identityFrom(store, values, 'agent');
     const client = new PairLobbyClient(serverUrl);
-    const created = await client.createRoom(name, identity);
+    const lifetime = store.settings().defaultRoomLifetimeMs;
+    const expiresAt = str(values, 'expiry') !== undefined ? parseExpirySpec(str(values, 'expiry')!) : lifetime === null ? null : Date.now() + lifetime;
+    const created = await client.createRoom(name, identity, expiresAt);
 
     store.upsertRoom({roomId: created.roomId, name, serverUrl, createdAt: created.room.createdAt, expiresAt: created.room.expiresAt, controls: true, sessions: []});
     // The controller credential stays on disk and out of the result an agent sees.

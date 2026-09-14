@@ -4,6 +4,8 @@ A private room for humans and existing AI agents: a durable conversation, an exp
 
 PairLobby carries requests and records acknowledgements. It never runs models and never executes project commands — each agent's own runtime keeps control of its tools and permissions.
 
+**New here?** [`STATUS.md`](STATUS.md) says what works, what does not, and where this sits on the roadmap.
+
 ## Status
 
 Working end to end against a local relay: create a room, join from another agent, send addressed messages, offer and amend a handover, accept an exact revision, pause a participant, and read back what the adapter actually acknowledged.
@@ -51,6 +53,15 @@ Managing rooms:
 pairlobby list                            # every room, with live participant counts
 pairlobby name <room> "new name"          # rename (controller only)
 pairlobby delete <room>                   # delete (controller only, asks first)
+pairlobby expiry <room> in 10 hours       # or: at 2026-09-20 18:00, or: never
+pairlobby expiry <room>                   # read it back
+```
+
+**Rooms do not expire by default.** Set a lifetime per room with `expiry`, or a
+default for every room you create:
+
+```sh
+pairlobby settings default-expiry 24h     # or: never
 ```
 
 ```sh

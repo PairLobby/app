@@ -36,11 +36,11 @@ export class PairLobbyClient {
         this.serverUrl = serverUrl.replace(/\/+$/, '');
     }
 
-    async createRoom(name: string, identity: ClientIdentity): Promise<CreatedRoom> {
+    async createRoom(name: string, identity: ClientIdentity, expiresAt?: number | null): Promise<CreatedRoom> {
         // Both credentials are generated here, so a lost response never strands a secret the caller does not hold.
         const controllerCredential = newCredential('controller');
         const participantCredential = newCredential('participant');
-        const body = await this.call<{room: RoomSnapshot; participantId: string; invite: {code: string; expiresAt: number}}>('POST', '/v1/rooms', null, {name, controllerCredential, participantCredential, ...identity});
+        const body = await this.call<{room: RoomSnapshot; participantId: string; invite: {code: string; expiresAt: number}}>('POST', '/v1/rooms', null, {name, controllerCredential, participantCredential, ...identity, ...(expiresAt !== undefined ? {expiresAt} : {})});
         return {roomId: body.room.roomId, participantId: body.participantId, controllerCredential, participantCredential, invite: body.invite, room: body.room};
     }
 
@@ -82,6 +82,10 @@ export class PairLobbyClient {
 
     rename(roomId: string, credential: string, name: string): Promise<{event: RoomEvent}> {
         return this.call('POST', `/v1/rooms/${roomId}/name`, credential, {name});
+    }
+
+    setExpiry(roomId: string, credential: string, expiresAt: number | null): Promise<{event: RoomEvent}> {
+        return this.call('POST', `/v1/rooms/${roomId}/expiry`, credential, {expiresAt});
     }
 
     close(roomId: string, credential: string): Promise<{event: RoomEvent}> {

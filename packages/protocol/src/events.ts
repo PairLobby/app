@@ -53,6 +53,7 @@ const controlAckPayload = z.object({targetParticipantId: ParticipantId, revision
 
 const roomClosedPayload = z.object({exportWindowEndsAt: z.number().int().nonnegative()});
 const roomRenamedPayload = z.object({name: z.string().min(1).max(64), previousName: z.string().min(1).max(64)});
+const roomExpiryChangedPayload = z.object({expiresAt: z.number().int().nonnegative().nullable(), previousExpiresAt: z.number().int().nonnegative().nullable()});
 
 /** Event types a client may submit. Membership and control events are server-authored. */
 export const CLIENT_EVENT_TYPES = ['message', 'handover.offered', 'handover.accepted', 'handover.declined', 'control.ack'] as const;
@@ -79,6 +80,7 @@ export const EventBody = z.discriminatedUnion('type', [
     z.object({type: z.literal('control.ack'), payload: controlAckPayload}),
     z.object({type: z.literal('room.closed'), payload: roomClosedPayload}),
     z.object({type: z.literal('room.renamed'), payload: roomRenamedPayload}),
+    z.object({type: z.literal('room.expiry_changed'), payload: roomExpiryChangedPayload}),
 ]);
 export type EventBody = z.infer<typeof EventBody>;
 export type EventType = EventBody['type'];
