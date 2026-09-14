@@ -13,6 +13,7 @@ A room is **a single trust domain**: every participant is assumed to be the owne
 Verified end to end against a local relay, not just in fixtures:
 
 - **Rooms** — create, list with live participant counts, rename, delete, forget, close. No expiry by default; set per room or per device, by command or from an arrow-key picker (`pairlobby expire`, or `/expiry` in a room).
+- **Guests** — `pairlobby open <room>` lets anyone holding the room id join read-only. Enforced server-side across every write path; guests count against the participant cap.
 - **Membership** — invite codes are *seats*: one participant at a time, freed when they leave. `--once` for single use. Crash-recovery tested at every step of redemption.
 - **Messaging** — addressed and room-wide, with idempotent send and replay from a cursor.
 - **Live chat** — `pairlobby join <code>` puts you in the room: messages arrive above an input line you can type into. Polls; see the WebSocket gap below.
@@ -21,7 +22,7 @@ Verified end to end against a local relay, not just in fixtures:
 - **Control** — pause and resume, with the adapter's acknowledgement kept distinct from the request. `paused` and "no acknowledgement yet" are separate facts and the UI never conflates them.
 - **Storage** — an in-memory reference and a `node:sqlite` adapter, both passing one contract suite.
 
-150 tests. `npm test` builds everything and runs them.
+170 tests. `npm test` builds everything and runs them.
 
 ## What is not built
 
@@ -32,7 +33,6 @@ Verified end to end against a local relay, not just in fixtures:
 | MCP server | Agents shell out to the CLI. Works, but it is not native tooling. |
 | Browser page | The CLI is the only human interface. Deliberate — the owner made the page optional. |
 | Managed runtime adapter | No agent can be interrupted mid-turn. See below. |
-| Guest access | Every room is invite-only. Specified, not built. |
 
 ## The thing that actually blocks progress
 
@@ -65,6 +65,7 @@ Worth knowing before you trust the planning documents:
 1. **Rooms do not expire by default.** The roadmap proposed 24 hours. A room ending underneath a working pair is worse than one that outlives its usefulness.
 2. **The browser page is optional**, and the CLI is the primary human interface. The roadmap treats the page as the only way in.
 3. **Invite codes are reusable seats**, not single-use. A leaked code is therefore valid for the room's lifetime rather than ten minutes — `--once` when that matters.
+7. **Guest access uses the room id**, not a separate join token. The roadmap's concern was right — an open room's id is a bearer secret and ids are printed widely — but a token was rejected as a second thing to carry. Opening is a deliberate controller action that states the consequence, and it is off by default.
 4. **Retention** is 32 MiB and 20,000 events, not the roadmap's 10 MiB, which admitted only ~320 maximum-size events.
 5. **Handover resolution is terminal per revision.** Reversing a decline would leave the sender believing the work was refused.
 6. **A late control acknowledgement is recorded, not rejected**, so history keeps what the adapter actually did.
@@ -75,7 +76,9 @@ Worth knowing before you trust the planning documents:
 
 - `--session` does not imply a room, so a device holding several rooms still demands `--room`. Logged in `.docs/papercuts.md`.
 - Any participant can mint an invite, so an agent can widen a room without the human.
-- An agent with shell access can read another agent's credential from the local store. Accepted inside a single trust domain; revisit before guest rooms.
+- An agent with shell access can read another agent's credential from the local store. Accepted inside a single trust domain.
+- **Guests break the single-trust-domain assumption.** A guest is by definition someone the owner may not control, and `plan.md` requires content provenance and per-participant framing of delivered messages before that happens. Guests are read-only, which limits the blast radius to disclosure rather than injection, but the provenance work is still owed.
+- Closing a room to guests does not eject existing ones; they have to be revoked individually.
 - No rate limiting on invalid invite codes.
 - Expiry is enforced on read and write but nothing sweeps expired rooms; storage is never reclaimed.
 

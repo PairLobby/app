@@ -16,6 +16,8 @@ const BOLD = '\u001b[1m';
 const RESET = '\u001b[0m';
 
 export interface ChatOptions {
+    /** Guests may watch and leave; the composer is disabled for them. */
+    readOnly?: boolean;
     store: LocalStore;
     client: PairLobbyClient;
     roomId: string;
@@ -68,6 +70,10 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
     }
 
     function setPrompt(): void {
+        if (options.readOnly === true) {
+            terminal.setPrompt(`${DIM}watching${RESET} `);
+            return;
+        }
         terminal.setPrompt(recipient ? `${DIM}→ ${recipient.name}${RESET} ` : '> ');
     }
 
@@ -144,6 +150,10 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         if (line.length === 0) return;
 
         if (line === '/quit' || line === '/exit') {closed = true; terminal.close(); return;}
+        if (options.readOnly === true && !line.startsWith('/')) {
+            emit(`${DIM}  you are a read-only guest in this room${RESET}`);
+            return;
+        }
         if (line === '/help') {emit(HELP); return;}
         if (line === '/who') {emit(who(snapshot, showIds)); return;}
         if (line === '/to') {recipient = null; setPrompt(); emit(`${DIM}  addressing the room${RESET}`); terminal.prompt(true); return;}
@@ -293,6 +303,7 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
         case 'room.closed':         return 'the room was closed';
         case 'room.renamed':        return `${sender} renamed the room to ${event.payload.name}`;
         case 'room.expiry_changed':  return event.payload.expiresAt === null ? `${sender} made the room permanent` : `${sender} set the room to expire ${new Date(event.payload.expiresAt).toLocaleString()}`;
+        case 'room.access_changed':  return event.payload.joinPolicy === 'open_to_guests' ? `${sender} opened the room to read-only guests` : `${sender} made the room invite only`;
         default:                    return event.type;
     }
 }

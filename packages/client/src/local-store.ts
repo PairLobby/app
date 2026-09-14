@@ -25,7 +25,7 @@ export interface SessionEntry {
     terminal?: string;
     /** Process that invoked the CLI. */
     pid?: number;
-    role: 'member' | 'controller';
+    role: 'guest' | 'member' | 'controller';
     joinedAt: number;
     lastReadSeq: number;
     /** Where the session was working, to tell two agents in one checkout apart when listing. */

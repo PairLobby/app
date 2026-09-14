@@ -84,6 +84,17 @@ export class PairLobbyClient {
         return this.call('POST', `/v1/rooms/${roomId}/name`, credential, {name});
     }
 
+    setJoinPolicy(roomId: string, credential: string, joinPolicy: 'invite_only' | 'open_to_guests'): Promise<{event: RoomEvent}> {
+        return this.call('POST', `/v1/rooms/${roomId}/access`, credential, {joinPolicy});
+    }
+
+    /** Enters an open room as a read-only guest. No invite code, no credential to present. */
+    async joinAsGuest(roomId: string, identity: ClientIdentity): Promise<JoinedRoom> {
+        const participantCredential = newCredential('participant');
+        const body = await this.call<{roomId: string; participantId: string; role: ParticipantRole; room: RoomSnapshot}>('POST', `/v1/rooms/${roomId}/guests`, null, {participantCredential, ...identity});
+        return {roomId: body.roomId, participantId: body.participantId, participantCredential, role: body.role, room: body.room};
+    }
+
     setExpiry(roomId: string, credential: string, expiresAt: number | null): Promise<{event: RoomEvent}> {
         return this.call('POST', `/v1/rooms/${roomId}/expiry`, credential, {expiresAt});
     }

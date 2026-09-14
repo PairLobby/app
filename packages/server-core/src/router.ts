@@ -1,7 +1,7 @@
 //! Transport-agnostic routing over Web `Request`/`Response`, so the Node server
 //! and the Cloudflare Worker share one implementation of the HTTP contract.
 
-import {CreateInviteRequest, CreateRoomRequest, PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, ReadEventsQuery, RedeemInviteRequest, RenameRoomRequest, SendEventRequest, SetExpiryRequest, ControlRequest} from '@pairlobby/protocol';
+import {CreateInviteRequest, CreateRoomRequest, PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, ReadEventsQuery, RedeemInviteRequest, JoinAsGuestRequest, RenameRoomRequest, SendEventRequest, SetAccessRequest, SetExpiryRequest, ControlRequest} from '@pairlobby/protocol';
 import type {ErrorCode} from '@pairlobby/protocol';
 
 import type {RoomService} from './service.js';
@@ -57,6 +57,14 @@ async function route(request: Request, service: RoomService): Promise<Response> 
 
     if (segments[1] !== 'rooms' || segments.length < 3) return errorResponse('invalid_request', 'unknown path', 404);
     const roomId = segments[2]!;
+
+    // Guest entry is the one room route with no credential: knowing the id is the claim.
+    if (method === 'POST' && segments[3] === 'guests') {
+        const input = JoinAsGuestRequest.parse(await request.json());
+        const result = await service.joinAsGuest(roomId, input);
+        return json({roomId: result.roomId, participantId: result.participantId, role: result.role, room: result.snapshot});
+    }
+
     const credential = bearer(request);
 
     if (segments.length === 3 && method === 'GET') return json(await service.snapshot(roomId, credential));
@@ -87,6 +95,10 @@ async function route(request: Request, service: RoomService): Promise<Response> 
         case 'POST name': {
             const {name} = RenameRoomRequest.parse(await request.json());
             return json({event: await service.rename(roomId, credential, name)});
+        }
+        case 'POST access': {
+            const {joinPolicy} = SetAccessRequest.parse(await request.json());
+            return json({event: await service.setJoinPolicy(roomId, credential, joinPolicy)});
         }
         case 'POST expiry': {
             const {expiresAt} = SetExpiryRequest.parse(await request.json());

@@ -4,7 +4,7 @@
 //! Call `runRoomContract` from a test file, passing a factory for the store
 //! under test.
 
-import {DEFAULT_ROOM_POLICY, ProtocolError, newId} from '@pairlobby/protocol';
+import {DEFAULT_ROOM_POLICY, ProtocolError, newCredential, newId} from '@pairlobby/protocol';
 import type {ErrorCode} from '@pairlobby/protocol';
 import {afterEach, beforeEach, describe, expect, test} from 'vitest';
 
@@ -78,6 +78,98 @@ describe(label, () => {
             expect(secondClaude.sessionId).not.toBe(alice.sessionId);
             await alice.say('for the first session only', alice.participantId);
             expect(await secondClaude.poll()).toHaveLength(0);
+        });
+    });
+
+    describe('guest access', () => {
+        let server: RoomHarness;
+        let alice: FakeAgent;
+        let controller: string;
+
+        beforeEach(async () => {
+            server = track(new RoomHarness(makeStore()));
+            alice = new FakeAgent(server, 'claude');
+            const created = await alice.create('guest-room');
+            controller = created.controllerCredential;
+        });
+
+        const guest = {displayName: 'hugo', kind: 'human' as const};
+
+        test('test_a_closed_room_refuses_a_guest_who_knows_its_id', async () => {
+            await expectError('unauthorized', () => server.joinAsGuest(guest, newCredential('participant')));
+        });
+
+        test('test_an_open_room_admits_a_guest_with_no_invite_code', async () => {
+            await server.setJoinPolicy(controller, 'open_to_guests');
+            const joined = await server.joinAsGuest(guest, newCredential('participant'));
+            expect(joined.role).toBe('guest');
+            expect((await server.snapshot(controller)).policy.joinPolicy).toBe('open_to_guests');
+        });
+
+        test('test_a_guest_can_read_the_whole_transcript', async () => {
+            await server.setJoinPolicy(controller, 'open_to_guests');
+            await alice.say('something before the guest arrived');
+            const credential = newCredential('participant');
+            await server.joinAsGuest(guest, credential);
+            const page = await server.read(credential, 0);
+            expect(page.events.some((event) => event.type === 'message')).toBe(true);
+        });
+
+        test('test_a_guest_cannot_write_in_any_form', async () => {
+            await server.setJoinPolicy(controller, 'open_to_guests');
+            const credential = newCredential('participant');
+            const joined = await server.joinAsGuest(guest, credential);
+
+            await expectError('unauthorized', () => server.send(credential, {type: 'message', payload: {text: 'hello', priority: 'normal'}, idempotencyKey: newId('event')}));
+            await expectError('unauthorized', () => server.send(credential, {type: 'handover.offered', payload: {handoverId: newId('handover'), revision: 1, document: sampleHandover()}, idempotencyKey: newId('event'), recipientId: alice.participantId}));
+            await expectError('unauthorized', () => server.send(credential, {type: 'control.ack', payload: {targetParticipantId: joined.participantId, revision: 1, outcome: 'resumed'}, idempotencyKey: newId('event')}));
+            await expectError('unauthorized', () => server.control(credential, alice.participantId, true));
+            await expectError('unauthorized', () => server.revoke(credential, alice.participantId));
+            await expectError('unauthorized', () => server.close(credential));
+            await expectError('unauthorized', () => server.rename(credential, 'hijacked'));
+            await expectError('unauthorized', () => server.setExpiry(credential, Date.now() + 60_000));
+            await expectError('unauthorized', () => server.setJoinPolicy(credential, 'invite_only'));
+        });
+
+        test('test_a_guest_cannot_widen_the_room', async () => {
+            await server.setJoinPolicy(controller, 'open_to_guests');
+            const credential = newCredential('participant');
+            await server.joinAsGuest(guest, credential);
+            await expectError('unauthorized', () => server.mintInviteAs(credential));
+        });
+
+        test('test_a_guest_may_leave', async () => {
+            await server.setJoinPolicy(controller, 'open_to_guests');
+            const credential = newCredential('participant');
+            const joined = await server.joinAsGuest(guest, credential);
+            await server.leave(credential);
+            expect((await server.snapshot(controller)).participants.find((participant) => participant.participantId === joined.participantId)!.left).toBe(true);
+        });
+
+        test('test_closing_the_room_again_stops_new_guests', async () => {
+            await server.setJoinPolicy(controller, 'open_to_guests');
+            await server.joinAsGuest(guest, newCredential('participant'));
+            await server.setJoinPolicy(controller, 'invite_only');
+            await expectError('unauthorized', () => server.joinAsGuest({displayName: 'latecomer', kind: 'human'}, newCredential('participant')));
+        });
+
+        test('test_only_the_controller_can_open_a_room', async () => {
+            await expectError('unauthorized', () => server.setJoinPolicy(alice.credential, 'open_to_guests'));
+        });
+
+        test('test_opening_is_recorded_in_history', async () => {
+            await server.setJoinPolicy(controller, 'open_to_guests');
+            const page = await server.read(alice.credential, 0);
+            const changed = page.events.find((event) => event.type === 'room.access_changed');
+            expect(changed?.type === 'room.access_changed' && changed.payload.joinPolicy).toBe('open_to_guests');
+        });
+
+        test('test_guests_count_against_the_participant_cap', async () => {
+            await server.setJoinPolicy(controller, 'open_to_guests');
+            for (let index = 1; index < DEFAULT_ROOM_POLICY.maxParticipants; index += 1) {
+                await server.joinAsGuest({displayName: `guest-${index}`, kind: 'human'}, newCredential('participant'));
+            }
+            await expectError('participant_limit_reached', () => server.joinAsGuest({displayName: 'one-too-many', kind: 'human'}, newCredential('participant')));
         });
     });
 

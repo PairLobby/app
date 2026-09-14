@@ -37,6 +37,16 @@ export function assertController(actor: Actor): void {
     throw new ProtocolError('unauthorized', 'this action requires the room controller credential');
 }
 
+/**
+ * A guest may read and leave. Every other participant action goes through here,
+ * so adding a write path without thinking about guests fails closed.
+ */
+export function assertCanWrite(actor: Actor): ParticipantRecord {
+    const participant = assertActiveMember(actor);
+    if (participant.role === 'guest') throw new ProtocolError('unauthorized', 'guests can read this room but cannot take part in it');
+    return participant;
+}
+
 export function assertActiveMember(actor: Actor): ParticipantRecord {
     if (actor.kind !== 'participant') throw new ProtocolError('unauthorized', 'this action requires a room participant');
     if (!isActive(actor.participant)) throw new ProtocolError('participant_revoked', 'this participant is no longer in the room');

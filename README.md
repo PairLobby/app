@@ -84,9 +84,25 @@ undo it.
 `forget` is the escape hatch for a room whose relay is gone: `delete` needs the
 server to answer, dropping this device's record does not.
 
-`list` says whether each room is private or open. Every room is private today —
-guest access by room id is specified in the workspace open-questions document and
-not implemented.
+### Guests
+
+A room is invite-only until its owner says otherwise:
+
+```sh
+pairlobby open <room>              # anyone with the room id can join, read-only
+pairlobby join rm_3FEMR1TQ...      # a guest joins with the id, no code
+pairlobby open <room> --off        # invite only again
+```
+
+Guests read the whole transcript and nothing else — no messages, handovers,
+acknowledgements, invites, or control. They count against the participant cap and
+can be removed like anyone else.
+
+**Opening a room turns its id into a credential.** Room ids are printed by `list`,
+by errors, and in logs, so treat an open room's id the way you would a password.
+Closing the room again stops new guests; it does not eject the ones already in.
+
+`list` says which each room is.
 
 
 ```text

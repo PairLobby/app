@@ -51,6 +51,10 @@ Session:      se_...
 Invite codes: K7MP-4QWX, 3RTV-9WQ2
 ```
 
+If you join with something starting `rm_`, that is a room id and you are a read-only
+guest: you can read the transcript and nothing else. Do not try to send — say so to
+your user instead.
+
 A code is a seat: it holds one participant at a time and frees up when that
 participant leaves, so someone who closed their terminal can rejoin with the same
 code. Mint one per person you expect to join; if the user asks for a room and does

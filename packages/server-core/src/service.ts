@@ -3,7 +3,7 @@
 
 import {DEFAULT_ROOM_POLICY, ProtocolError, hashCredential, newId, newInviteCode, normalizeInviteCode} from '@pairlobby/protocol';
 import type {AdapterCapabilities, ExportResponse, ParticipantKind, ParticipantRole, ReadEventsResponse, RoomEvent, RoomPolicy, RoomSnapshot, SendEventRequest} from '@pairlobby/protocol';
-import {assertRoomWritable, authenticate, closeRoom, createRoom, joinRoom, leaveRoom, renameRoom, requestControl, revokeParticipant, sendEvent, setExpiry, toSnapshot} from '@pairlobby/room-core';
+import {assertRoomWritable, authenticate, closeRoom, createRoom, joinAsGuest, joinRoom, leaveRoom, renameRoom, requestControl, revokeParticipant, sendEvent, setExpiry, setJoinPolicy, toSnapshot} from '@pairlobby/room-core';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 
 import {stableStringify} from './stable-json.js';
@@ -88,8 +88,8 @@ export class RoomService {
     async mintInvite(roomId: string, credential: string, role: ParticipantRole, reusable = true): Promise<{code: string; expiresAt: number; reusable: boolean}> {
         const view = await this.view(roomId);
         const actor = authenticate(view, await hashCredential(credential), this.now());
-        if (actor.kind !== 'controller' && actor.participant.role !== 'controller' && actor.participant.kind !== 'agent') {
-            throw new ProtocolError('unauthorized', 'this action requires a room participant');
+        if (actor.kind === 'participant' && actor.participant.role === 'guest') {
+            throw new ProtocolError('unauthorized', 'guests cannot invite others into a room');
         }
         assertRoomWritable(view, this.now());
         const code = newInviteCode();
@@ -198,6 +198,29 @@ export class RoomService {
 
     async rename(roomId: string, credential: string, name: string): Promise<RoomEvent> {
         return this.applyOne(renameRoom(await this.view(roomId), await hashCredential(credential), name, this.ctx()));
+    }
+
+    async setJoinPolicy(roomId: string, credential: string, joinPolicy: 'invite_only' | 'open_to_guests'): Promise<RoomEvent> {
+        return this.applyOne(setJoinPolicy(await this.view(roomId), await hashCredential(credential), joinPolicy, this.ctx()));
+    }
+
+    /** Guest entry. Knowing the room id is the entire claim, so the room must allow it. */
+    async joinAsGuest(roomId: string, input: Identity & {participantCredential: string}): Promise<RedeemResult> {
+        const view = await this.view(roomId);
+        assertRoomWritable(view, this.now());
+        const credentialHash = await hashCredential(input.participantCredential);
+        const existing = await this.store.participantByCredential(roomId, credentialHash);
+        if (existing) return {roomId, participantId: existing.participantId, role: existing.role, replayed: true, snapshot: toSnapshot(view)};
+
+        const joined = joinAsGuest(view, {
+            credentialHash,
+            displayName: input.displayName,
+            kind: input.kind,
+            sessionId: input.sessionId ?? null,
+            capabilities: input.capabilities ?? null,
+        }, this.ctx());
+        await this.store.apply(joined.mutation, null);
+        return {roomId, participantId: joined.participant.participantId, role: 'guest', replayed: false, snapshot: toSnapshot(await this.view(roomId))};
     }
 
     async setExpiry(roomId: string, credential: string, expiresAt: number | null): Promise<RoomEvent> {

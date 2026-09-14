@@ -2,9 +2,12 @@
 //! limits and not commercial entitlements.
 
 /**
- * How a room may be joined. Only `invite_only` is implemented; `open_to_guests`
- * is reserved so the field means something today rather than being added later
- * as a breaking change. Nothing reads it as permission yet.
+ * How a room may be joined.
+ *
+ * `open_to_guests` makes the room id sufficient to enter as a read-only guest.
+ * That turns the id into a bearer secret, and ids are printed by `list`, by
+ * errors, and in logs — which is why opening a room is a deliberate controller
+ * action rather than a default.
  */
 export type JoinPolicy = 'invite_only' | 'open_to_guests';
 
@@ -49,7 +52,7 @@ export const DEFAULT_ROOM_POLICY: RoomPolicy = {
 };
 
 /** Control, close, and export paths stay usable after ordinary writes hit quota. */
-export const QUOTA_EXEMPT_EVENT_TYPES = ['control.pause', 'control.resume', 'control.ack', 'participant.revoked', 'room.closed', 'room.renamed', 'room.expiry_changed'] as const;
+export const QUOTA_EXEMPT_EVENT_TYPES = ['control.pause', 'control.resume', 'control.ack', 'participant.revoked', 'room.closed', 'room.renamed', 'room.expiry_changed', 'room.access_changed'] as const;
 
 export function isQuotaExempt(eventType: string): boolean {
     return (QUOTA_EXEMPT_EVENT_TYPES as readonly string[]).includes(eventType);

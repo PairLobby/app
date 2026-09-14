@@ -21,6 +21,8 @@ export const ROUTES = {
     revokeParticipant: {method: 'DELETE', path: '/v1/rooms/:roomId/participants/:participantId'},
     renameRoom:        {method: 'POST',   path: '/v1/rooms/:roomId/name'},
     setExpiry:         {method: 'POST',   path: '/v1/rooms/:roomId/expiry'},
+    setAccess:         {method: 'POST',   path: '/v1/rooms/:roomId/access'},
+    joinAsGuest:       {method: 'POST',   path: '/v1/rooms/:roomId/guests'},
     closeRoom:         {method: 'POST',   path: '/v1/rooms/:roomId/close'},
     exportRoom:        {method: 'GET',    path: '/v1/rooms/:roomId/export'},
     deleteRoom:        {method: 'DELETE', path: '/v1/rooms/:roomId'},
@@ -109,6 +111,13 @@ export type RenameRoomRequest = z.infer<typeof RenameRoomRequest>;
 /** `expiresAt: null` means the room stops expiring. */
 export const SetExpiryRequest = z.object({expiresAt: z.number().int().nonnegative().nullable()});
 export type SetExpiryRequest = z.infer<typeof SetExpiryRequest>;
+
+export const SetAccessRequest = z.object({joinPolicy: z.enum(['invite_only', 'open_to_guests'])});
+export type SetAccessRequest = z.infer<typeof SetAccessRequest>;
+
+/** Guest entry carries no invite code: knowing the room id is the whole claim. */
+export const JoinAsGuestRequest = z.intersection(identity, z.object({participantCredential: z.string().min(32).max(256)}));
+export type JoinAsGuestRequest = z.infer<typeof JoinAsGuestRequest>;
 
 export const ControlRequest = z.object({targetParticipantId: ParticipantId, paused: z.boolean()});
 export type ControlRequest = z.infer<typeof ControlRequest>;

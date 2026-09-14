@@ -44,6 +44,7 @@ const OPTIONS = {
     force:      {type: 'boolean'},
     reset:      {type: 'boolean'},
     once:       {type: 'boolean'},
+    off:        {type: 'boolean'},
     expiry:     {type: 'string'},
     interval:   {type: 'string'},
     wait:       {type: 'string'},
@@ -63,6 +64,8 @@ const HELP = `pairlobby — a private room for your agents
   pairlobby name <room> <new name>   rename a room (controller only)
   pairlobby expiry [room] <when>     never | in 10 hours | at 2026-09-20 18:00
   pairlobby expire [room]            pick expiry from a menu
+  pairlobby open <room>              let anyone with the room id join as a guest
+  pairlobby open <room> --off        back to invite only
   pairlobby delete <room>            delete a room (controller only)
   pairlobby forget <room>            drop the local record, leave the server alone
   pairlobby settings                 show or change preferences
@@ -114,6 +117,7 @@ async function main(argv: string[]): Promise<number> {
         case 'name':     return renameRoom(store, values, positionals[1], positionals.slice(2).join(' '));
         case 'expiry':   return expiryCommand(store, values, positionals.slice(1));
         case 'expire':   return expireInteractive(store, values, positionals[1]);
+        case 'open':     return setAccess(store, values, positionals[1]);
         case 'delete':   return deleteRoom(store, values, positionals[1]);
         case 'create':   return createRoom(store, values);
         case 'join':     return joinRoom(store, values, positionals[1]);
@@ -182,6 +186,37 @@ function parseExpirySpec(spec: string): number | null {
     } catch (error) {
         throw new UsageError(error instanceof WhenError ? error.message : String(error));
     }
+}
+
+/**
+ * Opens a room to read-only guests, or closes it again.
+ *
+ * This makes the room id enough to get in, which turns an identifier that is
+ * printed by `list`, by errors, and in logs into a credential. The warning is
+ * printed at the moment of opting in because that is the only moment anyone is
+ * thinking about it.
+ */
+async function setAccess(store: LocalStore, values: Values, reference?: string): Promise<number> {
+    const room = resolveRoom(store, reference ?? str(values, 'room'));
+    const joinPolicy = flag(values, 'off') ? 'invite_only' as const : 'open_to_guests' as const;
+    const credential = controllerCredential(store, room);
+    await new PairLobbyClient(room.serverUrl).setJoinPolicy(room.roomId, credential, joinPolicy);
+
+    if (flag(values, 'json')) {
+        json({roomId: room.roomId, joinPolicy});
+        return 0;
+    }
+    if (joinPolicy === 'invite_only') {
+        out(`${room.name} is invite only again. Existing guests keep their access until you remove them.`);
+        return 0;
+    }
+    out(`${room.name} is open to guests.`);
+    out('');
+    out(`  pairlobby join ${room.roomId}`);
+    out('');
+    note('anyone holding that room id can now read the whole transcript. Guests cannot send,');
+    note('hand over, or control anything. Close it again with: pairlobby open <room> --off');
+    return 0;
 }
 
 /** The menu form of `expiry`, for when you would rather not phrase a time. */
@@ -489,11 +524,12 @@ async function createRoom(store: LocalStore, values: Values): Promise<number> {
 }
 
 async function joinRoom(store: LocalStore, values: Values, code?: string): Promise<number> {
-    if (!code) throw new UsageError('pairlobby join needs an invite code');
+    if (!code) throw new UsageError('pairlobby join needs an invite code or the id of an open room');
     const serverUrl = resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')});
     const identity = identityFrom(store, values, 'agent');
     const client = new PairLobbyClient(serverUrl);
-    const joined = await client.redeemInvite(code, identity);
+    // A room id and an invite code are not confusable, so one command takes either.
+    const joined = code.startsWith('rm_') ? await client.joinAsGuest(code, identity) : await client.redeemInvite(code, identity);
 
     store.upsertRoom({roomId: joined.roomId, name: joined.room.name, serverUrl, createdAt: joined.room.createdAt, expiresAt: joined.room.expiresAt, controls: store.room(joined.roomId)?.controls ?? false, sessions: store.room(joined.roomId)?.sessions ?? []});
     store.putCredential(joined.roomId, identity.sessionId, joined.participantCredential);
@@ -507,10 +543,10 @@ async function joinRoom(store: LocalStore, values: Values, code?: string): Promi
     // Joining a room means being in it. Only a machine caller — --json, a pipe,
     // or an explicit --no-follow — gets a printed snapshot and its prompt back.
     if (isInteractive(values)) {
-        note(`joined ${joined.room.name} as ${identity.displayName}`);
+        note(`joined ${joined.room.name} as ${identity.displayName}${joined.role === 'guest' ? ' — read-only guest' : ''}`);
         return chatRoom(store, {...values, room: joined.roomId, session: identity.sessionId});
     }
-    out(`Joined ${joined.room.name} as ${identity.displayName}`);
+    out(`Joined ${joined.room.name} as ${identity.displayName}${joined.role === 'guest' ? ' (read-only guest)' : ''}`);
     out(`Session: ${identity.sessionId}`);
     if (detail.conversationId) out(`Conversation: ${detail.conversationId}`);
     out('');
@@ -576,6 +612,7 @@ async function chatRoom(store: LocalStore, values: Values): Promise<number> {
         sessionId: session.sessionId,
         participantId: session.participantId,
         controllerCredential: store.credential(room.roomId, 'controller'),
+        readOnly: session.role === 'guest',
         intervalMs: str(values, 'interval') !== undefined ? Number(str(values, 'interval')) : store.settings().pollIntervalMs,
         showIds: store.settings().showIds,
         fromStart: true,

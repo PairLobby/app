@@ -163,6 +163,7 @@ function describe(event: RoomEvent): string {
         case 'room.closed':         return 'the room was closed';
         case 'room.renamed':        return `renamed from ${event.payload.previousName} to ${event.payload.name}`;
         case 'room.expiry_changed':  return event.payload.expiresAt === null ? 'the room no longer expires' : `the room now expires ${relativeTime(event.payload.expiresAt)}`;
+        case 'room.access_changed':  return event.payload.joinPolicy === 'open_to_guests' ? 'the room is now open to read-only guests' : 'the room is now invite only';
     }
 }
 
