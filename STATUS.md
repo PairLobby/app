@@ -12,7 +12,7 @@ A room is **a single trust domain**: every participant is assumed to be the owne
 
 Verified end to end against a local relay, not just in fixtures:
 
-- **Rooms** — create, list with live participant counts, rename, delete, forget, close. No expiry by default; set per room or per device.
+- **Rooms** — create, list with live participant counts, rename, delete, forget, close. No expiry by default; set per room or per device, by command or from an arrow-key picker (`pairlobby expire`, or `/expiry` in a room).
 - **Membership** — invite codes are *seats*: one participant at a time, freed when they leave. `--once` for single use. Crash-recovery tested at every step of redemption.
 - **Messaging** — addressed and room-wide, with idempotent send and replay from a cursor.
 - **Live chat** — `pairlobby join <code>` puts you in the room: messages arrive above an input line you can type into. Polls; see the WebSocket gap below.
@@ -21,7 +21,7 @@ Verified end to end against a local relay, not just in fixtures:
 - **Control** — pause and resume, with the adapter's acknowledgement kept distinct from the request. `paused` and "no acknowledgement yet" are separate facts and the UI never conflates them.
 - **Storage** — an in-memory reference and a `node:sqlite` adapter, both passing one contract suite.
 
-148 tests. `npm test` builds everything and runs them.
+150 tests. `npm test` builds everything and runs them.
 
 ## What is not built
 

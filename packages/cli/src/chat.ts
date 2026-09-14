@@ -9,6 +9,8 @@ import {ProtocolError, newId} from '@pairlobby/protocol';
 import type {RoomEvent, RoomSnapshot} from '@pairlobby/protocol';
 import {LocalStore, PairLobbyClient} from '@pairlobby/client';
 
+import {pickExpiry} from './picker.js';
+
 const DIM = '\u001b[2m';
 const BOLD = '\u001b[1m';
 const RESET = '\u001b[0m';
@@ -34,6 +36,7 @@ const HELP = `  <message>          send to the room
   /to <name>         address every later message to one participant
   /to                clear the default recipient
   /who               who is here
+  /expiry            set when this room expires
   /pause <name>      controller only
   /resume <name>     controller only
   /help              this
@@ -108,6 +111,33 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         }
     }
 
+    /**
+     * Hands stdin to the picker and takes it back afterwards. The readline
+     * interface is paused first, or both it and the picker consume the same
+     * keypresses and neither behaves.
+     */
+    async function changeExpiry(): Promise<void> {
+        if (!options.controllerCredential) {
+            emit(`${DIM}  this device does not hold the controller credential for this room${RESET}`);
+            return;
+        }
+        terminal.pause();
+        process.stdout.write('\n');
+        try {
+            const chosen = await pickExpiry(snapshot.name, snapshot.expiresAt);
+            if (chosen === undefined || chosen === snapshot.expiresAt) emit(`${DIM}  expiry left unchanged${RESET}`);
+            else {
+                await client.setExpiry(roomId, options.controllerCredential, chosen);
+                snapshot = await client.snapshot(roomId, credential);
+                emit(`${DIM}  ${chosen === null ? 'this room will not expire' : `this room expires ${new Date(chosen).toLocaleString()}`}${RESET}`);
+            }
+        } catch (error) {
+            emit(`${DIM}  ${error instanceof ProtocolError ? error.message : String(error)}${RESET}`);
+        }
+        terminal.resume();
+        terminal.prompt(true);
+    }
+
     terminal.on('line', (raw) => {
         const line = raw.trim();
         terminal.prompt(true);
@@ -122,6 +152,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             if (found) {recipient = found; setPrompt(); emit(`${DIM}  addressing ${found.name}${RESET}`); terminal.prompt(true);}
             return;
         }
+        if (line === '/expiry') {void changeExpiry(); return;}
         if (line.startsWith('/pause ')) {void control(line.slice(7).trim(), true); return;}
         if (line.startsWith('/resume ')) {void control(line.slice(8).trim(), false); return;}
         if (line.startsWith('/')) {emit(`${DIM}  unknown command; /help${RESET}`); return;}

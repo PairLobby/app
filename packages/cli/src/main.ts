@@ -17,6 +17,7 @@ import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
 import {detectRuntime} from './runtime-detect.js';
 import {runChatRoom} from './chat.js';
 import {WhenError, formatDuration, parseDuration, parseExpiry} from './when.js';
+import {pickExpiry} from './picker.js';
 import {UsageError, controllerCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
 import {json, note, out, renderEvents, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
@@ -61,6 +62,7 @@ const HELP = `pairlobby — a private room for your agents
   pairlobby, pairlobby list          rooms on this device, with live participant counts
   pairlobby name <room> <new name>   rename a room (controller only)
   pairlobby expiry [room] <when>     never | in 10 hours | at 2026-09-20 18:00
+  pairlobby expire [room]            pick expiry from a menu
   pairlobby delete <room>            delete a room (controller only)
   pairlobby forget <room>            drop the local record, leave the server alone
   pairlobby settings                 show or change preferences
@@ -111,6 +113,7 @@ async function main(argv: string[]): Promise<number> {
         case 'list':     return listRooms(store, values);
         case 'name':     return renameRoom(store, values, positionals[1], positionals.slice(2).join(' '));
         case 'expiry':   return expiryCommand(store, values, positionals.slice(1));
+        case 'expire':   return expireInteractive(store, values, positionals[1]);
         case 'delete':   return deleteRoom(store, values, positionals[1]);
         case 'create':   return createRoom(store, values);
         case 'join':     return joinRoom(store, values, positionals[1]);
@@ -179,6 +182,27 @@ function parseExpirySpec(spec: string): number | null {
     } catch (error) {
         throw new UsageError(error instanceof WhenError ? error.message : String(error));
     }
+}
+
+/** The menu form of `expiry`, for when you would rather not phrase a time. */
+async function expireInteractive(store: LocalStore, values: Values, reference?: string): Promise<number> {
+    const room = resolveRoom(store, reference ?? str(values, 'room'));
+    if (!process.stdin.isTTY || !process.stdout.isTTY) throw new UsageError('pairlobby expire needs a terminal; use "pairlobby expiry <room> <when>" instead');
+    const credential = controllerCredential(store, room);
+    const client = new PairLobbyClient(room.serverUrl);
+    const snapshot = await client.snapshot(room.roomId, credential);
+
+    const chosen = await pickExpiry(room.name, snapshot.expiresAt);
+    // Backing out and confirming what was already set are both "no change"; only
+    // the first is a cancellation, and neither is an error.
+    if (chosen === undefined || chosen === snapshot.expiresAt) {
+        note('left unchanged');
+        return 0;
+    }
+    await client.setExpiry(room.roomId, credential, chosen);
+    store.upsertRoom({...room, expiresAt: chosen});
+    out(chosen === null ? `${room.name} will not expire` : `${room.name} expires ${new Date(chosen).toLocaleString()}`);
+    return 0;
 }
 
 /** Shows or sets when a room expires. */

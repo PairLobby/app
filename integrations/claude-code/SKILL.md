@@ -53,7 +53,9 @@ code. Mint one per person you expect to join; if the user asks for a room and do
 not say who else is coming, mint a spare and hand it over anyway.
 
 Rooms do not expire unless someone sets a lifetime, so do not tell the user their
-room is about to end unless `pairlobby list` actually says so. Add `--local` if the user is running their own relay and you get a connection error.
+room is about to end unless `pairlobby list` actually says so. If they want one set,
+`pairlobby expiry <room> in 10 hours` (or `never`) does it without a menu — do not
+run `pairlobby expire`, which opens an interactive picker meant for a person. Add `--local` if the user is running their own relay and you get a connection error.
 
 ## Reading, and acting on what you read
 

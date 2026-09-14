@@ -1,6 +1,6 @@
 import {describe, expect, test} from 'vitest';
 
-import {WhenError, formatDuration, parseDuration, parseExpiry} from './when.js';
+import {WhenError, describeDuration, formatDuration, parseDuration, parseExpiry} from './when.js';
 
 const NOW = new Date(2026, 8, 13, 12, 0, 0).getTime();
 
@@ -51,5 +51,21 @@ describe('expiry specs', () => {
     test('test_an_unreadable_spec_is_refused', () => {
         expect(() => parseExpiry('whenever', NOW)).toThrow(WhenError);
         expect(() => parseExpiry('', NOW)).toThrow(WhenError);
+    });
+});
+
+describe('approximate durations', () => {
+    test('test_display_rounds_to_the_largest_sensible_unit', () => {
+        expect(describeDuration(2998 * 60_000)).toBe('2.1 days');
+        expect(describeDuration(3_600_000)).toBe('1 hour');
+        expect(describeDuration(5_400_000)).toBe('1.5 hours');
+        expect(describeDuration(500)).toBe('less than a second');
+    });
+
+    test('test_exact_formatting_is_unchanged_so_settings_round_trip', () => {
+        // Settings are stored from this, so an approximation here would silently
+        // change what someone configured.
+        expect(formatDuration(parseDuration('10 hours'))).toBe('10 hours');
+        expect(formatDuration(parseDuration('2 days'))).toBe('2 days');
     });
 });

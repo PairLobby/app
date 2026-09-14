@@ -64,6 +64,22 @@ function parseAbsolute(text: string): number | null {
     return Number.isNaN(fallback) ? null : fallback;
 }
 
+/**
+ * A rough, readable duration for display: largest sensible unit, rounded.
+ * `formatDuration` stays exact because settings round-trip through it, and an
+ * approximation there would quietly change what someone configured.
+ */
+export function describeDuration(ms: number): string {
+    for (const unit of [...UNITS].reverse()) {
+        if (ms >= unit.ms) {
+            const amount = Math.round((ms / unit.ms) * 10) / 10;
+            const name = unit.names.at(-1)!;
+            return `${amount} ${amount === 1 ? name.replace(/s$/, '') : name}`;
+        }
+    }
+    return 'less than a second';
+}
+
 /** Formats a duration in milliseconds the way someone would say it. */
 export function formatDuration(ms: number): string {
     for (const unit of [...UNITS].reverse()) {

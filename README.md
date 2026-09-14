@@ -55,7 +55,12 @@ pairlobby name <room> "new name"          # rename (controller only)
 pairlobby delete <room>                   # delete (controller only, asks first)
 pairlobby expiry <room> in 10 hours       # or: at 2026-09-20 18:00, or: never
 pairlobby expiry <room>                   # read it back
+pairlobby expire <room>                   # pick it from a menu instead
 ```
+
+`expire` opens a picker: never, a duration, or a date and time you adjust with the
+arrow keys — left and right move between year, month, day, hour and minute, up and
+down change the one under the cursor. `/expiry` does the same from inside a room.
 
 **Rooms do not expire by default.** Set a lifetime per room with `expiry`, or a
 default for every room you create:
