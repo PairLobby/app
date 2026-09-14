@@ -19,6 +19,10 @@ export const ROUTES = {
     connect:           {method: 'GET',    path: '/v1/rooms/:roomId/connect'},
     control:           {method: 'POST',   path: '/v1/rooms/:roomId/control'},
     revokeParticipant: {method: 'DELETE', path: '/v1/rooms/:roomId/participants/:participantId'},
+    renameRoom:        {method: 'POST',   path: '/v1/rooms/:roomId/name'},
+    setExpiry:         {method: 'POST',   path: '/v1/rooms/:roomId/expiry'},
+    setAccess:         {method: 'POST',   path: '/v1/rooms/:roomId/access'},
+    joinAsGuest:       {method: 'POST',   path: '/v1/rooms/:roomId/guests'},
     closeRoom:         {method: 'POST',   path: '/v1/rooms/:roomId/close'},
     exportRoom:        {method: 'GET',    path: '/v1/rooms/:roomId/export'},
     deleteRoom:        {method: 'DELETE', path: '/v1/rooms/:roomId'},
@@ -33,6 +37,8 @@ const identity = z.object({
 
 export const CreateRoomRequest = z.intersection(identity, z.object({
     name: z.string().min(1).max(64),
+    /** Overrides the server default. Null, or omitted with no server default, means no expiry. */
+    expiresAt: z.number().int().nonnegative().nullable().optional(),
     /** Client-generated so a lost response never strands a credential the caller does not hold. */
     controllerCredential: z.string().min(32).max(256),
     participantCredential: z.string().min(32).max(256),
@@ -63,8 +69,8 @@ export const RedeemInviteResponse = z.object({
 });
 export type RedeemInviteResponse = z.infer<typeof RedeemInviteResponse>;
 
-export const CreateInviteRequest = z.object({role: ParticipantRole.default('member')});
-export const CreateInviteResponse = z.object({code: z.string(), expiresAt: z.number().int().nonnegative()});
+export const CreateInviteRequest = z.object({role: ParticipantRole.default('member'), reusable: z.boolean().default(true)});
+export const CreateInviteResponse = z.object({code: z.string(), expiresAt: z.number().int().nonnegative(), reusable: z.boolean()});
 export type CreateInviteResponse = z.infer<typeof CreateInviteResponse>;
 
 export const ReadEventsQuery = z.object({
@@ -98,6 +104,20 @@ export type SendEventResponse = z.infer<typeof SendEventResponse>;
  */
 export const ConnectTicketResponse = z.object({ticket: z.string(), expiresAt: z.number().int().nonnegative()});
 export type ConnectTicketResponse = z.infer<typeof ConnectTicketResponse>;
+
+export const RenameRoomRequest = z.object({name: z.string().min(1).max(64)});
+export type RenameRoomRequest = z.infer<typeof RenameRoomRequest>;
+
+/** `expiresAt: null` means the room stops expiring. */
+export const SetExpiryRequest = z.object({expiresAt: z.number().int().nonnegative().nullable()});
+export type SetExpiryRequest = z.infer<typeof SetExpiryRequest>;
+
+export const SetAccessRequest = z.object({joinPolicy: z.enum(['invite_only', 'open_to_guests'])});
+export type SetAccessRequest = z.infer<typeof SetAccessRequest>;
+
+/** Guest entry carries no invite code: knowing the room id is the whole claim. */
+export const JoinAsGuestRequest = z.intersection(identity, z.object({participantCredential: z.string().min(32).max(256)}));
+export type JoinAsGuestRequest = z.infer<typeof JoinAsGuestRequest>;
 
 export const ControlRequest = z.object({targetParticipantId: ParticipantId, paused: z.boolean()});
 export type ControlRequest = z.infer<typeof ControlRequest>;

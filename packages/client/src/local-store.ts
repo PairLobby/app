@@ -25,7 +25,7 @@ export interface SessionEntry {
     terminal?: string;
     /** Process that invoked the CLI. */
     pid?: number;
-    role: 'member' | 'controller';
+    role: 'guest' | 'member' | 'controller';
     joinedAt: number;
     lastReadSeq: number;
     /** Where the session was working, to tell two agents in one checkout apart when listing. */
@@ -37,7 +37,8 @@ export interface RoomEntry {
     name: string;
     serverUrl: string;
     createdAt: number;
-    expiresAt: number;
+    /** Null for a room that does not expire. */
+    expiresAt: number | null;
     /** True when this device holds the controller credential for the room. */
     controls: boolean;
     sessions: SessionEntry[];
@@ -50,6 +51,20 @@ export interface Profile {
     runtime?: string;
     server?: string;
 }
+
+/** Behavioural preferences for this device. Distinct from the profile, which is identity. */
+export interface Settings {
+    /** Ask before deleting a room. */
+    confirmDelete: boolean;
+    /** How often the live room asks for new events, in milliseconds. */
+    pollIntervalMs: number;
+    /** Print participant and room ids next to names in the live room. */
+    showIds: boolean;
+    /** How long a new room lives, in milliseconds, or null for no expiry. */
+    defaultRoomLifetimeMs: number | null;
+}
+
+export const DEFAULT_SETTINGS: Settings = {confirmDelete: true, pollIntervalMs: 700, showIds: false, defaultRoomLifetimeMs: null};
 
 export function dataDirectory(): string {
     const override = process.env['PAIRLOBBY_DATA_DIR'];
@@ -99,6 +114,25 @@ export class LocalStore {
         writeJsonPrivate(this.profileFile, {});
     }
 
+    private get settingsFile(): string {
+        return join(this.directory, 'settings.json');
+    }
+
+    settings(): Settings {
+        return {...DEFAULT_SETTINGS, ...readJson<Partial<Settings>>(this.settingsFile, {})};
+    }
+
+    setSettings(update: Partial<Settings>): Settings {
+        const merged = {...this.settings(), ...update};
+        writeJsonPrivate(this.settingsFile, merged);
+        return merged;
+    }
+
+    resetSettings(): Settings {
+        writeJsonPrivate(this.settingsFile, {});
+        return DEFAULT_SETTINGS;
+    }
+
     rooms(): RoomEntry[] {
         return readJson<RoomEntry[]>(this.roomsFile, []);
     }
@@ -120,7 +154,7 @@ export class LocalStore {
 
     /** The only room when there is exactly one open room on this device. */
     soleRoom(now = Date.now()): RoomEntry | null {
-        const open = this.rooms().filter((entry) => entry.expiresAt > now);
+        const open = this.rooms().filter((entry) => entry.expiresAt === null || entry.expiresAt > now);
         return open.length === 1 ? open[0]! : null;
     }
 

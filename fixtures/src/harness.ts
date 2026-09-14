@@ -56,6 +56,20 @@ export class RoomHarness {
         return (await this.service.mintInvite(this.roomId, this.controllerCredential, role)).code;
     }
 
+    /** Mints using a specific credential, to check who is allowed to widen a room. */
+    async mintInviteAs(credential: string, role: ParticipantRole = 'member'): Promise<string> {
+        return (await this.service.mintInvite(this.roomId, credential, role)).code;
+    }
+
+    async mintInviteOnce(role: ParticipantRole = 'member'): Promise<string> {
+        return (await this.service.mintInvite(this.roomId, this.controllerCredential, role, false)).code;
+    }
+
+    /** The controller credential, for tests that need to act as the room owner. */
+    controller(): string {
+        return this.controllerCredential;
+    }
+
     async redeemInvite(code: string, identity: Identity, attemptId: string, participantCredential: string): Promise<{participantId: string; roomId: string; replayed: boolean}> {
         const result = await this.service.redeemInvite({code, attemptId, participantCredential, ...identity});
         return {participantId: result.participantId, roomId: result.roomId, replayed: result.replayed};
@@ -75,6 +89,22 @@ export class RoomHarness {
 
     async leave(credential: string): Promise<RoomEvent> {
         return this.service.leave(this.roomId, credential);
+    }
+
+    async rename(credential: string, name: string): Promise<RoomEvent> {
+        return this.service.rename(this.roomId, credential, name);
+    }
+
+    async setJoinPolicy(credential: string, joinPolicy: 'invite_only' | 'open_to_guests'): Promise<RoomEvent> {
+        return this.service.setJoinPolicy(this.roomId, credential, joinPolicy);
+    }
+
+    async joinAsGuest(identity: Identity, participantCredential: string) {
+        return this.service.joinAsGuest(this.roomId, {...identity, participantCredential});
+    }
+
+    async setExpiry(credential: string, expiresAt: number | null): Promise<RoomEvent> {
+        return this.service.setExpiry(this.roomId, credential, expiresAt);
     }
 
     async close(credential: string): Promise<RoomEvent> {

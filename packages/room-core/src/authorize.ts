@@ -11,7 +11,7 @@ export type Actor = {kind: 'participant'; participant: ParticipantRecord} | {kin
 /** Room lifecycle is checked at request time; physical cleanup is maintenance, not the access boundary. */
 export function assertRoomReadable(view: RoomView, now: number): void {
     if (view.room.lifecycle === 'deleted') throw new ProtocolError('room_not_found', 'this room no longer exists');
-    if (view.room.lifecycle === 'expired' || now >= view.room.expiresAt) throw new ProtocolError('room_expired', 'this room has expired');
+    if (view.room.lifecycle === 'expired' || (view.room.expiresAt !== null && now >= view.room.expiresAt)) throw new ProtocolError('room_expired', 'this room has expired');
     if (view.room.lifecycle === 'closed' && view.room.closedAt !== null && now >= view.room.closedAt + view.room.policy.exportWindowMs) {
         throw new ProtocolError('room_expired', 'this room was closed and its export window has ended');
     }
@@ -35,6 +35,16 @@ export function assertController(actor: Actor): void {
     if (actor.kind === 'controller') return;
     if (actor.participant.role === 'controller') return;
     throw new ProtocolError('unauthorized', 'this action requires the room controller credential');
+}
+
+/**
+ * A guest may read and leave. Every other participant action goes through here,
+ * so adding a write path without thinking about guests fails closed.
+ */
+export function assertCanWrite(actor: Actor): ParticipantRecord {
+    const participant = assertActiveMember(actor);
+    if (participant.role === 'guest') throw new ProtocolError('unauthorized', 'guests can read this room but cannot take part in it');
+    return participant;
 }
 
 export function assertActiveMember(actor: Actor): ParticipantRecord {

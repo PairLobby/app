@@ -16,6 +16,11 @@ export function json(value: unknown): void {
     process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+/** Renders an expiry, including the case of a room that has none. */
+export function expiryLine(expiresAt: number | null, now = Date.now()): string {
+    return expiresAt === null ? 'never expires' : `expires ${relativeTime(expiresAt, now)}`;
+}
+
 export function relativeTime(at: number, now = Date.now()): string {
     const seconds = Math.round((at - now) / 1000);
     if (seconds === 0) return 'just now';
@@ -37,7 +42,7 @@ export function renderRooms(rooms: RoomEntry[], now = Date.now()): void {
     }
     const sorted = [...rooms].sort((a, b) => b.createdAt - a.createdAt);
     for (const room of sorted) {
-        const expiry = room.expiresAt <= now ? 'expired' : `expires ${relativeTime(room.expiresAt, now)}`;
+        const expiry = room.expiresAt !== null && room.expiresAt <= now ? 'expired' : expiryLine(room.expiresAt, now);
         out(`${room.name}  ${dim(room.roomId)}`);
         out(`  ${room.serverUrl}  ·  ${expiry}${room.controls ? '  ·  you control this room' : ''}`);
         if (room.sessions.length === 0) out('  no sessions on this device');
@@ -65,7 +70,7 @@ export function renderWatchHeader(snapshot: RoomSnapshot, meParticipantId: strin
     out(`${snapshot.name}  ${dim(snapshot.roomId)}`);
     if (me) out(`you are ${me.displayName}  ${dim(mySessionId)}`);
     out(`${active.length} in the room: ${count(people, 'person', 'people')}, ${count(agents, 'agent', 'agents')}  ·  ${names(active)}`);
-    out(`${snapshot.lifecycle}  ·  expires ${relativeTime(snapshot.expiresAt, now)}`);
+    out(`${snapshot.lifecycle}  ·  ${expiryLine(snapshot.expiresAt, now)}`);
     out('');
 }
 
@@ -77,9 +82,52 @@ function names(participants: {displayName: string; kind: string}[]): string {
     return participants.map((participant) => participant.displayName).join(', ');
 }
 
+export interface RoomListEntry {
+    room: RoomEntry;
+    reachable: boolean;
+    snapshot?: RoomSnapshot;
+    why?: string;
+}
+
+/** `pairlobby list`: how many rooms, who is in each, and how each can be joined. */
+export function renderRoomList(entries: RoomListEntry[], now = Date.now()): void {
+    if (entries.length === 0) {
+        out('No rooms on this device.');
+        out('');
+        out('  pairlobby create --name my-project     start one');
+        out('  pairlobby join K7MP-4QWX               join one with an invite code');
+        return;
+    }
+    out(`${entries.length} ${entries.length === 1 ? 'room' : 'rooms'}`);
+    out('');
+    for (const entry of entries) {
+        const {room, snapshot} = entry;
+        out(`  ${room.name}  ${dim(room.roomId)}`);
+        if (snapshot) {
+            const active = snapshot.participants.filter((participant) => !participant.revoked && !participant.left);
+            const people = active.filter((participant) => participant.kind === 'human').length;
+            const agents = active.filter((participant) => participant.kind === 'agent').length;
+            out(`    ${active.length} in the room: ${people} ${people === 1 ? 'person' : 'people'}, ${agents} ${agents === 1 ? 'agent' : 'agents'}  ${dim(active.map((participant) => participant.displayName).join(', '))}`);
+            out(`    ${joinPolicyLine(snapshot)}`);
+            out(`    ${snapshot.lifecycle}  ·  ${expiryLine(snapshot.expiresAt, now)}${room.controls ? '  ·  you control this room' : ''}`);
+        } else {
+            out(`    ${dim(`unreachable (${entry.why ?? 'no credential on this device'}) — showing local record only`)}`);
+            out(`    ${room.sessions.length} local ${room.sessions.length === 1 ? 'session' : 'sessions'}  ·  ${room.serverUrl}`);
+        }
+        out('');
+    }
+}
+
+/** Says plainly whether knowing the room id is enough to get in. */
+function joinPolicyLine(snapshot: RoomSnapshot): string {
+    return snapshot.policy.joinPolicy === 'open_to_guests'
+        ? 'open — anyone with the room id can join as a read-only guest'
+        : 'private — an invite code is required, the room id alone is not enough';
+}
+
 export function renderSnapshot(snapshot: RoomSnapshot, now = Date.now()): void {
     out(`${snapshot.name}  ${dim(snapshot.roomId)}`);
-    out(`  ${snapshot.lifecycle}  ·  expires ${relativeTime(snapshot.expiresAt, now)}  ·  ${snapshot.latestSeq} events`);
+    out(`  ${snapshot.lifecycle}  ·  ${expiryLine(snapshot.expiresAt, now)}  ·  ${snapshot.latestSeq} events`);
     out('');
     for (const participant of snapshot.participants) {
         const flags = [participant.revoked ? 'removed' : null, participant.left ? 'left' : null, participant.paused ? 'paused' : null, participant.role === 'controller' ? 'controller' : null].filter(Boolean);
@@ -113,6 +161,9 @@ function describe(event: RoomEvent): string {
         case 'control.resume':      return `resume requested, revision ${event.payload.revision}`;
         case 'control.ack':         return `acknowledged revision ${event.payload.revision}: ${event.payload.outcome}`;
         case 'room.closed':         return 'the room was closed';
+        case 'room.renamed':        return `renamed from ${event.payload.previousName} to ${event.payload.name}`;
+        case 'room.expiry_changed':  return event.payload.expiresAt === null ? 'the room no longer expires' : `the room now expires ${relativeTime(event.payload.expiresAt)}`;
+        case 'room.access_changed':  return event.payload.joinPolicy === 'open_to_guests' ? 'the room is now open to read-only guests' : 'the room is now invite only';
     }
 }
 

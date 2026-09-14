@@ -36,11 +36,11 @@ export class PairLobbyClient {
         this.serverUrl = serverUrl.replace(/\/+$/, '');
     }
 
-    async createRoom(name: string, identity: ClientIdentity): Promise<CreatedRoom> {
+    async createRoom(name: string, identity: ClientIdentity, expiresAt?: number | null): Promise<CreatedRoom> {
         // Both credentials are generated here, so a lost response never strands a secret the caller does not hold.
         const controllerCredential = newCredential('controller');
         const participantCredential = newCredential('participant');
-        const body = await this.call<{room: RoomSnapshot; participantId: string; invite: {code: string; expiresAt: number}}>('POST', '/v1/rooms', null, {name, controllerCredential, participantCredential, ...identity});
+        const body = await this.call<{room: RoomSnapshot; participantId: string; invite: {code: string; expiresAt: number}}>('POST', '/v1/rooms', null, {name, controllerCredential, participantCredential, ...identity, ...(expiresAt !== undefined ? {expiresAt} : {})});
         return {roomId: body.room.roomId, participantId: body.participantId, controllerCredential, participantCredential, invite: body.invite, room: body.room};
     }
 
@@ -56,8 +56,8 @@ export class PairLobbyClient {
         return this.call('GET', `/v1/rooms/${roomId}`, credential);
     }
 
-    mintInvite(roomId: string, credential: string, role: ParticipantRole = 'member'): Promise<CreateInviteResponse> {
-        return this.call('POST', `/v1/rooms/${roomId}/invites`, credential, {role});
+    mintInvite(roomId: string, credential: string, role: ParticipantRole = 'member', reusable = true): Promise<CreateInviteResponse> {
+        return this.call('POST', `/v1/rooms/${roomId}/invites`, credential, {role, reusable});
     }
 
     readEvents(roomId: string, credential: string, after: number, limit = 200): Promise<ReadEventsResponse> {
@@ -78,6 +78,25 @@ export class PairLobbyClient {
 
     leave(roomId: string, credential: string): Promise<{event: RoomEvent}> {
         return this.call('POST', `/v1/rooms/${roomId}/leave`, credential, {});
+    }
+
+    rename(roomId: string, credential: string, name: string): Promise<{event: RoomEvent}> {
+        return this.call('POST', `/v1/rooms/${roomId}/name`, credential, {name});
+    }
+
+    setJoinPolicy(roomId: string, credential: string, joinPolicy: 'invite_only' | 'open_to_guests'): Promise<{event: RoomEvent}> {
+        return this.call('POST', `/v1/rooms/${roomId}/access`, credential, {joinPolicy});
+    }
+
+    /** Enters an open room as a read-only guest. No invite code, no credential to present. */
+    async joinAsGuest(roomId: string, identity: ClientIdentity): Promise<JoinedRoom> {
+        const participantCredential = newCredential('participant');
+        const body = await this.call<{roomId: string; participantId: string; role: ParticipantRole; room: RoomSnapshot}>('POST', `/v1/rooms/${roomId}/guests`, null, {participantCredential, ...identity});
+        return {roomId: body.roomId, participantId: body.participantId, participantCredential, role: body.role, room: body.room};
+    }
+
+    setExpiry(roomId: string, credential: string, expiresAt: number | null): Promise<{event: RoomEvent}> {
+        return this.call('POST', `/v1/rooms/${roomId}/expiry`, credential, {expiresAt});
     }
 
     close(roomId: string, credential: string): Promise<{event: RoomEvent}> {

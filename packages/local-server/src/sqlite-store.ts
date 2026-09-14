@@ -108,15 +108,26 @@ export class SqliteRoomStore implements RoomStore {
      * The conditional UPDATE is the whole point: a second attempt matches no row
      * and gets null, rather than racing the first into membership creation.
      */
-    async reserveInvite(digest: string, attemptId: string, credentialHash: string): Promise<InviteRecord | null> {
+    async reserveInvite(digest: string, attemptId: string, credentialHash: string, expectedOccupantId: string | null): Promise<InviteRecord | null> {
         return this.transaction(() => {
             const row = this.db.prepare('SELECT body FROM invites WHERE digest = ?').get(digest) as BodyRow | undefined;
             if (!row) return null;
             const invite = JSON.parse(row.body) as InviteRecord;
-            if (invite.state === 'redeemed') return invite.boundAttemptId === attemptId ? invite : null;
-            if (invite.state === 'reserved' && invite.boundAttemptId !== attemptId) return null;
+            if (invite.boundAttemptId === attemptId) return invite;
+            if (invite.state === 'reserved') return null;
+            if (invite.state === 'redeemed') {
+                if (!invite.reusable) return null;
+                if (invite.redeemedParticipantId !== expectedOccupantId) return null;
+            } else if (expectedOccupantId !== null) {
+                return null;
+            }
             const reserved: InviteRecord = {...invite, state: 'reserved', boundAttemptId: attemptId, boundCredentialHash: credentialHash};
-            const result = this.db.prepare("UPDATE invites SET state = 'reserved', bound_attempt_id = ?, body = ? WHERE digest = ? AND (state = 'unused' OR bound_attempt_id = ?)").run(attemptId, JSON.stringify(reserved), digest, attemptId);
+            // The WHERE clause repeats the precondition so a concurrent writer that
+            // slipped in between the read and this update loses rather than overwrites.
+            const previous = invite.state === 'redeemed' ? invite.redeemedParticipantId : null;
+            const result = previous === null
+                ? this.db.prepare("UPDATE invites SET state = 'reserved', bound_attempt_id = ?, body = ? WHERE digest = ? AND state = 'unused'").run(attemptId, JSON.stringify(reserved), digest)
+                : this.db.prepare("UPDATE invites SET state = 'reserved', bound_attempt_id = ?, body = ? WHERE digest = ? AND state = 'redeemed' AND json_extract(body, '$.redeemedParticipantId') = ?").run(attemptId, JSON.stringify(reserved), digest, previous);
             return result.changes === 1 ? reserved : null;
         });
     }

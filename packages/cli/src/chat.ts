@@ -9,11 +9,15 @@ import {ProtocolError, newId} from '@pairlobby/protocol';
 import type {RoomEvent, RoomSnapshot} from '@pairlobby/protocol';
 import {LocalStore, PairLobbyClient} from '@pairlobby/client';
 
+import {pickExpiry} from './picker.js';
+
 const DIM = '\u001b[2m';
 const BOLD = '\u001b[1m';
 const RESET = '\u001b[0m';
 
 export interface ChatOptions {
+    /** Guests may watch and leave; the composer is disabled for them. */
+    readOnly?: boolean;
     store: LocalStore;
     client: PairLobbyClient;
     roomId: string;
@@ -23,6 +27,8 @@ export interface ChatOptions {
     /** Present when this device holds the controller credential, enabling /pause and /resume. */
     controllerCredential?: string | undefined;
     intervalMs?: number;
+    /** Print participant ids beside names, which matters when two agents share one. */
+    showIds?: boolean;
     /** Start from the beginning of retained history rather than from the live edge. */
     fromStart?: boolean;
 }
@@ -32,6 +38,7 @@ const HELP = `  <message>          send to the room
   /to <name>         address every later message to one participant
   /to                clear the default recipient
   /who               who is here
+  /expiry            set when this room expires
   /pause <name>      controller only
   /resume <name>     controller only
   /help              this
@@ -41,6 +48,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
     const {client, roomId, credential, store, sessionId, participantId} = options;
     const intervalMs = options.intervalMs ?? 700;
 
+    const showIds = options.showIds === true;
     let snapshot = await client.snapshot(roomId, credential);
     const names = new Map<string, string>();
     absorbNames(snapshot, names);
@@ -62,6 +70,10 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
     }
 
     function setPrompt(): void {
+        if (options.readOnly === true) {
+            terminal.setPrompt(`${DIM}watching${RESET} `);
+            return;
+        }
         terminal.setPrompt(recipient ? `${DIM}→ ${recipient.name}${RESET} ` : '> ');
     }
 
@@ -83,7 +95,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             const result = await client.send(roomId, credential, {type: 'message', payload: {text, priority: 'normal'}, idempotencyKey: newId('event'), ...(to ? {recipientId: to} : {})});
             // Shown immediately and marked seen, so the poll does not print it twice.
             seen.add(result.event.eventId);
-            emit(format(result.event, names, participantId));
+            emit(format(result.event, names, participantId, showIds));
         } catch (error) {
             emit(`${DIM}  not sent — ${error instanceof ProtocolError ? error.message : String(error)}${RESET}`);
         }
@@ -105,20 +117,52 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         }
     }
 
+    /**
+     * Hands stdin to the picker and takes it back afterwards. The readline
+     * interface is paused first, or both it and the picker consume the same
+     * keypresses and neither behaves.
+     */
+    async function changeExpiry(): Promise<void> {
+        if (!options.controllerCredential) {
+            emit(`${DIM}  this device does not hold the controller credential for this room${RESET}`);
+            return;
+        }
+        terminal.pause();
+        process.stdout.write('\n');
+        try {
+            const chosen = await pickExpiry(snapshot.name, snapshot.expiresAt);
+            if (chosen === undefined || chosen === snapshot.expiresAt) emit(`${DIM}  expiry left unchanged${RESET}`);
+            else {
+                await client.setExpiry(roomId, options.controllerCredential, chosen);
+                snapshot = await client.snapshot(roomId, credential);
+                emit(`${DIM}  ${chosen === null ? 'this room will not expire' : `this room expires ${new Date(chosen).toLocaleString()}`}${RESET}`);
+            }
+        } catch (error) {
+            emit(`${DIM}  ${error instanceof ProtocolError ? error.message : String(error)}${RESET}`);
+        }
+        terminal.resume();
+        terminal.prompt(true);
+    }
+
     terminal.on('line', (raw) => {
         const line = raw.trim();
         terminal.prompt(true);
         if (line.length === 0) return;
 
         if (line === '/quit' || line === '/exit') {closed = true; terminal.close(); return;}
+        if (options.readOnly === true && !line.startsWith('/')) {
+            emit(`${DIM}  you are a read-only guest in this room${RESET}`);
+            return;
+        }
         if (line === '/help') {emit(HELP); return;}
-        if (line === '/who') {emit(who(snapshot)); return;}
+        if (line === '/who') {emit(who(snapshot, showIds)); return;}
         if (line === '/to') {recipient = null; setPrompt(); emit(`${DIM}  addressing the room${RESET}`); terminal.prompt(true); return;}
         if (line.startsWith('/to ')) {
             const found = resolveName(line.slice(4).trim());
             if (found) {recipient = found; setPrompt(); emit(`${DIM}  addressing ${found.name}${RESET}`); terminal.prompt(true);}
             return;
         }
+        if (line === '/expiry') {void changeExpiry(); return;}
         if (line.startsWith('/pause ')) {void control(line.slice(7).trim(), true); return;}
         if (line.startsWith('/resume ')) {void control(line.slice(8).trim(), false); return;}
         if (line.startsWith('/')) {emit(`${DIM}  unknown command; /help${RESET}`); return;}
@@ -134,6 +178,8 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
     });
 
     const finished = new Promise<void>((resolve) => terminal.once('close', resolve));
+    // readline intercepts Ctrl+C, so the interface is where the signal arrives.
+    terminal.on('SIGINT', () => {closed = true; terminal.close();});
     process.once('SIGINT', () => {closed = true; terminal.close();});
 
     setPrompt();
@@ -141,6 +187,10 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
 
     let cursor = options.fromStart ? 0 : snapshot.latestSeq;
     if (options.fromStart) cursor = 0;
+    // An unreachable relay is reported once, not once per poll, and retried with
+    // widening gaps. The old behaviour filled the screen and buried the room.
+    let outageSince: number | null = null;
+    let backoffMs = intervalMs;
 
     while (!closed) {
         try {
@@ -155,8 +205,13 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 for (const event of page.events) {
                     if (seen.has(event.eventId)) continue;
                     seen.add(event.eventId);
-                    emit(format(event, names, participantId));
+                    emit(format(event, names, participantId, showIds));
                 }
+            }
+            if (outageSince !== null) {
+                emit(`${DIM}  relay is back${RESET}`);
+                outageSince = null;
+                backoffMs = intervalMs;
             }
             if (page.hasMore) continue;
         } catch (error) {
@@ -164,15 +219,36 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 emit(`${DIM}  ${error.message}${RESET}`);
                 break;
             }
-            if (error instanceof ProtocolError && error.code === 'server_unavailable') emit(`${DIM}  relay unreachable, retrying${RESET}`);
-            else throw error;
+            if (error instanceof ProtocolError && error.code === 'server_unavailable') {
+                if (outageSince === null) {
+                    outageSince = Date.now();
+                    emit(`${DIM}  relay unreachable — still here, retrying quietly${RESET}`);
+                }
+                backoffMs = Math.min(backoffMs * 2, 30_000);
+            } else throw error;
         }
-        await Promise.race([sleep(intervalMs), finished]);
+        await Promise.race([sleep(outageSince === null ? intervalMs : backoffMs), finished]);
     }
 
     terminal.close();
-    process.stdout.write('\n');
-    return 0;
+    // Closing the interface is not enough to end the process: stdin stays open and
+    // referenced, so the event loop never drains and the command appears to hang.
+    if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    process.stdin.pause();
+
+    // Tell the room you are gone. Membership is durable, so without this the room
+    // shows you present indefinitely and your invite seat never reopens.
+    try {
+        await client.leave(roomId, credential);
+    } catch {
+        // Leaving is best effort: the room may already be closed, expired, or the
+        // relay gone. None of those should turn quitting into an error.
+    }
+    // Node's fetch keeps pooled sockets referenced, so the event loop does not
+    // drain on its own and the command appears to hang after you quit. Leave
+    // deliberately, once output is flushed.
+    await new Promise<void>((resolve) => process.stdout.write('\n', () => resolve()));
+    process.exit(0);
 }
 
 function header(snapshot: RoomSnapshot, participantId: string, sessionId: string, emit: (line: string) => void): void {
@@ -188,17 +264,18 @@ function header(snapshot: RoomSnapshot, participantId: string, sessionId: string
     emit('');
 }
 
-function who(snapshot: RoomSnapshot): string {
+function who(snapshot: RoomSnapshot, showIds = false): string {
     return snapshot.participants
         .filter((participant) => !participant.revoked && !participant.left)
         .map((participant) => {
             const control = participant.controlRevision > 0 ? `  ${DIM}control ${participant.controlRevision}: ${participant.acknowledgedOutcome ?? 'no acknowledgement yet'}${RESET}` : '';
-            return `  ${participant.displayName}  ${DIM}${participant.kind}${participant.paused ? ', paused' : ''}${RESET}${control}`;
+            const id = showIds ? `  ${DIM}${participant.participantId}${RESET}` : '';
+            return `  ${participant.displayName}${id}  ${DIM}${participant.kind}${participant.paused ? ', paused' : ''}${RESET}${control}`;
         })
         .join('\n');
 }
 
-function format(event: RoomEvent, names: Map<string, string>, meParticipantId: string): string {
+function format(event: RoomEvent, names: Map<string, string>, meParticipantId: string, showIds = false): string {
     const time = `${DIM}${new Date(event.at).toTimeString().slice(0, 5)}${RESET}`;
     const sender = event.senderId ? names.get(event.senderId) ?? event.senderId : 'room';
     const mine = event.senderId === meParticipantId;
@@ -206,7 +283,8 @@ function format(event: RoomEvent, names: Map<string, string>, meParticipantId: s
     if (event.type === 'message') {
         const to = event.recipientId ? `${DIM} → ${names.get(event.recipientId) ?? event.recipientId}${RESET}` : '';
         const who = mine ? `${DIM}${sender}${RESET}` : `${BOLD}${sender}${RESET}`;
-        return `${time}  ${who}${to}  ${event.payload.text}`;
+        const id = showIds && event.senderId ? `${DIM} ${event.senderId}${RESET}` : '';
+        return `${time}  ${who}${id}${to}  ${event.payload.text}`;
     }
     return `${time}  ${DIM}· ${systemLine(event, names, sender)}${RESET}`;
 }
@@ -223,6 +301,9 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
         case 'control.resume':      return `resume requested for ${names.get(event.payload.targetParticipantId) ?? 'someone'}, revision ${event.payload.revision}`;
         case 'control.ack':         return `${sender} acknowledged revision ${event.payload.revision}: ${event.payload.outcome}`;
         case 'room.closed':         return 'the room was closed';
+        case 'room.renamed':        return `${sender} renamed the room to ${event.payload.name}`;
+        case 'room.expiry_changed':  return event.payload.expiresAt === null ? `${sender} made the room permanent` : `${sender} set the room to expire ${new Date(event.payload.expiresAt).toLocaleString()}`;
+        case 'room.access_changed':  return event.payload.joinPolicy === 'open_to_guests' ? `${sender} opened the room to read-only guests` : `${sender} made the room invite only`;
         default:                    return event.type;
     }
 }

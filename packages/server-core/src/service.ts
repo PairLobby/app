@@ -3,7 +3,7 @@
 
 import {DEFAULT_ROOM_POLICY, ProtocolError, hashCredential, newId, newInviteCode, normalizeInviteCode} from '@pairlobby/protocol';
 import type {AdapterCapabilities, ExportResponse, ParticipantKind, ParticipantRole, ReadEventsResponse, RoomEvent, RoomPolicy, RoomSnapshot, SendEventRequest} from '@pairlobby/protocol';
-import {assertRoomWritable, authenticate, closeRoom, createRoom, joinRoom, leaveRoom, requestControl, revokeParticipant, sendEvent, toSnapshot} from '@pairlobby/room-core';
+import {assertRoomWritable, authenticate, closeRoom, createRoom, joinAsGuest, joinRoom, leaveRoom, renameRoom, requestControl, revokeParticipant, sendEvent, setExpiry, setJoinPolicy, toSnapshot} from '@pairlobby/room-core';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 
 import {stableStringify} from './stable-json.js';
@@ -20,6 +20,7 @@ export interface CreateRoomInput extends Identity {
     name: string;
     controllerCredential: string;
     participantCredential: string;
+    expiresAt?: number | null | undefined;
     policy?: RoomPolicy;
 }
 
@@ -75,6 +76,7 @@ export class RoomService {
             kind: input.kind,
             sessionId: input.sessionId ?? null,
             capabilities: input.capabilities ?? null,
+            ...(input.expiresAt !== undefined ? {expiresAt: input.expiresAt} : {}),
             ...(input.policy ? {policy: input.policy} : {}),
         }, this.ctx());
         await this.store.createRoom(created.mutation.room, created.participant, created.mutation.appendEvent);
@@ -83,11 +85,11 @@ export class RoomService {
         return {roomId: created.room.roomId, participantId: created.participant.participantId, invite, snapshot: toSnapshot(view)};
     }
 
-    async mintInvite(roomId: string, credential: string, role: ParticipantRole): Promise<{code: string; expiresAt: number}> {
+    async mintInvite(roomId: string, credential: string, role: ParticipantRole, reusable = true): Promise<{code: string; expiresAt: number; reusable: boolean}> {
         const view = await this.view(roomId);
         const actor = authenticate(view, await hashCredential(credential), this.now());
-        if (actor.kind !== 'controller' && actor.participant.role !== 'controller' && actor.participant.kind !== 'agent') {
-            throw new ProtocolError('unauthorized', 'this action requires a room participant');
+        if (actor.kind === 'participant' && actor.participant.role === 'guest') {
+            throw new ProtocolError('unauthorized', 'guests cannot invite others into a room');
         }
         assertRoomWritable(view, this.now());
         const code = newInviteCode();
@@ -100,12 +102,13 @@ export class RoomService {
             createdAt: now,
             expiresAt: now + view.room.policy.inviteLifetimeMs,
             state: 'unused',
+            reusable,
             boundAttemptId: null,
             boundCredentialHash: null,
             redeemedParticipantId: null,
             recoverableUntil: now + view.room.policy.inviteLifetimeMs * 2,
         });
-        return {code, expiresAt: now + view.room.policy.inviteLifetimeMs};
+        return {code, expiresAt: now + view.room.policy.inviteLifetimeMs, reusable};
     }
 
     /**
@@ -120,19 +123,31 @@ export class RoomService {
         const invite = await this.store.inviteByDigest(digest);
         if (!invite) throw new ProtocolError('invite_unknown', 'that invite code is not valid');
         const now = this.now();
+        let expectedOccupantId: string | null = null;
         const credentialHash = await hashCredential(input.participantCredential);
 
         if (invite.state === 'redeemed') {
-            if (invite.boundAttemptId !== input.attemptId) throw new ProtocolError('invite_already_redeemed', 'that invite code was already used');
-            const view = await this.view(invite.roomId);
-            return {roomId: invite.roomId, participantId: invite.redeemedParticipantId!, role: invite.role, replayed: true, snapshot: toSnapshot(view)};
+            // The same attempt retrying gets its original membership back.
+            if (invite.boundAttemptId === input.attemptId) {
+                const view = await this.view(invite.roomId);
+                return {roomId: invite.roomId, participantId: invite.redeemedParticipantId!, role: invite.role, replayed: true, snapshot: toSnapshot(view)};
+            }
+            if (!invite.reusable) throw new ProtocolError('invite_already_redeemed', 'that invite code was already used');
+            // A reusable code is a seat. It reopens when its occupant leaves, but a
+            // revoked participant's seat stays shut: removal is a deliberate act and
+            // must not be undone by reusing the code that let them in.
+            const occupant = invite.redeemedParticipantId ? (await this.view(invite.roomId)).participants.find((participant) => participant.participantId === invite.redeemedParticipantId) : undefined;
+            if (occupant && occupant.revokedAt !== null) throw new ProtocolError('invite_already_redeemed', 'that invite code belongs to a participant who was removed from the room');
+            if (occupant && occupant.leftAt === null) throw new ProtocolError('invite_already_redeemed', `${occupant.displayName} is currently in the room using that code`);
+            expectedOccupantId = invite.redeemedParticipantId;
+        } else if (now >= invite.expiresAt) {
+            throw new ProtocolError('invite_expired', 'that invite code has expired');
         }
-        if (now >= invite.expiresAt) throw new ProtocolError('invite_expired', 'that invite code has expired');
 
         const view = await this.view(invite.roomId);
         assertRoomWritable(view, now);
 
-        const reserved = await this.store.reserveInvite(digest, input.attemptId, credentialHash);
+        const reserved = await this.store.reserveInvite(digest, input.attemptId, credentialHash, expectedOccupantId);
         if (!reserved) throw new ProtocolError('invite_already_redeemed', 'that invite code is being redeemed by another attempt');
 
         // Recovery path: the previous attempt created membership but lost its response.
@@ -179,6 +194,37 @@ export class RoomService {
 
     async leave(roomId: string, credential: string): Promise<RoomEvent> {
         return this.applyOne(leaveRoom(await this.view(roomId), await hashCredential(credential), this.ctx()));
+    }
+
+    async rename(roomId: string, credential: string, name: string): Promise<RoomEvent> {
+        return this.applyOne(renameRoom(await this.view(roomId), await hashCredential(credential), name, this.ctx()));
+    }
+
+    async setJoinPolicy(roomId: string, credential: string, joinPolicy: 'invite_only' | 'open_to_guests'): Promise<RoomEvent> {
+        return this.applyOne(setJoinPolicy(await this.view(roomId), await hashCredential(credential), joinPolicy, this.ctx()));
+    }
+
+    /** Guest entry. Knowing the room id is the entire claim, so the room must allow it. */
+    async joinAsGuest(roomId: string, input: Identity & {participantCredential: string}): Promise<RedeemResult> {
+        const view = await this.view(roomId);
+        assertRoomWritable(view, this.now());
+        const credentialHash = await hashCredential(input.participantCredential);
+        const existing = await this.store.participantByCredential(roomId, credentialHash);
+        if (existing) return {roomId, participantId: existing.participantId, role: existing.role, replayed: true, snapshot: toSnapshot(view)};
+
+        const joined = joinAsGuest(view, {
+            credentialHash,
+            displayName: input.displayName,
+            kind: input.kind,
+            sessionId: input.sessionId ?? null,
+            capabilities: input.capabilities ?? null,
+        }, this.ctx());
+        await this.store.apply(joined.mutation, null);
+        return {roomId, participantId: joined.participant.participantId, role: 'guest', replayed: false, snapshot: toSnapshot(await this.view(roomId))};
+    }
+
+    async setExpiry(roomId: string, credential: string, expiresAt: number | null): Promise<RoomEvent> {
+        return this.applyOne(setExpiry(await this.view(roomId), await hashCredential(credential), expiresAt, this.ctx()));
     }
 
     async close(roomId: string, credential: string): Promise<RoomEvent> {

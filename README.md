@@ -4,6 +4,8 @@ A private room for humans and existing AI agents: a durable conversation, an exp
 
 PairLobby carries requests and records acknowledgements. It never runs models and never executes project commands — each agent's own runtime keeps control of its tools and permissions.
 
+**New here?** [`STATUS.md`](STATUS.md) says what works, what does not, and where this sits on the roadmap.
+
 ## Status
 
 Working end to end against a local relay: create a room, join from another agent, send addressed messages, offer and amend a handover, accept an exact revision, pause a participant, and read back what the adapter actually acknowledged.
@@ -17,7 +19,7 @@ The planning documents — concept, roadmap, monetization, and open questions �
 ```sh
 npm install && npm run build
 
-node packages/cli/dist/main.js serve          # leave this running
+npm run serve                                 # leave this running
 ```
 
 In another terminal:
@@ -44,6 +46,64 @@ pairlobby profile --as hugo --human       # once per device
 pairlobby join <CODE>                     # from then on, this is the whole command
 pairlobby chat                            # re-enter a room you already joined
 ```
+
+Managing rooms:
+
+```sh
+pairlobby list                            # every room, with live participant counts
+pairlobby name <room> "new name"          # rename (controller only)
+pairlobby delete <room>                   # delete (controller only, asks first)
+pairlobby expiry <room> in 10 hours       # or: at 2026-09-20 18:00, or: never
+pairlobby expiry <room>                   # read it back
+pairlobby expire <room>                   # pick it from a menu instead
+```
+
+`expire` opens a picker: never, a duration, or a date and time you adjust with the
+arrow keys — left and right move between year, month, day, hour and minute, up and
+down change the one under the cursor. `/expiry` does the same from inside a room.
+
+**Rooms do not expire by default.** Set a lifetime per room with `expiry`, or a
+default for every room you create:
+
+```sh
+pairlobby settings default-expiry 24h     # or: never
+```
+
+```sh
+pairlobby forget <room>                   # drop the local record, leave the server alone
+pairlobby settings                        # show preferences
+pairlobby settings confirm-delete false   # stop asking before delete
+```
+
+An invite code is a **seat**: it admits one participant at a time and frees up when
+that participant leaves, so closing your session and rejoining with the same code
+works. `pairlobby invite --once` mints a code spent on first use instead. A revoked
+participant's seat stays shut — removal is deliberate and reusing their code must not
+undo it.
+
+`forget` is the escape hatch for a room whose relay is gone: `delete` needs the
+server to answer, dropping this device's record does not.
+
+### Guests
+
+A room is invite-only until its owner says otherwise:
+
+```sh
+pairlobby open <room>              # anyone with the room id can join, read-only
+pairlobby join rm_3FEMR1TQ...      # a guest joins with the id, no code
+pairlobby open <room> --off        # invite only again
+```
+
+Guests read the whole transcript and nothing else — no messages, handovers,
+acknowledgements, invites, or control. They count against the participant cap and
+can be removed like anyone else.
+
+**Opening a room turns its id into a credential.** Room ids are printed by `list`,
+by errors, and in logs, so treat an open room's id the way you would a password.
+Closing the room again stops new guests; it does not eject the ones already in.
+
+`list` says which each room is.
+
 
 ```text
 spike  rm_DVCBG1V6XM0T3WKGCM368FE1BV
@@ -107,4 +167,4 @@ npm test        # builds every package, then runs the suite
 
 No provider API keys, inference hosting, remote shell, scheduler, or GPU discovery. No file transfer, task board, capability advertisement, or accounts. The workspace's `docs/draft.txt` describes a broader eventual system and is historical context, not a requirement list.
 
-There is no push channel. Nothing reaches an agent until it runs `pairlobby read`, and `pause` is a request that the agent notices on its next read — after its current turn, not during it. A room is a single trust domain: every participant is assumed to be the owner's own agent or a human the owner trusts. Do not share invites outside that boundary.
+There is no push channel. Nothing reaches an agent until it runs `pairlobby read`; `read --wait <seconds>` blocks until something is addressed to it, which is the closest cooperative integration gets. `pause` is a request that the agent notices on its next read — after its current turn, not during it. A room is a single trust domain: every participant is assumed to be the owner's own agent or a human the owner trusts. Do not share invites outside that boundary.

@@ -16,8 +16,10 @@ import type {AdapterCapabilities} from '@pairlobby/protocol';
 import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
 import {detectRuntime} from './runtime-detect.js';
 import {runChatRoom} from './chat.js';
+import {WhenError, formatDuration, parseDuration, parseExpiry} from './when.js';
+import {pickExpiry} from './picker.js';
 import {UsageError, controllerCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
-import {json, note, out, renderEvents, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
+import {json, note, out, renderEvents, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
 const OPTIONS = {
     name:       {type: 'string'},
@@ -39,7 +41,14 @@ const OPTIONS = {
     'no-follow': {type: 'boolean'},
     agent:      {type: 'boolean'},
     clear:      {type: 'boolean'},
+    force:      {type: 'boolean'},
+    reset:      {type: 'boolean'},
+    once:       {type: 'boolean'},
+    off:        {type: 'boolean'},
+    expiry:     {type: 'string'},
     interval:   {type: 'string'},
+    wait:       {type: 'string'},
+    all:        {type: 'boolean'},
     runtime:    {type: 'string'},
     human:      {type: 'boolean'},
     template:   {type: 'boolean'},
@@ -51,12 +60,21 @@ const OPTIONS = {
 
 const HELP = `pairlobby — a private room for your agents
 
-  pairlobby                          rooms your agents joined on this device
+  pairlobby, pairlobby list          rooms on this device, with live participant counts
+  pairlobby name <room> <new name>   rename a room (controller only)
+  pairlobby expiry [room] <when>     never | in 10 hours | at 2026-09-20 18:00
+  pairlobby expire [room]            pick expiry from a menu
+  pairlobby open <room>              let anyone with the room id join as a guest
+  pairlobby open <room> --off        back to invite only
+  pairlobby delete <room>            delete a room (controller only)
+  pairlobby forget <room>            drop the local record, leave the server alone
+  pairlobby settings                 show or change preferences
   pairlobby create --name <name>     start a room and print an invite
   pairlobby join <code>              join a room and enter it
   pairlobby chat                     re-enter a room you already joined
   pairlobby send <text> --to <who>   send a message to one participant
   pairlobby read                     read new events for this session
+  pairlobby read --wait 300          block until something is addressed to you
   pairlobby watch                    follow the room live as events arrive
   pairlobby session                  this session's id and runtime conversation
   pairlobby profile --as <name> --human
@@ -66,7 +84,7 @@ const HELP = `pairlobby — a private room for your agents
   pairlobby accept <handover-id> --revision <n>
   pairlobby decline <handover-id> --revision <n>
   pairlobby status                   participants and control state
-  pairlobby invite                   mint another invite code
+  pairlobby invite                   mint an invite code (a reusable seat; --once for single use)
   pairlobby ack --outcome <outcome>  report what a pause actually did
   pairlobby pause <who>              controller only
   pairlobby resume <who>             controller only
@@ -94,7 +112,13 @@ async function main(argv: string[]): Promise<number> {
     const store = new LocalStore();
 
     switch (command) {
-        case 'rooms':    return listRooms(store, values);
+        case 'rooms':
+        case 'list':     return listRooms(store, values);
+        case 'name':     return renameRoom(store, values, positionals[1], positionals.slice(2).join(' '));
+        case 'expiry':   return expiryCommand(store, values, positionals.slice(1));
+        case 'expire':   return expireInteractive(store, values, positionals[1]);
+        case 'open':     return setAccess(store, values, positionals[1]);
+        case 'delete':   return deleteRoom(store, values, positionals[1]);
         case 'create':   return createRoom(store, values);
         case 'join':     return joinRoom(store, values, positionals[1]);
         case 'send':     return sendMessage(store, values, positionals.slice(1).join(' '));
@@ -103,6 +127,8 @@ async function main(argv: string[]): Promise<number> {
         case 'chat':     return chatRoom(store, values);
         case 'session':  return sessionInfo(store, values);
         case 'profile':  return profileCommand(store, values);
+        case 'settings': return settingsCommand(store, values, positionals[1], positionals[2]);
+        case 'forget':   return forgetRoom(store, values, positionals[1]);
         case 'status':   return status(store, values);
         case 'invite':   return invite(store, values);
         case 'handover': return offerHandover(store, values);
@@ -129,13 +155,184 @@ function flag(values: Values, key: keyof typeof OPTIONS): boolean {
     return values[key] === true;
 }
 
-function listRooms(store: LocalStore, values: Values): number {
+/**
+ * Lists rooms with live counts. Each room is asked its own server, so a room on
+ * an unreachable relay is reported as unreachable rather than silently shown
+ * with stale local numbers.
+ */
+async function listRooms(store: LocalStore, values: Values): Promise<number> {
     const rooms = store.rooms();
+    const detailed = await Promise.all(rooms.map(async (room) => {
+        const credential = store.credential(room.roomId, 'controller') ?? room.sessions.map((session) => store.credential(room.roomId, session.sessionId)).find(Boolean);
+        if (!credential) return {room, reachable: false as const};
+        try {
+            return {room, reachable: true as const, snapshot: await new PairLobbyClient(room.serverUrl).snapshot(room.roomId, credential)};
+        } catch (error) {
+            return {room, reachable: false as const, why: error instanceof ProtocolError ? error.code : 'unreachable'};
+        }
+    }));
+
     if (flag(values, 'json')) {
-        json({rooms});
+        json({count: rooms.length, rooms: detailed.map((entry) => ({...entry.room, live: 'snapshot' in entry ? entry.snapshot : null}))});
         return 0;
     }
-    renderRooms(rooms);
+    renderRoomList(detailed);
+    return 0;
+}
+
+function parseExpirySpec(spec: string): number | null {
+    try {
+        return parseExpiry(spec);
+    } catch (error) {
+        throw new UsageError(error instanceof WhenError ? error.message : String(error));
+    }
+}
+
+/**
+ * Opens a room to read-only guests, or closes it again.
+ *
+ * This makes the room id enough to get in, which turns an identifier that is
+ * printed by `list`, by errors, and in logs into a credential. The warning is
+ * printed at the moment of opting in because that is the only moment anyone is
+ * thinking about it.
+ */
+async function setAccess(store: LocalStore, values: Values, reference?: string): Promise<number> {
+    const room = resolveRoom(store, reference ?? str(values, 'room'));
+    const joinPolicy = flag(values, 'off') ? 'invite_only' as const : 'open_to_guests' as const;
+    const credential = controllerCredential(store, room);
+    await new PairLobbyClient(room.serverUrl).setJoinPolicy(room.roomId, credential, joinPolicy);
+
+    if (flag(values, 'json')) {
+        json({roomId: room.roomId, joinPolicy});
+        return 0;
+    }
+    if (joinPolicy === 'invite_only') {
+        out(`${room.name} is invite only again. Existing guests keep their access until you remove them.`);
+        return 0;
+    }
+    out(`${room.name} is open to guests.`);
+    out('');
+    out(`  pairlobby join ${room.roomId}`);
+    out('');
+    note('anyone holding that room id can now read the whole transcript. Guests cannot send,');
+    note('hand over, or control anything. Close it again with: pairlobby open <room> --off');
+    return 0;
+}
+
+/** The menu form of `expiry`, for when you would rather not phrase a time. */
+async function expireInteractive(store: LocalStore, values: Values, reference?: string): Promise<number> {
+    const room = resolveRoom(store, reference ?? str(values, 'room'));
+    if (!process.stdin.isTTY || !process.stdout.isTTY) throw new UsageError('pairlobby expire needs a terminal; use "pairlobby expiry <room> <when>" instead');
+    const credential = controllerCredential(store, room);
+    const client = new PairLobbyClient(room.serverUrl);
+    const snapshot = await client.snapshot(room.roomId, credential);
+
+    const chosen = await pickExpiry(room.name, snapshot.expiresAt);
+    // Backing out and confirming what was already set are both "no change"; only
+    // the first is a cancellation, and neither is an error.
+    if (chosen === undefined || chosen === snapshot.expiresAt) {
+        note('left unchanged');
+        return 0;
+    }
+    await client.setExpiry(room.roomId, credential, chosen);
+    store.upsertRoom({...room, expiresAt: chosen});
+    out(chosen === null ? `${room.name} will not expire` : `${room.name} expires ${new Date(chosen).toLocaleString()}`);
+    return 0;
+}
+
+/** Shows or sets when a room expires. */
+async function expiryCommand(store: LocalStore, values: Values, args: string[]): Promise<number> {
+    // The room is optional, so `expiry in 2 days` works when only one room is
+    // active. A first word that parses as part of a time spec is not a room name.
+    const looksLikeSpec = (word: string | undefined) => word !== undefined && /^(never|none|off|no|permanent|forever|in|at|on|\d)/i.test(word);
+    const reference = looksLikeSpec(args[0]) ? undefined : args[0];
+    const spec = (looksLikeSpec(args[0]) ? args : args.slice(1)).join(' ').trim();
+    const room = resolveRoom(store, reference ?? str(values, 'room'));
+
+    if (spec.length === 0) {
+        const client = new PairLobbyClient(room.serverUrl);
+        const credential = store.credential(room.roomId, 'controller') ?? room.sessions.map((session) => store.credential(room.roomId, session.sessionId)).find(Boolean);
+        if (!credential) throw new UsageError(`no credential for ${room.name} on this device`);
+        const snapshot = await client.snapshot(room.roomId, credential);
+        if (flag(values, 'json')) {
+            json({roomId: room.roomId, expiresAt: snapshot.expiresAt});
+            return 0;
+        }
+        out(snapshot.expiresAt === null ? `${room.name} never expires` : `${room.name} expires ${new Date(snapshot.expiresAt).toLocaleString()}`);
+        return 0;
+    }
+
+    const expiresAt = parseExpirySpec(spec);
+    const credential = controllerCredential(store, room);
+    await new PairLobbyClient(room.serverUrl).setExpiry(room.roomId, credential, expiresAt);
+    store.upsertRoom({...room, expiresAt});
+
+    if (flag(values, 'json')) {
+        json({roomId: room.roomId, expiresAt});
+        return 0;
+    }
+    out(expiresAt === null ? `${room.name} will not expire` : `${room.name} expires ${new Date(expiresAt).toLocaleString()}`);
+    return 0;
+}
+
+async function renameRoom(store: LocalStore, values: Values, reference: string | undefined, name: string): Promise<number> {
+    if (!reference) throw new UsageError('pairlobby name needs a room and a new name');
+    const room = resolveRoom(store, reference);
+    if (name.trim().length === 0) throw new UsageError(`pairlobby name ${reference} <new name>`);
+    const credential = controllerCredential(store, room);
+    await new PairLobbyClient(room.serverUrl).rename(room.roomId, credential, name.trim());
+    store.upsertRoom({...room, name: name.trim()});
+
+    if (flag(values, 'json')) {
+        json({roomId: room.roomId, name: name.trim(), previousName: room.name});
+        return 0;
+    }
+    out(`${room.name} is now ${name.trim()}`);
+    return 0;
+}
+
+/**
+ * Deletes a room. The server makes it inaccessible immediately; physical cleanup
+ * may lag, which is why the local registry entry goes at the same time rather
+ * than waiting for a later confirmation.
+ */
+async function deleteRoom(store: LocalStore, values: Values, reference: string | undefined): Promise<number> {
+    if (!reference) throw new UsageError('pairlobby delete needs a room');
+    const room = resolveRoom(store, reference);
+    const credential = controllerCredential(store, room);
+    const confirm = store.settings().confirmDelete && !flag(values, 'force') && !flag(values, 'json') && process.stdin.isTTY;
+    if (confirm) {
+        const {createInterface} = await import('node:readline/promises');
+        const terminal = createInterface({input: process.stdin, output: process.stdout});
+        const answer = await terminal.question(`Delete ${room.name} (${room.roomId}) and its history? This cannot be undone. [y/N] `);
+        terminal.close();
+        if (answer.trim().toLowerCase() !== 'y') {
+            note('left alone');
+            return 0;
+        }
+    }
+    try {
+        await new PairLobbyClient(room.serverUrl).delete(room.roomId, credential);
+    } catch (error) {
+        // A dead relay must not strand the entry forever. Deleting needs the server
+        // to answer; dropping the local record does not, so say which is which.
+        if (error instanceof ProtocolError && error.code === 'server_unavailable') {
+            throw new UsageError(`could not reach ${room.serverUrl}, so the room was not deleted.\n  Start the server and try again, or drop this device's record of it:\n    pairlobby forget ${room.roomId}`);
+        }
+        if (error instanceof ProtocolError && (error.code === 'room_not_found' || error.code === 'room_expired')) {
+            store.forgetRoom(room.roomId);
+            out(`${room.name} was already gone; removed it from this device.`);
+            return 0;
+        }
+        throw error;
+    }
+    store.forgetRoom(room.roomId);
+
+    if (flag(values, 'json')) {
+        json({roomId: room.roomId, deleted: true});
+        return 0;
+    }
+    out(`Deleted ${room.name}`);
     return 0;
 }
 
@@ -158,6 +355,90 @@ function identityFrom(store: LocalStore, values: Values, fallbackName: string): 
     const runtime = str(values, 'runtime') ?? (kind === 'human' ? undefined : profile.runtime ?? detected.runtime);
     const capabilities: AdapterCapabilities | undefined = runtime ? {deliverUnsolicited: false, cancelTurn: false, cancelTool: false, runtime} : undefined;
     return {displayName, kind, sessionId: newId('session'), ...(capabilities ? {capabilities} : {})};
+}
+
+const SETTING_KEYS = {
+    'confirm-delete': {field: 'confirmDelete', kind: 'boolean', help: 'ask before deleting a room'},
+    'poll-interval':  {field: 'pollIntervalMs', kind: 'number', help: 'milliseconds between live-room polls'},
+    'show-ids':       {field: 'showIds', kind: 'boolean', help: 'print ids next to names in the live room'},
+    'default-expiry': {field: 'defaultRoomLifetimeMs', kind: 'duration', help: 'how long a new room lives: never, or a duration like 24h'},
+} as const;
+
+function settingsCommand(store: LocalStore, values: Values, key?: string, value?: string): number {
+    if (flag(values, 'reset')) {
+        store.resetSettings();
+        note('settings reset to defaults');
+        return 0;
+    }
+    if (key !== undefined) {
+        const definition = SETTING_KEYS[key as keyof typeof SETTING_KEYS];
+        if (!definition) throw new UsageError(`unknown setting "${key}"; known settings: ${Object.keys(SETTING_KEYS).join(', ')}`);
+        if (value === undefined) throw new UsageError(`pairlobby settings ${key} <value>`);
+        const parsed = definition.kind === 'boolean' ? parseBoolean(key, value) : definition.kind === 'duration' ? parseLifetime(value) : parseCount(key, value);
+        store.setSettings({[definition.field]: parsed} as never);
+        note(`${key} is now ${definition.kind === 'duration' ? describeLifetime(parsed as number | null) : parsed}`);
+        return 0;
+    }
+    const settings = store.settings();
+    if (flag(values, 'json')) {
+        json(settings);
+        return 0;
+    }
+    const width = Math.max(...Object.keys(SETTING_KEYS).map((name) => name.length));
+    for (const [name, definition] of Object.entries(SETTING_KEYS)) {
+        const raw = settings[definition.field];
+        out(`${name.padEnd(width)}  ${definition.kind === 'duration' ? describeLifetime(raw as number | null) : String(raw)}`);
+        out(`${' '.repeat(width)}  ${definition.help}`);
+    }
+    out('');
+    note('pairlobby settings <name> <value>   ·   pairlobby settings --reset');
+    return 0;
+}
+
+function parseBoolean(key: string, value: string): boolean {
+    const normalized = value.trim().toLowerCase();
+    if (['true', 'yes', 'on', '1'].includes(normalized)) return true;
+    if (['false', 'no', 'off', '0'].includes(normalized)) return false;
+    throw new UsageError(`${key} takes true or false, not "${value}"`);
+}
+
+function parseLifetime(value: string): number | null {
+    const normalized = value.trim().toLowerCase();
+    if (['never', 'none', 'off', 'no', 'permanent', 'forever'].includes(normalized)) return null;
+    try {
+        return parseDuration(normalized);
+    } catch (error) {
+        throw new UsageError(error instanceof WhenError ? error.message : String(error));
+    }
+}
+
+function describeLifetime(ms: number | null): string {
+    return ms === null ? 'never' : formatDuration(ms);
+}
+
+function parseCount(key: string, value: string): number {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) throw new UsageError(`${key} takes a positive number, not "${value}"`);
+    return parsed;
+}
+
+/**
+ * Drops a room from this device without touching the server. The room may still
+ * exist and other participants are unaffected — this is how you get rid of a
+ * record for a relay that is gone, which `delete` cannot do because `delete`
+ * needs the server to answer.
+ */
+function forgetRoom(store: LocalStore, values: Values, reference: string | undefined): number {
+    if (!reference) throw new UsageError('pairlobby forget needs a room');
+    const room = resolveRoom(store, reference);
+    store.forgetRoom(room.roomId);
+    if (flag(values, 'json')) {
+        json({roomId: room.roomId, forgotten: true});
+        return 0;
+    }
+    out(`Forgot ${room.name} on this device.`);
+    note('the room itself is untouched; it expires on its own schedule');
+    return 0;
 }
 
 /** Shows or sets this device's default identity. */
@@ -217,7 +498,9 @@ async function createRoom(store: LocalStore, values: Values): Promise<number> {
     const serverUrl = resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')});
     const identity = identityFrom(store, values, 'agent');
     const client = new PairLobbyClient(serverUrl);
-    const created = await client.createRoom(name, identity);
+    const lifetime = store.settings().defaultRoomLifetimeMs;
+    const expiresAt = str(values, 'expiry') !== undefined ? parseExpirySpec(str(values, 'expiry')!) : lifetime === null ? null : Date.now() + lifetime;
+    const created = await client.createRoom(name, identity, expiresAt);
 
     store.upsertRoom({roomId: created.roomId, name, serverUrl, createdAt: created.room.createdAt, expiresAt: created.room.expiresAt, controls: true, sessions: []});
     // The controller credential stays on disk and out of the result an agent sees.
@@ -241,11 +524,12 @@ async function createRoom(store: LocalStore, values: Values): Promise<number> {
 }
 
 async function joinRoom(store: LocalStore, values: Values, code?: string): Promise<number> {
-    if (!code) throw new UsageError('pairlobby join needs an invite code');
+    if (!code) throw new UsageError('pairlobby join needs an invite code or the id of an open room');
     const serverUrl = resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')});
     const identity = identityFrom(store, values, 'agent');
     const client = new PairLobbyClient(serverUrl);
-    const joined = await client.redeemInvite(code, identity);
+    // A room id and an invite code are not confusable, so one command takes either.
+    const joined = code.startsWith('rm_') ? await client.joinAsGuest(code, identity) : await client.redeemInvite(code, identity);
 
     store.upsertRoom({roomId: joined.roomId, name: joined.room.name, serverUrl, createdAt: joined.room.createdAt, expiresAt: joined.room.expiresAt, controls: store.room(joined.roomId)?.controls ?? false, sessions: store.room(joined.roomId)?.sessions ?? []});
     store.putCredential(joined.roomId, identity.sessionId, joined.participantCredential);
@@ -259,10 +543,10 @@ async function joinRoom(store: LocalStore, values: Values, code?: string): Promi
     // Joining a room means being in it. Only a machine caller — --json, a pipe,
     // or an explicit --no-follow — gets a printed snapshot and its prompt back.
     if (isInteractive(values)) {
-        note(`joined ${joined.room.name} as ${identity.displayName}`);
+        note(`joined ${joined.room.name} as ${identity.displayName}${joined.role === 'guest' ? ' — read-only guest' : ''}`);
         return chatRoom(store, {...values, room: joined.roomId, session: identity.sessionId});
     }
-    out(`Joined ${joined.room.name} as ${identity.displayName}`);
+    out(`Joined ${joined.room.name} as ${identity.displayName}${joined.role === 'guest' ? ' (read-only guest)' : ''}`);
     out(`Session: ${identity.sessionId}`);
     if (detail.conversationId) out(`Conversation: ${detail.conversationId}`);
     out('');
@@ -289,7 +573,10 @@ async function sendMessage(store: LocalStore, values: Values, text: string): Pro
 async function readEvents(store: LocalStore, values: Values): Promise<number> {
     const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     const after = str(values, 'after') !== undefined ? Number(str(values, 'after')) : session.lastReadSeq;
-    const page = await client.readEvents(room.roomId, credential, after);
+    const waitSeconds = str(values, 'wait') !== undefined ? Number(str(values, 'wait')) : 0;
+    const page = waitSeconds > 0
+        ? await waitForEvents(client, room.roomId, credential, session.participantId, after, waitSeconds, flag(values, 'all'), store.settings().pollIntervalMs)
+        : await client.readEvents(room.roomId, credential, after);
     const snapshot = await client.snapshot(room.roomId, credential);
     const names = new Map(snapshot.participants.map((participant) => [participant.participantId, participant.displayName] as const));
 
@@ -325,7 +612,9 @@ async function chatRoom(store: LocalStore, values: Values): Promise<number> {
         sessionId: session.sessionId,
         participantId: session.participantId,
         controllerCredential: store.credential(room.roomId, 'controller'),
-        ...(str(values, 'interval') !== undefined ? {intervalMs: Number(str(values, 'interval'))} : {}),
+        readOnly: session.role === 'guest',
+        intervalMs: str(values, 'interval') !== undefined ? Number(str(values, 'interval')) : store.settings().pollIntervalMs,
+        showIds: store.settings().showIds,
         fromStart: true,
     });
 }
@@ -417,6 +706,37 @@ async function sessionInfo(store: LocalStore, values: Values): Promise<number> {
     return 0;
 }
 
+/**
+ * Blocks until something arrives, so an agent can wait for work instead of
+ * polling in a loop and burning a turn on every empty check.
+ *
+ * By default it returns only when an event is addressed to this participant.
+ * Room-wide chatter is not a reason to wake an agent up; --all says otherwise.
+ * It returns empty on timeout rather than erroring, so a caller can simply wait
+ * again.
+ */
+async function waitForEvents(client: PairLobbyClient, roomId: string, credential: string, participantId: string, after: number, seconds: number, wakeOnAnything: boolean, intervalMs: number) {
+    const deadline = Date.now() + seconds * 1000;
+    let cursor = after;
+    let latest = after;
+    const collected: Awaited<ReturnType<PairLobbyClient['readEvents']>>['events'] = [];
+
+    for (;;) {
+        const page = await client.readEvents(roomId, credential, cursor);
+        if (page.events.length > 0) {
+            cursor = page.events.at(-1)!.seq;
+            collected.push(...page.events);
+            const wakes = wakeOnAnything
+                ? page.events.some((event) => event.senderId !== participantId)
+                : page.events.some((event) => event.recipientId === participantId && event.senderId !== participantId);
+            if (wakes) return {events: collected, earliestSeq: 0, latestSeq: page.latestSeq, hasMore: page.hasMore};
+        }
+        latest = page.latestSeq;
+        if (Date.now() >= deadline) return {events: collected, earliestSeq: 0, latestSeq: latest, hasMore: false};
+        await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, Math.max(0, deadline - Date.now()))));
+    }
+}
+
 async function status(store: LocalStore, values: Values): Promise<number> {
     const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     const snapshot = await client.snapshot(room.roomId, credential);
@@ -430,13 +750,15 @@ async function status(store: LocalStore, values: Values): Promise<number> {
 
 async function invite(store: LocalStore, values: Values): Promise<number> {
     const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
-    const minted = await client.mintInvite(room.roomId, credential);
+    const minted = await client.mintInvite(room.roomId, credential, 'member', !flag(values, 'once'));
     if (flag(values, 'json')) {
         json(minted);
         return 0;
     }
     out(minted.code);
-    note(`single use, expires ${new Date(minted.expiresAt).toISOString()}`);
+    note(minted.reusable
+        ? `holds one seat: reusable whenever nobody is in the room under it. Must first be used before ${new Date(minted.expiresAt).toLocaleTimeString()}`
+        : `single use, expires ${new Date(minted.expiresAt).toLocaleTimeString()}`);
     return 0;
 }
 
@@ -552,11 +874,20 @@ async function serve(values: Values): Promise<number> {
     const {dataDirectory} = await import('@pairlobby/client');
     const {join} = await import('node:path');
     const dataDir = str(values, 'data-dir') ?? dataDirectory();
-    const running = await startServer({
-        host: str(values, 'host') ?? '127.0.0.1',
-        port: str(values, 'port') !== undefined ? Number(str(values, 'port')) : 8790,
-        dataFile: join(dataDir, 'rooms.sqlite'),
-    });
+    const host = str(values, 'host') ?? '127.0.0.1';
+    const port = str(values, 'port') !== undefined ? Number(str(values, 'port')) : 8790;
+    let running;
+    try {
+        running = await startServer({host, port, dataFile: join(dataDir, 'rooms.sqlite')});
+    } catch (error) {
+        // Say what is wrong and what to do, rather than surfacing a raw errno. The
+        // occupant is never probed: something else owning the port is not ours to poke.
+        if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+            throw new UsageError(`something is already listening on ${host}:${port}.\n  If it is your own PairLobby server, you do not need another one.\n  Otherwise pick a different port: pairlobby serve --port ${port + 1}`);
+        }
+        if ((error as NodeJS.ErrnoException).code === 'EACCES') throw new UsageError(`not allowed to listen on ${host}:${port}; ports below 1024 usually need elevated permissions`);
+        throw error;
+    }
     out(`PairLobby server on ${running.url}`);
     out(`Data: ${running.dataFile}`);
     out('Press Ctrl+C to stop.');

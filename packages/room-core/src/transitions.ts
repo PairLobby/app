@@ -5,7 +5,7 @@ import {DEFAULT_ROOM_POLICY, ProtocolError, newId} from '@pairlobby/protocol';
 import type {AdapterCapabilities, EventSubmission, HandoverRecord, ParticipantKind, ParticipantRecord, ParticipantRole, RoomPolicy, RoomRecord, SendEventRequest} from '@pairlobby/protocol';
 
 import {appendEvent} from './append.js';
-import {assertActiveMember, assertController, assertRecipientExists, assertRoomWritable, authenticate, type Actor} from './authorize.js';
+import {assertActiveMember, assertCanWrite, assertController, assertRecipientExists, assertRoomWritable, authenticate, type Actor} from './authorize.js';
 import {applyHandoverAccepted, applyHandoverDeclined, applyHandoverOffered} from './handover.js';
 import {activeParticipants, controlFor, emptyMutation, findParticipant, isActive, type CoreContext, type Mutation, type RoomView} from './state.js';
 
@@ -19,6 +19,8 @@ export interface Identity {
 export interface CreateRoomInput extends Identity {
     name: string;
     roomId: string;
+    /** Explicit expiry, overriding the policy lifetime. Null means it never expires. */
+    expiresAt?: number | null;
     controllerCredentialHash: string;
     participantCredentialHash: string;
     policy?: RoomPolicy;
@@ -36,7 +38,7 @@ export function createRoom(input: CreateRoomInput, ctx: CoreContext): CreatedRoo
         roomId: input.roomId,
         name: input.name,
         createdAt: ctx.now,
-        expiresAt: ctx.now + policy.roomLifetimeMs,
+        expiresAt: input.expiresAt !== undefined ? input.expiresAt : policy.roomLifetimeMs === null ? null : ctx.now + policy.roomLifetimeMs,
         closedAt: null,
         lifecycle: 'open',
         policy,
@@ -89,7 +91,7 @@ export function joinRoom(view: RoomView, input: JoinRoomInput, ctx: CoreContext)
 export function sendEvent(view: RoomView, credentialHash: string, request: SendEventRequest, ctx: CoreContext): Mutation {
     const actor = authenticate(view, credentialHash, ctx.now);
     assertRoomWritable(view, ctx.now);
-    const sender = assertActiveMember(actor);
+    const sender = assertCanWrite(actor);
     const recipientId = request.recipientId ?? null;
     if (recipientId !== null) assertRecipientExists(view, recipientId);
     const submission: EventSubmission = {type: request.type, payload: request.payload} as EventSubmission;
@@ -163,6 +165,51 @@ export function leaveRoom(view: RoomView, credentialHash: string, ctx: CoreConte
     const left: ParticipantRecord = {...participant, leftAt: ctx.now};
     const {room, event} = appendEvent(view.room, {senderId: participant.participantId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'participant.left', payload: {participantId: participant.participantId}}}, ctx);
     return {...emptyMutation(room, event), upsertParticipants: [left]};
+}
+
+export function renameRoom(view: RoomView, credentialHash: string, name: string, ctx: CoreContext): Mutation {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    const previousName = view.room.name;
+    if (previousName === name) throw new ProtocolError('invalid_request', 'the room already has that name');
+    const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
+    const {room, event} = appendEvent({...view.room, name}, {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'room.renamed', payload: {name, previousName}}}, ctx);
+    return emptyMutation(room, event);
+}
+
+/** Sets or clears when a room expires. Null stops it expiring at all. */
+/** Opens or closes guest entry. Controller only. */
+export function setJoinPolicy(view: RoomView, credentialHash: string, joinPolicy: 'invite_only' | 'open_to_guests', ctx: CoreContext): Mutation {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    if (view.room.policy.joinPolicy === joinPolicy) throw new ProtocolError('invalid_request', joinPolicy === 'open_to_guests' ? 'this room is already open to guests' : 'this room is already invite only');
+    const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
+    const room = {...view.room, policy: {...view.room.policy, joinPolicy}};
+    const {room: updated, event} = appendEvent(room, {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'room.access_changed', payload: {joinPolicy}}}, ctx);
+    return emptyMutation(updated, event);
+}
+
+/**
+ * Admits a read-only guest. There is no invite to redeem: the caller's claim is
+ * that they know the room id, which is only sufficient while the room says so.
+ */
+export function joinAsGuest(view: RoomView, input: Omit<JoinRoomInput, 'role'>, ctx: CoreContext): JoinedRoom {
+    if (view.room.policy.joinPolicy !== 'open_to_guests') throw new ProtocolError('unauthorized', 'this room is invite only; ask its owner for a code');
+    return joinRoom(view, {...input, role: 'guest'}, ctx);
+}
+
+export function setExpiry(view: RoomView, credentialHash: string, expiresAt: number | null, ctx: CoreContext): Mutation {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    if (expiresAt !== null && expiresAt <= ctx.now) throw new ProtocolError('invalid_request', 'that expiry time is already in the past');
+    const previousExpiresAt = view.room.expiresAt;
+    if (previousExpiresAt === expiresAt) throw new ProtocolError('invalid_request', expiresAt === null ? 'this room already does not expire' : 'the room already expires then');
+    const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
+    const {room, event} = appendEvent({...view.room, expiresAt}, {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'room.expiry_changed', payload: {expiresAt, previousExpiresAt}}}, ctx);
+    return emptyMutation(room, event);
 }
 
 export function closeRoom(view: RoomView, credentialHash: string, ctx: CoreContext): Mutation {

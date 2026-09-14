@@ -11,11 +11,12 @@ export const RoomLifecycle = z.enum(['open', 'closed', 'expired', 'deleted']);
 export type RoomLifecycle = z.infer<typeof RoomLifecycle>;
 
 export const RoomPolicySchema = z.object({
+    joinPolicy: z.enum(['invite_only', 'open_to_guests']).default('invite_only'),
     maxParticipants: z.number().int().min(2),
     maxEventPayloadBytes: z.number().int().min(1),
     maxRetainedEventBytes: z.number().int().min(1),
     maxRetainedEvents: z.number().int().min(1),
-    roomLifetimeMs: z.number().int().min(1),
+    roomLifetimeMs: z.number().int().min(1).nullable(),
     inviteLifetimeMs: z.number().int().min(1),
     exportWindowMs: z.number().int().min(0),
     connectTicketLifetimeMs: z.number().int().min(1),
@@ -25,7 +26,8 @@ export const RoomRecord = z.object({
     roomId: RoomId,
     name: z.string().min(1).max(64),
     createdAt: z.number().int().nonnegative(),
-    expiresAt: z.number().int().nonnegative(),
+    /** Null for a room that does not expire. */
+    expiresAt: z.number().int().nonnegative().nullable(),
     closedAt: z.number().int().nonnegative().nullable(),
     lifecycle: RoomLifecycle,
     policy: RoomPolicySchema,
@@ -66,6 +68,12 @@ export const InviteRecord = z.object({
     createdAt: z.number().int().nonnegative(),
     expiresAt: z.number().int().nonnegative(),
     state: InviteRedemption,
+    /**
+     * A reusable code behaves as a seat: it admits one participant at a time and
+     * becomes available again when that participant leaves. A single-use code is
+     * spent on first redemption.
+     */
+    reusable: z.boolean().default(true),
     /** Set once an attempt reserves the invite, so a retry of that attempt recovers the same membership. */
     boundAttemptId: AttemptId.nullable(),
     boundCredentialHash: z.string().length(64).nullable(),
@@ -123,7 +131,7 @@ export const RoomSnapshot = z.object({
     name: z.string(),
     lifecycle: RoomLifecycle,
     createdAt: z.number().int().nonnegative(),
-    expiresAt: z.number().int().nonnegative(),
+    expiresAt: z.number().int().nonnegative().nullable(),
     closedAt: z.number().int().nonnegative().nullable(),
     controlRevision: z.number().int().nonnegative(),
     latestSeq: z.number().int().nonnegative(),

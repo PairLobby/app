@@ -12,7 +12,11 @@ export const PROTOCOL_VERSION_HEADER = 'pairlobby-protocol';
 export const ParticipantKind = z.enum(['agent', 'human']);
 export type ParticipantKind = z.infer<typeof ParticipantKind>;
 
-export const ParticipantRole = z.enum(['member', 'controller']);
+/**
+ * A guest may read the room and leave it. Nothing else: no messages, no
+ * handovers, no acknowledgements, no invites, no control.
+ */
+export const ParticipantRole = z.enum(['guest', 'member', 'controller']);
 export type ParticipantRole = z.infer<typeof ParticipantRole>;
 
 /**
@@ -52,6 +56,9 @@ const controlResumePayload = z.object({targetParticipantId: ParticipantId, revis
 const controlAckPayload = z.object({targetParticipantId: ParticipantId, revision: z.number().int().min(1), outcome: ControlOutcome, detail: z.string().max(512).optional()});
 
 const roomClosedPayload = z.object({exportWindowEndsAt: z.number().int().nonnegative()});
+const roomRenamedPayload = z.object({name: z.string().min(1).max(64), previousName: z.string().min(1).max(64)});
+const roomExpiryChangedPayload = z.object({expiresAt: z.number().int().nonnegative().nullable(), previousExpiresAt: z.number().int().nonnegative().nullable()});
+const roomAccessChangedPayload = z.object({joinPolicy: z.enum(['invite_only', 'open_to_guests'])});
 
 /** Event types a client may submit. Membership and control events are server-authored. */
 export const CLIENT_EVENT_TYPES = ['message', 'handover.offered', 'handover.accepted', 'handover.declined', 'control.ack'] as const;
@@ -77,6 +84,9 @@ export const EventBody = z.discriminatedUnion('type', [
     z.object({type: z.literal('control.resume'), payload: controlResumePayload}),
     z.object({type: z.literal('control.ack'), payload: controlAckPayload}),
     z.object({type: z.literal('room.closed'), payload: roomClosedPayload}),
+    z.object({type: z.literal('room.renamed'), payload: roomRenamedPayload}),
+    z.object({type: z.literal('room.expiry_changed'), payload: roomExpiryChangedPayload}),
+    z.object({type: z.literal('room.access_changed'), payload: roomAccessChangedPayload}),
 ]);
 export type EventBody = z.infer<typeof EventBody>;
 export type EventType = EventBody['type'];

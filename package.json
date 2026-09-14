@@ -12,6 +12,7 @@
   "scripts": {
     "build": "tsc --build",
     "clean": "tsc --build --clean",
+    "serve": "npm run build --silent && node packages/cli/dist/main.js serve",
     "install:cli": "npm run build && npm link --workspace @pairlobby/cli",
     "uninstall:cli": "npm unlink -g pairlobby",
     "test": "tsc --build && vitest run",
