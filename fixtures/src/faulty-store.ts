@@ -17,7 +17,7 @@ export class FaultyStore implements TestableRoomStore {
 
     constructor(inner: TestableRoomStore) {
         this.inner = inner;
-        for (const key of ['createRoom', 'loadRoom', 'readEvents', 'eventBySeq', 'idempotencyRecord', 'putInvite', 'inviteByDigest', 'reserveInvite', 'participantByCredential', 'handovers', 'setLifecycle', 'deleteRoom'] as const) {
+        for (const key of ['createRoom', 'loadRoom', 'readEvents', 'eventBySeq', 'idempotencyRecord', 'putInvite', 'inviteByDigest', 'reserveInvite', 'participantByCredential', 'handovers', 'messageRequest', 'messageRequests', 'setLifecycle', 'deleteRoom'] as const) {
             (this as Record<string, unknown>)[key] = (...args: unknown[]) => (this.inner[key] as (...rest: unknown[]) => unknown)(...args);
         }
     }

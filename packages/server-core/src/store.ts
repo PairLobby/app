@@ -2,7 +2,7 @@
 //! imitating a database API, so a Durable Object's SQL transaction and a Node
 //! server's SQLite transaction implement the same small surface.
 
-import type {HandoverRecord, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
+import type {HandoverRecord, MessageRequest, RequestPage, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 
 export interface IdempotencyRecord {
@@ -52,6 +52,8 @@ export interface RoomStore {
 
     participantByCredential(roomId: string, credentialHash: string): Promise<ParticipantRecord | null>;
     handovers(roomId: string): Promise<HandoverRecord[]>;
+    messageRequest(roomId: string, eventId: string): Promise<MessageRequest | null>;
+    messageRequests(roomId: string, after: number, limit: number, recipientId?: string): Promise<RequestPage>;
 
     setLifecycle(roomId: string, lifecycle: RoomRecord['lifecycle']): Promise<void>;
     deleteRoom(roomId: string): Promise<void>;

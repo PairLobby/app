@@ -39,12 +39,14 @@ export const AdapterCapabilities = z.object({
 export type AdapterCapabilities = z.infer<typeof AdapterCapabilities>;
 
 const messagePayload = z.object({
-    text: z.string().min(1).max(32 * 1024),
+    text: z.string().min(1).max(32 * 1024).refine(text=>text.trim().length>0,'message must not be blank'),
     priority: z.enum(['normal', 'priority']).default('normal'),
+    responseStage: z.enum(['progress', 'final']).optional(),
 });
 
 /** Emitted when a participant has actually read something addressed to it. */
 const messageReceivedPayload = z.object({eventId: EventId});
+const deliveryFailedPayload = z.object({eventId: EventId, reason: z.string().min(1).max(1024)});
 
 const handoverOfferedPayload = z.object({handoverId: HandoverId, revision: z.number().int().min(1), document: HandoverDocument});
 const handoverAcceptedPayload = z.object({handoverId: HandoverId, revision: z.number().int().min(1), note: z.string().max(2048).optional()});
@@ -64,11 +66,12 @@ const roomExpiryChangedPayload = z.object({expiresAt: z.number().int().nonnegati
 const roomAccessChangedPayload = z.object({joinPolicy: z.enum(['invite_only', 'open_to_guests'])});
 
 /** Event types a client may submit. Membership and control events are server-authored. */
-export const CLIENT_EVENT_TYPES = ['message', 'message.received', 'handover.offered', 'handover.accepted', 'handover.declined', 'control.ack'] as const;
+export const CLIENT_EVENT_TYPES = ['message', 'message.received', 'message.delivery_failed', 'handover.offered', 'handover.accepted', 'handover.declined', 'control.ack'] as const;
 
 export const EventSubmission = z.discriminatedUnion('type', [
     z.object({type: z.literal('message'), payload: messagePayload}),
     z.object({type: z.literal('message.received'), payload: messageReceivedPayload}),
+    z.object({type: z.literal('message.delivery_failed'), payload: deliveryFailedPayload}),
     z.object({type: z.literal('handover.offered'), payload: handoverOfferedPayload}),
     z.object({type: z.literal('handover.accepted'), payload: handoverAcceptedPayload}),
     z.object({type: z.literal('handover.declined'), payload: handoverDeclinedPayload}),
@@ -79,6 +82,7 @@ export type EventSubmission = z.infer<typeof EventSubmission>;
 export const EventBody = z.discriminatedUnion('type', [
     z.object({type: z.literal('message'), payload: messagePayload}),
     z.object({type: z.literal('message.received'), payload: messageReceivedPayload}),
+    z.object({type: z.literal('message.delivery_failed'), payload: deliveryFailedPayload}),
     z.object({type: z.literal('handover.offered'), payload: handoverOfferedPayload}),
     z.object({type: z.literal('handover.accepted'), payload: handoverAcceptedPayload}),
     z.object({type: z.literal('handover.declined'), payload: handoverDeclinedPayload}),

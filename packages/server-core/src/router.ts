@@ -78,6 +78,15 @@ async function route(request: Request, service: RoomService): Promise<Response> 
             const {role, reusable, expiresAt} = CreateInviteRequest.parse(await readOptionalJson(request));
             return json(await service.mintInvite(roomId, credential, role, reusable, expiresAt), 201);
         }
+        case 'POST requests': {
+            if(segments[4] && segments[5]==='ack') return json(await service.acknowledgeMessage(roomId,credential,segments[4]));
+            return errorResponse('invalid_request','unknown request operation',404);
+        }
+        case 'GET requests': {
+            if(segments[4]) return json(await service.request(roomId,credential,segments[4]));
+            const query=ReadEventsQuery.parse(Object.fromEntries(url.searchParams));
+            return json(await service.requests(roomId,credential,query.after,query.limit,url.searchParams.get('to') ?? undefined));
+        }
         case 'GET events': {
             const query = ReadEventsQuery.parse(Object.fromEntries(new URL(request.url).searchParams));
             return json(await service.read(roomId, credential, query.after, query.limit));

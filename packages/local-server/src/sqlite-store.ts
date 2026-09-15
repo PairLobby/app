@@ -4,8 +4,9 @@
 
 import {DatabaseSync} from 'node:sqlite';
 
-import type {HandoverRecord, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
+import type {HandoverRecord, MessageRequest, RequestPage, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
+import {REQUEST_BACKFILL_SQL} from '@pairlobby/server-core';
 import type {EventPage, IdempotencyRecord, RoomStore} from '@pairlobby/server-core';
 
 import {SCHEMA, SCHEMA_VERSION} from './schema.js';
@@ -23,6 +24,7 @@ export class SqliteRoomStore implements RoomStore {
         this.db.exec('PRAGMA foreign_keys = ON');
         this.db.exec('PRAGMA busy_timeout = 5000');
         this.db.exec(SCHEMA);
+        if (!this.db.prepare("SELECT value FROM meta WHERE key='message_requests_v1'").get()) this.transaction(()=>this.db.exec(REQUEST_BACKFILL_SQL));
         this.db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING').run('schema_version', String(SCHEMA_VERSION));
     }
 
@@ -72,6 +74,7 @@ export class SqliteRoomStore implements RoomStore {
             for (const control of mutation.upsertControls) {
                 this.db.prepare('INSERT INTO controls (room_id, target_participant_id, body) VALUES (?, ?, ?) ON CONFLICT (room_id, target_participant_id) DO UPDATE SET body = excluded.body').run(control.roomId, control.targetParticipantId, JSON.stringify(control));
             }
+            for (const request of mutation.upsertRequests ?? []) this.writeRequest(request);
             this.writeEvent(mutation.appendEvent);
             if (idempotency) {
                 this.db.prepare('INSERT INTO idempotency (room_id, key, request_digest, seq) VALUES (?, ?, ?, ?)').run(mutation.room.roomId, idempotency.key, idempotency.requestDigest, mutation.appendEvent.seq);
@@ -150,6 +153,22 @@ export class SqliteRoomStore implements RoomStore {
         return this.rows('SELECT body FROM handovers WHERE room_id = ? ORDER BY handover_id', roomId);
     }
 
+    async messageRequest(roomId: string, eventId: string): Promise<MessageRequest | null> {
+        const row=this.db.prepare('SELECT body FROM message_requests WHERE room_id=? AND event_id=?').get(roomId,eventId) as BodyRow | undefined;
+        return row ? JSON.parse(row.body) as MessageRequest : null;
+    }
+    async messageRequests(roomId: string, after: number, limit: number, recipientId?: string): Promise<RequestPage> {
+        const rows=this.db.prepare("SELECT body FROM message_requests WHERE room_id=? AND seq>? AND requires_reply=1 AND response_event_id IS NULL AND (? IS NULL OR json_extract(body,'$.to')=?) ORDER BY seq LIMIT ?").all(roomId,after,recipientId ?? null,recipientId ?? null,limit+1) as unknown as BodyRow[];
+        return {requests:rows.slice(0,limit).map(row=>JSON.parse(row.body) as MessageRequest),hasMore:rows.length>limit};
+    }
+    private writeRequest(request: MessageRequest): void {
+        // Keep concurrent receipt/progress writes from erasing an accepted reply.
+        const old=this.db.prepare('SELECT body FROM message_requests WHERE event_id=?').get(request.eventId) as BodyRow | undefined;
+        const previous=old ? JSON.parse(old.body) as MessageRequest : null;
+        const merged={...request,receivedAt:previous?.receivedAt ?? request.receivedAt,responseEventId:previous?.responseEventId ?? request.responseEventId,respondedAt:previous?.respondedAt ?? request.respondedAt,progressAt:Math.max(previous?.progressAt ?? 0,request.progressAt ?? 0) || null};
+        this.db.prepare('INSERT INTO message_requests(event_id,room_id,seq,received_at,response_event_id,requires_reply,body) VALUES(?,?,?,?,?,?,?) ON CONFLICT(event_id) DO UPDATE SET received_at=excluded.received_at,response_event_id=excluded.response_event_id,body=excluded.body').run(merged.eventId,merged.roomId,merged.seq,merged.receivedAt,merged.responseEventId,merged.requiresReply?1:0,JSON.stringify(merged));
+    }
+
     async setLifecycle(roomId: string, lifecycle: RoomRecord['lifecycle']): Promise<void> {
         this.transaction(() => {
             const row = this.db.prepare('SELECT body FROM rooms WHERE room_id = ?').get(roomId) as BodyRow | undefined;
@@ -162,7 +181,7 @@ export class SqliteRoomStore implements RoomStore {
     /** Physical cleanup. Access was already denied by the lifecycle change. */
     async deleteRoom(roomId: string): Promise<void> {
         this.transaction(() => {
-            for (const table of ['events', 'idempotency', 'handovers', 'controls', 'invites', 'participants']) {
+            for (const table of ['message_requests', 'events', 'idempotency', 'handovers', 'controls', 'invites', 'participants']) {
                 this.db.prepare(`DELETE FROM ${table} WHERE room_id = ?`).run(roomId);
             }
         });

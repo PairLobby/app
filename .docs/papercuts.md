@@ -6,3 +6,51 @@
 - 2026-09-14T00:05:09Z: A new attempt to send a room message failed with server_unavailable on both the initial call and one retry. The local relay must be running before messages can be delivered.
 
 - 2026-09-14T00:07:09Z: Retrying a pending room message after the relay became reachable returned room_expired. The saved session no longer permits delivery; a fresh room invite is needed.
+
+## 2026-09-15 00:50:20 UTC
+
+Reading room messages with an explicit session still failed when multiple rooms were active, despite the integration instructions requiring only --session. Pass both --room and --session to disambiguate the read.
+
+## 2026-09-15 01:04:12 UTC
+
+Wrangler types writes its output relative to the working directory even when a nested --config is supplied. Pass the hosted package output path explicitly so generated imports and TypeScript inclusion point at the correct project.
+
+## 2026-09-15 01:23:02 UTC
+
+Stripe CLI and its configuration file are present, but API calls report no configured credentials. Authenticate with stripe login before attempting live product, webhook, or subscription setup.
+
+## 2026-09-15 01:30:02 UTC
+
+Strict request quotas require their own SQLite write on each admitted API request, and free control events still incur storage writes. Include both metering and bounded control/request/storage reserves in unit economics instead of pricing only ordinary messages.
+
+## 2026-09-15 01:48:27 UTC
+
+The team seat race fixture hit Better Auth throttling before reaching membership allocation because all simulated users share a loopback address. Reset only the local test rate-limit table between account setup steps so the seat race test reaches the code it intends to exercise.
+
+## 2026-09-15 01:48:27 UTC
+
+An inferred RPC return type from Reflect.apply triggered excessive TypeScript type instantiation in the test bridge. Declaring the test-only RPC result as Promise<unknown> fixes the Cloudflare RPC type expansion without weakening production bindings.
+
+## 2026-09-15 01:54:49 UTC
+
+The current Wrangler OAuth credentials cannot read account billing subscriptions (HTTP 403). Worker deployment and API checks work; confirm the billing plan through the Cloudflare dashboard rather than treating this scoped API failure as a deployment failure.
+
+## 2026-09-15 01:54:49 UTC
+
+A standalone Node invocation of the Wrangler test harness stalled during a storage-size probe. Running the same probe inside the existing Vitest harness succeeded and confirmed that databaseSize decreases when data is removed.
+
+## 2026-09-15 01:58:19 UTC
+
+The commit and push command was rejected by automatic approval review because approval is required while AskForApproval is set to Never. Source changes remain on the dedicated local feature branch; deployed services are unaffected.
+
+## 2026-09-15 03:28:57 UTC
+
+Investigating ignored agent messages found that pending requests were keyed by participant pair, so newer asks replaced older ones, and any later chatter could clear the obligation. Persist each addressed request by event ID and require the intended recipient to acknowledge and explicitly reply to that ID.
+
+## 2026-09-15 03:28:57 UTC
+
+The CLI advanced its read cursor before sending receipts and swallowed receipt failures; it also looked only at the first history page for unanswered work. Use the durable inbox and commit receipts before advancing the cursor so failed reads remain retryable.
+
+## 2026-09-15 03:28:57 UTC
+
+A real MCP integration test exposed simultaneous local HTTP sends choosing the same next event sequence and returning a generic failure. Serialize local relay mutations; the hosted workspace adapter already serializes its operations.

@@ -30,16 +30,29 @@ describe('open requests', () => {
         expect(openRequests([ask, message('claude', 'codex', 'done', ask.eventId)])).toHaveLength(0);
     });
 
-    // Requiring replyTo would report an agent that answered in plain conversation
-    // as ignoring the request, and a warning that lies stops being read.
-    test('test_answering_in_conversation_closes_it_without_replyTo', () => {
-        const ask = message('codex', 'claude', 'write a joke');
-        expect(openRequests([ask, message('claude', 'codex', 'saved to ~/Desktop/joke.txt')])).toHaveLength(0);
+    test('test_unthreaded_chatter_does_not_resolve_requests', () => {
+        const ask=message('codex','claude','write a joke');
+        expect(owedByMe([ask,message('claude','codex','working on it')],'claude')).toHaveLength(1);
     });
-
-    test('test_declining_out_loud_closes_it_too', () => {
-        const ask = message('codex', 'claude', 'write a joke');
-        expect(openRequests([ask, message('claude', 'codex', 'I will not write to the Desktop')])).toHaveLength(0);
+    test('test_every_message_to_the_same_recipient_stays_open', () => {
+        const first=message('codex','claude','first');const second=message('codex','claude','second');
+        expect(openRequests([first,second]).map(r=>r.eventId)).toEqual([first.eventId,second.eventId]);
+        expect(openRequests([first,second,message('claude','codex','done',first.eventId)]).map(r=>r.eventId)).toEqual([second.eventId]);
+    });
+    test('test_a_different_participant_cannot_close_or_acknowledge_the_request', () => {
+        const ask=message('codex','claude','private work');
+        const requests=openRequests([ask,message('hugo','codex','done',ask.eventId),receipt('hugo',ask.eventId)]);
+        expect(requests).toHaveLength(1);expect(requests[0]!.received).toBe(false);
+    });
+    test('test_progress_does_not_count_as_a_final_reply', () => {
+        const ask=message('codex','claude','work');
+        const update=message('claude','codex','started',ask.eventId);
+        if(update.type==='message') update.payload.responseStage='progress';
+        expect(openRequests([ask,update])).toHaveLength(1);
+    });
+    test('test_an_explicit_refusal_counts_as_an_answer', () => {
+        const ask=message('codex','claude','work');
+        expect(openRequests([ask,message('claude','codex','I cannot do this',ask.eventId)])).toHaveLength(0);
     });
 
     test('test_talking_to_someone_else_does_not_close_it', () => {

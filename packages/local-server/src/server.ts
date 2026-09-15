@@ -38,7 +38,16 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
     // Host is pinned to defeat DNS rebinding, and an unexpected Origin is refused.
     const allowedHosts: string[] = [];
     if (options.publicUrl) allowedHosts.push(new URL(options.publicUrl).host);
-    const handle = createRouter({service, allowedOrigins: options.allowedOrigins ?? [], allowedHosts});
+    const route = createRouter({service, allowedOrigins: options.allowedOrigins ?? [], allowedHosts});
+
+    // One local relay owns this store. Serialize mutating requests so two
+    // async service calls cannot both choose the same next event sequence.
+    let mutations: Promise<unknown> = Promise.resolve();
+    const handle=(request: Request): Promise<Response>=>{
+        const result=mutations.then(()=>route(request));
+        if(!['GET','HEAD'].includes(request.method)) mutations=result.catch(()=>{});
+        return result;
+    };
 
     const server = createHttpServer((incoming, outgoing) => {
         void respond(handle, incoming, outgoing, `http://${incoming.headers.host ?? `${host}:${port}`}`);

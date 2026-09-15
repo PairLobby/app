@@ -5,8 +5,8 @@
 
 import {createInterface, clearLine, cursorTo, type Interface} from 'node:readline';
 
-import {ProtocolError, newId} from '@pairlobby/protocol';
-import type {RoomEvent, RoomSnapshot} from '@pairlobby/protocol';
+import {ProtocolError, requestState, newId} from '@pairlobby/protocol';
+import type {MessageRequest, RoomEvent, RoomSnapshot} from '@pairlobby/protocol';
 import {LocalStore, PairLobbyClient} from '@pairlobby/client';
 
 import {pickExpiry} from './picker.js';
@@ -40,7 +40,9 @@ const HELP = `  <message>          send to the room
   @name <message>    send to one participant
   /to <name>         address every later message to one participant
   /to                clear the default recipient
-  /who               who is here
+  /requests          show every unanswered request
+  /reply <id> <text>  answer one exact request
+  /who               who is registered in this room
   /expiry            set when this room expires
   /pause <name>      controller only
   /resume <name>     controller only
@@ -214,6 +216,8 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             return;
         }
         if (line === '/help') {emit(HELP); return;}
+        if(line==='/requests') {void client.requests(roomId,credential).then(page=>{for(const request of page.requests) emit(`${request.eventId} ${requestState(request)} ${request.text.slice(0,100)}`);if(page.hasMore) emit('More requests remain; use pairlobby requests --after to page through them.');}).catch(error=>emit(`Cannot verify requests: ${String(error)}`));return;}
+        if(line.startsWith('/reply ')) {const [id,...words]=line.slice(7).split(/\s+/);if(!id||!words.length) {emit('Usage: /reply <event-id> <answer>');return;}void client.reply(roomId,credential,id,words.join(' ')).then(()=>emit(`Answer recorded for ${id}`)).catch(error=>emit(`Reply failed: ${String(error)}`));return;}
         if (line === '/who') {emit(who(snapshot, showIds)); return;}
         if (line === '/to') {recipient = null; setPrompt(); emit(`${DIM}  addressing the room${RESET}`); terminal.prompt(true); return;}
         if (line.startsWith('/to ')) {
@@ -255,6 +259,9 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
     if (options.fromStart) cursor = 0;
     // An unreachable relay is reported once, not once per poll, and retried with
     // widening gaps. The old behaviour filled the screen and buried the room.
+    let pendingRequests: MessageRequest[]=[];
+    let loadedRequests=false;
+    const shownRequestStates=new Map<string,string>();
     let outageSince: number | null = null;
     let backoffMs = intervalMs;
 
@@ -262,8 +269,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         try {
             const page = await client.readEvents(roomId, credential, cursor);
             if (page.events.length > 0) {
-                cursor = page.events.at(-1)!.seq;
-                store.updateCursor(roomId, sessionId, cursor);
+                const nextCursor = page.events.at(-1)!.seq;
                 if (page.events.some((event) => event.type === 'participant.joined' || event.type === 'participant.left' || event.type === 'participant.revoked')) {
                     snapshot = await client.snapshot(roomId, credential);
                     absorbNames(snapshot, names);
@@ -272,6 +278,16 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                     if (seen.has(event.eventId)) continue;
                     seen.add(event.eventId);
                     emit(format(event, names, participantId, showIds));
+                }
+                if(!options.readOnly) for(const event of page.events) if(event.type==='message' && event.recipientId===participantId && event.senderId!==participantId) await client.acknowledgeMessage(roomId,credential,event.eventId);
+                cursor=nextCursor;store.updateCursor(roomId,sessionId,cursor);
+            }
+            if(!loadedRequests || page.events.length) {pendingRequests=(await client.requests(roomId,credential)).requests;loadedRequests=true;}
+            for(const request of pendingRequests) {
+                const state=requestState(request);
+                if(shownRequestStates.get(request.eventId)!==state) {
+                    shownRequestStates.set(request.eventId,state);
+                    emit(`${state.includes('overdue')||state==='failed'?'ATTENTION: ':''}${names.get(request.from) ?? request.from} → ${names.get(request.to) ?? request.to}: ${state} [${request.eventId}]`);
                 }
             }
             if (outageSince !== null) {
@@ -293,9 +309,13 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 backoffMs = Math.min(backoffMs * 2, 30_000);
             } else throw error;
         }
-        await Promise.race([sleep(outageSince === null ? intervalMs : backoffMs), finished]);
+        await Promise.race([
+            outageSince === null ? client.waitForChange(roomId, credential, cursor, 5000, intervalMs).catch(() => sleep(Math.max(1000, backoffMs))) : sleep(backoffMs),
+            finished,
+        ]);
     }
 
+    client.closeLive();
     clearHint();
     process.stdin.off('keypress', onKeypress);
     terminal.close();
@@ -327,7 +347,7 @@ function header(snapshot: RoomSnapshot, participantId: string, sessionId: string
 
     emit(`${BOLD}${snapshot.name}${RESET}  ${DIM}${snapshot.roomId}${RESET}`);
     emit(`${DIM}session${RESET} ${sessionId}${me ? `  ${DIM}as${RESET} ${me.displayName}` : ''}`);
-    emit(`${DIM}people in the room:${RESET} ${active.length}  (${plural(people, 'person', 'people')}, ${plural(agents, 'agent', 'agents')})  ${DIM}${active.map((participant) => participant.displayName).join(', ')}${RESET}`);
+    emit(`${DIM}registered in this room:${RESET} ${active.length}  (${plural(people, 'person', 'people')}, ${plural(agents, 'agent', 'agents')})  ${DIM}${active.map((participant) => participant.displayName).join(', ')}${RESET}`);
     emit(`${DIM}/help for commands, /quit to leave${RESET}`);
     emit('');
 }
@@ -352,7 +372,8 @@ function format(event: RoomEvent, names: Map<string, string>, meParticipantId: s
         const to = event.recipientId ? `${DIM} → ${names.get(event.recipientId) ?? event.recipientId}${RESET}` : '';
         const who = mine ? `${DIM}${sender}${RESET}` : `${BOLD}${sender}${RESET}`;
         const id = showIds && event.senderId ? `${DIM} ${event.senderId}${RESET}` : '';
-        return `${time}  ${who}${id}${to}  ${event.payload.text}`;
+        const thread=event.replyTo ? `${event.payload.responseStage==='progress'?'progress':'reply'} to ${event.replyTo}` : event.recipientId ? `request ${event.eventId}` : '';
+        return `${time}  ${who}${id}${to}${thread?`  [${thread}]`:''}  ${event.payload.text}`;
     }
     return `${time}  ${DIM}· ${systemLine(event, names, sender)}${RESET}`;
 }
@@ -372,6 +393,7 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
         case 'room.renamed':        return `${sender} renamed the room to ${event.payload.name}`;
         case 'room.expiry_changed':  return event.payload.expiresAt === null ? `${sender} made the room permanent` : `${sender} set the room to expire ${new Date(event.payload.expiresAt).toLocaleString()}`;
         case 'room.access_changed':  return event.payload.joinPolicy === 'open_to_guests' ? `${sender} opened the room to read-only guests` : `${sender} made the room invite only`;
+        case 'message.delivery_failed': return `DELIVERY FAILURE for ${event.payload.eventId}: ${event.payload.reason} (request remains unanswered)`;
         case 'message.received':     return `${sender} read it`;
         default:                    return event.type;
     }

@@ -2,8 +2,8 @@
 //! bodies back into `ProtocolError`, so callers handle one error type whether a
 //! failure came from local validation or from the server.
 
-import {PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, newCredential, newId} from '@pairlobby/protocol';
-import type {AdapterCapabilities, CreateInviteResponse, ErrorCode, ExportResponse, ParticipantKind, ParticipantRole, ReadEventsResponse, RoomEvent, RoomSnapshot, SendEventRequest, SendEventResponse} from '@pairlobby/protocol';
+import {PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, ServerFrame, newCredential, newId} from '@pairlobby/protocol';
+import type {AdapterCapabilities, MessageRequest, RequestPage, CreateInviteResponse, ErrorCode, ExportResponse, ParticipantKind, ParticipantRole, ReadEventsResponse, RoomEvent, RoomSnapshot, SendEventRequest, SendEventResponse} from '@pairlobby/protocol';
 
 export interface ClientIdentity {
     displayName: string;
@@ -32,7 +32,15 @@ export interface JoinedRoom {
 export class PairLobbyClient {
     readonly serverUrl: string;
 
-    constructor(serverUrl: string) {
+    private socket: WebSocket | null = null;
+    private watermark = 0;
+    private earliestSeq = 0;
+    private liveEvents: RoomEvent[] = [];
+    private liveBytes = 0;
+    private liveRoom: string | null = null;
+    private changed = new Set<() => void>();
+
+    constructor(serverUrl: string, private readonly accountToken?: string) {
         this.serverUrl = serverUrl.replace(/\/+$/, '');
     }
 
@@ -61,7 +69,46 @@ export class PairLobbyClient {
     }
 
     readEvents(roomId: string, credential: string, after: number, limit = 200): Promise<ReadEventsResponse> {
+        if (this.liveRoom === roomId && this.socket?.readyState === WebSocket.OPEN) {
+            const events = this.liveEvents.filter(event => event.seq > after).slice(0,limit);
+            if ((events[0]?.seq === after+1) || (after === this.watermark)) {
+                return Promise.resolve({events,earliestSeq:this.earliestSeq,latestSeq:this.watermark,hasMore:(events.at(-1)?.seq ?? after)<this.watermark});
+            }
+        }
         return this.call('GET', `/v1/rooms/${roomId}/events?after=${after}&limit=${limit}`, credential);
+    }
+
+    requests(roomId: string, credential: string, after=0, limit=100, recipientId?: string): Promise<RequestPage> {
+        return this.call('GET',`/v1/rooms/${roomId}/requests?after=${after}&limit=${limit}${recipientId?`&to=${encodeURIComponent(recipientId)}`:""}`,credential);
+    }
+    async pendingRequests(roomId: string,credential: string,recipientId?: string): Promise<MessageRequest[]> {
+        const requests: MessageRequest[]=[];
+        let after=0;
+        for(let pageNumber=0;pageNumber<11;pageNumber++) {
+            const page=await this.requests(roomId,credential,after,100,recipientId);
+            requests.push(...page.requests);
+            if(!page.hasMore) return requests;
+            const next=page.requests.at(-1)?.seq;
+            if(next===undefined || next<=after) throw new ProtocolError('server_unavailable','request pagination did not advance');
+            after=next;
+        }
+        throw new ProtocolError('server_unavailable','pending request limit exceeded; inbox cannot be verified');
+    }
+    request(roomId: string, credential: string, eventId: string): Promise<MessageRequest> {
+        return this.call('GET',`/v1/rooms/${roomId}/requests/${eventId}`,credential);
+    }
+    async acknowledgeMessage(roomId: string, credential: string, eventId: string): Promise<void> {
+        await this.call('POST',`/v1/rooms/${roomId}/requests/${eventId}/ack`,credential,{});
+    }
+    async deliveryFailed(roomId: string,credential: string,eventId: string,reason: string): Promise<void> {
+        const request=await this.request(roomId,credential,eventId);
+        if(request.failureAt || request.responseEventId) return;
+        await this.send(roomId,credential,{type:'message.delivery_failed',payload:{eventId,reason},idempotencyKey:`failure-${eventId}`});
+    }
+    async reply(roomId: string, credential: string, eventId: string, text: string, progress=false): Promise<SendEventResponse> {
+        const target=await this.request(roomId,credential,eventId);
+        if(target.receivedAt===null) await this.acknowledgeMessage(roomId,credential,eventId);
+        return this.send(roomId,credential,{type:'message',recipientId:target.from,replyTo:eventId,payload:{text,priority:'normal',responseStage:progress?'progress':'final'},idempotencyKey:progress?newId('event'):`reply-${eventId}`});
     }
 
     send(roomId: string, credential: string, request: SendEventRequest): Promise<SendEventResponse> {
@@ -111,14 +158,72 @@ export class PairLobbyClient {
         await this.call('DELETE', `/v1/rooms/${roomId}`, credential);
     }
 
+    /** Hosted reads sleep on socket notifications; local relays retain polling. */
+    async waitForChange(roomId: string, credential: string, after: number, timeoutMs: number, localIntervalMs = 1000): Promise<void> {
+        if (!new URL(this.serverUrl).pathname.startsWith('/relay/')) {
+            await new Promise(resolve => setTimeout(resolve, Math.min(timeoutMs, localIntervalMs)));
+            return;
+        }
+        if (this.liveRoom !== roomId) this.closeLive();
+        if (!this.socket) {
+            const {ticket} = await this.call<{ticket: string}>('POST', `/v1/rooms/${roomId}/connect-ticket`, credential, {});
+            const url = new URL(`${this.serverUrl}/v1/rooms/${roomId}/connect`);
+            url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+            url.searchParams.set('ticket', ticket);
+            const socket = new WebSocket(url);
+            this.socket = socket;
+            this.liveRoom = roomId;
+            this.watermark = after;
+            socket.addEventListener('message', event => {
+                try {
+                    const frame = ServerFrame.parse(JSON.parse(String(event.data)));
+                    if (frame.type === 'hello') {this.watermark=Math.max(this.watermark,frame.watermarkSeq);this.earliestSeq=frame.snapshot.earliestSeq;}
+                    if (frame.type === 'event') {
+                        this.watermark=Math.max(this.watermark,frame.event.seq);
+                        this.liveEvents.push(frame.event);this.liveBytes+=new TextEncoder().encode(JSON.stringify(frame.event)).byteLength;
+                        while (this.liveEvents.length>500 || this.liveBytes>1024*1024) this.liveBytes-=new TextEncoder().encode(JSON.stringify(this.liveEvents.shift())).byteLength;
+                    }
+                    if (frame.type === 'error' && frame.fatal) {socket.close();return;}
+                    for (const wake of this.changed) wake();
+                } catch { socket.close(); }
+            });
+            const closed = () => {
+                if (this.socket === socket) this.socket = null;
+                for (const wake of this.changed) wake();
+            };
+            socket.addEventListener('close', closed);
+            socket.addEventListener('error', closed);
+        }
+        if (this.watermark > after) return;
+        await new Promise<void>((resolve, reject) => {
+            const finish = () => {
+                if (this.watermark <= after && this.socket) return;
+                clearTimeout(timer);this.changed.delete(finish);
+                if (!this.socket) reject(new ProtocolError('server_unavailable', 'Live connection closed; reconnect to resume'));
+                else resolve();
+            };
+            const timer = setTimeout(() => {this.changed.delete(finish);resolve();},timeoutMs);
+            this.changed.add(finish);
+            finish();
+        });
+    }
+
+    closeLive(): void {
+        const socket = this.socket;
+        this.socket = null; this.liveRoom = null; this.watermark = 0; this.liveEvents=[];this.liveBytes=0;
+        socket?.close();
+        for (const wake of this.changed) wake();
+    }
+
     private async call<T>(method: string, path: string, credential: string | null, body?: unknown): Promise<T> {
         const headers = new Headers({[PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)});
         if (credential) headers.set('authorization', `Bearer ${credential}`);
+        if (this.accountToken && method === 'POST' && path === '/v1/rooms') headers.set('x-pairlobby-account-token', this.accountToken);
         if (body !== undefined) headers.set('content-type', 'application/json');
 
         let response: Response;
         try {
-            response = await fetch(`${this.serverUrl}${path}`, {method, headers, ...(body === undefined ? {} : {body: JSON.stringify(body)})});
+            response = await fetch(`${this.serverUrl}${path}`, {method, headers, signal:AbortSignal.timeout(path.endsWith('/export')?60_000:15_000), ...(body === undefined ? {} : {body: JSON.stringify(body)})});
         } catch {
             throw new ProtocolError('server_unavailable', `could not reach ${this.serverUrl}`, {retryAfterMs: 1000});
         }

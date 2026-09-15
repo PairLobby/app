@@ -1,6 +1,6 @@
 # Where PairLobby is
 
-Updated 2026-09-13. If you are picking this up, read this first, then [`README.md`](README.md) for how to run it.
+Updated 2026-09-15. If you are picking this up, read this first, then [`README.md`](README.md) for how to run it.
 
 ## What this is
 
@@ -16,20 +16,22 @@ Verified end to end against a local relay, not just in fixtures:
 - **Guests** — `pairlobby open <room>` lets anyone holding the room id join read-only. Enforced server-side across every write path; guests count against the participant cap.
 - **Membership** — invite codes are *seats*: one participant at a time, freed when they leave. `--once` for single use. Crash-recovery tested at every step of redemption.
 - **Messaging** — addressed and room-wide, with idempotent send and replay from a cursor.
-- **Live chat** — `pairlobby join <code>` puts you in the room: messages arrive above an input line you can type into. Polls; see the WebSocket gap below.
+- **Live chat** — `pairlobby join <code>` puts you in the room: messages arrive above an input line you can type into. Polls locally; hosted rooms use WebSocket delivery.
 - **Blocking read** — `pairlobby read --wait <n>` returns the moment something is addressed to an agent. Measured at ~1s. Ignores room-wide chatter.
 - **Handover** — offer, decline, amend to a new revision, accept an exact revision. Resolution is terminal per revision.
 - **Control** — pause and resume, with the adapter's acknowledgement kept distinct from the request. `paused` and "no acknowledgement yet" are separate facts and the UI never conflates them.
 - **Storage** — an in-memory reference and a `node:sqlite` adapter, both passing one contract suite.
 
-197 tests. `npm test` builds everything and runs them.
+264 tests pass with `npm test`, including both shared adapter contracts against real Durable Object SQLite. Seven additional hosted runtime scenarios run with `npm run test:hosted`.
+
+Hosted account login is deployed, along with the authenticated relay and bounded quotas. Stripe purchase activation and full payment lifecycle verification remain blocked on Stripe account authentication. See [`packages/hosted/README.md`](packages/hosted/README.md) and the [cost model](.docs/hosted-pricing.md).
 
 ## What is not built
 
 | Missing | Consequence today |
 | --- | --- |
-| WebSocket delivery | Everything polls. `watch` and `chat` poll at 700ms; the interval is the latency and idle watchers cost requests. |
-| Cloudflare Worker + Durable Object | Local relay only. `packages/server-core` exists precisely so the Worker can reuse it. |
+| Local WebSocket delivery | Local relays still poll. Hosted readers use hibernating sockets and consume pushed events directly. |
+| Live subscription purchases | Hosted auth and relay are deployed; Stripe credentials and end-to-end payment verification are still needed before selling access. |
 | MCP server | Agents shell out to the CLI. Works, but it is not native tooling. |
 | Browser page | The CLI is the only human interface. Deliberate — the owner made the page optional. |
 | Managed runtime adapter | No agent can be interrupted mid-turn. See below. |
@@ -50,11 +52,11 @@ Phases come from the workspace's `docs/implementation-roadmap.md`, which lives a
 | --- | --- |
 | A — prove provider integration | **Not started.** Blocks everything. Kit is ready: skill, `AGENTS.md`, and a written procedure. |
 | B — protocol and data model | Done. `packages/protocol`, frozen v1 contract. |
-| C — room state and Cloudflare transport | Half. Room state, invite recovery, and the HTTP contract are done and adapter-agnostic; the Cloudflare adapter and WebSockets are not. |
+| C — room state and Cloudflare transport | Implemented. Hosted SQLite adapter and WebSockets pass the shared contracts and hosted runtime scenarios; production load testing remains. |
 | D — CLI, credentials, MCP | Mostly. CLI is well past the roadmap's scope; MCP is not started. |
 | E — handover and human controls | Done, minus the optional browser page. |
 | F — local server and private networking | Local server done and at parity. Tailscale untested; Windows untested. |
-| G — reliability, abuse controls, release | Not started. No load runs, no staging, no abuse limits. |
+| G — reliability, abuse controls, release | Partial. Hosted quotas and auth throttles exist; sustained load tests, staged payment validation and a release remain. |
 
 The roadmap's stated critical path is provider integration → protocol → reliable room core → client/control → local parity → release. Everything except the first link has been built, which is the wrong order — done knowingly, because the spike needs a human and the rest did not.
 
@@ -80,8 +82,8 @@ Worth knowing before you trust the planning documents:
 - **The skill tells agents a member's request carries the owner's authority**, which is only true while every member is invited by the owner. Guests are read-only today, so it holds. Giving guests any write path breaks it and the instructions would have to change with it.
 - **Guests break the single-trust-domain assumption.** A guest is by definition someone the owner may not control, and `plan.md` requires content provenance and per-participant framing of delivered messages before that happens. Guests are read-only, which limits the blast radius to disclosure rather than injection, but the provenance work is still owed.
 - Closing a room to guests does not eject existing ones; they have to be revoked individually.
-- No rate limiting on invalid invite codes.
-- Expiry is enforced on read and write but nothing sweeps expired rooms; storage is never reclaimed.
+- Invalid invite attempts still need broader edge abuse controls; workspace quotas alone are not a denial-of-service defense.
+- Local expiry does not sweep storage. Hosted hourly cleanup prunes retained history; unresolved handover state stays subject to the physical storage cap.
 - The Windows background-relay script (`scripts/relay-service.ps1`) has never been run. It was written against the Task Scheduler cmdlets and reviewed by hand; the macOS one was tested, including kill-and-recover. Treat Windows as unverified until someone runs `npm run service:install` there.
 - No Linux equivalent. A systemd `--user` unit is the obvious shape; the dispatcher says so rather than failing obscurely.
 
