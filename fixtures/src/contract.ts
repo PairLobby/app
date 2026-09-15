@@ -292,13 +292,40 @@ describe(label, () => {
             await expectError('invite_already_redeemed', () => server.redeemInvite(created.inviteCode, {displayName: 'stranger', kind: 'agent'}, newId('attempt'), `plp_${newId('room')}`));
         });
 
-        test('test_an_expired_invite_cannot_be_redeemed', async () => {
+        test('test_an_invite_does_not_expire_unless_it_was_given_a_deadline', async () => {
             const clock = fixedClock();
             const server = track(new RoomHarness(makeStore(), clock));
             const alice = new FakeAgent(server, 'claude');
             const created = await alice.create('join-room');
-            clock.advance(DEFAULT_ROOM_POLICY.inviteLifetimeMs + 1);
-            await expectError('invite_expired', () => server.redeemInvite(created.inviteCode, {displayName: 'codex', kind: 'agent'}, newId('attempt'), `plp_${newId('room')}`));
+            clock.advance(365 * 24 * 60 * 60 * 1000);
+            const joined = await server.redeemInvite(created.inviteCode, {displayName: 'codex', kind: 'agent'}, newId('attempt'), `plp_${newId('room')}`);
+            expect(joined.replayed).toBe(false);
+        });
+
+        test('test_an_invite_given_a_deadline_stops_working_after_it', async () => {
+            const clock = fixedClock();
+            const server = track(new RoomHarness(makeStore(), clock));
+            const alice = new FakeAgent(server, 'claude');
+            await alice.create('join-room');
+            const code = await server.mintExpiringInvite(10 * 60 * 1000);
+            clock.advance(10 * 60 * 1000 + 1);
+            await expectError('invite_expired', () => server.redeemInvite(code, {displayName: 'codex', kind: 'agent'}, newId('attempt'), `plp_${newId('room')}`));
+        });
+
+        test('test_a_deadline_only_gates_the_first_use_not_the_seat', async () => {
+            const clock = fixedClock();
+            const server = track(new RoomHarness(makeStore(), clock));
+            const alice = new FakeAgent(server, 'claude');
+            await alice.create('join-room');
+            const code = await server.mintExpiringInvite(10 * 60 * 1000);
+            const first = new FakeAgent(server, 'hugo');
+            await first.join(code);
+            await server.leave(first.credential);
+
+            // The seat reopens even though the original deadline has passed: the
+            // code was already claimed, so the clock has done its job.
+            clock.advance(10 * 60 * 1000 + 1);
+            await new FakeAgent(server, 'hugo').join(code);
         });
     });
 

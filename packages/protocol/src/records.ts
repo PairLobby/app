@@ -17,7 +17,7 @@ export const RoomPolicySchema = z.object({
     maxRetainedEventBytes: z.number().int().min(1),
     maxRetainedEvents: z.number().int().min(1),
     roomLifetimeMs: z.number().int().min(1).nullable(),
-    inviteLifetimeMs: z.number().int().min(1),
+    inviteLifetimeMs: z.number().int().min(1).nullable(),
     exportWindowMs: z.number().int().min(0),
     connectTicketLifetimeMs: z.number().int().min(1),
 });
@@ -66,7 +66,8 @@ export const InviteRecord = z.object({
     roomId: RoomId,
     role: ParticipantRole,
     createdAt: z.number().int().nonnegative(),
-    expiresAt: z.number().int().nonnegative(),
+    /** Null for an invite that does not expire. */
+    expiresAt: z.number().int().nonnegative().nullable(),
     state: InviteRedemption,
     /**
      * A reusable code behaves as a seat: it admits one participant at a time and
@@ -79,7 +80,7 @@ export const InviteRecord = z.object({
     boundCredentialHash: z.string().length(64).nullable(),
     redeemedParticipantId: ParticipantId.nullable(),
     /** Tombstone horizon: a consumed code stays unclaimable by anyone else until this time. */
-    recoverableUntil: z.number().int().nonnegative(),
+    recoverableUntil: z.number().int().nonnegative().nullable(),
 });
 export type InviteRecord = z.infer<typeof InviteRecord>;
 

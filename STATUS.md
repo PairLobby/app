@@ -22,7 +22,7 @@ Verified end to end against a local relay, not just in fixtures:
 - **Control** — pause and resume, with the adapter's acknowledgement kept distinct from the request. `paused` and "no acknowledgement yet" are separate facts and the UI never conflates them.
 - **Storage** — an in-memory reference and a `node:sqlite` adapter, both passing one contract suite.
 
-170 tests. `npm test` builds everything and runs them.
+197 tests. `npm test` builds everything and runs them.
 
 ## What is not built
 
@@ -62,7 +62,7 @@ The roadmap's stated critical path is provider integration → protocol → reli
 
 Worth knowing before you trust the planning documents:
 
-1. **Rooms do not expire by default.** The roadmap proposed 24 hours. A room ending underneath a working pair is worse than one that outlives its usefulness.
+1. **Neither rooms nor invites expire by default.** The roadmap proposed 24-hour rooms and 10-minute invites. Both were guesses in a document that called them "product choices to validate"; a room that ends underneath a working pair, or a code that dies while it is still being pasted, is worse than one that outlives its usefulness. Expiry is opt-in per room, per invite, and per device.
 2. **The browser page is optional**, and the CLI is the primary human interface. The roadmap treats the page as the only way in.
 3. **Invite codes are reusable seats**, not single-use. A leaked code is therefore valid for the room's lifetime rather than ten minutes — `--once` when that matters.
 7. **Guest access uses the room id**, not a separate join token. The roadmap's concern was right — an open room's id is a bearer secret and ids are printed widely — but a token was rejected as a second thing to carry. Opening is a deliberate controller action that states the consequence, and it is off by default.
@@ -77,10 +77,13 @@ Worth knowing before you trust the planning documents:
 - `--session` does not imply a room, so a device holding several rooms still demands `--room`. Logged in `.docs/papercuts.md`.
 - Any participant can mint an invite, so an agent can widen a room without the human.
 - An agent with shell access can read another agent's credential from the local store. Accepted inside a single trust domain.
+- **The skill tells agents a member's request carries the owner's authority**, which is only true while every member is invited by the owner. Guests are read-only today, so it holds. Giving guests any write path breaks it and the instructions would have to change with it.
 - **Guests break the single-trust-domain assumption.** A guest is by definition someone the owner may not control, and `plan.md` requires content provenance and per-participant framing of delivered messages before that happens. Guests are read-only, which limits the blast radius to disclosure rather than injection, but the provenance work is still owed.
 - Closing a room to guests does not eject existing ones; they have to be revoked individually.
 - No rate limiting on invalid invite codes.
 - Expiry is enforced on read and write but nothing sweeps expired rooms; storage is never reclaimed.
+- The Windows background-relay script (`scripts/relay-service.ps1`) has never been run. It was written against the Task Scheduler cmdlets and reviewed by hand; the macOS one was tested, including kill-and-recover. Treat Windows as unverified until someone runs `npm run service:install` there.
+- No Linux equivalent. A systemd `--user` unit is the obvious shape; the dispatcher says so rather than failing obscurely.
 
 ## Layout
 

@@ -61,6 +61,11 @@ export class RoomHarness {
         return (await this.service.mintInvite(this.roomId, credential, role)).code;
     }
 
+    /** Mints a code that stops working after `lifetimeMs`. */
+    async mintExpiringInvite(lifetimeMs: number, role: ParticipantRole = 'member'): Promise<string> {
+        return (await this.service.mintInvite(this.roomId, this.controllerCredential, role, true, this.clock.now() + lifetimeMs)).code;
+    }
+
     async mintInviteOnce(role: ParticipantRole = 'member'): Promise<string> {
         return (await this.service.mintInvite(this.roomId, this.controllerCredential, role, false)).code;
     }

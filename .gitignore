@@ -5,3 +5,5 @@ dist/
 .dev.vars
 coverage/
 .DS_Store
+.vscode/
+.idea/

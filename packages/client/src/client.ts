@@ -56,8 +56,8 @@ export class PairLobbyClient {
         return this.call('GET', `/v1/rooms/${roomId}`, credential);
     }
 
-    mintInvite(roomId: string, credential: string, role: ParticipantRole = 'member', reusable = true): Promise<CreateInviteResponse> {
-        return this.call('POST', `/v1/rooms/${roomId}/invites`, credential, {role, reusable});
+    mintInvite(roomId: string, credential: string, role: ParticipantRole = 'member', reusable = true, expiresAt?: number | null): Promise<CreateInviteResponse> {
+        return this.call('POST', `/v1/rooms/${roomId}/invites`, credential, {role, reusable, ...(expiresAt !== undefined ? {expiresAt} : {})});
     }
 
     readEvents(roomId: string, credential: string, after: number, limit = 200): Promise<ReadEventsResponse> {

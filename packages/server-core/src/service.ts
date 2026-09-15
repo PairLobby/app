@@ -27,7 +27,7 @@ export interface CreateRoomInput extends Identity {
 export interface CreatedRoom {
     roomId: string;
     participantId: string;
-    invite: {code: string; expiresAt: number};
+    invite: {code: string; expiresAt: number | null};
     snapshot: RoomSnapshot;
 }
 
@@ -85,7 +85,7 @@ export class RoomService {
         return {roomId: created.room.roomId, participantId: created.participant.participantId, invite, snapshot: toSnapshot(view)};
     }
 
-    async mintInvite(roomId: string, credential: string, role: ParticipantRole, reusable = true): Promise<{code: string; expiresAt: number; reusable: boolean}> {
+    async mintInvite(roomId: string, credential: string, role: ParticipantRole, reusable = true, expiresAt?: number | null): Promise<{code: string; expiresAt: number | null; reusable: boolean}> {
         const view = await this.view(roomId);
         const actor = authenticate(view, await hashCredential(credential), this.now());
         if (actor.kind === 'participant' && actor.participant.role === 'guest') {
@@ -95,20 +95,22 @@ export class RoomService {
         const code = newInviteCode();
         const normalized = normalizeInviteCode(code)!;
         const now = this.now();
+        const lifetime = view.room.policy.inviteLifetimeMs;
+        const deadline = expiresAt !== undefined ? expiresAt : lifetime === null ? null : now + lifetime;
         await this.store.putInvite({
             digest: await hashCredential(normalized),
             roomId,
             role,
             createdAt: now,
-            expiresAt: now + view.room.policy.inviteLifetimeMs,
+            expiresAt: deadline,
             state: 'unused',
             reusable,
             boundAttemptId: null,
             boundCredentialHash: null,
             redeemedParticipantId: null,
-            recoverableUntil: now + view.room.policy.inviteLifetimeMs * 2,
+            recoverableUntil: deadline === null ? null : deadline + (deadline - now),
         });
-        return {code, expiresAt: now + view.room.policy.inviteLifetimeMs, reusable};
+        return {code, expiresAt: deadline, reusable};
     }
 
     /**
@@ -140,7 +142,7 @@ export class RoomService {
             if (occupant && occupant.revokedAt !== null) throw new ProtocolError('invite_already_redeemed', 'that invite code belongs to a participant who was removed from the room');
             if (occupant && occupant.leftAt === null) throw new ProtocolError('invite_already_redeemed', `${occupant.displayName} is currently in the room using that code`);
             expectedOccupantId = invite.redeemedParticipantId;
-        } else if (now >= invite.expiresAt) {
+        } else if (invite.expiresAt !== null && now >= invite.expiresAt) {
             throw new ProtocolError('invite_expired', 'that invite code has expired');
         }
 

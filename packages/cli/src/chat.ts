@@ -10,10 +10,13 @@ import type {RoomEvent, RoomSnapshot} from '@pairlobby/protocol';
 import {LocalStore, PairLobbyClient} from '@pairlobby/client';
 
 import {pickExpiry} from './picker.js';
+import {applyMention, commonPrefix, currentMention, matchNames, renderSuggestions} from './mentions.js';
 
 const DIM = '\u001b[2m';
 const BOLD = '\u001b[1m';
 const RESET = '\u001b[0m';
+const SAVE_CURSOR = '\u001b[s';
+const RESTORE_CURSOR = '\u001b[u';
 
 export interface ChatOptions {
     /** Guests may watch and leave; the composer is disabled for them. */
@@ -53,20 +56,72 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
     const names = new Map<string, string>();
     absorbNames(snapshot, names);
 
-    const terminal = createInterface({input: process.stdin, output: process.stdout, prompt: ''});
+    /** Active members other than you: the only names worth completing to. */
+    function mentionable(): string[] {
+        return snapshot.participants
+            .filter((participant) => !participant.revoked && !participant.left && participant.participantId !== participantId)
+            .map((participant) => participant.displayName);
+    }
+
+    // readline's own completer gives Tab for free; the live preview below is
+    // separate because readline only offers completions when Tab is pressed.
+    const terminal = createInterface({
+        input: process.stdin,
+        output: process.stdout,
+        prompt: '',
+        completer: (line: string): [string[], string] => {
+            const partial = currentMention(line);
+            if (partial === null) return [[], line];
+            const matches = matchNames(partial, mentionable());
+            if (matches.length === 0) return [[], line];
+            const advance = matches.length === 1 ? `${matches[0]!} ` : commonPrefix(matches);
+            return [[applyMention(line, advance)], line];
+        },
+    });
     const seen = new Set<string>();
     let recipient: {id: string; name: string} | null = null;
     let closed = false;
+
+    /** Lines currently drawn beneath the prompt, so they can be cleared again. */
+    let hintLines = 0;
+    let suspended = false;
+
+    function clearHint(): void {
+        if (hintLines === 0) return;
+        process.stdout.write(SAVE_CURSOR);
+        for (let index = 0; index < hintLines; index += 1) process.stdout.write('\n\u001b[2K');
+        process.stdout.write(RESTORE_CURSOR);
+        hintLines = 0;
+    }
+
+    /**
+     * Draws the @-completion beneath the input without moving the cursor, so it
+     * never interrupts typing. Redrawn on every keypress; cleared when the
+     * partial name is gone.
+     */
+    function drawHint(): void {
+        if (suspended || options.readOnly === true) return;
+        const partial = currentMention(terminal.line ?? '', terminal.cursor ?? undefined);
+        clearHint();
+        if (partial === null) return;
+        const text = renderSuggestions(partial, matchNames(partial, mentionable()), (process.stdout.columns ?? 80) - 2);
+        process.stdout.write(SAVE_CURSOR);
+        process.stdout.write(`\n\u001b[2K${text}`);
+        process.stdout.write(RESTORE_CURSOR);
+        hintLines = 1;
+    }
 
     /**
      * Writes above the input line and redraws it, so an arriving message never
      * eats what you are halfway through typing.
      */
     function emit(line: string): void {
+        clearHint();
         cursorTo(process.stdout, 0);
         clearLine(process.stdout, 0);
         process.stdout.write(`${line}\n`);
         terminal.prompt(true);
+        drawHint();
     }
 
     function setPrompt(): void {
@@ -127,6 +182,8 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             emit(`${DIM}  this device does not hold the controller credential for this room${RESET}`);
             return;
         }
+        suspended = true;
+        clearHint();
         terminal.pause();
         process.stdout.write('\n');
         try {
@@ -140,12 +197,14 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         } catch (error) {
             emit(`${DIM}  ${error instanceof ProtocolError ? error.message : String(error)}${RESET}`);
         }
+        suspended = false;
         terminal.resume();
         terminal.prompt(true);
     }
 
     terminal.on('line', (raw) => {
         const line = raw.trim();
+        clearHint();
         terminal.prompt(true);
         if (line.length === 0) return;
 
@@ -176,6 +235,13 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         }
         void send(line, recipient?.id ?? null);
     });
+
+    // readline emits keypress on stdin once an interface exists; observing is
+    // enough, since readline still owns the editing itself.
+    const onKeypress = () => {
+        if (!closed) setImmediate(drawHint);
+    };
+    process.stdin.on('keypress', onKeypress);
 
     const finished = new Promise<void>((resolve) => terminal.once('close', resolve));
     // readline intercepts Ctrl+C, so the interface is where the signal arrives.
@@ -230,6 +296,8 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         await Promise.race([sleep(outageSince === null ? intervalMs : backoffMs), finished]);
     }
 
+    clearHint();
+    process.stdin.off('keypress', onKeypress);
     terminal.close();
     // Closing the interface is not enough to end the process: stdin stays open and
     // referenced, so the event loop never drains and the command appears to hang.
@@ -304,6 +372,7 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
         case 'room.renamed':        return `${sender} renamed the room to ${event.payload.name}`;
         case 'room.expiry_changed':  return event.payload.expiresAt === null ? `${sender} made the room permanent` : `${sender} set the room to expire ${new Date(event.payload.expiresAt).toLocaleString()}`;
         case 'room.access_changed':  return event.payload.joinPolicy === 'open_to_guests' ? `${sender} opened the room to read-only guests` : `${sender} made the room invite only`;
+        case 'message.received':     return `${sender} read it`;
         default:                    return event.type;
     }
 }
