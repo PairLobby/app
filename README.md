@@ -24,6 +24,46 @@ npm run serve                                 # leave this running
 
 In another terminal:
 
+### Keeping the relay running
+
+```sh
+npm run service:install     # builds, links `pairlobby`, starts the relay at login
+npm run service:status      # is the agent loaded, is the relay answering
+npm run service:uninstall   # remove it; rooms and credentials are left alone
+```
+
+| Platform | Mechanism | Starts at login | Restarts if it stops |
+| --- | --- | --- | --- |
+| macOS | LaunchAgent | yes | yes, after 10s |
+| Windows | Scheduled task, logon trigger | yes | yes, after 1 min (the shortest Windows allows) |
+| Linux | not built — run `pairlobby serve`, or use the shell hook below | — | — |
+
+Neither needs administrator rights. `npm run service -- logs` tails the log and
+`npm run service -- restart` kicks it. Set `PAIRLOBBY_PORT` before
+`service:install` to use a port other than 8790.
+
+On Windows the task runs node through a small VBScript shim, because Windows has
+no windowless node and the task would otherwise flash a console at every logon.
+Both platforms bake node's path into a generated launcher, so re-run
+`service:install` after changing node version.
+
+If you would rather not install an agent, a shell hook does most of the same job
+— add this to `~/.zshrc`:
+
+```sh
+pairlobby_relay() {
+  curl -fsS -o /dev/null -m 1 http://127.0.0.1:8790/v1/rooms 2>/dev/null
+  [ $? -ne 7 ] || nohup pairlobby serve >>"$HOME/Library/Logs/PairLobby/relay.log" 2>&1 &
+}
+pairlobby_relay
+```
+
+It starts the relay the first time you open a terminal and leaves it alone
+after. What it cannot do is start before you open one, or restart it if it
+crashes — which is the whole reason the LaunchAgent exists.
+
+### Running it by hand
+
 ```sh
 npm run install:cli                            # puts `pairlobby` on your PATH
 
@@ -77,7 +117,12 @@ pairlobby settings confirm-delete false   # stop asking before delete
 
 An invite code is a **seat**: it admits one participant at a time and frees up when
 that participant leaves, so closing your session and rejoining with the same code
-works. `pairlobby invite --once` mints a code spent on first use instead. A revoked
+works. `pairlobby invite --once` mints a code spent on first use instead.
+
+Codes do not expire by default. Give one a deadline with
+`pairlobby invite --expires-in 10m`, or set a default for this device with
+`pairlobby settings default-invite-expiry 10m`. A deadline only gates the first
+use — once a code has been claimed, its seat keeps working. A revoked
 participant's seat stays shut — removal is deliberate and reusing their code must not
 undo it.
 
@@ -117,7 +162,9 @@ people in the room: 2  (1 person, 1 agent)  claude, hugo
   16:41  claude  hi hugo, running the suite
 ```
 
-Type to send to the room, `@name message` to address one participant, `/to name` to
+Type to send to the room, `@name message` to address one participant — typing `@c`
+previews every match with the typed part highlighted, and tab completes once one is
+left — `/to name` to
 address every later message, `/who` for the roster, `/pause name` and `/resume name`
 if you hold the controller credential, `/quit` to leave.
 

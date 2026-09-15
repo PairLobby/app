@@ -2,7 +2,7 @@
 //! everything diagnostic goes to stderr so a piped command stays parseable.
 
 import type {RoomEvent, RoomSnapshot} from '@pairlobby/protocol';
-import type {RoomEntry} from '@pairlobby/client';
+import type {OpenRequest, RoomEntry} from '@pairlobby/client';
 
 export function out(line = ''): void {
     process.stdout.write(`${line}\n`);
@@ -139,6 +139,27 @@ export function renderSnapshot(snapshot: RoomSnapshot, now = Date.now()): void {
     }
 }
 
+/** Who is waiting on whom. An unanswered request is the quiet way a room stalls. */
+export function renderOpenRequests(requests: OpenRequest[], names: Map<string, string>, now = Date.now()): void {
+    if (requests.length === 0) return;
+    out('');
+    out(`waiting for a reply`);
+    for (const request of requests) {
+        const from = names.get(request.from) ?? request.from;
+        const to = names.get(request.to) ?? request.to;
+        const seen = request.received ? 'read it' : 'has not read it yet';
+        out(`  ${from} -> ${to}  ${dim(`${describeWait(now - request.at)} ago, ${to} ${seen}`)}`);
+        out(`    ${request.text.slice(0, 76)}${request.text.length > 76 ? '…' : ''}`);
+    }
+}
+
+function describeWait(ms: number): string {
+    const seconds = Math.max(0, Math.round(ms / 1000));
+    if (seconds < 90) return `${seconds}s`;
+    if (seconds < 5400) return `${Math.round(seconds / 60)}m`;
+    return `${Math.round(seconds / 3600)}h`;
+}
+
 export function renderEvents(events: RoomEvent[], names: Map<string, string>): void {
     for (const event of events) {
         const sender = event.senderId ? names.get(event.senderId) ?? event.senderId : 'room';
@@ -164,6 +185,7 @@ function describe(event: RoomEvent): string {
         case 'room.renamed':        return `renamed from ${event.payload.previousName} to ${event.payload.name}`;
         case 'room.expiry_changed':  return event.payload.expiresAt === null ? 'the room no longer expires' : `the room now expires ${relativeTime(event.payload.expiresAt)}`;
         case 'room.access_changed':  return event.payload.joinPolicy === 'open_to_guests' ? 'the room is now open to read-only guests' : 'the room is now invite only';
+        case 'message.received':     return 'read';
     }
 }
 

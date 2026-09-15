@@ -7,9 +7,10 @@
 //! listing a room can never disclose one.
 
 import {readFileSync} from 'node:fs';
+import {userInfo} from 'node:os';
 import {parseArgs} from 'node:util';
 
-import {LocalStore, PairLobbyClient} from '@pairlobby/client';
+import {LocalStore, PairLobbyClient, openRequests, owedByMe, unreceipted} from '@pairlobby/client';
 import {ProtocolError, newId} from '@pairlobby/protocol';
 import type {AdapterCapabilities} from '@pairlobby/protocol';
 
@@ -19,7 +20,7 @@ import {runChatRoom} from './chat.js';
 import {WhenError, formatDuration, parseDuration, parseExpiry} from './when.js';
 import {pickExpiry} from './picker.js';
 import {UsageError, controllerCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
-import {json, note, out, renderEvents, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
+import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
 const OPTIONS = {
     name:       {type: 'string'},
@@ -46,6 +47,7 @@ const OPTIONS = {
     once:       {type: 'boolean'},
     off:        {type: 'boolean'},
     expiry:     {type: 'string'},
+    'expires-in': {type: 'string'},
     interval:   {type: 'string'},
     wait:       {type: 'string'},
     all:        {type: 'boolean'},
@@ -85,6 +87,7 @@ const HELP = `pairlobby — a private room for your agents
   pairlobby decline <handover-id> --revision <n>
   pairlobby status                   participants and control state
   pairlobby invite                   mint an invite code (a reusable seat; --once for single use)
+  pairlobby invite --expires-in 10m  mint one that stops working after a while
   pairlobby ack --outcome <outcome>  report what a pause actually did
   pairlobby pause <who>              controller only
   pairlobby resume <who>             controller only
@@ -350,8 +353,14 @@ function identityFrom(store: LocalStore, values: Values, fallbackName: string): 
     const profile = store.profile();
     const profileApplies = !(detected.runtime !== undefined && profile.kind === 'human');
 
-    const kind = flag(values, 'human') ? 'human' : flag(values, 'agent') ? 'agent' : (profileApplies && profile.kind) || (detected.runtime ? 'agent' : 'agent');
-    const displayName = str(values, 'as') ?? (profileApplies ? profile.displayName : undefined) ?? fallbackName;
+    // Who is at the keyboard: an agent shelling out either declares a runtime or
+    // has no terminal. A person on a TTY with neither is a person, and defaulting
+    // them to "agent" made rooms report zero people in them.
+    const looksLikeAgent = detected.runtime !== undefined || process.stdin.isTTY !== true;
+    const kind = flag(values, 'human') ? 'human'
+        : flag(values, 'agent') ? 'agent'
+        : (profileApplies && profile.kind) || (looksLikeAgent ? 'agent' : 'human');
+    const displayName = str(values, 'as') ?? (profileApplies ? profile.displayName : undefined) ?? (kind === 'human' ? osUserName() : fallbackName);
     const runtime = str(values, 'runtime') ?? (kind === 'human' ? undefined : profile.runtime ?? detected.runtime);
     const capabilities: AdapterCapabilities | undefined = runtime ? {deliverUnsolicited: false, cancelTurn: false, cancelTool: false, runtime} : undefined;
     return {displayName, kind, sessionId: newId('session'), ...(capabilities ? {capabilities} : {})};
@@ -361,7 +370,8 @@ const SETTING_KEYS = {
     'confirm-delete': {field: 'confirmDelete', kind: 'boolean', help: 'ask before deleting a room'},
     'poll-interval':  {field: 'pollIntervalMs', kind: 'number', help: 'milliseconds between live-room polls'},
     'show-ids':       {field: 'showIds', kind: 'boolean', help: 'print ids next to names in the live room'},
-    'default-expiry': {field: 'defaultRoomLifetimeMs', kind: 'duration', help: 'how long a new room lives: never, or a duration like 24h'},
+    'default-expiry':        {field: 'defaultRoomLifetimeMs', kind: 'duration', help: 'how long a new room lives: never, or a duration like 24h'},
+    'default-invite-expiry': {field: 'defaultInviteLifetimeMs', kind: 'duration', help: 'how long a new invite code lasts: never, or a duration like 10m'},
 } as const;
 
 function settingsCommand(store: LocalStore, values: Values, key?: string, value?: string): number {
@@ -479,6 +489,15 @@ function profileCommand(store: LocalStore, values: Values): number {
  * registry and never to the relay: a runtime conversation id is how the owner
  * finds their own agent, not something other participants need.
  */
+/** A person's login name beats "agent" as a default label for a person. */
+function osUserName(): string {
+    try {
+        return userInfo().username || 'you';
+    } catch {
+        return 'you';
+    }
+}
+
 function localDetail(values: Values): {runtime?: string; conversationId?: string; terminal?: string; pid?: number} {
     const detected = detectRuntime();
     // A conversation id is only inherited when this really is the detected runtime
@@ -583,16 +602,41 @@ async function readEvents(store: LocalStore, values: Values): Promise<number> {
     // The cursor advances only on an explicit read, so delivery and consumption stay distinct.
     if (page.events.length > 0) store.updateCursor(room.roomId, session.sessionId, page.events.at(-1)!.seq);
 
+    // Confirm what was actually read. Without this the sender cannot tell a busy
+    // agent from an absent one, and waits on a message nobody will ever answer.
+    const pending = unreceipted(page.events, session.participantId);
+    for (const event of pending) {
+        try {
+            await client.send(room.roomId, credential, {type: 'message.received', payload: {eventId: event.eventId}, idempotencyKey: `receipt-${event.eventId}`});
+        } catch {
+            // A receipt is a courtesy; failing to send one must not fail the read.
+        }
+    }
+
+    const whole = await client.readEvents(room.roomId, credential, 0, 500);
+    const owed = owedByMe(whole.events, session.participantId);
+
     if (flag(values, 'json')) {
-        json({events: page.events, latestSeq: page.latestSeq, hasMore: page.hasMore, addressedToMe: page.events.filter((event) => event.recipientId === session.participantId).map((event) => event.eventId)});
+        json({
+            events: page.events,
+            latestSeq: page.latestSeq,
+            hasMore: page.hasMore,
+            addressedToMe: page.events.filter((event) => event.recipientId === session.participantId).map((event) => event.eventId),
+            awaitingYourReply: owed.map((request) => ({eventId: request.eventId, from: names.get(request.from) ?? request.from, text: request.text, waitingSeconds: Math.round(request.waitingMs / 1000)})),
+        });
         return 0;
     }
-    if (page.events.length === 0) {
+    if (page.events.length === 0 && owed.length === 0) {
         note(`nothing new in ${room.name} since #${after}`);
         return 0;
     }
     renderEvents(page.events, names);
-    if (page.hasMore) note(`more events remain; run read again`);
+    if (page.hasMore) note('more events remain; run read again');
+    if (owed.length > 0) {
+        note('');
+        note(`${owed.length} ${owed.length === 1 ? 'request is' : 'requests are'} waiting on you. Answer, or say you will not:`);
+        for (const request of owed) note(`  ${names.get(request.from) ?? request.from}, ${Math.round(request.waitingMs / 1000)}s ago: ${request.text.slice(0, 72)}`);
+    }
     return 0;
 }
 
@@ -740,25 +784,33 @@ async function waitForEvents(client: PairLobbyClient, roomId: string, credential
 async function status(store: LocalStore, values: Values): Promise<number> {
     const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     const snapshot = await client.snapshot(room.roomId, credential);
+    const history = await client.readEvents(room.roomId, credential, 0, 500);
+    const names = new Map(snapshot.participants.map((participant) => [participant.participantId, participant.displayName] as const));
+    const open = openRequests(history.events);
+
     if (flag(values, 'json')) {
-        json(snapshot);
+        json({...snapshot, openRequests: open.map((request) => ({...request, from: names.get(request.from) ?? request.from, to: names.get(request.to) ?? request.to}))});
         return 0;
     }
     renderSnapshot(snapshot);
+    renderOpenRequests(open, names);
     return 0;
 }
 
 async function invite(store: LocalStore, values: Values): Promise<number> {
     const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
-    const minted = await client.mintInvite(room.roomId, credential, 'member', !flag(values, 'once'));
+    // --expires-in wins, then the device default, then the room's own policy.
+    const lifetime = str(values, 'expires-in') !== undefined ? parseLifetime(str(values, 'expires-in')!) : store.settings().defaultInviteLifetimeMs;
+    const expiresAt = lifetime === null ? null : Date.now() + lifetime;
+    const minted = await client.mintInvite(room.roomId, credential, 'member', !flag(values, 'once'), expiresAt);
+
     if (flag(values, 'json')) {
         json(minted);
         return 0;
     }
     out(minted.code);
-    note(minted.reusable
-        ? `holds one seat: reusable whenever nobody is in the room under it. Must first be used before ${new Date(minted.expiresAt).toLocaleTimeString()}`
-        : `single use, expires ${new Date(minted.expiresAt).toLocaleTimeString()}`);
+    const deadline = minted.expiresAt === null ? 'does not expire' : `must be used before ${new Date(minted.expiresAt).toLocaleString()}`;
+    note(minted.reusable ? `one seat, reusable whenever nobody holds it — ${deadline}` : `single use — ${deadline}`);
     return 0;
 }
 

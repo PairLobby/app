@@ -62,9 +62,11 @@ export interface Settings {
     showIds: boolean;
     /** How long a new room lives, in milliseconds, or null for no expiry. */
     defaultRoomLifetimeMs: number | null;
+    /** How long a new invite code stays redeemable, or null for no expiry. */
+    defaultInviteLifetimeMs: number | null;
 }
 
-export const DEFAULT_SETTINGS: Settings = {confirmDelete: true, pollIntervalMs: 700, showIds: false, defaultRoomLifetimeMs: null};
+export const DEFAULT_SETTINGS: Settings = {confirmDelete: true, pollIntervalMs: 700, showIds: false, defaultRoomLifetimeMs: null, defaultInviteLifetimeMs: null};
 
 export function dataDirectory(): string {
     const override = process.env['PAIRLOBBY_DATA_DIR'];

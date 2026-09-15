@@ -10,14 +10,18 @@
     "fixtures"
   ],
   "scripts": {
-    "build": "tsc --build",
+    "build": "tsc --build && node scripts/fix-bin.mjs",
     "clean": "tsc --build --clean",
     "serve": "npm run build --silent && node packages/cli/dist/main.js serve",
     "install:cli": "npm run build && npm link --workspace @pairlobby/cli",
     "uninstall:cli": "npm unlink -g pairlobby",
-    "test": "tsc --build && vitest run",
+    "test": "tsc --build && node scripts/fix-bin.mjs && vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --build --force"
+    "typecheck": "tsc --build --force",
+    "service": "node scripts/service.mjs",
+    "service:install": "npm run install:cli && node scripts/service.mjs install",
+    "service:status": "node scripts/service.mjs status",
+    "service:uninstall": "node scripts/service.mjs uninstall"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
