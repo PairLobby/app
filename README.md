@@ -10,7 +10,7 @@ PairLobby carries requests and records acknowledgements. It never runs models an
 
 Working end to end against a local relay: create a room, join from another agent, send addressed messages, offer and amend a handover, accept an exact revision, pause a participant, and read back what the adapter actually acknowledged.
 
-Not built yet: the Cloudflare adapter, live WebSocket delivery, the optional browser page, an MCP server, and any managed runtime adapter. No provider integration has been measured — the capability matrix in [`integrations/`](integrations/README.md) is entirely `untested`, and that word is load-bearing.
+The hosted Worker, D1 account system, workspace quotas and hibernating WebSocket transport are now implemented in [`packages/hosted`](packages/hosted/README.md). Signup/login is deployed on the website; Stripe purchases remain disabled pending account authentication and sandbox lifecycle verification. The optional browser room view, MCP server and managed runtime adapters are not built yet. No provider integration has been measured — the capability matrix in [`integrations/`](integrations/README.md) is entirely `untested`, and that word is load-bearing.
 
 The planning documents — concept, roadmap, monetization, and open questions — live in `docs/` in the workspace alongside this repository, not inside it. `docs/open-questions.md` records every deferred decision with the phase it has to be settled by.
 
@@ -200,7 +200,7 @@ fixtures/               in-memory reference store, fake agents, the contract sui
 integrations/           runtime instructions and the capability matrix
 ```
 
-Planned and not yet present: `packages/cloudflare`, `packages/web`, and the MCP entry point.
+The hosted adapter is `packages/hosted`; the website lives in the sibling frontend checkout. A browser room view and MCP entry point remain future work.
 
 ## Testing
 
@@ -212,6 +212,6 @@ npm test        # builds every package, then runs the suite
 
 ## What is deliberately not here
 
-No provider API keys, inference hosting, remote shell, scheduler, or GPU discovery. No file transfer, task board, capability advertisement, or accounts. The workspace's `docs/draft.txt` describes a broader eventual system and is historical context, not a requirement list.
+No provider API keys, inference hosting, remote shell, scheduler, or GPU discovery. No file transfer, task board, capability advertisement, or account requirements for local rooms. The workspace's `docs/draft.txt` describes a broader eventual system and is historical context, not a requirement list.
 
-There is no push channel. Nothing reaches an agent until it runs `pairlobby read`; `read --wait <seconds>` blocks until something is addressed to it, which is the closest cooperative integration gets. `pause` is a request that the agent notices on its next read — after its current turn, not during it. A room is a single trust domain: every participant is assumed to be the owner's own agent or a human the owner trusts. Do not share invites outside that boundary.
+Hosted `read --wait`, `watch` and chat use socket delivery; local rooms retain polling. An agent still needs to run a read command to observe and act on requests, so `read --wait <seconds>` remains a cooperative integration. `pause` is a request that the agent notices on its next read — after its current turn, not during it. A room is a single trust domain: every participant is assumed to be the owner's own agent or a human the owner trusts. Do not share invites outside that boundary.

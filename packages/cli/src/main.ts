@@ -11,7 +11,7 @@ import {userInfo} from 'node:os';
 import {parseArgs} from 'node:util';
 
 import {LocalStore, PairLobbyClient, openRequests, owedByMe, unreceipted} from '@pairlobby/client';
-import {ProtocolError, newId} from '@pairlobby/protocol';
+import {ProtocolError, requestState, newId} from '@pairlobby/protocol';
 import type {AdapterCapabilities} from '@pairlobby/protocol';
 
 import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
@@ -23,6 +23,11 @@ import {UsageError, controllerCredential, resolveRecipient, resolveRoom, resolve
 import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
 const OPTIONS = {
+    'wait-for-ack': {type:'string'},
+    'no-wait': {type:'boolean'},
+    'allow-from': {type:'string'},
+    'reply-to': {type: 'string'},
+    progress: {type: 'boolean'},
     name:       {type: 'string'},
     as:         {type: 'string'},
     room:       {type: 'string'},
@@ -75,6 +80,11 @@ const HELP = `pairlobby — a private room for your agents
   pairlobby join <code>              join a room and enter it
   pairlobby chat                     re-enter a room you already joined
   pairlobby send <text> --to <who>   send a message to one participant
+  pairlobby configure-claude        prepare a scoped Claude channel and Stop hook
+  pairlobby reply <event-id> <text>  answer one exact request; --progress keeps it open
+  pairlobby receipt <event-id>       explicitly acknowledge delivery
+  pairlobby requests                every unanswered request, with overdue status
+  pairlobby guard-stop              Claude Stop hook: block until pending requests are answered
   pairlobby read                     read new events for this session
   pairlobby read --wait 300          block until something is addressed to you
   pairlobby watch                    follow the room live as events arrive
@@ -125,6 +135,12 @@ async function main(argv: string[]): Promise<number> {
         case 'create':   return createRoom(store, values);
         case 'join':     return joinRoom(store, values, positionals[1]);
         case 'send':     return sendMessage(store, values, positionals.slice(1).join(' '));
+        case 'configure-claude': {const result=(await import('./channel-config.js')).configureClaude(store,str(values,'room'),str(values,'session'),str(values,'allow-from'));json(result);return 0;}
+        case 'channel': return (await import('./channel.js')).runChannel(store,str(values,'room'),str(values,'session'),str(values,'allow-from'));
+        case 'reply':    return replyMessage(store,values,positionals[1],positionals.slice(2).join(' '));
+        case 'requests': return requestStatus(store,values);
+        case 'receipt':  return receiptMessage(store,values,positionals[1]);
+        case 'guard-stop': return guardStop(store,values);
         case 'read':     return readEvents(store, values);
         case 'watch':    return watchRoom(store, values);
         case 'chat':     return chatRoom(store, values);
@@ -516,7 +532,7 @@ async function createRoom(store: LocalStore, values: Values): Promise<number> {
     if (!name) throw new UsageError('pairlobby create needs --name');
     const serverUrl = resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')});
     const identity = identityFrom(store, values, 'agent');
-    const client = new PairLobbyClient(serverUrl);
+    const client = new PairLobbyClient(serverUrl, process.env['PAIRLOBBY_ACCOUNT_TOKEN']);
     const lifetime = store.settings().defaultRoomLifetimeMs;
     const expiresAt = str(values, 'expiry') !== undefined ? parseExpirySpec(str(values, 'expiry')!) : lifetime === null ? null : Date.now() + lifetime;
     const created = await client.createRoom(name, identity, expiresAt);
@@ -575,17 +591,78 @@ async function joinRoom(store: LocalStore, values: Values, code?: string): Promi
 
 async function sendMessage(store: LocalStore, values: Values, text: string): Promise<number> {
     if (text.trim().length === 0) throw new UsageError('pairlobby send needs a message');
+    const wait=Number(str(values,'wait-for-ack') ?? 30);
+    if(!Number.isFinite(wait)||wait<0||wait>300) throw new UsageError('--wait-for-ack must be between 0 and 300 seconds');
     const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     const recipient = str(values, 'to');
+    const replyTo=str(values,'reply-to');
+    if(replyTo) return replyMessage(store,values,replyTo,text);
     const recipientId = recipient ? resolveRecipient((await client.snapshot(room.roomId, credential)).participants, recipient) : undefined;
     // The key is generated once so a retry after a lost response is a replay, not a second message.
     const result = await client.send(room.roomId, credential, {type: 'message', payload: {text, priority: 'normal'}, idempotencyKey: newId('event'), ...(recipientId ? {recipientId} : {})});
 
-    if (flag(values, 'json')) {
-        json({seq: result.event.seq, eventId: result.event.eventId, deduplicated: result.deduplicated});
-        return 0;
+    const seconds=flag(values,'no-wait')?0:Number(str(values,'wait-for-ack') ?? 30);
+    if(!Number.isFinite(seconds)||seconds<0||seconds>300) throw new UsageError('--wait-for-ack must be between 0 and 300 seconds');
+    let acknowledged=false;
+    if(recipientId && seconds>0) {
+        const deadline=Date.now()+seconds*1000;
+        note(`queued ${result.event.eventId}; waiting for the recipient's acknowledgement`);
+        while(Date.now()<deadline) {
+            const request=await client.request(room.roomId,credential,result.event.eventId);
+            if(request.receivedAt!==null) {acknowledged=true;break;}
+            if(request.failureAt) break;
+            await sleep(Math.min(1000,Math.max(0,deadline-Date.now())));
+        }
     }
-    note(`sent as #${result.event.seq}${recipientId ? ` to ${recipient}` : ' to the room'}`);
+    const timedOut=!!recipientId && seconds>0 && !acknowledged;
+    if(flag(values,'json')) json({seq:result.event.seq,eventId:result.event.eventId,deduplicated:result.deduplicated,delivery:acknowledged?'acknowledged':timedOut?'unconfirmed':'queued',requiresReply:!!recipientId,error:timedOut?'Recipient did not acknowledge before the deadline. The request is still queued; do not resend it as a new request.':null});
+    else note(acknowledged?`acknowledged ${result.event.eventId}; a final reply is still required`:timedOut?`DELIVERY UNCONFIRMED: ${result.event.eventId}. The request remains pending; check the recipient adapter.`:`queued ${result.event.eventId}`);
+    return timedOut?1:0;
+}
+
+async function receiptMessage(store: LocalStore,values: Values,eventId?: string): Promise<number> {
+    if(!eventId) throw new UsageError('receipt requires an event id');
+    const {room,credential,client}=select(store,str(values,'room'),str(values,'session'));
+    await client.acknowledgeMessage(room.roomId,credential,eventId);
+    if(flag(values,'json')) json({acknowledged:eventId});else note(`acknowledged ${eventId}`);
+    return 0;
+}
+async function replyMessage(store: LocalStore,values: Values,eventId: string | undefined,text: string): Promise<number> {
+    if(!eventId || !text.trim()) throw new UsageError('reply needs an event id and a non-empty answer (a refusal or unknown answer is valid)');
+    const {room,credential,client}=select(store,str(values,'room'),str(values,'session'));
+    const result=await client.reply(room.roomId,credential,eventId,text,flag(values,'progress'));
+    if(flag(values,'json')) json({eventId:result.event.eventId,replyTo:eventId,final:!flag(values,'progress')});
+    else note(`${flag(values,'progress')?'progress':'answer'} recorded for ${eventId}`);
+    return 0;
+}
+async function requestStatus(store: LocalStore,values: Values): Promise<number> {
+    const {room,credential,client}=select(store,str(values,'room'),str(values,'session'));
+    const page=await client.requests(room.roomId,credential,Number(str(values,'after') ?? 0));
+    const requests=page.requests.map(request=>({...request,state:requestState(request)}));
+    if(flag(values,'json')) json({requests,hasMore:page.hasMore});
+    else {
+        for(const request of requests) out(`${request.eventId}  ${request.state}  ${request.text.slice(0,100)}`);
+        if(!requests.length) out('No unanswered requests.');
+        if(page.hasMore) note('More requests remain; continue with --after using the last seq.');
+    }
+    return 0;
+}
+async function guardStop(store: LocalStore,values: Values): Promise<number> {
+    let repeated=false;
+    if(!process.stdin.isTTY) {
+        try {const input=JSON.parse(readFileSync(0,'utf8')) as {stop_hook_active?:boolean};repeated=input.stop_hook_active===true;} catch { /* Manual invocation can supply an empty input. */ }
+    }
+    try {
+        const {room,credential,client,session}=select(store,str(values,'room'),str(values,'session'));
+        const pending=await client.pendingRequests(room.roomId,credential,session.participantId);
+        if(pending.length && repeated) {
+            for(const request of pending) await client.deliveryFailed(room.roomId,credential,request.eventId,'The runtime attempted to finish again without replying after a Stop-hook reminder. Human intervention is required. No final reply was fabricated.');
+            json({systemMessage:`PAIRLOBBY FAILURE: ${pending.length} requests remain unanswered. Adapter failure was recorded in the room. The runtime is allowed to stop to avoid an infinite model loop; these requests are NOT resolved.`});
+        } else if(pending.length) json({decision:'block',reason:`PairLobby has ${pending.length} unanswered requests. Run pairlobby read --room ${room.roomId} --session ${session.sessionId} --json, then use pairlobby reply <event-id> <answer> with the same --room and --session for each request. A refusal or unknown answer is valid; progress is not a final answer. Pending IDs: ${pending.map(r=>r.eventId).join(', ')}`});
+        else json({});
+    } catch {
+        json(repeated?{systemMessage:'PAIRLOBBY FAILURE: the relay is unreachable and completion could not be verified or recorded. Requests remain unconfirmed; human intervention is required.'}:{decision:'block',reason:'PairLobby could not verify your inbox. Restore relay access or report the failure explicitly. Do not claim that room requests were answered.'});
+    }
     return 0;
 }
 
@@ -593,36 +670,31 @@ async function readEvents(store: LocalStore, values: Values): Promise<number> {
     const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     const after = str(values, 'after') !== undefined ? Number(str(values, 'after')) : session.lastReadSeq;
     const waitSeconds = str(values, 'wait') !== undefined ? Number(str(values, 'wait')) : 0;
-    const page = waitSeconds > 0
+    const before=await client.requests(room.roomId,credential,0,100,session.participantId);
+    const hasPending=before.requests.some(request=>request.to===session.participantId);
+    const page = waitSeconds > 0 && !hasPending
         ? await waitForEvents(client, room.roomId, credential, session.participantId, after, waitSeconds, flag(values, 'all'), store.settings().pollIntervalMs)
         : await client.readEvents(room.roomId, credential, after);
     const snapshot = await client.snapshot(room.roomId, credential);
     const names = new Map(snapshot.participants.map((participant) => [participant.participantId, participant.displayName] as const));
 
-    // The cursor advances only on an explicit read, so delivery and consumption stay distinct.
-    if (page.events.length > 0) store.updateCursor(room.roomId, session.sessionId, page.events.at(-1)!.seq);
-
-    // Confirm what was actually read. Without this the sender cannot tell a busy
-    // agent from an absent one, and waits on a message nobody will ever answer.
-    const pending = unreceipted(page.events, session.participantId);
-    for (const event of pending) {
-        try {
-            await client.send(room.roomId, credential, {type: 'message.received', payload: {eventId: event.eventId}, idempotencyKey: `receipt-${event.eventId}`});
-        } catch {
-            // A receipt is a courtesy; failing to send one must not fail the read.
-        }
-    }
-
-    const whole = await client.readEvents(room.roomId, credential, 0, 500);
-    const owed = owedByMe(whole.events, session.participantId);
+    const inbox=await client.requests(room.roomId,credential,0,100,session.participantId);
+    const owed=inbox.requests.filter(request=>request.to===session.participantId);
+    // Persist receipts before advancing the cursor. A failed receipt is retried
+    // by the next read; it must never be swallowed as a courtesy failure.
+    const ids=new Set([...unreceipted(page.events,session.participantId).map(event=>event.eventId),...owed.filter(request=>request.receivedAt===null).map(request=>request.eventId)]);
+    for(const id of ids) await client.acknowledgeMessage(room.roomId,credential,id);
+    for(const request of owed) if(ids.has(request.eventId)) request.receivedAt ??= Date.now();
+    if (page.events.length > 0) store.updateCursor(room.roomId,session.sessionId,page.events.at(-1)!.seq);
 
     if (flag(values, 'json')) {
         json({
             events: page.events,
+            hasMoreRequests: inbox.hasMore,
             latestSeq: page.latestSeq,
             hasMore: page.hasMore,
             addressedToMe: page.events.filter((event) => event.recipientId === session.participantId).map((event) => event.eventId),
-            awaitingYourReply: owed.map((request) => ({eventId: request.eventId, from: names.get(request.from) ?? request.from, text: request.text, waitingSeconds: Math.round(request.waitingMs / 1000)})),
+            awaitingYourReply: owed.map((request) => ({eventId: request.eventId, from: names.get(request.from) ?? request.from, text: request.text, waitingSeconds: Math.round((Date.now()-request.at) / 1000), state: requestState(request)})),
         });
         return 0;
     }
@@ -635,7 +707,7 @@ async function readEvents(store: LocalStore, values: Values): Promise<number> {
     if (owed.length > 0) {
         note('');
         note(`${owed.length} ${owed.length === 1 ? 'request is' : 'requests are'} waiting on you. Answer, or say you will not:`);
-        for (const request of owed) note(`  ${names.get(request.from) ?? request.from}, ${Math.round(request.waitingMs / 1000)}s ago: ${request.text.slice(0, 72)}`);
+        for (const request of owed) note(`  ${names.get(request.from) ?? request.from}, ${Math.round((Date.now()-request.at) / 1000)}s ago: ${request.text.slice(0, 72)}`);
     }
     return 0;
 }
@@ -665,8 +737,8 @@ async function chatRoom(store: LocalStore, values: Values): Promise<number> {
 
 /**
  * Follows a room live. This polls, because there is no push channel yet: the
- * relay knows about a new event long before this loop asks for it. A WebSocket
- * is the right fix and is not built; until then the interval is the latency.
+ * relay knows about a new event long before this loop asks for it. Hosted relays use WebSocket
+ * notifications; local relays keep this polling interval.
  */
 async function watchRoom(store: LocalStore, values: Values): Promise<number> {
     const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
@@ -683,7 +755,7 @@ async function watchRoom(store: LocalStore, values: Values): Promise<number> {
     }
 
     let stopped = false;
-    const stop = () => {stopped = true;};
+    const stop = () => {stopped = true; client.closeLive();};
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
 
@@ -714,8 +786,9 @@ async function watchRoom(store: LocalStore, values: Values): Promise<number> {
             else renderEvents(page.events, names);
         }
         if (page.hasMore) continue;
-        await sleep(intervalMs);
+        await client.waitForChange(room.roomId, credential, cursor, 300_000, intervalMs).catch(async () => {if (!stopped) await sleep(Math.max(intervalMs, 1000));});
     }
+    client.closeLive();
     return 0;
 }
 
@@ -765,7 +838,7 @@ async function waitForEvents(client: PairLobbyClient, roomId: string, credential
     let latest = after;
     const collected: Awaited<ReturnType<PairLobbyClient['readEvents']>>['events'] = [];
 
-    for (;;) {
+    try { for (;;) {
         const page = await client.readEvents(roomId, credential, cursor);
         if (page.events.length > 0) {
             cursor = page.events.at(-1)!.seq;
@@ -777,16 +850,16 @@ async function waitForEvents(client: PairLobbyClient, roomId: string, credential
         }
         latest = page.latestSeq;
         if (Date.now() >= deadline) return {events: collected, earliestSeq: 0, latestSeq: latest, hasMore: false};
-        await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, Math.max(0, deadline - Date.now()))));
-    }
+        if (!page.hasMore) await client.waitForChange(roomId, credential, cursor, Math.max(0, deadline - Date.now()), intervalMs);
+    } } finally { client.closeLive(); }
 }
 
 async function status(store: LocalStore, values: Values): Promise<number> {
     const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     const snapshot = await client.snapshot(room.roomId, credential);
-    const history = await client.readEvents(room.roomId, credential, 0, 500);
+    const pending=await client.requests(room.roomId,credential);
     const names = new Map(snapshot.participants.map((participant) => [participant.participantId, participant.displayName] as const));
-    const open = openRequests(history.events);
+    const open = pending.requests.map(request=>({...request,received:request.receivedAt!==null,waitingMs:Date.now()-request.at,state:requestState(request)}));
 
     if (flag(values, 'json')) {
         json({...snapshot, openRequests: open.map((request) => ({...request, from: names.get(request.from) ?? request.from, to: names.get(request.to) ?? request.to}))});

@@ -58,7 +58,7 @@ export const DEFAULT_ROOM_POLICY: RoomPolicy = {
 };
 
 /** Control, close, and export paths stay usable after ordinary writes hit quota. */
-export const QUOTA_EXEMPT_EVENT_TYPES = ['control.pause', 'control.resume', 'control.ack', 'participant.revoked', 'room.closed', 'room.renamed', 'room.expiry_changed', 'room.access_changed', 'message.received'] as const;
+export const QUOTA_EXEMPT_EVENT_TYPES = ['control.pause', 'control.resume', 'control.ack', 'participant.revoked', 'room.closed', 'room.renamed', 'room.expiry_changed', 'room.access_changed', 'message.received', 'message.delivery_failed'] as const;
 
 export function isQuotaExempt(eventType: string): boolean {
     return (QUOTA_EXEMPT_EVENT_TYPES as readonly string[]).includes(eventType);

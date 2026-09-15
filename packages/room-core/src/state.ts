@@ -2,7 +2,7 @@
 //! produces. Events are appended, never materialized in full: a room may retain
 //! twenty thousand of them.
 
-import type {ControlRecord, HandoverRecord, ParticipantRecord, ParticipantView, RoomEvent, RoomRecord, RoomSnapshot} from '@pairlobby/protocol';
+import type {ControlRecord, MessageRequest, HandoverRecord, ParticipantRecord, ParticipantView, RoomEvent, RoomRecord, RoomSnapshot} from '@pairlobby/protocol';
 
 export interface RoomView {
     room: RoomRecord;
@@ -19,6 +19,7 @@ export interface Mutation {
     upsertParticipants: ParticipantRecord[];
     upsertHandovers: HandoverRecord[];
     upsertControls: ControlRecord[];
+    upsertRequests?: MessageRequest[];
 }
 
 export interface CoreContext {

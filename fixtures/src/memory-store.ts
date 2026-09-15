@@ -2,7 +2,7 @@
 //! stores are measured against, and it is deliberately strict: `apply` either
 //! lands every part of a mutation or throws before touching anything.
 
-import type {HandoverRecord, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
+import type {HandoverRecord, MessageRequest, RequestPage, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 import type {EventPage, IdempotencyRecord, RoomStore} from '@pairlobby/server-core';
 
@@ -18,6 +18,7 @@ interface RoomTable {
 
 export class MemoryStore implements RoomStore {
     private rooms = new Map<string, RoomTable>();
+    private requests = new Map<string,MessageRequest>();
     private invites = new Map<string, InviteRecord>();
 
     async createRoom(room: RoomRecord, participant: ParticipantRecord, event: RoomEvent): Promise<void> {
@@ -36,6 +37,10 @@ export class MemoryStore implements RoomStore {
         for (const participant of mutation.upsertParticipants) table.participants = upsert(table.participants, participant, 'participantId');
         for (const handover of mutation.upsertHandovers) table.handovers = upsert(table.handovers, handover, 'handoverId');
         for (const control of mutation.upsertControls) table.controls = upsert(table.controls, control, 'targetParticipantId');
+        for(const request of mutation.upsertRequests ?? []) {
+            const previous=this.requests.get(request.eventId);
+            this.requests.set(request.eventId,{...request,receivedAt:previous?.receivedAt ?? request.receivedAt,responseEventId:previous?.responseEventId ?? request.responseEventId,respondedAt:previous?.respondedAt ?? request.respondedAt,progressAt:Math.max(previous?.progressAt ?? 0,request.progressAt ?? 0)||null});
+        }
         table.events.push(mutation.appendEvent);
         if (idempotency) table.idempotency.set(idempotency.key, {requestDigest: idempotency.requestDigest, seq: mutation.appendEvent.seq});
     }
@@ -93,6 +98,11 @@ export class MemoryStore implements RoomStore {
         return [...this.require(roomId).handovers];
     }
 
+    async messageRequest(roomId: string,eventId: string): Promise<MessageRequest | null> {const value=this.requests.get(eventId);return value?.roomId===roomId ? value : null;}
+    async messageRequests(roomId: string,after: number,limit: number,recipientId?: string): Promise<RequestPage> {
+        const records=[...this.requests.values()].filter(r=>r.roomId===roomId && r.seq>after && r.requiresReply && !r.responseEventId && (!recipientId || r.to===recipientId)).sort((a,b)=>a.seq-b.seq);
+        return {requests:records.slice(0,limit),hasMore:records.length>limit};
+    }
     async setLifecycle(roomId: string, lifecycle: RoomRecord['lifecycle']): Promise<void> {
         const table = this.require(roomId);
         table.room = {...table.room, lifecycle};
@@ -101,6 +111,7 @@ export class MemoryStore implements RoomStore {
     async deleteRoom(roomId: string): Promise<void> {
         const table = this.rooms.get(roomId);
         if (!table) return;
+        for(const [id,request] of this.requests) if(request.roomId===roomId) this.requests.delete(id);
         table.events = [];
         table.handovers = [];
     }

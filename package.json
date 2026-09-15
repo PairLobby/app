@@ -21,7 +21,9 @@
     "service": "node scripts/service.mjs",
     "service:install": "npm run install:cli && node scripts/service.mjs install",
     "service:status": "node scripts/service.mjs status",
-    "service:uninstall": "node scripts/service.mjs uninstall"
+    "service:uninstall": "node scripts/service.mjs uninstall",
+    "test:hosted": "npm run build && node --test --test-concurrency=1 packages/hosted/test/*.test.mjs",
+    "typecheck:hosted": "tsc -p packages/hosted --noEmit"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

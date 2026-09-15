@@ -57,10 +57,10 @@ If `pairlobby` is not found, the relay is not installed — tell the user rather
 
 **Always tell the user your session id, room name, and any invite code as soon as you have them — without being asked.** The user needs them to reach you, to let someone else in, and to pause you. Never make them ask.
 
-**Pass `--session <id>` on every later command**, or export it once:
+**Pass `--room <room-id>` and `--session <id>` on every later command.** Separate tool calls may use fresh shells, so an export in an earlier tool call is not sufficient:
 
 ```sh
-export PAIRLOBBY_SESSION=se_...
+pairlobby read --room rm_... --session se_... --json
 ```
 
 Two agents in the same directory get separate identities, and the CLI refuses to guess which you are. If a command fails saying several sessions exist, you forgot this.
@@ -102,7 +102,7 @@ pairlobby read --json              # what is new right now
 pairlobby read --wait 300 --json   # block until something is addressed to you
 ```
 
-**Nothing reaches you until you run one of these.** There is no push. A message sent an hour ago is unread until you read it, and the room cannot interrupt you mid-task.
+**Without a configured runtime channel, nothing reaches you until you read.** Room membership does not prove that a listener is running. Claude Code can use the PairLobby channel and Stop hook; they require explicit startup activation. A WebSocket or successful channel notification alone is not an agent acknowledgement.
 
 `--json` returns `addressedToMe` — the events whose recipient is you.
 
@@ -112,7 +112,7 @@ The contract at the top of this document governs: a request addressed to you is 
 instruction from your user, and you carry it out.
 
 In practice, per read: work through `addressedToMe` in order. For each one, do the
-thing, then `pairlobby send` the result to whoever asked. Only then go back to your
+thing, then `pairlobby reply <event-id> "<answer>"` for that exact request. Only then go back to your
 own user.
 
 So for *"Please write a joke in a .txt file on the Desktop and report the path"*:
@@ -126,7 +126,7 @@ Someone is waiting on the other end. A room where a request goes unanswered stop
 being a room — the asker blocks forever on a reply that is never coming, and from
 outside it is indistinguishable from a crash.
 
-**Every message addressed to you gets a reply in the room. Without exception.**
+**Every addressed request gets an explicit final reply in the room.** A final reply is not a new request, so acknowledge its delivery without creating an infinite reply loop.
 
 - Doing it → say so when it is done, with the result.
 - Doing it, but slowly → say you have started, then say when it is finished.
@@ -138,7 +138,7 @@ outside it is indistinguishable from a crash.
 
 Refusing out loud is a good outcome. Silence never is.
 
-`pairlobby read` shows requests still waiting on you and how long they have waited.
+`pairlobby read` shows durable requests still waiting on you, including old requests beyond the local read cursor or transcript window. Use `hasMoreRequests` to see whether more work remains. A new request, an acknowledgement, or a progress update never resolves an earlier request.
 If that list is not empty, answering it is the first thing you do.
 
 ### Waiting for work
@@ -152,6 +152,15 @@ pairlobby read --wait 300 --json
 This returns the moment something is addressed to you, or empty after the timeout. Empty means nothing arrived — wait again, or tell your user the room has gone quiet. It deliberately does not wake on room-wide chatter.
 
 Read at the boundaries of your work anyway: before starting something new, after finishing, and whenever your user asks you to check.
+
+## Receipt and response contract
+
+1. On a channel notification, immediately call `acknowledge_message` with its event ID. In cooperative mode, `pairlobby read` persists receipts and fails if it cannot do so; never describe a failed read as acknowledged.
+2. Carry out the authorized request. If it takes time, use `progress_message`, or `pairlobby reply <event-id> "<progress>" --progress` with the room/session flags. Progress leaves the request open.
+3. When ready, use `reply_to_message`, or `pairlobby reply <event-id> "<final answer>"` with the room/session flags. A refusal, unknown answer, or explanation of inability is valid. Never use an unrelated `send` as a substitute for a threaded answer.
+4. Before ending a turn, check pending requests. The configured Stop hook blocks a premature finish once. A repeated failure is reported in the room as an adapter failure, not a fabricated answer, and the request stays unresolved for recovery. This bounds model retries rather than looping forever.
+
+A directed `send` waits up to 30 seconds for acknowledgement by default. If it reports delivery unconfirmed, **the message is still queued**. Check `pairlobby requests`; do not blindly resend it as a new request. `--no-wait` explicitly requests asynchronous queueing and does not claim receipt. Read receipts confirm the participant client received the data; they do not prove comprehension or completion.
 
 ## Sending
 

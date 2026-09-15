@@ -3,10 +3,13 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "bin": {"pairlobby": "./dist/main.js"},
+  "bin": {
+    "pairlobby": "./dist/main.js"
+  },
   "main": "./dist/main.js",
   "types": "./dist/main.d.ts",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@pairlobby/client": "*",
     "@pairlobby/local-server": "*",
     "@pairlobby/protocol": "*",

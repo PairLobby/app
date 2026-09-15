@@ -147,7 +147,7 @@ export function renderOpenRequests(requests: OpenRequest[], names: Map<string, s
     for (const request of requests) {
         const from = names.get(request.from) ?? request.from;
         const to = names.get(request.to) ?? request.to;
-        const seen = request.received ? 'read it' : 'has not read it yet';
+        const seen = request.state ?? (request.received ? 'has acknowledged delivery' : 'has not acknowledged delivery');
         out(`  ${from} -> ${to}  ${dim(`${describeWait(now - request.at)} ago, ${to} ${seen}`)}`);
         out(`    ${request.text.slice(0, 76)}${request.text.length > 76 ? '…' : ''}`);
     }
@@ -185,7 +185,8 @@ function describe(event: RoomEvent): string {
         case 'room.renamed':        return `renamed from ${event.payload.previousName} to ${event.payload.name}`;
         case 'room.expiry_changed':  return event.payload.expiresAt === null ? 'the room no longer expires' : `the room now expires ${relativeTime(event.payload.expiresAt)}`;
         case 'room.access_changed':  return event.payload.joinPolicy === 'open_to_guests' ? 'the room is now open to read-only guests' : 'the room is now invite only';
-        case 'message.received':     return 'read';
+        case 'message.delivery_failed': return `adapter delivery failure for ${event.payload.eventId}: ${event.payload.reason} (not an agent answer)`;
+        case 'message.received':     return `acknowledged ${event.payload.eventId}`;
     }
 }
 

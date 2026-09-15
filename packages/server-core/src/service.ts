@@ -2,7 +2,7 @@
 //! the Node server both run this; only the store and the socket layer differ.
 
 import {DEFAULT_ROOM_POLICY, ProtocolError, hashCredential, newId, newInviteCode, normalizeInviteCode} from '@pairlobby/protocol';
-import type {AdapterCapabilities, ExportResponse, ParticipantKind, ParticipantRole, ReadEventsResponse, RoomEvent, RoomPolicy, RoomSnapshot, SendEventRequest} from '@pairlobby/protocol';
+import type {AdapterCapabilities, MessageRequest, RequestPage, ExportResponse, ParticipantKind, ParticipantRole, ReadEventsResponse, RoomEvent, RoomPolicy, RoomSnapshot, SendEventRequest} from '@pairlobby/protocol';
 import {assertRoomWritable, authenticate, closeRoom, createRoom, joinAsGuest, joinRoom, leaveRoom, renameRoom, requestControl, revokeParticipant, sendEvent, setExpiry, setJoinPolicy, toSnapshot} from '@pairlobby/room-core';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 
@@ -173,6 +173,8 @@ export class RoomService {
     }
 
     async send(roomId: string, credential: string, request: SendEventRequest): Promise<{event: RoomEvent; deduplicated: boolean}> {
+        const view = await this.view(roomId);
+        const actor = authenticate(view, await hashCredential(credential), this.now());
         const requestDigest = stableStringify({type: request.type, payload: request.payload, recipientId: request.recipientId ?? null, replyTo: request.replyTo ?? null});
         const previous = await this.store.idempotencyRecord(roomId, request.idempotencyKey);
         if (previous) {
@@ -181,9 +183,60 @@ export class RoomService {
             if (!event) throw new ProtocolError('cursor_gap', 'the original event for this idempotency key is no longer retained');
             return {event, deduplicated: true};
         }
-        const mutation = sendEvent(await this.view(roomId), await hashCredential(credential), request, this.ctx());
+        const updates: MessageRequest[] = [];
+        if (request.type==='message.received' || request.type==='message.delivery_failed' || (request.type==='message' && request.replyTo)) {
+            const id=request.type==='message.received' || request.type==='message.delivery_failed' ? request.payload.eventId : request.replyTo!;
+            const target=await this.store.messageRequest(roomId,id);
+            if (!target) throw new ProtocolError('invalid_request','no such addressed message in this room');
+            if (actor.kind!=='participant' || actor.participant.participantId!==target.to) throw new ProtocolError('unauthorized','only the addressed recipient may acknowledge or answer this message');
+            if(request.type==='message.delivery_failed') {
+                if(target.responseEventId) throw new ProtocolError('invalid_request','this request is already answered');
+                updates.push({...target,failureAt:this.now(),failureReason:request.payload.reason});
+            } else if (request.type==='message.received') updates.push({...target,receivedAt:target.receivedAt ?? this.now()});
+            else {
+                if (request.recipientId!==target.from) throw new ProtocolError('invalid_request','a reply must be addressed to the original sender');
+                if (!target.requiresReply) throw new ProtocolError('invalid_request','this message is already a reply or progress update');
+                if (target.responseEventId) throw new ProtocolError('invalid_request','this request already has a final reply');
+                if (target.receivedAt===null) throw new ProtocolError('invalid_request','acknowledge the request before replying');
+                updates.push({...target,progressAt:request.payload.responseStage==='progress'?this.now():target.progressAt});
+            }
+        } else if(request.type==='message' && request.payload.responseStage) {
+            throw new ProtocolError('invalid_request','responseStage requires replyTo');
+        }
+        if(request.type==='message' && request.recipientId && !request.replyTo) {
+            const pending=await this.store.messageRequests(roomId,0,1000);
+            if(pending.requests.length>=1000) throw new ProtocolError('quota_exceeded','answer or resolve pending requests before creating more');
+        }
+        const mutation = sendEvent(view, await hashCredential(credential), request, this.ctx());
+        if(request.type==='message' && request.recipientId) {
+            if(request.replyTo && request.payload.responseStage!=='progress') {
+                const target=updates[0]!;
+                updates[0]={...target,responseEventId:mutation.appendEvent.eventId,respondedAt:this.now()};
+            }
+            updates.push({roomId,eventId:mutation.appendEvent.eventId,seq:mutation.appendEvent.seq,from:mutation.appendEvent.senderId!,to:request.recipientId,text:request.payload.text,at:mutation.appendEvent.at,requiresReply:!request.replyTo,receivedAt:null,responseEventId:null,respondedAt:null,progressAt:null});
+        }
+        mutation.upsertRequests=updates;
         await this.store.apply(mutation, {key: request.idempotencyKey, requestDigest});
         return {event: mutation.appendEvent, deduplicated: false};
+    }
+
+    async acknowledgeMessage(roomId: string, credential: string, eventId: string): Promise<MessageRequest> {
+        const actor=authenticate(await this.view(roomId),await hashCredential(credential),this.now());
+        const target=await this.request(roomId,credential,eventId);
+        if(actor.kind!=='participant' || actor.participant.participantId!==target.to) throw new ProtocolError('unauthorized','only the addressed recipient may acknowledge this message');
+        if(target.receivedAt===null) await this.send(roomId,credential,{type:'message.received',payload:{eventId},idempotencyKey:`receipt-${eventId}`});
+        return this.request(roomId,credential,eventId);
+    }
+
+    async requests(roomId: string, credential: string, after=0, limit=100, recipientId?: string): Promise<RequestPage> {
+        authenticate(await this.view(roomId),await hashCredential(credential),this.now());
+        return this.store.messageRequests(roomId,after,limit,recipientId);
+    }
+    async request(roomId: string, credential: string, eventId: string): Promise<MessageRequest> {
+        authenticate(await this.view(roomId),await hashCredential(credential),this.now());
+        const request=await this.store.messageRequest(roomId,eventId);
+        if(!request) throw new ProtocolError('invalid_request','no such addressed message');
+        return request;
     }
 
     async control(roomId: string, credential: string, targetParticipantId: string, paused: boolean): Promise<RoomEvent> {
