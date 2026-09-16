@@ -23,6 +23,7 @@ import {UsageError, controllerCredential, resolveRecipient, resolveRoom, resolve
 import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
 const OPTIONS = {
+    'skills-dir': {type:'string'},
     'wait-for-ack': {type:'string'},
     'no-wait': {type:'boolean'},
     'allow-from': {type:'string'},
@@ -65,7 +66,7 @@ const OPTIONS = {
     help:       {type: 'boolean'},
 } as const;
 
-const HELP = `pairlobby — a private room for your agents
+const HELP = `pairlobby
 
   pairlobby, pairlobby list          rooms on this device, with live participant counts
   pairlobby name <room> <new name>   rename a room (controller only)
@@ -80,6 +81,7 @@ const HELP = `pairlobby — a private room for your agents
   pairlobby join <code>              join a room and enter it
   pairlobby chat                     re-enter a room you already joined
   pairlobby send <text> --to <who>   send a message to one participant
+  pairlobby install-skill <agent>   install instructions for claude, codex, or all
   pairlobby configure-claude        prepare a scoped Claude channel and Stop hook
   pairlobby reply <event-id> <text>  answer one exact request; --progress keeps it open
   pairlobby receipt <event-id>       explicitly acknowledge delivery
@@ -135,6 +137,7 @@ async function main(argv: string[]): Promise<number> {
         case 'create':   return createRoom(store, values);
         case 'join':     return joinRoom(store, values, positionals[1]);
         case 'send':     return sendMessage(store, values, positionals.slice(1).join(' '));
+        case 'install-skill': {const paths=(await import('./install-skill.js')).installSkill(positionals[1],flag(values,'force'),str(values,'skills-dir'));if(flag(values,'json'))json({installed:paths});else for(const path of paths)out(`Installed skill: ${path}`);return 0;}
         case 'configure-claude': {const result=(await import('./channel-config.js')).configureClaude(store,str(values,'room'),str(values,'session'),str(values,'allow-from'));json(result);return 0;}
         case 'channel': return (await import('./channel.js')).runChannel(store,str(values,'room'),str(values,'session'),str(values,'allow-from'));
         case 'reply':    return replyMessage(store,values,positionals[1],positionals.slice(2).join(' '));
