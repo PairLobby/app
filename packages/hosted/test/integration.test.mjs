@@ -6,7 +6,7 @@ import {PairLobbyClient} from '../../client/dist/index.js';
 import {createHash,randomUUID} from 'node:crypto';
 
 const origin='https://pairlobby.com';
-const server=createTestHarness({workers:[{configPath:'wrangler.jsonc',vars:{SIGNUPS_ENABLED:'true'},secrets:{BETTER_AUTH_SECRET:'test-only-secret-with-at-least-thirty-two-bytes',STRIPE_WEBHOOK_SECRET:'whsec_test_only',STRIPE_SECRET_KEY:'sk_test_placeholder'}}]});
+const server=createTestHarness({workers:[{configPath:'packages/hosted/wrangler.jsonc',vars:{SIGNUPS_ENABLED:'true'},secrets:{BETTER_AUTH_SECRET:'test-only-secret-with-at-least-thirty-two-bytes',STRIPE_WEBHOOK_SECRET:'whsec_test_only',STRIPE_SECRET_KEY:'sk_test_placeholder'}}]});
 let worker,db,cookie,user,workspace,team,relay,token,localOrigin;
 const hash=s=>createHash('sha256').update(s).digest('hex');
 async function call(path,{body,headers={},method=body===undefined?'GET':'POST'}={}) {

@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --config ../../wrangler.jsonc",
-    "deploy": "wrangler deploy --config ../../wrangler.jsonc",
+    "dev": "npm --prefix ../.. run build && wrangler dev",
+    "deploy": "npm --prefix ../.. run build && wrangler deploy",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
