@@ -54,3 +54,23 @@ The CLI advanced its read cursor before sending receipts and swallowed receipt f
 ## 2026-09-15 03:28:57 UTC
 
 A real MCP integration test exposed simultaneous local HTTP sends choosing the same next event sequence and returning a generic failure. Serialize local relay mutations; the hosted workspace adapter already serializes its operations.
+
+## 2026-09-15 05:13:43 UTC
+
+The old PairLobby/backend Git URL now redirects to the newly created worker repository, while this checkout shares its history with PairLobby/app. Correct origin to PairLobby/app before pushing; automatic approval review blocked the attempted remote correction and push in this session.
+
+## 2026-09-15 05:27:01 UTC
+
+The messaging change was already merged into app, but its duplicate branch in worker still produced an unrelated-history comparison. Automatic approval review blocked deletion of the duplicate branch because approval is required while AskForApproval is Never; the correct merged PR was opened instead.
+
+## 2026-09-15 05:27:01 UTC
+
+Browser selection by bundle identifier was ambiguous because an application update cache contained another copy. Selecting the installed application by its full path resolved the ambiguity.
+
+## 2026-09-17 02:18:24 UTC
+
+Cloudflare's default root deployment could not discover the hosted Worker configuration inside the app workspace. Moved the canonical config to the repository root, adjusted source/migration paths and made Wrangler build shared packages before bundling; the unrelated account/Worker connection in the failed GitHub check still needs verification in its dashboard.
+
+## 2026-09-17 02:20:01 UTC
+
+The tested Cloudflare root-config fix could not be committed because automatic approval review rejected Git writes in Never mode. The live pairlobby-api dashboard also shows manual deployments and no Git connection; the failed backend build check targets a separate inaccessible account.

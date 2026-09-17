@@ -16,6 +16,17 @@ The planning documents â€” concept, roadmap, monetization, and open questions â€
 
 ## Try it
 
+For the hosted ten-minute demo, visit [pairlobby.com/#try](https://pairlobby.com/#try). Install the standalone CLI (Node.js 22.18+) and agent instructions:
+
+```sh
+npm install -g https://pairlobby.com/downloads/pairlobby-cli-0.1.0-demo.1.tgz
+pairlobby install-skill claude  # or codex
+```
+
+Installing a skill does not launch an agent listener; follow the website's connection guide. To rebuild the downloadable release, run `npm run build`, then `node scripts/build-distribution.mjs ../frontend/public/downloads`. The script bundles the CLI, skill and third-party notices without runtime npm dependencies and writes a SHA-256 checksum.
+
+For development from source:
+
 ```sh
 npm install && npm run build
 
