@@ -6,7 +6,7 @@ The website serves `/login`, `/signup`, `/reset-password` and `/account`. This W
 
 ## Local validation
 
-From the backend repository root:
+From the app repository root:
 
 ```sh
 npm ci
@@ -21,13 +21,17 @@ node scripts/hosted-costs.mjs
 
 ## Deployment
 
-The D1 database ID is in `wrangler.jsonc`. Run migrations before deployment:
+The canonical Worker configuration is [`../../wrangler.jsonc`](../../wrangler.jsonc) at the app repository root, so Cloudflare's default deployment command discovers it. Wrangler builds the shared workspace packages before bundling the Worker. Run migrations before deployment when there are new migrations:
 
 ```sh
-npx wrangler d1 migrations apply pairlobby-accounts --remote --config packages/hosted/wrangler.jsonc
-npm run build
-npx wrangler deploy --config packages/hosted/wrangler.jsonc
+npx wrangler d1 migrations apply pairlobby-accounts --remote
+npm run deploy:check
+npm run deploy
 ```
+
+For Workers Builds, connect `PairLobby/app` to the existing `pairlobby-api` Worker in the account that owns `pairlobby.com` and `pairlobby-accounts`. Use repository root `/`, leave the separate build command empty (Wrangler runs it), and set the deploy command to `npx wrangler deploy`. A build connected to a different Worker named `backend` or to another account does not target this deployment; reconnect it to `pairlobby-api` instead of renaming the configured Worker or replacing its database ID.
+
+For local development, run `npm run dev --workspace @pairlobby/hosted` from the repository root. Local secrets are read from the root `.dev.vars` alongside the configuration. Existing local development state under `packages/hosted/.wrangler/state` can be reused with `--persist-to packages/hosted/.wrangler/state` when invoking Wrangler from the repository root.
 
 The Worker needs Workers Paid for production auth CPU budgets and the modeled allocations. The subscription lookup scope is not available to the current Wrangler OAuth token, so confirm the account plan in Cloudflare. Email Sending is enabled for `pairlobby.com`; the sending identity is `accounts@pairlobby.com`.
 

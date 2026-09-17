@@ -11,6 +11,8 @@
   ],
   "scripts": {
     "build": "tsc --build && node scripts/fix-bin.mjs",
+    "deploy": "wrangler deploy",
+    "deploy:check": "wrangler deploy --dry-run",
     "clean": "tsc --build --clean",
     "serve": "npm run build --silent && node packages/cli/dist/main.js serve",
     "install:cli": "npm run build && npm link --workspace @pairlobby/cli",
