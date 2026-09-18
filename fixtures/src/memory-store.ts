@@ -6,6 +6,8 @@ import type {HandoverRecord, MessageRequest, RequestPage, InviteRecord, Particip
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 import type {EventPage, IdempotencyRecord, RoomStore} from '@pairlobby/server-core';
 
+type IdempotencyKey = {key: string; requestDigest: string} | null;
+
 interface RoomTable {
     room: RoomRecord;
     participants: ParticipantRecord[];
@@ -18,7 +20,7 @@ interface RoomTable {
 
 export class MemoryStore implements RoomStore {
     private rooms = new Map<string, RoomTable>();
-    private requests = new Map<string,MessageRequest>();
+    private requests = new Map<string, MessageRequest>();
     private invites = new Map<string, InviteRecord>();
 
     async createRoom(room: RoomRecord, participant: ParticipantRecord, event: RoomEvent): Promise<void> {
@@ -27,22 +29,32 @@ export class MemoryStore implements RoomStore {
 
     async loadRoom(roomId: string): Promise<RoomView | null> {
         const table = this.rooms.get(roomId);
-        if (!table) return null;
+        if (!table) {
+            return null;
+        }
         return {room: table.room, participants: table.participants, handovers: table.handovers, controls: table.controls, earliestSeq: table.earliestSeq};
     }
 
-    async apply(mutation: Mutation, idempotency: {key: string; requestDigest: string} | null): Promise<void> {
+    async apply(mutation: Mutation, idempotency: IdempotencyKey): Promise<void> {
         const table = this.require(mutation.room.roomId);
         table.room = mutation.room;
         for (const participant of mutation.upsertParticipants) table.participants = upsert(table.participants, participant, 'participantId');
         for (const handover of mutation.upsertHandovers) table.handovers = upsert(table.handovers, handover, 'handoverId');
         for (const control of mutation.upsertControls) table.controls = upsert(table.controls, control, 'targetParticipantId');
-        for(const request of mutation.upsertRequests ?? []) {
-            const previous=this.requests.get(request.eventId);
-            this.requests.set(request.eventId,{...request,receivedAt:previous?.receivedAt ?? request.receivedAt,responseEventId:previous?.responseEventId ?? request.responseEventId,respondedAt:previous?.respondedAt ?? request.respondedAt,progressAt:Math.max(previous?.progressAt ?? 0,request.progressAt ?? 0)||null});
+        for (const request of mutation.upsertRequests ?? []) {
+            const previous = this.requests.get(request.eventId);
+            this.requests.set(request.eventId, {
+                ...request,
+                receivedAt: previous?.receivedAt ?? request.receivedAt,
+                responseEventId: previous?.responseEventId ?? request.responseEventId,
+                respondedAt: previous?.respondedAt ?? request.respondedAt,
+                progressAt: Math.max(previous?.progressAt ?? 0, request.progressAt ?? 0) || null
+            });
         }
         table.events.push(mutation.appendEvent);
-        if (idempotency) table.idempotency.set(idempotency.key, {requestDigest: idempotency.requestDigest, seq: mutation.appendEvent.seq});
+        if (idempotency) {
+            table.idempotency.set(idempotency.key, {requestDigest: idempotency.requestDigest, seq: mutation.appendEvent.seq});
+        }
     }
 
     async readEvents(roomId: string, after: number, limit: number): Promise<EventPage> {
@@ -70,12 +82,22 @@ export class MemoryStore implements RoomStore {
 
     async reserveInvite(digest: string, attemptId: string, credentialHash: string, expectedOccupantId: string | null): Promise<InviteRecord | null> {
         const invite = this.invites.get(digest);
-        if (!invite) return null;
-        if (invite.boundAttemptId === attemptId) return invite;
-        if (invite.state === 'reserved') return null;
+        if (!invite) {
+            return null;
+        }
+        if (invite.boundAttemptId === attemptId) {
+            return invite;
+        }
+        if (invite.state === 'reserved') {
+            return null;
+        }
         if (invite.state === 'redeemed') {
-            if (!invite.reusable) return null;
-            if (invite.redeemedParticipantId !== expectedOccupantId) return null;
+            if (!invite.reusable) {
+                return null;
+            }
+            if (invite.redeemedParticipantId !== expectedOccupantId) {
+                return null;
+            }
         } else if (expectedOccupantId !== null) {
             return null;
         }
@@ -86,7 +108,9 @@ export class MemoryStore implements RoomStore {
 
     async completeInvite(digest: string, participantId: string): Promise<void> {
         const invite = this.invites.get(digest);
-        if (!invite) return;
+        if (!invite) {
+            return;
+        }
         this.invites.set(digest, {...invite, state: 'redeemed', redeemedParticipantId: participantId});
     }
 
@@ -98,10 +122,15 @@ export class MemoryStore implements RoomStore {
         return [...this.require(roomId).handovers];
     }
 
-    async messageRequest(roomId: string,eventId: string): Promise<MessageRequest | null> {const value=this.requests.get(eventId);return value?.roomId===roomId ? value : null;}
-    async messageRequests(roomId: string,after: number,limit: number,recipientId?: string): Promise<RequestPage> {
-        const records=[...this.requests.values()].filter(r=>r.roomId===roomId && r.seq>after && r.requiresReply && !r.responseEventId && (!recipientId || r.to===recipientId)).sort((a,b)=>a.seq-b.seq);
-        return {requests:records.slice(0,limit),hasMore:records.length>limit};
+    async messageRequest(roomId: string, eventId: string): Promise<MessageRequest | null> {
+        const value = this.requests.get(eventId);
+        return value?.roomId === roomId ? value : null;
+    }
+    async messageRequests(roomId: string, after: number, limit: number, recipientId?: string): Promise<RequestPage> {
+        const records = [...this.requests.values()]
+            .filter((r) => r.roomId === roomId && r.seq > after && r.requiresReply && !r.responseEventId && (!recipientId || r.to === recipientId))
+            .sort((a, b) => a.seq - b.seq);
+        return {requests: records.slice(0, limit), hasMore: records.length > limit};
     }
     async setLifecycle(roomId: string, lifecycle: RoomRecord['lifecycle']): Promise<void> {
         const table = this.require(roomId);
@@ -110,8 +139,13 @@ export class MemoryStore implements RoomStore {
 
     async deleteRoom(roomId: string): Promise<void> {
         const table = this.rooms.get(roomId);
-        if (!table) return;
-        for(const [id,request] of this.requests) if(request.roomId===roomId) this.requests.delete(id);
+        if (!table) {
+            return;
+        }
+        for (const [id, request] of this.requests)
+            if (request.roomId === roomId) {
+                this.requests.delete(id);
+            }
         table.events = [];
         table.handovers = [];
     }
@@ -125,13 +159,17 @@ export class MemoryStore implements RoomStore {
 
     private require(roomId: string): RoomTable {
         const table = this.rooms.get(roomId);
-        if (!table) throw new Error(`unknown room ${roomId}`);
+        if (!table) {
+            throw new Error(`unknown room ${roomId}`);
+        }
         return table;
     }
 }
 
 function upsert<T extends Record<string, unknown>>(list: T[], item: T, key: keyof T): T[] {
     const index = list.findIndex((candidate) => candidate[key] === item[key]);
-    if (index === -1) return [...list, item];
+    if (index === -1) {
+        return [...list, item];
+    }
     return list.map((candidate, position) => (position === index ? item : candidate));
 }

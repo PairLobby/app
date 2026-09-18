@@ -125,6 +125,37 @@ test('Team seats are allocated atomically and members cannot manage billing',asy
     assert.equal(memberToken.response.status,201,JSON.stringify(memberToken.data));
 },{timeout:30_000});
 
+test('online keys resolve globally and private rooms reject unauthorized accounts on every join path',async()=>{
+    const member=await db.prepare("SELECT u.id,u.email FROM user u JOIN team_members tm ON tm.user_id=u.id WHERE tm.team_id=? AND u.id<>? LIMIT 1").bind(team,user.id).first();
+    assert.ok(member);
+    const memberToken='pl_'+randomUUID();
+    await db.prepare('INSERT INTO api_tokens VALUES(?,?,?,?,?,?,?)').bind(hash(memberToken),member.id,workspace,team,'private room test',Date.now(),Date.now()+60000).run();
+    const creatorHeaders={'x-pairlobby-account-token':token};
+    const who=await call('/api/online/account',{headers:creatorHeaders});assert.equal(who.response.status,200);assert.equal(who.data.userId,user.id);
+    const input={name:'private room',displayName:'owner',kind:'agent',controllerCredential:'private-controller'.repeat(3),participantCredential:'private-participant'.repeat(3),private:true};
+    const created=await call(relay+'/v1/rooms',{body:input,headers:creatorHeaders});assert.equal(created.response.status,201,JSON.stringify(created.data));
+    const key=created.data.invite.code;assert.match(key,/^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+    const lookup='/api/online/invites/'+key;
+    assert.equal((await call(lookup)).response.status,401);
+    assert.equal((await call(lookup,{headers:{'x-pairlobby-account-token':memberToken}})).response.status,403);
+    const resolved=await call(lookup,{headers:creatorHeaders});assert.equal(resolved.response.status,200);assert.equal(resolved.data.server,origin+relay);
+    const join={code:key,displayName:'allowed agent',kind:'agent',attemptId:'at_'+'A'.repeat(26),attemptSecret:'s'.repeat(40),participantCredential:'j'.repeat(40)};
+    assert.equal((await call(relay+'/v1/invites/redeem',{body:join,headers:{'x-account-user':user.id}})).response.status,401,'spoofed identity cannot bypass direct redemption');
+    assert.equal((await call(relay+'/v1/invites/redeem',{body:join,headers:{'x-pairlobby-account-token':memberToken}})).response.status,403);
+    const path=relay+'/v1/rooms/'+created.data.room.roomId;
+    assert.equal((await call(path+'/allowed-accounts',{method:'PUT',body:{private:true,accounts:[member.email]},headers:{authorization:'Bearer '+input.participantCredential}})).response.status,403);
+    assert.equal((await call(path+'/allowed-accounts',{method:'PUT',body:{private:true,accounts:[member.email]},headers:{authorization:'Bearer '+input.controllerCredential}})).response.status,200);
+    const joined=await call(relay+'/v1/invites/redeem',{body:join,headers:{'x-pairlobby-account-token':memberToken}});assert.equal(joined.response.status,200,JSON.stringify(joined.data));
+    assert.equal((await call(path,{headers:{authorization:'Bearer '+join.participantCredential}})).response.status,200);
+    assert.equal((await call(path+'/allowed-accounts',{method:'PUT',body:{private:true,accounts:[]},headers:{authorization:'Bearer '+input.controllerCredential}})).response.status,200);
+    assert.equal((await call(path,{headers:{authorization:'Bearer '+join.participantCredential}})).response.status,403,'removal also closes existing access');
+    await db.prepare('DELETE FROM api_tokens WHERE digest=?').bind(hash(memberToken)).run();
+    assert.equal((await call('/api/online/account',{headers:{'x-pairlobby-account-token':memberToken}})).response.status,401);
+    const keys=await db.prepare('SELECT digest FROM online_invites').all();assert.equal(new Set(keys.results.map(row=>row.digest)).size,keys.results.length);
+    await call(path,{method:'DELETE',headers:{authorization:'Bearer '+input.controllerCredential}});
+    assert.equal((await call(lookup,{headers:creatorHeaders})).response.status,404,'deleted room keys cannot resolve');
+},{timeout:10000});
+
 test('expired subscriptions deny new work but preserve controls and exports',async()=>{
     await db.prepare('UPDATE workspaces SET period_end=? WHERE id=?').bind(Date.now()-1000,workspace).run();
     let result=await call(relay+`/v1/rooms/${room}/events`,{body:{type:'message',payload:{text:'no',priority:'normal'},idempotencyKey:'expired-write'},headers:{authorization:`Bearer ${credential}`}});assert.equal(result.response.status,402);

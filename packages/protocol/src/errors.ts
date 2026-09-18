@@ -20,7 +20,7 @@ export const ERROR_CODES = [
     'unsupported_capability',
     'protocol_version_unsupported',
     'invalid_request',
-    'server_unavailable',
+    'server_unavailable'
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -37,25 +37,25 @@ export interface ProtocolErrorBody {
 }
 
 const STATUS_BY_CODE: Record<ErrorCode, number> = {
-    invite_expired:               410,
-    invite_already_redeemed:      409,
-    invite_unknown:               404,
-    unauthorized:                 401,
-    participant_revoked:          403,
-    room_expired:                 410,
-    room_closed:                  409,
-    room_not_found:               404,
-    quota_exceeded:               429,
-    cursor_gap:                   410,
-    stale_handover_revision:      409,
-    handover_already_resolved:    409,
-    idempotency_conflict:         409,
-    participant_limit_reached:    409,
-    payload_too_large:            413,
-    unsupported_capability:       501,
+    invite_expired: 410,
+    invite_already_redeemed: 409,
+    invite_unknown: 404,
+    unauthorized: 401,
+    participant_revoked: 403,
+    room_expired: 410,
+    room_closed: 409,
+    room_not_found: 404,
+    quota_exceeded: 429,
+    cursor_gap: 410,
+    stale_handover_revision: 409,
+    handover_already_resolved: 409,
+    idempotency_conflict: 409,
+    participant_limit_reached: 409,
+    payload_too_large: 413,
+    unsupported_capability: 501,
     protocol_version_unsupported: 400,
-    invalid_request:              400,
-    server_unavailable:           503,
+    invalid_request: 400,
+    server_unavailable: 503
 };
 
 export class ProtocolError extends Error {

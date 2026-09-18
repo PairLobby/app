@@ -25,9 +25,9 @@ export interface RuntimeIdentity {
  */
 const CONVERSATION_VARIABLES: {variable: string; runtime: string; verified: boolean}[] = [
     {variable: 'CLAUDE_CODE_SESSION_ID', runtime: 'claude-code', verified: true},
-    {variable: 'CODEX_SESSION_ID',       runtime: 'codex-cli',   verified: false},
-    {variable: 'CODEX_THREAD_ID',        runtime: 'codex-cli',   verified: false},
-    {variable: 'CODEX_CONVERSATION_ID',  runtime: 'codex-cli',   verified: false},
+    {variable: 'CODEX_SESSION_ID', runtime: 'codex-cli', verified: false},
+    {variable: 'CODEX_THREAD_ID', runtime: 'codex-cli', verified: false},
+    {variable: 'CODEX_CONVERSATION_ID', runtime: 'codex-cli', verified: false}
 ];
 
 export function detectRuntime(): RuntimeIdentity {
@@ -36,6 +36,6 @@ export function detectRuntime(): RuntimeIdentity {
     return {
         ...(found ? {conversationId: found.value!, runtime: found.runtime} : {}),
         ...(terminal ? {terminal} : {}),
-        pid: process.ppid,
+        pid: process.ppid
     };
 }

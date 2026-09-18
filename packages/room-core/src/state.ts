@@ -69,7 +69,7 @@ export function toParticipantView(view: RoomView, participant: ParticipantRecord
         left: participant.leftAt !== null,
         paused: control?.paused ?? false,
         controlRevision: control?.revision ?? 0,
-        acknowledgedOutcome: control?.acknowledgedOutcome ?? null,
+        acknowledgedOutcome: control?.acknowledgedOutcome ?? null
     };
 }
 
@@ -85,6 +85,6 @@ export function toSnapshot(view: RoomView): RoomSnapshot {
         latestSeq: view.room.nextSeq - 1,
         earliestSeq: view.earliestSeq,
         participants: view.participants.map((participant) => toParticipantView(view, participant)),
-        policy: view.room.policy,
+        policy: view.room.policy
     };
 }

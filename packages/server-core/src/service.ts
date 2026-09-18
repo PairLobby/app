@@ -2,12 +2,49 @@
 //! the Node server both run this; only the store and the socket layer differ.
 
 import {DEFAULT_ROOM_POLICY, ProtocolError, hashCredential, newId, newInviteCode, normalizeInviteCode} from '@pairlobby/protocol';
-import type {AdapterCapabilities, MessageRequest, RequestPage, ExportResponse, ParticipantKind, ParticipantRole, ReadEventsResponse, RoomEvent, RoomPolicy, RoomSnapshot, SendEventRequest} from '@pairlobby/protocol';
-import {assertRoomWritable, authenticate, closeRoom, createRoom, joinAsGuest, joinRoom, leaveRoom, renameRoom, requestControl, revokeParticipant, sendEvent, setExpiry, setJoinPolicy, toSnapshot} from '@pairlobby/room-core';
+import type {
+    AdapterCapabilities,
+    MessageRequest,
+    RequestPage,
+    ExportResponse,
+    ParticipantKind,
+    ParticipantRole,
+    ReadEventsResponse,
+    RoomEvent,
+    RoomPolicy,
+    RoomSnapshot,
+    SendEventRequest
+} from '@pairlobby/protocol';
+import {
+    assertRoomWritable,
+    authenticate,
+    closeRoom,
+    createRoom,
+    joinAsGuest,
+    joinRoom,
+    leaveRoom,
+    renameRoom,
+    requestControl,
+    revokeParticipant,
+    sendEvent,
+    setExpiry,
+    setJoinPolicy,
+    toSnapshot
+} from '@pairlobby/room-core';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 
 import {stableStringify} from './stable-json.js';
 import type {RoomStore} from './store.js';
+
+type InviteDirectory = {
+    reserve(code: string, roomId: string, expiresAt: number | null): Promise<boolean>;
+};
+
+type MintedInvite = {code: string; expiresAt: number | null; reusable: boolean};
+
+type SentEventResult = {event: RoomEvent; deduplicated: boolean};
+
+type GuestJoinInput = Identity & {participantCredential: string};
 
 export interface Identity {
     displayName: string;
@@ -51,7 +88,11 @@ export class RoomService {
     private readonly store: RoomStore;
     private readonly now: Clock;
 
-    constructor(store: RoomStore, now: Clock = () => Date.now()) {
+    constructor(
+        store: RoomStore,
+        now: Clock = () => Date.now(),
+        private readonly directory?: InviteDirectory
+    ) {
         this.store = store;
         this.now = now;
     }
@@ -62,41 +103,60 @@ export class RoomService {
 
     private async view(roomId: string): Promise<RoomView> {
         const view = await this.store.loadRoom(roomId);
-        if (!view) throw new ProtocolError('room_not_found', 'no such room');
+        if (!view) {
+            throw new ProtocolError('room_not_found', 'no such room');
+        }
         return view;
     }
 
     async createRoom(input: CreateRoomInput): Promise<CreatedRoom> {
-        const created = createRoom({
-            name: input.name,
-            roomId: newId('room'),
-            controllerCredentialHash: await hashCredential(input.controllerCredential),
-            participantCredentialHash: await hashCredential(input.participantCredential),
-            displayName: input.displayName,
-            kind: input.kind,
-            sessionId: input.sessionId ?? null,
-            capabilities: input.capabilities ?? null,
-            ...(input.expiresAt !== undefined ? {expiresAt: input.expiresAt} : {}),
-            ...(input.policy ? {policy: input.policy} : {}),
-        }, this.ctx());
+        const created = createRoom(
+            {
+                name: input.name,
+                roomId: newId('room'),
+                controllerCredentialHash: await hashCredential(input.controllerCredential),
+                participantCredentialHash: await hashCredential(input.participantCredential),
+                displayName: input.displayName,
+                kind: input.kind,
+                sessionId: input.sessionId ?? null,
+                capabilities: input.capabilities ?? null,
+                ...(input.expiresAt !== undefined ? {expiresAt: input.expiresAt} : {}),
+                ...(input.policy ? {policy: input.policy} : {})
+            },
+            this.ctx()
+        );
         await this.store.createRoom(created.mutation.room, created.participant, created.mutation.appendEvent);
         const invite = await this.mintInvite(created.room.roomId, input.controllerCredential, 'member');
         const view = await this.view(created.room.roomId);
         return {roomId: created.room.roomId, participantId: created.participant.participantId, invite, snapshot: toSnapshot(view)};
     }
 
-    async mintInvite(roomId: string, credential: string, role: ParticipantRole, reusable = true, expiresAt?: number | null): Promise<{code: string; expiresAt: number | null; reusable: boolean}> {
+    async mintInvite(roomId: string, credential: string, role: ParticipantRole, reusable = true, expiresAt?: number | null): Promise<MintedInvite> {
         const view = await this.view(roomId);
         const actor = authenticate(view, await hashCredential(credential), this.now());
         if (actor.kind === 'participant' && actor.participant.role === 'guest') {
             throw new ProtocolError('unauthorized', 'guests cannot invite others into a room');
         }
         assertRoomWritable(view, this.now());
-        const code = newInviteCode();
-        const normalized = normalizeInviteCode(code)!;
         const now = this.now();
         const lifetime = view.room.policy.inviteLifetimeMs;
         const deadline = expiresAt !== undefined ? expiresAt : lifetime === null ? null : now + lifetime;
+        let code = '',
+            normalized = '';
+        for (let attempt = 0; attempt < 8; attempt++) {
+            code = newInviteCode(this.directory ? 12 : 8);
+            normalized = normalizeInviteCode(code)!;
+            if (await this.store.inviteByDigest(await hashCredential(normalized))) {
+                continue;
+            }
+            if (!this.directory || (await this.directory.reserve(code, roomId, deadline))) {
+                break;
+            }
+            code = '';
+        }
+        if (!code || (await this.store.inviteByDigest(await hashCredential(normalized)))) {
+            throw new ProtocolError('server_unavailable', 'Could not allocate a unique invite; try again');
+        }
         await this.store.putInvite({
             digest: await hashCredential(normalized),
             roomId,
@@ -108,7 +168,7 @@ export class RoomService {
             boundAttemptId: null,
             boundCredentialHash: null,
             redeemedParticipantId: null,
-            recoverableUntil: deadline === null ? null : deadline + (deadline - now),
+            recoverableUntil: deadline === null ? null : deadline + (deadline - now)
         });
         return {code, expiresAt: deadline, reusable};
     }
@@ -120,10 +180,14 @@ export class RoomService {
      */
     async redeemInvite(input: RedeemInput): Promise<RedeemResult> {
         const normalized = normalizeInviteCode(input.code);
-        if (!normalized) throw new ProtocolError('invite_unknown', 'that invite code is not well formed');
+        if (!normalized) {
+            throw new ProtocolError('invite_unknown', 'that invite code is not well formed');
+        }
         const digest = await hashCredential(normalized);
         const invite = await this.store.inviteByDigest(digest);
-        if (!invite) throw new ProtocolError('invite_unknown', 'that invite code is not valid');
+        if (!invite) {
+            throw new ProtocolError('invite_unknown', 'that invite code is not valid');
+        }
         const now = this.now();
         let expectedOccupantId: string | null = null;
         const credentialHash = await hashCredential(input.participantCredential);
@@ -134,13 +198,21 @@ export class RoomService {
                 const view = await this.view(invite.roomId);
                 return {roomId: invite.roomId, participantId: invite.redeemedParticipantId!, role: invite.role, replayed: true, snapshot: toSnapshot(view)};
             }
-            if (!invite.reusable) throw new ProtocolError('invite_already_redeemed', 'that invite code was already used');
+            if (!invite.reusable) {
+                throw new ProtocolError('invite_already_redeemed', 'that invite code was already used');
+            }
             // A reusable code is a seat. It reopens when its occupant leaves, but a
             // revoked participant's seat stays shut: removal is a deliberate act and
             // must not be undone by reusing the code that let them in.
-            const occupant = invite.redeemedParticipantId ? (await this.view(invite.roomId)).participants.find((participant) => participant.participantId === invite.redeemedParticipantId) : undefined;
-            if (occupant && occupant.revokedAt !== null) throw new ProtocolError('invite_already_redeemed', 'that invite code belongs to a participant who was removed from the room');
-            if (occupant && occupant.leftAt === null) throw new ProtocolError('invite_already_redeemed', `${occupant.displayName} is currently in the room using that code`);
+            const occupant = invite.redeemedParticipantId
+                ? (await this.view(invite.roomId)).participants.find((participant) => participant.participantId === invite.redeemedParticipantId)
+                : undefined;
+            if (occupant && occupant.revokedAt !== null) {
+                throw new ProtocolError('invite_already_redeemed', 'that invite code belongs to a participant who was removed from the room');
+            }
+            if (occupant && occupant.leftAt === null) {
+                throw new ProtocolError('invite_already_redeemed', `${occupant.displayName} is currently in the room using that code`);
+            }
             expectedOccupantId = invite.redeemedParticipantId;
         } else if (invite.expiresAt !== null && now >= invite.expiresAt) {
             throw new ProtocolError('invite_expired', 'that invite code has expired');
@@ -150,7 +222,9 @@ export class RoomService {
         assertRoomWritable(view, now);
 
         const reserved = await this.store.reserveInvite(digest, input.attemptId, credentialHash, expectedOccupantId);
-        if (!reserved) throw new ProtocolError('invite_already_redeemed', 'that invite code is being redeemed by another attempt');
+        if (!reserved) {
+            throw new ProtocolError('invite_already_redeemed', 'that invite code is being redeemed by another attempt');
+        }
 
         // Recovery path: the previous attempt created membership but lost its response.
         const existing = await this.store.participantByCredential(invite.roomId, credentialHash);
@@ -159,83 +233,127 @@ export class RoomService {
             return {roomId: invite.roomId, participantId: existing.participantId, role: existing.role, replayed: true, snapshot: toSnapshot(await this.view(invite.roomId))};
         }
 
-        const joined = joinRoom(view, {
-            role: reserved.role,
-            credentialHash,
-            displayName: input.displayName,
-            kind: input.kind,
-            sessionId: input.sessionId ?? null,
-            capabilities: input.capabilities ?? null,
-        }, this.ctx());
+        const joined = joinRoom(
+            view,
+            {
+                role: reserved.role,
+                credentialHash,
+                displayName: input.displayName,
+                kind: input.kind,
+                sessionId: input.sessionId ?? null,
+                capabilities: input.capabilities ?? null
+            },
+            this.ctx()
+        );
         await this.store.apply(joined.mutation, null);
         await this.store.completeInvite(digest, joined.participant.participantId);
         return {roomId: invite.roomId, participantId: joined.participant.participantId, role: reserved.role, replayed: false, snapshot: toSnapshot(await this.view(invite.roomId))};
     }
 
-    async send(roomId: string, credential: string, request: SendEventRequest): Promise<{event: RoomEvent; deduplicated: boolean}> {
+    async send(roomId: string, credential: string, request: SendEventRequest): Promise<SentEventResult> {
         const view = await this.view(roomId);
         const actor = authenticate(view, await hashCredential(credential), this.now());
         const requestDigest = stableStringify({type: request.type, payload: request.payload, recipientId: request.recipientId ?? null, replyTo: request.replyTo ?? null});
         const previous = await this.store.idempotencyRecord(roomId, request.idempotencyKey);
         if (previous) {
-            if (previous.requestDigest !== requestDigest) throw new ProtocolError('idempotency_conflict', 'this idempotency key was used with different content');
+            if (previous.requestDigest !== requestDigest) {
+                throw new ProtocolError('idempotency_conflict', 'this idempotency key was used with different content');
+            }
             const event = await this.store.eventBySeq(roomId, previous.seq);
-            if (!event) throw new ProtocolError('cursor_gap', 'the original event for this idempotency key is no longer retained');
+            if (!event) {
+                throw new ProtocolError('cursor_gap', 'the original event for this idempotency key is no longer retained');
+            }
             return {event, deduplicated: true};
         }
         const updates: MessageRequest[] = [];
-        if (request.type==='message.received' || request.type==='message.delivery_failed' || (request.type==='message' && request.replyTo)) {
-            const id=request.type==='message.received' || request.type==='message.delivery_failed' ? request.payload.eventId : request.replyTo!;
-            const target=await this.store.messageRequest(roomId,id);
-            if (!target) throw new ProtocolError('invalid_request','no such addressed message in this room');
-            if (actor.kind!=='participant' || actor.participant.participantId!==target.to) throw new ProtocolError('unauthorized','only the addressed recipient may acknowledge or answer this message');
-            if(request.type==='message.delivery_failed') {
-                if(target.responseEventId) throw new ProtocolError('invalid_request','this request is already answered');
-                updates.push({...target,failureAt:this.now(),failureReason:request.payload.reason});
-            } else if (request.type==='message.received') updates.push({...target,receivedAt:target.receivedAt ?? this.now()});
-            else {
-                if (request.recipientId!==target.from) throw new ProtocolError('invalid_request','a reply must be addressed to the original sender');
-                if (!target.requiresReply) throw new ProtocolError('invalid_request','this message is already a reply or progress update');
-                if (target.responseEventId) throw new ProtocolError('invalid_request','this request already has a final reply');
-                if (target.receivedAt===null) throw new ProtocolError('invalid_request','acknowledge the request before replying');
-                updates.push({...target,progressAt:request.payload.responseStage==='progress'?this.now():target.progressAt});
+        if (request.type === 'message.received' || request.type === 'message.delivery_failed' || (request.type === 'message' && request.replyTo)) {
+            const id = request.type === 'message.received' || request.type === 'message.delivery_failed' ? request.payload.eventId : request.replyTo!;
+            const target = await this.store.messageRequest(roomId, id);
+            if (!target) {
+                throw new ProtocolError('invalid_request', 'no such addressed message in this room');
             }
-        } else if(request.type==='message' && request.payload.responseStage) {
-            throw new ProtocolError('invalid_request','responseStage requires replyTo');
+            if (actor.kind !== 'participant' || actor.participant.participantId !== target.to) {
+                throw new ProtocolError('unauthorized', 'only the addressed recipient may acknowledge or answer this message');
+            }
+            if (request.type === 'message.delivery_failed') {
+                if (target.responseEventId) {
+                    throw new ProtocolError('invalid_request', 'this request is already answered');
+                }
+                updates.push({...target, failureAt: this.now(), failureReason: request.payload.reason});
+            } else if (request.type === 'message.received') {
+                updates.push({...target, receivedAt: target.receivedAt ?? this.now()});
+            } else {
+                if (request.recipientId !== target.from) {
+                    throw new ProtocolError('invalid_request', 'a reply must be addressed to the original sender');
+                }
+                if (!target.requiresReply) {
+                    throw new ProtocolError('invalid_request', 'this message is already a reply or progress update');
+                }
+                if (target.responseEventId) {
+                    throw new ProtocolError('invalid_request', 'this request already has a final reply');
+                }
+                if (target.receivedAt === null) {
+                    throw new ProtocolError('invalid_request', 'acknowledge the request before replying');
+                }
+                updates.push({...target, progressAt: request.payload.responseStage === 'progress' ? this.now() : target.progressAt});
+            }
+        } else if (request.type === 'message' && request.payload.responseStage) {
+            throw new ProtocolError('invalid_request', 'responseStage requires replyTo');
         }
-        if(request.type==='message' && request.recipientId && !request.replyTo) {
-            const pending=await this.store.messageRequests(roomId,0,1000);
-            if(pending.requests.length>=1000) throw new ProtocolError('quota_exceeded','answer or resolve pending requests before creating more');
+        if (request.type === 'message' && request.recipientId && !request.replyTo) {
+            const pending = await this.store.messageRequests(roomId, 0, 1000);
+            if (pending.requests.length >= 1000) {
+                throw new ProtocolError('quota_exceeded', 'answer or resolve pending requests before creating more');
+            }
         }
         const mutation = sendEvent(view, await hashCredential(credential), request, this.ctx());
-        if(request.type==='message' && request.recipientId) {
-            if(request.replyTo && request.payload.responseStage!=='progress') {
-                const target=updates[0]!;
-                updates[0]={...target,responseEventId:mutation.appendEvent.eventId,respondedAt:this.now()};
+        if (request.type === 'message' && request.recipientId) {
+            if (request.replyTo && request.payload.responseStage !== 'progress') {
+                const target = updates[0]!;
+                updates[0] = {...target, responseEventId: mutation.appendEvent.eventId, respondedAt: this.now()};
             }
-            updates.push({roomId,eventId:mutation.appendEvent.eventId,seq:mutation.appendEvent.seq,from:mutation.appendEvent.senderId!,to:request.recipientId,text:request.payload.text,at:mutation.appendEvent.at,requiresReply:!request.replyTo,receivedAt:null,responseEventId:null,respondedAt:null,progressAt:null});
+            updates.push({
+                roomId,
+                eventId: mutation.appendEvent.eventId,
+                seq: mutation.appendEvent.seq,
+                from: mutation.appendEvent.senderId!,
+                to: request.recipientId,
+                text: request.payload.text,
+                at: mutation.appendEvent.at,
+                requiresReply: !request.replyTo,
+                receivedAt: null,
+                responseEventId: null,
+                respondedAt: null,
+                progressAt: null
+            });
         }
-        mutation.upsertRequests=updates;
+        mutation.upsertRequests = updates;
         await this.store.apply(mutation, {key: request.idempotencyKey, requestDigest});
         return {event: mutation.appendEvent, deduplicated: false};
     }
 
     async acknowledgeMessage(roomId: string, credential: string, eventId: string): Promise<MessageRequest> {
-        const actor=authenticate(await this.view(roomId),await hashCredential(credential),this.now());
-        const target=await this.request(roomId,credential,eventId);
-        if(actor.kind!=='participant' || actor.participant.participantId!==target.to) throw new ProtocolError('unauthorized','only the addressed recipient may acknowledge this message');
-        if(target.receivedAt===null) await this.send(roomId,credential,{type:'message.received',payload:{eventId},idempotencyKey:`receipt-${eventId}`});
-        return this.request(roomId,credential,eventId);
+        const actor = authenticate(await this.view(roomId), await hashCredential(credential), this.now());
+        const target = await this.request(roomId, credential, eventId);
+        if (actor.kind !== 'participant' || actor.participant.participantId !== target.to) {
+            throw new ProtocolError('unauthorized', 'only the addressed recipient may acknowledge this message');
+        }
+        if (target.receivedAt === null) {
+            await this.send(roomId, credential, {type: 'message.received', payload: {eventId}, idempotencyKey: `receipt-${eventId}`});
+        }
+        return this.request(roomId, credential, eventId);
     }
 
-    async requests(roomId: string, credential: string, after=0, limit=100, recipientId?: string): Promise<RequestPage> {
-        authenticate(await this.view(roomId),await hashCredential(credential),this.now());
-        return this.store.messageRequests(roomId,after,limit,recipientId);
+    async requests(roomId: string, credential: string, after = 0, limit = 100, recipientId?: string): Promise<RequestPage> {
+        authenticate(await this.view(roomId), await hashCredential(credential), this.now());
+        return this.store.messageRequests(roomId, after, limit, recipientId);
     }
     async request(roomId: string, credential: string, eventId: string): Promise<MessageRequest> {
-        authenticate(await this.view(roomId),await hashCredential(credential),this.now());
-        const request=await this.store.messageRequest(roomId,eventId);
-        if(!request) throw new ProtocolError('invalid_request','no such addressed message');
+        authenticate(await this.view(roomId), await hashCredential(credential), this.now());
+        const request = await this.store.messageRequest(roomId, eventId);
+        if (!request) {
+            throw new ProtocolError('invalid_request', 'no such addressed message');
+        }
         return request;
     }
 
@@ -260,20 +378,26 @@ export class RoomService {
     }
 
     /** Guest entry. Knowing the room id is the entire claim, so the room must allow it. */
-    async joinAsGuest(roomId: string, input: Identity & {participantCredential: string}): Promise<RedeemResult> {
+    async joinAsGuest(roomId: string, input: GuestJoinInput): Promise<RedeemResult> {
         const view = await this.view(roomId);
         assertRoomWritable(view, this.now());
         const credentialHash = await hashCredential(input.participantCredential);
         const existing = await this.store.participantByCredential(roomId, credentialHash);
-        if (existing) return {roomId, participantId: existing.participantId, role: existing.role, replayed: true, snapshot: toSnapshot(view)};
+        if (existing) {
+            return {roomId, participantId: existing.participantId, role: existing.role, replayed: true, snapshot: toSnapshot(view)};
+        }
 
-        const joined = joinAsGuest(view, {
-            credentialHash,
-            displayName: input.displayName,
-            kind: input.kind,
-            sessionId: input.sessionId ?? null,
-            capabilities: input.capabilities ?? null,
-        }, this.ctx());
+        const joined = joinAsGuest(
+            view,
+            {
+                credentialHash,
+                displayName: input.displayName,
+                kind: input.kind,
+                sessionId: input.sessionId ?? null,
+                capabilities: input.capabilities ?? null
+            },
+            this.ctx()
+        );
         await this.store.apply(joined.mutation, null);
         return {roomId, participantId: joined.participant.participantId, role: 'guest', replayed: false, snapshot: toSnapshot(await this.view(roomId))};
     }
@@ -311,7 +435,9 @@ export class RoomService {
         for (;;) {
             const page = await this.store.readEvents(roomId, after, 500);
             collected.push(...page.events);
-            if (!page.hasMore || page.events.length === 0) break;
+            if (!page.hasMore || page.events.length === 0) {
+                break;
+            }
             after = page.events.at(-1)!.seq;
         }
         return {room: toSnapshot(view), events: collected, handovers: await this.store.handovers(roomId), exportedAt: this.now(), complete: view.earliestSeq <= 1};
@@ -321,7 +447,9 @@ export class RoomService {
     async delete(roomId: string, credential: string): Promise<void> {
         const view = await this.view(roomId);
         const actor = authenticate(view, await hashCredential(credential), this.now());
-        if (actor.kind !== 'controller' && actor.participant.role !== 'controller') throw new ProtocolError('unauthorized', 'deleting a room requires the controller credential');
+        if (actor.kind !== 'controller' && actor.participant.role !== 'controller') {
+            throw new ProtocolError('unauthorized', 'deleting a room requires the controller credential');
+        }
         await this.store.setLifecycle(roomId, 'deleted');
         await this.store.deleteRoom(roomId);
     }

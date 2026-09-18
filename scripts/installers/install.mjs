@@ -1,10 +1,55 @@
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
-import {chmodSync,existsSync,mkdirSync,mkdtempSync,readFileSync,renameSync,rmSync,writeFileSync,appendFileSync} from 'node:fs';
+import {chmodSync,existsSync,mkdirSync,mkdtempSync,readFileSync,renameSync,rmSync,writeFileSync,appendFileSync,openSync,closeSync,readSync,writeSync} from 'node:fs';
 import {homedir,platform} from 'node:os';
 import {join,resolve} from 'node:path';
 import {parseArgs} from 'node:util';
-const {values}=parseArgs({options:{skills:{type:'string',default:'all'},'skills-dir':{type:'string'}}});
+const {values}=parseArgs({options:{skills:{type:'string'},'skills-dir':{type:'string'}}});
+
+function selectSkills(requested) {
+    if (requested !== undefined) return requested;
+
+    let terminal;
+    try {
+        terminal = openSync('/dev/tty', 'r+');
+    } catch {
+        console.log('No interactive terminal; skipping agent skills. Use --skills all, claude or codex to include them.');
+        return 'none';
+    }
+
+    function ask(question) {
+        writeSync(terminal, question);
+        const byte = Buffer.alloc(1);
+        let answer = '';
+        while (readSync(terminal, byte, 0, 1, null) > 0) {
+            const character = byte.toString();
+            if (character === '\n') return answer.trim().toLowerCase();
+            if (character !== '\r') answer += character;
+        }
+        return null;
+    }
+
+    try {
+        while (true) {
+            const answer = ask('Install agent skills? [y/N] ');
+            if (answer === null || ['', 'n', 'no'].includes(answer)) return 'none';
+            if (['y', 'yes'].includes(answer)) break;
+            writeSync(terminal, 'Please enter y or n.\n');
+        }
+        while (true) {
+            const answer = ask('Which agents? 1) Claude Code  2) Codex  3) Both [3]: ');
+            if (answer === null) return 'none';
+            if (['1', 'claude', 'claude code'].includes(answer)) return 'claude';
+            if (['2', 'codex'].includes(answer)) return 'codex';
+            if (['', '3', 'both', 'all'].includes(answer)) return 'all';
+            writeSync(terminal, 'Please enter 1, 2 or 3.\n');
+        }
+    } finally {
+        closeSync(terminal);
+    }
+}
+
+values.skills = selectSkills(values.skills);
 if(!['all','claude','codex','none'].includes(values.skills)) throw new Error('Skills must be all, claude, codex or none.');
 if(values['skills-dir']&&['all','none'].includes(values.skills)) throw new Error('--skills-dir requires a single agent.');
 const windows=platform()==='win32';

@@ -28,15 +28,24 @@ async function withKeys<T>(render: () => string, handle: (key: Key, resolve: (va
     const {stdin, stdout} = process;
     const wasRaw = stdin.isRaw === true;
     emitKeypressEvents(stdin);
-    if (stdin.isTTY) stdin.setRawMode(true);
+    if (stdin.isTTY) {
+        stdin.setRawMode(true);
+    }
     stdin.resume();
     stdout.write(HIDE_CURSOR);
 
     let lines = 0;
     const draw = () => {
-        if (lines > 0) stdout.write(`\u001b[${lines}A`);
+        if (lines > 0) {
+            stdout.write(`\u001b[${lines}A`);
+        }
         const frame = render();
-        stdout.write(frame.split('\n').map((line) => `\u001b[2K${line}`).join('\n') + '\n');
+        stdout.write(
+            frame
+                .split('\n')
+                .map((line) => `\u001b[2K${line}`)
+                .join('\n') + '\n'
+        );
         lines = frame.split('\n').length;
     };
     draw();
@@ -45,7 +54,9 @@ async function withKeys<T>(render: () => string, handle: (key: Key, resolve: (va
         const onKey = (_: string, key: Key) => {
             handle(key, (value) => {
                 stdin.off('keypress', onKey);
-                if (stdin.isTTY && !wasRaw) stdin.setRawMode(false);
+                if (stdin.isTTY && !wasRaw) {
+                    stdin.setRawMode(false);
+                }
                 stdout.write(SHOW_CURSOR);
                 resolve(value);
             });
@@ -74,19 +85,24 @@ export async function chooseFromMenu<T>(title: string, options: MenuOption<T>[],
         return [`${BOLD}${title}${RESET}`, '', ...rows, '', `${DIM}up/down to move · enter to choose · esc to cancel${RESET}`].join('\n');
     };
     return withKeys<T | undefined>(render, (key, resolve) => {
-        if (key.name === 'up' || key.name === 'k') index = (index - 1 + options.length) % options.length;
-        else if (key.name === 'down' || key.name === 'j') index = (index + 1) % options.length;
-        else if (key.name === 'return' || key.name === 'space') resolve(options[index]!.value);
-        else if (key.name === 'escape' || (key.ctrl && key.name === 'c')) resolve(undefined);
+        if (key.name === 'up' || key.name === 'k') {
+            index = (index - 1 + options.length) % options.length;
+        } else if (key.name === 'down' || key.name === 'j') {
+            index = (index + 1) % options.length;
+        } else if (key.name === 'return' || key.name === 'space') {
+            resolve(options[index]!.value);
+        } else if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
+            resolve(undefined);
+        }
     });
 }
 
 const FIELDS = [
-    {label: 'year',   width: 4},
-    {label: 'month',  width: 2},
-    {label: 'day',    width: 2},
-    {label: 'hour',   width: 2},
-    {label: 'minute', width: 2},
+    {label: 'year', width: 4},
+    {label: 'month', width: 2},
+    {label: 'day', width: 2},
+    {label: 'hour', width: 2},
+    {label: 'minute', width: 2}
 ] as const;
 
 function daysInMonth(year: number, month: number): number {
@@ -111,11 +127,23 @@ export async function pickDateTime(initial: Date, title = 'Expires at'): Promise
 
     const adjust = (delta: number) => {
         switch (FIELDS[field]!.label) {
-            case 'year':   parts.year += delta; clampDay(); break;
-            case 'month':  parts.month = (parts.month + delta + 12) % 12; clampDay(); break;
-            case 'day':    parts.day = wrap(parts.day + delta, 1, daysInMonth(parts.year, parts.month)); break;
-            case 'hour':   parts.hour = wrap(parts.hour + delta, 0, 23); break;
-            case 'minute': parts.minute = wrap(parts.minute + delta, 0, 59); break;
+            case 'year':
+                parts.year += delta;
+                clampDay();
+                break;
+            case 'month':
+                parts.month = (parts.month + delta + 12) % 12;
+                clampDay();
+                break;
+            case 'day':
+                parts.day = wrap(parts.day + delta, 1, daysInMonth(parts.year, parts.month));
+                break;
+            case 'hour':
+                parts.hour = wrap(parts.hour + delta, 0, 23);
+                break;
+            case 'minute':
+                parts.minute = wrap(parts.minute + delta, 0, 59);
+                break;
         }
     };
 
@@ -124,7 +152,8 @@ export async function pickDateTime(initial: Date, title = 'Expires at'): Promise
         const shown = values.map((value, position) => (position === field ? `${INVERT}${value}${RESET}` : value));
         const stamp = `  ${shown[0]}-${shown[1]}-${shown[2]}   ${shown[3]}:${shown[4]}`;
         const chosen = new Date(parts.year, parts.month, parts.day, parts.hour, parts.minute);
-        const relative = chosen.getTime() <= Date.now() ? `${DIM}that time has already passed${RESET}` : `${DIM}${describeDuration(chosen.getTime() - Date.now())} from now${RESET}`;
+        const relative =
+            chosen.getTime() <= Date.now() ? `${DIM}that time has already passed${RESET}` : `${DIM}${describeDuration(chosen.getTime() - Date.now())} from now${RESET}`;
         return [
             `${BOLD}${title}${RESET}`,
             '',
@@ -133,38 +162,47 @@ export async function pickDateTime(initial: Date, title = 'Expires at'): Promise
             '',
             `  ${relative}`,
             '',
-            `${DIM}left/right to move · up/down to change · enter to confirm · esc to cancel${RESET}`,
+            `${DIM}left/right to move · up/down to change · enter to confirm · esc to cancel${RESET}`
         ].join('\n');
     };
 
     return withKeys<Date | undefined>(render, (key, resolve) => {
-        if (key.name === 'left' || key.name === 'h') field = (field - 1 + FIELDS.length) % FIELDS.length;
-        else if (key.name === 'right' || key.name === 'l' || key.name === 'tab') field = (field + 1) % FIELDS.length;
-        else if (key.name === 'up' || key.name === 'k') adjust(1);
-        else if (key.name === 'down' || key.name === 'j') adjust(-1);
-        else if (key.name === 'pageup') adjust(10);
-        else if (key.name === 'pagedown') adjust(-10);
-        else if (key.name === 'return') resolve(new Date(parts.year, parts.month, parts.day, parts.hour, parts.minute));
-        else if (key.name === 'escape' || (key.ctrl && key.name === 'c')) resolve(undefined);
+        if (key.name === 'left' || key.name === 'h') {
+            field = (field - 1 + FIELDS.length) % FIELDS.length;
+        } else if (key.name === 'right' || key.name === 'l' || key.name === 'tab') {
+            field = (field + 1) % FIELDS.length;
+        } else if (key.name === 'up' || key.name === 'k') {
+            adjust(1);
+        } else if (key.name === 'down' || key.name === 'j') {
+            adjust(-1);
+        } else if (key.name === 'pageup') {
+            adjust(10);
+        } else if (key.name === 'pagedown') {
+            adjust(-10);
+        } else if (key.name === 'return') {
+            resolve(new Date(parts.year, parts.month, parts.day, parts.hour, parts.minute));
+        } else if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
+            resolve(undefined);
+        }
     });
 }
 
 /** Reads a line of text with raw keypresses, so it composes with the pickers. */
 export async function promptLine(title: string, placeholder: string): Promise<string | undefined> {
     let text = '';
-    const render = () => [
-        `${BOLD}${title}${RESET}`,
-        '',
-        `  ${text.length > 0 ? text : `${DIM}${placeholder}${RESET}`}`,
-        '',
-        `${DIM}enter to confirm · esc to cancel${RESET}`,
-    ].join('\n');
+    const render = () =>
+        [`${BOLD}${title}${RESET}`, '', `  ${text.length > 0 ? text : `${DIM}${placeholder}${RESET}`}`, '', `${DIM}enter to confirm · esc to cancel${RESET}`].join('\n');
 
     return withKeys<string | undefined>(render, (key, resolve) => {
-        if (key.name === 'return') resolve(text.trim().length > 0 ? text.trim() : undefined);
-        else if (key.name === 'escape' || (key.ctrl && key.name === 'c')) resolve(undefined);
-        else if (key.name === 'backspace') text = text.slice(0, -1);
-        else if (key.sequence && key.sequence.length === 1 && key.sequence >= ' ') text += key.sequence;
+        if (key.name === 'return') {
+            resolve(text.trim().length > 0 ? text.trim() : undefined);
+        } else if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
+            resolve(undefined);
+        } else if (key.name === 'backspace') {
+            text = text.slice(0, -1);
+        } else if (key.sequence && key.sequence.length === 1 && key.sequence >= ' ') {
+            text += key.sequence;
+        }
     });
 }
 
@@ -178,27 +216,41 @@ export async function pickExpiry(roomName: string, current: number | null): Prom
     const now = Date.now();
     const currently = current === null ? 'never expires' : `expires ${new Date(current).toLocaleString()}`;
 
-    const mode = await chooseFromMenu<'never' | 'relative' | 'absolute' | 'cancel'>(`Expiry for ${roomName}${DIM} — currently ${currently}${RESET}`, [
-        {label: 'Never expires', value: 'never'},
-        {label: 'In a while…', hint: 'pick a duration', value: 'relative'},
-        {label: 'At a date and time…', hint: 'arrows to adjust', value: 'absolute'},
-        {label: 'Cancel', value: 'cancel'},
-    ], current === null ? 0 : 1);
+    const mode = await chooseFromMenu<'never' | 'relative' | 'absolute' | 'cancel'>(
+        `Expiry for ${roomName}${DIM} — currently ${currently}${RESET}`,
+        [
+            {label: 'Never expires', value: 'never'},
+            {label: 'In a while…', hint: 'pick a duration', value: 'relative'},
+            {label: 'At a date and time…', hint: 'arrows to adjust', value: 'absolute'},
+            {label: 'Cancel', value: 'cancel'}
+        ],
+        current === null ? 0 : 1
+    );
 
-    if (mode === undefined || mode === 'cancel') return undefined;
-    if (mode === 'never') return null;
+    if (mode === undefined || mode === 'cancel') {
+        return undefined;
+    }
+    if (mode === 'never') {
+        return null;
+    }
 
     if (mode === 'relative') {
         const chosen = await chooseFromMenu<number | 'custom' | 'back'>('Expires in', [
             ...RELATIVE_CHOICES,
             {label: 'Custom…', hint: 'e.g. 90m, 3 days', value: 'custom'},
-            {label: 'Back', value: 'back'},
+            {label: 'Back', value: 'back'}
         ]);
-        if (chosen === undefined || chosen === 'back') return undefined;
-        if (chosen !== 'custom') return now + chosen;
+        if (chosen === undefined || chosen === 'back') {
+            return undefined;
+        }
+        if (chosen !== 'custom') {
+            return now + chosen;
+        }
 
         const typed = await promptLine('Expires in', '10 hours');
-        if (typed === undefined) return undefined;
+        if (typed === undefined) {
+            return undefined;
+        }
         return now + parseDuration(typed);
     }
 
@@ -209,7 +261,7 @@ export async function pickExpiry(roomName: string, current: number | null): Prom
 
 function wrap(value: number, low: number, high: number): number {
     const span = high - low + 1;
-    return ((value - low) % span + span) % span + low;
+    return ((((value - low) % span) + span) % span) + low;
 }
 
 function pad(value: number, width: number): string {

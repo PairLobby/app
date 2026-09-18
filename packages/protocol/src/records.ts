@@ -19,7 +19,7 @@ export const RoomPolicySchema = z.object({
     roomLifetimeMs: z.number().int().min(1).nullable(),
     inviteLifetimeMs: z.number().int().min(1).nullable(),
     exportWindowMs: z.number().int().min(0),
-    connectTicketLifetimeMs: z.number().int().min(1),
+    connectTicketLifetimeMs: z.number().int().min(1)
 });
 
 export const RoomRecord = z.object({
@@ -36,7 +36,7 @@ export const RoomRecord = z.object({
     controlRevision: z.number().int().nonnegative(),
     nextSeq: z.number().int().min(1),
     retainedEventBytes: z.number().int().nonnegative(),
-    retainedEvents: z.number().int().nonnegative(),
+    retainedEvents: z.number().int().nonnegative()
 });
 export type RoomRecord = z.infer<typeof RoomRecord>;
 
@@ -53,7 +53,7 @@ export const ParticipantRecord = z.object({
     capabilities: AdapterCapabilities.nullable(),
     joinedAt: z.number().int().nonnegative(),
     revokedAt: z.number().int().nonnegative().nullable(),
-    leftAt: z.number().int().nonnegative().nullable(),
+    leftAt: z.number().int().nonnegative().nullable()
 });
 export type ParticipantRecord = z.infer<typeof ParticipantRecord>;
 
@@ -80,7 +80,7 @@ export const InviteRecord = z.object({
     boundCredentialHash: z.string().length(64).nullable(),
     redeemedParticipantId: ParticipantId.nullable(),
     /** Tombstone horizon: a consumed code stays unclaimable by anyone else until this time. */
-    recoverableUntil: z.number().int().nonnegative().nullable(),
+    recoverableUntil: z.number().int().nonnegative().nullable()
 });
 export type InviteRecord = z.infer<typeof InviteRecord>;
 
@@ -95,7 +95,7 @@ export const HandoverRecord = z.object({
     state: HandoverState,
     offeredEventId: EventId,
     resolvedEventId: EventId.nullable(),
-    resolvedAt: z.number().int().nonnegative().nullable(),
+    resolvedAt: z.number().int().nonnegative().nullable()
 });
 export type HandoverRecord = z.infer<typeof HandoverRecord>;
 
@@ -107,7 +107,7 @@ export const ControlRecord = z.object({
     requestedAt: z.number().int().nonnegative(),
     acknowledgedRevision: z.number().int().nonnegative(),
     acknowledgedOutcome: ControlOutcome.nullable(),
-    acknowledgedAt: z.number().int().nonnegative().nullable(),
+    acknowledgedAt: z.number().int().nonnegative().nullable()
 });
 export type ControlRecord = z.infer<typeof ControlRecord>;
 
@@ -123,7 +123,7 @@ export const ParticipantView = z.object({
     left: z.boolean(),
     paused: z.boolean(),
     controlRevision: z.number().int().nonnegative(),
-    acknowledgedOutcome: ControlOutcome.nullable(),
+    acknowledgedOutcome: ControlOutcome.nullable()
 });
 export type ParticipantView = z.infer<typeof ParticipantView>;
 
@@ -138,6 +138,6 @@ export const RoomSnapshot = z.object({
     latestSeq: z.number().int().nonnegative(),
     earliestSeq: z.number().int().nonnegative(),
     participants: z.array(ParticipantView),
-    policy: RoomPolicySchema,
+    policy: RoomPolicySchema
 });
 export type RoomSnapshot = z.infer<typeof RoomSnapshot>;

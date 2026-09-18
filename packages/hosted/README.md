@@ -48,16 +48,34 @@ The Stripe CLI is installed but not authenticated. Run `stripe login` locally to
 
 Enterprise add-on checkout is prepaid: $10 for 100,000 additional work events and 500,000 API requests. Storage, seats, teams, rooms and concurrent-session limits stay unchanged. Blocks expire at the current billing-period end. The owner explicitly checks out each purchase; no automatic overage charges are possible. Block grants are idempotent by Checkout session ID and reduced after refunds.
 
-## Using a plan from another machine
+## Online keys and private rooms
 
-After subscribing, create an account token on `/account`. Copy its relay address and keep the token private. Set `PAIRLOBBY_ACCOUNT_TOKEN` in the shell of the room creator, then:
+New hosted and demo invites have globally reserved 12-character keys. Join from any device without a relay URL or room ID:
 
 ```sh
-pairlobby create --name my-project --server <relay-address>
-pairlobby join <invite-code> --server <relay-address>
+pairlobby join online XXXX-XXXX-XXXX
 ```
 
-Joining agents only need the invite and relay address. They do not need the owner's account token. Keep using the latest CLI: `read --wait`, `watch` and interactive chat use hibernating socket delivery on hosted URLs, with indexed HTTP replay to close gaps. Local server behavior remains independent.
+Local rooms retain `pairlobby join <code>`, and explicit `--server` connections remain supported. Previously issued keys are not indexed retroactively; mint a new invitation to use online resolution. The CLI sends account credentials only to the configured online origin; resolved relay URLs must have that same origin.
+
+For account-restricted rooms, create a token on `/account`, then save it using the hidden prompt. Tokens stay in the device's private credential file, outside the room listing. The environment variable `PAIRLOBBY_ACCOUNT_TOKEN` is also supported for unattended use.
+
+```sh
+pairlobby login
+pairlobby create online --name project --private --allow colleague@example.com
+pairlobby invite                 # selects the current sole room; mints a unique key
+pairlobby join online XXXX-XXXX-XXXX
+pairlobby allow colleague@example.com other@example.com --room project
+pairlobby logout
+```
+
+`allow` replaces the room-specific allowed-account list; the creator remains allowed. All emails must identify verified existing accounts. With no emails, only the creator is allowed. Managing that list requires the room controller credential. Removing an account blocks its existing participant credentials and closes its room sockets. New private joins require a valid, unexpired account token belonging to an allowed account; forwarding the key or submitting a claimed user ID is insufficient. Token revocation prevents subsequent joins; use the room allowlist or participant revocation to end existing room access. Logging out removes saved device account tokens; it does not implicitly leave rooms or unset environment variables.
+
+Ordinary invite-only rooms and the ten-minute demo remain usable without an account for invited participants. Paid room creation still requires an active plan. Old rooms without account-owner metadata must be recreated to opt into private account restrictions.
+
+The shared D1 `online_invites` directory stores hashed keys and their relay mapping. The primary key reserves uniqueness across all hosted workspaces and demo rooms; collisions retry before any key is returned. Expired mappings reject lookup, and private-room authorization is checked again at redemption even for direct relay URLs. Retained mappings prevent key reassignment. Apply migration `0004_online_invites.sql` before deploying either Worker with directory support. The separate demo Worker binds the same D1 database.
+
+Keep using the latest CLI: `read --wait`, `watch` and interactive chat use hibernating socket delivery on hosted URLs, with indexed HTTP replay to close gaps. Local server behavior remains independent.
 
 ## Limits and operational boundaries
 

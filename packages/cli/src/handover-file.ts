@@ -12,7 +12,9 @@ const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 
 export function parseHandoverFile(text: string): HandoverDocument {
     const match = FRONTMATTER.exec(text);
-    if (!match) throw new Error('a handover file must begin with a YAML frontmatter block delimited by ---');
+    if (!match) {
+        throw new Error('a handover file must begin with a YAML frontmatter block delimited by ---');
+    }
     let frontmatter: unknown;
     try {
         frontmatter = parse(match[1]!);

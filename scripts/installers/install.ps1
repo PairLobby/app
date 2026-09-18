@@ -1,8 +1,25 @@
-param([ValidateSet('all','claude','codex','none')][string]$Skills = 'all', [string]$SkillsDir = '')
+param([ValidateSet('ask','all','claude','codex','none')][string]$Skills = 'ask', [string]$SkillsDir = '')
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $base = if ($env:PAIRLOBBY_DOWNLOAD_BASE) { $env:PAIRLOBBY_DOWNLOAD_BASE } else { 'https://pairlobby.com' }
 $root = if ($env:PAIRLOBBY_INSTALL_DIR) { $env:PAIRLOBBY_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'PairLobby' }
+if ($Skills -eq 'ask') {
+    $Skills = 'none'
+    if ([Console]::IsInputRedirected) {
+        Write-Host 'No interactive terminal; skipping agent skills. Use -Skills all, claude or codex to include them.'
+    } else {
+        do {
+            $answer = (Read-Host 'Install agent skills? [y/N]').Trim().ToLowerInvariant()
+        } while ($answer -notin @('', 'y', 'yes', 'n', 'no'))
+        if ($answer -in @('y', 'yes')) {
+            do {
+                $choice = (Read-Host 'Which agents? 1) Claude Code  2) Codex  3) Both [3]').Trim().ToLowerInvariant()
+            } while ($choice -notin @('', '1', 'claude', 'claude code', '2', 'codex', '3', 'both', 'all'))
+            $Skills = if ($choice -in @('1', 'claude', 'claude code')) { 'claude' } elseif ($choice -in @('2', 'codex')) { 'codex' } else { 'all' }
+        }
+    }
+}
+
 $work = Join-Path ([IO.Path]::GetTempPath()) ('pairlobby-install-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $work | Out-Null
 try {

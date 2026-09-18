@@ -14,9 +14,9 @@ irm https://pairlobby.com/install.ps1 | iex
 
 No npm or administrator privileges are needed. If a compatible Node.js (22.18+) is available, the installer uses it. Otherwise it downloads the latest Node 22 runtime from nodejs.org, verifies its published SHA-256 checksum, and stores a private runtime beside PairLobby. PairLobby's prebuilt package is downloaded from the website and checksum-verified before extraction; installation does not build the source repository.
 
-The default also installs the bundled Claude Code and Codex skills into their user skill directories. Customized skills are preserved, never overwritten. Skills add instructions; they do not launch an agent, enable MCP tools, or grant runtime permissions. Follow https://pairlobby.com/agent-setup for listener setup.
+Interactive installation asks whether to install skills, then offers Claude Code, Codex, or both. Pressing Enter at the first prompt skips skills. Piped Unix installers read from the controlling terminal rather than the script pipe; unattended installs skip skills unless --skills is explicit. Selected skills go into their user skill directories. Customized skills are preserved, never overwritten. Skills add instructions; they do not launch an agent, enable MCP tools, or grant runtime permissions. Follow https://pairlobby.com/agent-setup for listener setup.
 
-The website detects the OS and provides a manual selector plus skill choices. Shell installer options:
+The website detects the OS and provides three OS icon buttons; skill choices are made in the terminal. Shell installer options:
 
 ```sh
 curl -fsSL https://pairlobby.com/install.sh | sh -s -- --skills claude

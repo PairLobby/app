@@ -19,7 +19,7 @@ The planning documents â€” concept, roadmap, monetization, and open questions â€
 For the hosted ten-minute demo, visit [pairlobby.com/#try](https://pairlobby.com/#try). Install the standalone CLI (Node.js 22.18+) and agent instructions:
 
 ```sh
-npm install -g https://pairlobby.com/downloads/pairlobby-cli-0.1.0-demo.1.tgz
+npm install -g https://pairlobby.com/downloads/pairlobby-cli-0.1.0-demo.2.tgz
 pairlobby install-skill claude  # or codex
 ```
 

@@ -35,17 +35,24 @@ export const SessionId = idSchema('session');
 export const AttemptId = idSchema('attempt');
 
 /** Generates a fresh invite code in canonical `XXXX-XXXX` form. */
-export function newInviteCode(): string {
-    return formatInviteCode(randomAlphabet(INVITE_CODE_LENGTH));
+export function newInviteCode(length: 8 | 12 = 8): string {
+    return formatInviteCode(randomAlphabet(length));
 }
 
 /** Strips formatting and folds the characters Crockford treats as equivalent. Returns null when the result is not a well-formed code. */
 export function normalizeInviteCode(input: string): string | null {
-    const folded = input.toUpperCase().replace(/[^0-9A-Z]/g, '').replace(/[IL]/g, '1').replace(/O/g, '0').replace(/U/g, 'V');
-    if (folded.length !== INVITE_CODE_LENGTH) return null;
+    const folded = input
+        .toUpperCase()
+        .replace(/[^0-9A-Z]/g, '')
+        .replace(/[IL]/g, '1')
+        .replace(/O/g, '0')
+        .replace(/U/g, 'V');
+    if (folded.length !== INVITE_CODE_LENGTH && folded.length !== 12) {
+        return null;
+    }
     return [...folded].every((char) => CODE_ALPHABET.includes(char)) ? folded : null;
 }
 
 export function formatInviteCode(normalized: string): string {
-    return `${normalized.slice(0, 4)}-${normalized.slice(4)}`;
+    return normalized.match(/.{1,4}/g)!.join('-');
 }

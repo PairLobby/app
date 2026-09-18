@@ -9,7 +9,7 @@ import {createHash} from 'node:crypto';
 const installer=resolve('scripts/installers/install.mjs');
 const archive=readFileSync('../frontend/public/downloads/pairlobby-cli-0.1.0-demo.2.tgz');
 const hash=createHash('sha256').update(archive).digest('hex');
-function run(command,args,env){return new Promise((resolve,reject)=>{let output='';const child=spawn(command,args,{env,stdio:['ignore','pipe','pipe']});child.stdout.on('data',c=>output+=c);child.stderr.on('data',c=>output+=c);child.on('error',reject);child.on('exit',code=>resolve({code,output}));});}
+function run(command,args,env){return new Promise((resolve,reject)=>{let output='';const child=spawn(command,args,{env,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe']});child.stdout.on('data',c=>output+=c);child.stderr.on('data',c=>output+=c);child.on('error',reject);child.on('exit',code=>resolve({code,output}));});}
 test('installer verifies downloads, preserves customized skills, and installs a working user command',async()=>{
  const root=mkdtempSync(join(tmpdir(),'pairlobby-installer-test-'));let bad=false;
  const server=createServer((req,res)=>{if(req.url.endsWith('.sha256'))res.end((bad?'0'.repeat(64):hash)+'  package.tgz\n');else res.end(archive);});
@@ -22,6 +22,7 @@ test('installer verifies downloads, preserves customized skills, and installs a 
   const skill=join(root,'skills/pairlobby/SKILL.md');assert.match(readFileSync(skill,'utf8'),/PairLobby/i);
   result=await run(join(root,'bin/pairlobby'),['--help'],env);assert.equal(result.code,0,result.output);assert.match(result.output,/join online/);
   writeFileSync(skill,'My customized skill');result=await run(process.execPath,args,env);assert.equal(result.code,0,result.output);assert.equal(readFileSync(skill,'utf8'),'My customized skill');
+  result=await run(process.execPath,[installer],env);assert.equal(result.code,0,result.output);assert.match(result.output,/No interactive terminal; skipping agent skills/);assert.doesNotMatch(result.output,/Installed (claude|codex) skill/);
   const before=readFileSync(join(root,'bin/pairlobby'),'utf8');bad=true;
   result=await run(process.execPath,args,env);assert.notEqual(result.code,0);assert.match(result.output,/checksum/);assert.equal(readFileSync(join(root,'bin/pairlobby'),'utf8'),before);
   bad=false;
