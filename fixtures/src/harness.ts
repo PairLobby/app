@@ -6,6 +6,10 @@ import type {ParticipantRole, RoomEvent, RoomPolicy, RoomSnapshot, SendEventRequ
 import {RoomService} from '@pairlobby/server-core';
 import type {Identity, RoomStore} from '@pairlobby/server-core';
 
+type RedeemedRoomResult = {participantId: string; roomId: string; replayed: boolean};
+
+type SentEventResult = {event: RoomEvent; deduplicated: boolean};
+
 export interface Clock {
     now(): number;
     advance(ms: number): void;
@@ -13,7 +17,12 @@ export interface Clock {
 
 export function fixedClock(start = 1_700_000_000_000): Clock {
     let current = start;
-    return {now: () => current, advance: (ms) => {current += ms;}};
+    return {
+        now: () => current,
+        advance: (ms) => {
+            current += ms;
+        }
+    };
 }
 
 /** A store that can also simulate retention dropping the front of the log. */
@@ -75,12 +84,12 @@ export class RoomHarness {
         return this.controllerCredential;
     }
 
-    async redeemInvite(code: string, identity: Identity, attemptId: string, participantCredential: string): Promise<{participantId: string; roomId: string; replayed: boolean}> {
+    async redeemInvite(code: string, identity: Identity, attemptId: string, participantCredential: string): Promise<RedeemedRoomResult> {
         const result = await this.service.redeemInvite({code, attemptId, participantCredential, ...identity});
         return {participantId: result.participantId, roomId: result.roomId, replayed: result.replayed};
     }
 
-    async send(credential: string, request: SendEventRequest): Promise<{event: RoomEvent; deduplicated: boolean}> {
+    async send(credential: string, request: SendEventRequest): Promise<SentEventResult> {
         return this.service.send(this.roomId, credential, request);
     }
 

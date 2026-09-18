@@ -23,7 +23,13 @@ export function runRedemptionContract(label: string, makeStore: StoreFactory): v
             store = new FaultyStore(makeStore());
             service = new RoomService(store, () => 1_700_000_000_000);
             controllerCredential = newCredential('controller');
-            const created = await service.createRoom({name: 'recovery-room', controllerCredential, participantCredential: newCredential('participant'), displayName: 'claude', kind: 'agent'});
+            const created = await service.createRoom({
+                name: 'recovery-room',
+                controllerCredential,
+                participantCredential: newCredential('participant'),
+                displayName: 'claude',
+                kind: 'agent'
+            });
             roomId = created.roomId;
             code = created.invite.code;
         });
@@ -64,8 +70,9 @@ export function runRedemptionContract(label: string, makeStore: StoreFactory): v
             await expect(service.redeemInvite({code, attemptId: newId('attempt'), participantCredential, ...joiner})).rejects.toThrow('injected store failure');
 
             // The reservation survives the crash, so the code is not available to anyone else.
-            await expect(service.redeemInvite({code, attemptId: newId('attempt'), participantCredential: newCredential('participant'), displayName: 'stranger', kind: 'agent'}))
-                .rejects.toMatchObject({code: 'invite_already_redeemed'});
+            await expect(
+                service.redeemInvite({code, attemptId: newId('attempt'), participantCredential: newCredential('participant'), displayName: 'stranger', kind: 'agent'})
+            ).rejects.toMatchObject({code: 'invite_already_redeemed'});
             expect(await participantCount()).toBe(1);
         });
 

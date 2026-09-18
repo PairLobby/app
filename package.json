@@ -11,6 +11,8 @@
   ],
   "scripts": {
     "build": "tsc --build && node scripts/fix-bin.mjs",
+    "deploy": "npm run build && wrangler deploy --config packages/hosted/wrangler.jsonc",
+    "deploy:check": "npm run build && wrangler deploy --config packages/hosted/wrangler.jsonc --dry-run",
     "clean": "tsc --build --clean",
     "serve": "npm run build --silent && node packages/cli/dist/main.js serve",
     "install:cli": "npm run build && npm link --workspace @pairlobby/cli",
@@ -27,6 +29,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "esbuild": "0.28.1",
     "typescript": "^5.7.2",
     "vitest": "^4.1.11"
   }

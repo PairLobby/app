@@ -6,6 +6,8 @@ import type {AdapterCapabilities, ControlOutcome, HandoverDocument, RoomEvent} f
 
 import type {RoomHarness} from './harness.js';
 
+type CreatedAgentRoom = {controllerCredential: string; inviteCode: string};
+
 export interface FakeAgentOptions {
     /** What this fake claims its adapter can do. Real capabilities come from the provider spike, not from here. */
     capabilities?: AdapterCapabilities;
@@ -36,7 +38,7 @@ export class FakeAgent {
         return {displayName: this.displayName, kind: 'agent' as const, sessionId: this.sessionId, ...(this.options.capabilities ? {capabilities: this.options.capabilities} : {})};
     }
 
-    async create(roomName: string): Promise<{controllerCredential: string; inviteCode: string}> {
+    async create(roomName: string): Promise<CreatedAgentRoom> {
         const created = await this.server.createRoom(roomName, this.identity());
         this.participantId = created.participantId;
         this.credential = created.participantCredential;
@@ -50,7 +52,12 @@ export class FakeAgent {
     }
 
     async say(text: string, recipientId?: string): Promise<RoomEvent> {
-        const result = await this.server.send(this.credential, {type: 'message', payload: {text, priority: 'normal'}, idempotencyKey: newId('event'), ...(recipientId ? {recipientId} : {})});
+        const result = await this.server.send(this.credential, {
+            type: 'message',
+            payload: {text, priority: 'normal'},
+            idempotencyKey: newId('event'),
+            ...(recipientId ? {recipientId} : {})
+        });
         return result.event;
     }
 
@@ -77,8 +84,12 @@ export class FakeAgent {
         const fresh = page.events.filter((event) => !this.seen.has(event.eventId));
         for (const event of fresh) this.seen.add(event.eventId);
         for (const event of fresh) {
-            if (event.type === 'control.pause' && event.payload.targetParticipantId === this.participantId) await this.handlePause(event.payload.revision);
-            if (event.type === 'control.resume' && event.payload.targetParticipantId === this.participantId) await this.handleResume(event.payload.revision);
+            if (event.type === 'control.pause' && event.payload.targetParticipantId === this.participantId) {
+                await this.handlePause(event.payload.revision);
+            }
+            if (event.type === 'control.resume' && event.payload.targetParticipantId === this.participantId) {
+                await this.handleResume(event.payload.revision);
+            }
         }
         const addressed = fresh.filter((event) => event.recipientId === this.participantId);
         this.inbox.push(...addressed);
@@ -93,6 +104,10 @@ export class FakeAgent {
 
     private async handleResume(revision: number): Promise<void> {
         this.paused = false;
-        await this.server.send(this.credential, {type: 'control.ack', payload: {targetParticipantId: this.participantId, revision, outcome: 'resumed'}, idempotencyKey: newId('event')});
+        await this.server.send(this.credential, {
+            type: 'control.ack',
+            payload: {targetParticipantId: this.participantId, revision, outcome: 'resumed'},
+            idempotencyKey: newId('event')
+        });
     }
 }

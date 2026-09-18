@@ -22,11 +22,30 @@ beforeEach(() => {
 afterEach(() => rmSync(directory, {recursive: true, force: true}));
 
 function room(overrides: Partial<RoomEntry> = {}): RoomEntry {
-    return {roomId: 'rm_AAAAAAAAAAAAAAAAAAAAAAAAAA', name: 'my-project', serverUrl: 'http://127.0.0.1:8790', createdAt: 1000, expiresAt: Date.now() + 86_400_000, controls: true, sessions: [], ...overrides};
+    return {
+        roomId: 'rm_AAAAAAAAAAAAAAAAAAAAAAAAAA',
+        name: 'my-project',
+        serverUrl: 'http://127.0.0.1:8790',
+        createdAt: 1000,
+        expiresAt: Date.now() + 86_400_000,
+        controls: true,
+        sessions: [],
+        ...overrides
+    };
 }
 
 function session(overrides: Partial<SessionEntry> = {}): SessionEntry {
-    return {participantId: 'pt_AAAAAAAAAAAAAAAAAAAAAAAAAA', sessionId: 'se_AAAAAAAAAAAAAAAAAAAAAAAAAA', displayName: 'claude', kind: 'agent', role: 'member', joinedAt: 1000, lastReadSeq: 0, cwd: '/work', ...overrides};
+    return {
+        participantId: 'pt_AAAAAAAAAAAAAAAAAAAAAAAAAA',
+        sessionId: 'se_AAAAAAAAAAAAAAAAAAAAAAAAAA',
+        displayName: 'claude',
+        kind: 'agent',
+        role: 'member',
+        joinedAt: 1000,
+        lastReadSeq: 0,
+        cwd: '/work',
+        ...overrides
+    };
 }
 
 describe('local registry', () => {

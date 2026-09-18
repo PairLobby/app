@@ -22,50 +22,59 @@ import {pickExpiry} from './picker.js';
 import {UsageError, controllerCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
 import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
+import {accountToken, loginOnline, onlineAccount, onlineOrigin, resolveOnlineKey} from './online.js';
+
+type LocalIdentity = {displayName: string; kind: 'agent' | 'human'; sessionId: string; capabilities?: AdapterCapabilities};
+
+type LocalRuntimeDetail = {runtime?: string; conversationId?: string; terminal?: string; pid?: number};
+
 const OPTIONS = {
-    'wait-for-ack': {type:'string'},
-    'no-wait': {type:'boolean'},
-    'allow-from': {type:'string'},
+    private: {type: 'boolean'},
+    allow: {type: 'string'},
+    'skills-dir': {type: 'string'},
+    'wait-for-ack': {type: 'string'},
+    'no-wait': {type: 'boolean'},
+    'allow-from': {type: 'string'},
     'reply-to': {type: 'string'},
     progress: {type: 'boolean'},
-    name:       {type: 'string'},
-    as:         {type: 'string'},
-    room:       {type: 'string'},
-    session:    {type: 'string'},
-    to:         {type: 'string'},
-    file:       {type: 'string'},
-    server:     {type: 'string'},
-    local:      {type: 'boolean'},
-    json:       {type: 'boolean'},
-    after:      {type: 'string'},
-    revision:      {type: 'string'},
+    name: {type: 'string'},
+    as: {type: 'string'},
+    room: {type: 'string'},
+    session: {type: 'string'},
+    to: {type: 'string'},
+    file: {type: 'string'},
+    server: {type: 'string'},
+    local: {type: 'boolean'},
+    json: {type: 'boolean'},
+    after: {type: 'string'},
+    revision: {type: 'string'},
     'handover-id': {type: 'string'},
-    reason:     {type: 'string'},
-    outcome:    {type: 'string'},
+    reason: {type: 'string'},
+    outcome: {type: 'string'},
     conversation: {type: 'string'},
-    follow:     {type: 'boolean'},
+    follow: {type: 'boolean'},
     'no-follow': {type: 'boolean'},
-    agent:      {type: 'boolean'},
-    clear:      {type: 'boolean'},
-    force:      {type: 'boolean'},
-    reset:      {type: 'boolean'},
-    once:       {type: 'boolean'},
-    off:        {type: 'boolean'},
-    expiry:     {type: 'string'},
+    agent: {type: 'boolean'},
+    clear: {type: 'boolean'},
+    force: {type: 'boolean'},
+    reset: {type: 'boolean'},
+    once: {type: 'boolean'},
+    off: {type: 'boolean'},
+    expiry: {type: 'string'},
     'expires-in': {type: 'string'},
-    interval:   {type: 'string'},
-    wait:       {type: 'string'},
-    all:        {type: 'boolean'},
-    runtime:    {type: 'string'},
-    human:      {type: 'boolean'},
-    template:   {type: 'boolean'},
-    host:       {type: 'string'},
-    port:       {type: 'string'},
+    interval: {type: 'string'},
+    wait: {type: 'string'},
+    all: {type: 'boolean'},
+    runtime: {type: 'string'},
+    human: {type: 'boolean'},
+    template: {type: 'boolean'},
+    host: {type: 'string'},
+    port: {type: 'string'},
     'data-dir': {type: 'string'},
-    help:       {type: 'boolean'},
+    help: {type: 'boolean'}
 } as const;
 
-const HELP = `pairlobby — a private room for your agents
+const HELP = `pairlobby
 
   pairlobby, pairlobby list          rooms on this device, with live participant counts
   pairlobby name <room> <new name>   rename a room (controller only)
@@ -77,9 +86,15 @@ const HELP = `pairlobby — a private room for your agents
   pairlobby forget <room>            drop the local record, leave the server alone
   pairlobby settings                 show or change preferences
   pairlobby create --name <name>     start a room and print an invite
-  pairlobby join <code>              join a room and enter it
+  pairlobby join <code>              join a local room and enter it
+  pairlobby join online <key>       join a hosted room without a URL or room ID
+  pairlobby login                    save an account token from the website
+  pairlobby logout                   remove saved account login
+  pairlobby create online --name X [--private] [--allow email,email]
+  pairlobby allow [email ...]       replace the room allowlist (creator retained)
   pairlobby chat                     re-enter a room you already joined
   pairlobby send <text> --to <who>   send a message to one participant
+  pairlobby install-skill <agent>   install instructions for claude, codex, or all
   pairlobby configure-claude        prepare a scoped Claude channel and Stop hook
   pairlobby reply <event-id> <text>  answer one exact request; --progress keeps it open
   pairlobby receipt <event-id>       explicitly acknowledge delivery
@@ -126,40 +141,107 @@ async function main(argv: string[]): Promise<number> {
 
     switch (command) {
         case 'rooms':
-        case 'list':     return listRooms(store, values);
-        case 'name':     return renameRoom(store, values, positionals[1], positionals.slice(2).join(' '));
-        case 'expiry':   return expiryCommand(store, values, positionals.slice(1));
-        case 'expire':   return expireInteractive(store, values, positionals[1]);
-        case 'open':     return setAccess(store, values, positionals[1]);
-        case 'delete':   return deleteRoom(store, values, positionals[1]);
-        case 'create':   return createRoom(store, values);
-        case 'join':     return joinRoom(store, values, positionals[1]);
-        case 'send':     return sendMessage(store, values, positionals.slice(1).join(' '));
-        case 'configure-claude': {const result=(await import('./channel-config.js')).configureClaude(store,str(values,'room'),str(values,'session'),str(values,'allow-from'));json(result);return 0;}
-        case 'channel': return (await import('./channel.js')).runChannel(store,str(values,'room'),str(values,'session'),str(values,'allow-from'));
-        case 'reply':    return replyMessage(store,values,positionals[1],positionals.slice(2).join(' '));
-        case 'requests': return requestStatus(store,values);
-        case 'receipt':  return receiptMessage(store,values,positionals[1]);
-        case 'guard-stop': return guardStop(store,values);
-        case 'read':     return readEvents(store, values);
-        case 'watch':    return watchRoom(store, values);
-        case 'chat':     return chatRoom(store, values);
-        case 'session':  return sessionInfo(store, values);
-        case 'profile':  return profileCommand(store, values);
-        case 'settings': return settingsCommand(store, values, positionals[1], positionals[2]);
-        case 'forget':   return forgetRoom(store, values, positionals[1]);
-        case 'status':   return status(store, values);
-        case 'invite':   return invite(store, values);
-        case 'handover': return offerHandover(store, values);
-        case 'accept':   return resolveHandover(store, values, positionals[1], true);
-        case 'decline':  return resolveHandover(store, values, positionals[1], false);
-        case 'ack':      return acknowledge(store, values);
-        case 'pause':    return setPaused(store, values, positionals[1], true);
-        case 'resume':   return setPaused(store, values, positionals[1], false);
-        case 'close':    return closeRoom(store, values);
-        case 'serve':    return serve(values);
-        case 'help':     out(HELP); return 0;
-        default:         throw new UsageError(`unknown command "${command}"; run "pairlobby help"`);
+        case 'list':
+            return listRooms(store, values);
+        case 'name':
+            return renameRoom(store, values, positionals[1], positionals.slice(2).join(' '));
+        case 'expiry':
+            return expiryCommand(store, values, positionals.slice(1));
+        case 'expire':
+            return expireInteractive(store, values, positionals[1]);
+        case 'open':
+            return setAccess(store, values, positionals[1]);
+        case 'delete':
+            return deleteRoom(store, values, positionals[1]);
+        case 'create':
+            return createRoom(store, values, positionals[1] === 'online');
+        case 'join':
+            return joinRoom(store, values, positionals[1] === 'online' ? positionals[2] : positionals[1], positionals[1] === 'online');
+        case 'login':
+            out(`Logged in as ${await loginOnline(store)}`);
+            return 0;
+        case 'logout':
+            store.forgetRoom('online-account');
+            out('Saved account login removed.');
+            return 0;
+        case 'allow': {
+            const room = resolveRoom(store, str(values, 'room'));
+            await new PairLobbyClient(room.serverUrl).setAllowedAccounts(
+                room.roomId,
+                controllerCredential(store, room),
+                positionals
+                    .slice(1)
+                    .flatMap((value) => value.split(','))
+                    .filter(Boolean)
+            );
+            out('Private room allowed accounts updated; the creator remains allowed.');
+            return 0;
+        }
+        case 'send':
+            return sendMessage(store, values, positionals.slice(1).join(' '));
+        case 'install-skill': {
+            const paths = (await import('./install-skill.js')).installSkill(positionals[1], flag(values, 'force'), str(values, 'skills-dir'));
+            if (flag(values, 'json')) {
+                json({installed: paths});
+            } else {
+                for (const path of paths) out(`Installed skill: ${path}`);
+            }
+            return 0;
+        }
+        case 'configure-claude': {
+            const result = (await import('./channel-config.js')).configureClaude(store, str(values, 'room'), str(values, 'session'), str(values, 'allow-from'));
+            json(result);
+            return 0;
+        }
+        case 'channel':
+            return (await import('./channel.js')).runChannel(store, str(values, 'room'), str(values, 'session'), str(values, 'allow-from'));
+        case 'reply':
+            return replyMessage(store, values, positionals[1], positionals.slice(2).join(' '));
+        case 'requests':
+            return requestStatus(store, values);
+        case 'receipt':
+            return receiptMessage(store, values, positionals[1]);
+        case 'guard-stop':
+            return guardStop(store, values);
+        case 'read':
+            return readEvents(store, values);
+        case 'watch':
+            return watchRoom(store, values);
+        case 'chat':
+            return chatRoom(store, values);
+        case 'session':
+            return sessionInfo(store, values);
+        case 'profile':
+            return profileCommand(store, values);
+        case 'settings':
+            return settingsCommand(store, values, positionals[1], positionals[2]);
+        case 'forget':
+            return forgetRoom(store, values, positionals[1]);
+        case 'status':
+            return status(store, values);
+        case 'invite':
+            return invite(store, values);
+        case 'handover':
+            return offerHandover(store, values);
+        case 'accept':
+            return resolveHandover(store, values, positionals[1], true);
+        case 'decline':
+            return resolveHandover(store, values, positionals[1], false);
+        case 'ack':
+            return acknowledge(store, values);
+        case 'pause':
+            return setPaused(store, values, positionals[1], true);
+        case 'resume':
+            return setPaused(store, values, positionals[1], false);
+        case 'close':
+            return closeRoom(store, values);
+        case 'serve':
+            return serve(values);
+        case 'help':
+            out(HELP);
+            return 0;
+        default:
+            throw new UsageError(`unknown command "${command}"; run "pairlobby help"`);
     }
 }
 
@@ -181,15 +263,19 @@ function flag(values: Values, key: keyof typeof OPTIONS): boolean {
  */
 async function listRooms(store: LocalStore, values: Values): Promise<number> {
     const rooms = store.rooms();
-    const detailed = await Promise.all(rooms.map(async (room) => {
-        const credential = store.credential(room.roomId, 'controller') ?? room.sessions.map((session) => store.credential(room.roomId, session.sessionId)).find(Boolean);
-        if (!credential) return {room, reachable: false as const};
-        try {
-            return {room, reachable: true as const, snapshot: await new PairLobbyClient(room.serverUrl).snapshot(room.roomId, credential)};
-        } catch (error) {
-            return {room, reachable: false as const, why: error instanceof ProtocolError ? error.code : 'unreachable'};
-        }
-    }));
+    const detailed = await Promise.all(
+        rooms.map(async (room) => {
+            const credential = store.credential(room.roomId, 'controller') ?? room.sessions.map((session) => store.credential(room.roomId, session.sessionId)).find(Boolean);
+            if (!credential) {
+                return {room, reachable: false as const};
+            }
+            try {
+                return {room, reachable: true as const, snapshot: await new PairLobbyClient(room.serverUrl).snapshot(room.roomId, credential)};
+            } catch (error) {
+                return {room, reachable: false as const, why: error instanceof ProtocolError ? error.code : 'unreachable'};
+            }
+        })
+    );
 
     if (flag(values, 'json')) {
         json({count: rooms.length, rooms: detailed.map((entry) => ({...entry.room, live: 'snapshot' in entry ? entry.snapshot : null}))});
@@ -217,7 +303,7 @@ function parseExpirySpec(spec: string): number | null {
  */
 async function setAccess(store: LocalStore, values: Values, reference?: string): Promise<number> {
     const room = resolveRoom(store, reference ?? str(values, 'room'));
-    const joinPolicy = flag(values, 'off') ? 'invite_only' as const : 'open_to_guests' as const;
+    const joinPolicy = flag(values, 'off') ? ('invite_only' as const) : ('open_to_guests' as const);
     const credential = controllerCredential(store, room);
     await new PairLobbyClient(room.serverUrl).setJoinPolicy(room.roomId, credential, joinPolicy);
 
@@ -241,7 +327,9 @@ async function setAccess(store: LocalStore, values: Values, reference?: string):
 /** The menu form of `expiry`, for when you would rather not phrase a time. */
 async function expireInteractive(store: LocalStore, values: Values, reference?: string): Promise<number> {
     const room = resolveRoom(store, reference ?? str(values, 'room'));
-    if (!process.stdin.isTTY || !process.stdout.isTTY) throw new UsageError('pairlobby expire needs a terminal; use "pairlobby expiry <room> <when>" instead');
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        throw new UsageError('pairlobby expire needs a terminal; use "pairlobby expiry <room> <when>" instead');
+    }
     const credential = controllerCredential(store, room);
     const client = new PairLobbyClient(room.serverUrl);
     const snapshot = await client.snapshot(room.roomId, credential);
@@ -271,7 +359,9 @@ async function expiryCommand(store: LocalStore, values: Values, args: string[]):
     if (spec.length === 0) {
         const client = new PairLobbyClient(room.serverUrl);
         const credential = store.credential(room.roomId, 'controller') ?? room.sessions.map((session) => store.credential(room.roomId, session.sessionId)).find(Boolean);
-        if (!credential) throw new UsageError(`no credential for ${room.name} on this device`);
+        if (!credential) {
+            throw new UsageError(`no credential for ${room.name} on this device`);
+        }
         const snapshot = await client.snapshot(room.roomId, credential);
         if (flag(values, 'json')) {
             json({roomId: room.roomId, expiresAt: snapshot.expiresAt});
@@ -295,9 +385,13 @@ async function expiryCommand(store: LocalStore, values: Values, args: string[]):
 }
 
 async function renameRoom(store: LocalStore, values: Values, reference: string | undefined, name: string): Promise<number> {
-    if (!reference) throw new UsageError('pairlobby name needs a room and a new name');
+    if (!reference) {
+        throw new UsageError('pairlobby name needs a room and a new name');
+    }
     const room = resolveRoom(store, reference);
-    if (name.trim().length === 0) throw new UsageError(`pairlobby name ${reference} <new name>`);
+    if (name.trim().length === 0) {
+        throw new UsageError(`pairlobby name ${reference} <new name>`);
+    }
     const credential = controllerCredential(store, room);
     await new PairLobbyClient(room.serverUrl).rename(room.roomId, credential, name.trim());
     store.upsertRoom({...room, name: name.trim()});
@@ -316,7 +410,9 @@ async function renameRoom(store: LocalStore, values: Values, reference: string |
  * than waiting for a later confirmation.
  */
 async function deleteRoom(store: LocalStore, values: Values, reference: string | undefined): Promise<number> {
-    if (!reference) throw new UsageError('pairlobby delete needs a room');
+    if (!reference) {
+        throw new UsageError('pairlobby delete needs a room');
+    }
     const room = resolveRoom(store, reference);
     const credential = controllerCredential(store, room);
     const confirm = store.settings().confirmDelete && !flag(values, 'force') && !flag(values, 'json') && process.stdin.isTTY;
@@ -336,7 +432,9 @@ async function deleteRoom(store: LocalStore, values: Values, reference: string |
         // A dead relay must not strand the entry forever. Deleting needs the server
         // to answer; dropping the local record does not, so say which is which.
         if (error instanceof ProtocolError && error.code === 'server_unavailable') {
-            throw new UsageError(`could not reach ${room.serverUrl}, so the room was not deleted.\n  Start the server and try again, or drop this device's record of it:\n    pairlobby forget ${room.roomId}`);
+            throw new UsageError(
+                `could not reach ${room.serverUrl}, so the room was not deleted.\n  Start the server and try again, or drop this device's record of it:\n    pairlobby forget ${room.roomId}`
+            );
         }
         if (error instanceof ProtocolError && (error.code === 'room_not_found' || error.code === 'room_expired')) {
             store.forgetRoom(room.roomId);
@@ -364,7 +462,7 @@ async function deleteRoom(store: LocalStore, values: Values, reference: string |
  * configured would join wearing the owner's name and human role — quietly
  * granting itself an identity the room has no other way to question.
  */
-function identityFrom(store: LocalStore, values: Values, fallbackName: string): {displayName: string; kind: 'agent' | 'human'; sessionId: string; capabilities?: AdapterCapabilities} {
+function identityFrom(store: LocalStore, values: Values, fallbackName: string): LocalIdentity {
     const detected = detectRuntime();
     const profile = store.profile();
     const profileApplies = !(detected.runtime !== undefined && profile.kind === 'human');
@@ -373,21 +471,19 @@ function identityFrom(store: LocalStore, values: Values, fallbackName: string): 
     // has no terminal. A person on a TTY with neither is a person, and defaulting
     // them to "agent" made rooms report zero people in them.
     const looksLikeAgent = detected.runtime !== undefined || process.stdin.isTTY !== true;
-    const kind = flag(values, 'human') ? 'human'
-        : flag(values, 'agent') ? 'agent'
-        : (profileApplies && profile.kind) || (looksLikeAgent ? 'agent' : 'human');
+    const kind = flag(values, 'human') ? 'human' : flag(values, 'agent') ? 'agent' : (profileApplies && profile.kind) || (looksLikeAgent ? 'agent' : 'human');
     const displayName = str(values, 'as') ?? (profileApplies ? profile.displayName : undefined) ?? (kind === 'human' ? osUserName() : fallbackName);
-    const runtime = str(values, 'runtime') ?? (kind === 'human' ? undefined : profile.runtime ?? detected.runtime);
+    const runtime = str(values, 'runtime') ?? (kind === 'human' ? undefined : (profile.runtime ?? detected.runtime));
     const capabilities: AdapterCapabilities | undefined = runtime ? {deliverUnsolicited: false, cancelTurn: false, cancelTool: false, runtime} : undefined;
     return {displayName, kind, sessionId: newId('session'), ...(capabilities ? {capabilities} : {})};
 }
 
 const SETTING_KEYS = {
     'confirm-delete': {field: 'confirmDelete', kind: 'boolean', help: 'ask before deleting a room'},
-    'poll-interval':  {field: 'pollIntervalMs', kind: 'number', help: 'milliseconds between live-room polls'},
-    'show-ids':       {field: 'showIds', kind: 'boolean', help: 'print ids next to names in the live room'},
-    'default-expiry':        {field: 'defaultRoomLifetimeMs', kind: 'duration', help: 'how long a new room lives: never, or a duration like 24h'},
-    'default-invite-expiry': {field: 'defaultInviteLifetimeMs', kind: 'duration', help: 'how long a new invite code lasts: never, or a duration like 10m'},
+    'poll-interval': {field: 'pollIntervalMs', kind: 'number', help: 'milliseconds between live-room polls'},
+    'show-ids': {field: 'showIds', kind: 'boolean', help: 'print ids next to names in the live room'},
+    'default-expiry': {field: 'defaultRoomLifetimeMs', kind: 'duration', help: 'how long a new room lives: never, or a duration like 24h'},
+    'default-invite-expiry': {field: 'defaultInviteLifetimeMs', kind: 'duration', help: 'how long a new invite code lasts: never, or a duration like 10m'}
 } as const;
 
 function settingsCommand(store: LocalStore, values: Values, key?: string, value?: string): number {
@@ -398,8 +494,12 @@ function settingsCommand(store: LocalStore, values: Values, key?: string, value?
     }
     if (key !== undefined) {
         const definition = SETTING_KEYS[key as keyof typeof SETTING_KEYS];
-        if (!definition) throw new UsageError(`unknown setting "${key}"; known settings: ${Object.keys(SETTING_KEYS).join(', ')}`);
-        if (value === undefined) throw new UsageError(`pairlobby settings ${key} <value>`);
+        if (!definition) {
+            throw new UsageError(`unknown setting "${key}"; known settings: ${Object.keys(SETTING_KEYS).join(', ')}`);
+        }
+        if (value === undefined) {
+            throw new UsageError(`pairlobby settings ${key} <value>`);
+        }
         const parsed = definition.kind === 'boolean' ? parseBoolean(key, value) : definition.kind === 'duration' ? parseLifetime(value) : parseCount(key, value);
         store.setSettings({[definition.field]: parsed} as never);
         note(`${key} is now ${definition.kind === 'duration' ? describeLifetime(parsed as number | null) : parsed}`);
@@ -423,14 +523,20 @@ function settingsCommand(store: LocalStore, values: Values, key?: string, value?
 
 function parseBoolean(key: string, value: string): boolean {
     const normalized = value.trim().toLowerCase();
-    if (['true', 'yes', 'on', '1'].includes(normalized)) return true;
-    if (['false', 'no', 'off', '0'].includes(normalized)) return false;
+    if (['true', 'yes', 'on', '1'].includes(normalized)) {
+        return true;
+    }
+    if (['false', 'no', 'off', '0'].includes(normalized)) {
+        return false;
+    }
     throw new UsageError(`${key} takes true or false, not "${value}"`);
 }
 
 function parseLifetime(value: string): number | null {
     const normalized = value.trim().toLowerCase();
-    if (['never', 'none', 'off', 'no', 'permanent', 'forever'].includes(normalized)) return null;
+    if (['never', 'none', 'off', 'no', 'permanent', 'forever'].includes(normalized)) {
+        return null;
+    }
     try {
         return parseDuration(normalized);
     } catch (error) {
@@ -444,7 +550,9 @@ function describeLifetime(ms: number | null): string {
 
 function parseCount(key: string, value: string): number {
     const parsed = Number(value);
-    if (!Number.isFinite(parsed) || parsed <= 0) throw new UsageError(`${key} takes a positive number, not "${value}"`);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+        throw new UsageError(`${key} takes a positive number, not "${value}"`);
+    }
     return parsed;
 }
 
@@ -455,7 +563,9 @@ function parseCount(key: string, value: string): number {
  * needs the server to answer.
  */
 function forgetRoom(store: LocalStore, values: Values, reference: string | undefined): number {
-    if (!reference) throw new UsageError('pairlobby forget needs a room');
+    if (!reference) {
+        throw new UsageError('pairlobby forget needs a room');
+    }
     const room = resolveRoom(store, reference);
     store.forgetRoom(room.roomId);
     if (flag(values, 'json')) {
@@ -478,7 +588,7 @@ function profileCommand(store: LocalStore, values: Values): number {
         ...(str(values, 'as') !== undefined ? {displayName: str(values, 'as')!} : {}),
         ...(flag(values, 'human') ? {kind: 'human' as const} : flag(values, 'agent') ? {kind: 'agent' as const} : {}),
         ...(str(values, 'runtime') !== undefined ? {runtime: str(values, 'runtime')!} : {}),
-        ...(str(values, 'server') !== undefined ? {server: str(values, 'server')!} : {}),
+        ...(str(values, 'server') !== undefined ? {server: str(values, 'server')!} : {})
     };
     const profile = Object.keys(update).length > 0 ? store.setProfile(update) : store.profile();
 
@@ -494,9 +604,15 @@ function profileCommand(store: LocalStore, values: Values): number {
     }
     out(`name     ${profile.displayName ?? '(unset)'}`);
     out(`kind     ${profile.kind ?? '(unset)'}`);
-    if (profile.runtime) out(`runtime  ${profile.runtime}`);
-    if (profile.server) out(`server   ${profile.server}`);
-    if (profile.kind === 'human') note('a detected agent runtime ignores this profile, so agents never join as you');
+    if (profile.runtime) {
+        out(`runtime  ${profile.runtime}`);
+    }
+    if (profile.server) {
+        out(`server   ${profile.server}`);
+    }
+    if (profile.kind === 'human') {
+        note('a detected agent runtime ignores this profile, so agents never join as you');
+    }
     return 0;
 }
 
@@ -514,7 +630,7 @@ function osUserName(): string {
     }
 }
 
-function localDetail(values: Values): {runtime?: string; conversationId?: string; terminal?: string; pid?: number} {
+function localDetail(values: Values): LocalRuntimeDetail {
     const detected = detectRuntime();
     // A conversation id is only inherited when this really is the detected runtime
     // talking. A human, or an agent declaring a different runtime, would otherwise
@@ -527,21 +643,55 @@ function localDetail(values: Values): {runtime?: string; conversationId?: string
     return {...(runtime ? {runtime} : {}), ...(conversationId ? {conversationId} : {}), ...(detected.terminal ? {terminal: detected.terminal} : {}), pid: detected.pid};
 }
 
-async function createRoom(store: LocalStore, values: Values): Promise<number> {
+async function createRoom(store: LocalStore, values: Values, online = false): Promise<number> {
     const name = str(values, 'name');
-    if (!name) throw new UsageError('pairlobby create needs --name');
-    const serverUrl = resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')});
+    if (!name) {
+        throw new UsageError('pairlobby create needs --name');
+    }
+    if (online && (str(values, 'server') || flag(values, 'local'))) {
+        throw new UsageError('online cannot be combined with --server or --local');
+    }
+    if (str(values, 'allow') && !flag(values, 'private')) {
+        throw new UsageError('--allow requires --private');
+    }
+    if (flag(values, 'private') && !online) {
+        throw new UsageError('Use create online --private for an account-restricted room');
+    }
+    const serverUrl = online ? (await onlineAccount(store)).server : resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')});
     const identity = identityFrom(store, values, 'agent');
-    const client = new PairLobbyClient(serverUrl, process.env['PAIRLOBBY_ACCOUNT_TOKEN']);
+    const client = new PairLobbyClient(serverUrl, online ? accountToken(store) : process.env['PAIRLOBBY_ACCOUNT_TOKEN']);
     const lifetime = store.settings().defaultRoomLifetimeMs;
     const expiresAt = str(values, 'expiry') !== undefined ? parseExpirySpec(str(values, 'expiry')!) : lifetime === null ? null : Date.now() + lifetime;
-    const created = await client.createRoom(name, identity, expiresAt);
+    const created = await client.createRoom(
+        name,
+        identity,
+        expiresAt,
+        online
+            ? {
+                  private: flag(values, 'private'),
+                  allowedAccounts: (str(values, 'allow') ?? '')
+                      .split(',')
+                      .map((s) => s.trim())
+                      .filter(Boolean)
+              }
+            : undefined
+    );
 
     store.upsertRoom({roomId: created.roomId, name, serverUrl, createdAt: created.room.createdAt, expiresAt: created.room.expiresAt, controls: true, sessions: []});
     // The controller credential stays on disk and out of the result an agent sees.
     store.putCredential(created.roomId, 'controller', created.controllerCredential);
     store.putCredential(created.roomId, identity.sessionId, created.participantCredential);
-    store.addSession(created.roomId, {participantId: created.participantId, sessionId: identity.sessionId, displayName: identity.displayName, kind: identity.kind, role: 'member', joinedAt: created.room.createdAt, lastReadSeq: 0, cwd: process.cwd(), ...localDetail(values)});
+    store.addSession(created.roomId, {
+        participantId: created.participantId,
+        sessionId: identity.sessionId,
+        displayName: identity.displayName,
+        kind: identity.kind,
+        role: 'member',
+        joinedAt: created.room.createdAt,
+        lastReadSeq: 0,
+        cwd: process.cwd(),
+        ...localDetail(values)
+    });
 
     if (flag(values, 'json')) {
         json({roomId: created.roomId, name, serverUrl, participantId: created.participantId, sessionId: identity.sessionId, invite: created.invite, ...localDetail(values)});
@@ -551,27 +701,62 @@ async function createRoom(store: LocalStore, values: Values): Promise<number> {
     out(`Room: ${name}`);
     out(`Invite: ${created.invite.code}  (single use)`);
     out(`Session: ${identity.sessionId}`);
-    if (detail.conversationId) out(`Conversation: ${detail.conversationId}`);
+    if (detail.conversationId) {
+        out(`Conversation: ${detail.conversationId}`);
+    }
     out('');
-    out(`  pairlobby join ${created.invite.code} --server ${serverUrl}`);
+    out(online ? `  pairlobby join online ${created.invite.code}` : `  pairlobby join ${created.invite.code} --server ${serverUrl}`);
     note('The controller credential for this room was stored on this device and is not printed.');
     return 0;
 }
 
-async function joinRoom(store: LocalStore, values: Values, code?: string): Promise<number> {
-    if (!code) throw new UsageError('pairlobby join needs an invite code or the id of an open room');
-    const serverUrl = resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')});
+async function joinRoom(store: LocalStore, values: Values, code?: string, online = false): Promise<number> {
+    if (!code) {
+        throw new UsageError('pairlobby join needs an invite code or the id of an open room');
+    }
+    if (online && (str(values, 'server') || flag(values, 'local'))) {
+        throw new UsageError('online cannot be combined with --server or --local');
+    }
+    const serverUrl = online ? await resolveOnlineKey(store, code) : resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')});
     const identity = identityFrom(store, values, 'agent');
-    const client = new PairLobbyClient(serverUrl);
+    const token = new URL(serverUrl).origin === onlineOrigin() ? accountToken(store) : undefined;
+    const client = new PairLobbyClient(serverUrl, token);
     // A room id and an invite code are not confusable, so one command takes either.
     const joined = code.startsWith('rm_') ? await client.joinAsGuest(code, identity) : await client.redeemInvite(code, identity);
 
-    store.upsertRoom({roomId: joined.roomId, name: joined.room.name, serverUrl, createdAt: joined.room.createdAt, expiresAt: joined.room.expiresAt, controls: store.room(joined.roomId)?.controls ?? false, sessions: store.room(joined.roomId)?.sessions ?? []});
+    store.upsertRoom({
+        roomId: joined.roomId,
+        name: joined.room.name,
+        serverUrl,
+        createdAt: joined.room.createdAt,
+        expiresAt: joined.room.expiresAt,
+        controls: store.room(joined.roomId)?.controls ?? false,
+        sessions: store.room(joined.roomId)?.sessions ?? []
+    });
     store.putCredential(joined.roomId, identity.sessionId, joined.participantCredential);
-    store.addSession(joined.roomId, {participantId: joined.participantId, sessionId: identity.sessionId, displayName: identity.displayName, kind: identity.kind, role: joined.role, joinedAt: Date.now(), lastReadSeq: 0, cwd: process.cwd(), ...localDetail(values)});
+    store.addSession(joined.roomId, {
+        participantId: joined.participantId,
+        sessionId: identity.sessionId,
+        displayName: identity.displayName,
+        kind: identity.kind,
+        role: joined.role,
+        joinedAt: Date.now(),
+        lastReadSeq: 0,
+        cwd: process.cwd(),
+        ...localDetail(values)
+    });
 
     if (flag(values, 'json')) {
-        json({roomId: joined.roomId, name: joined.room.name, serverUrl, participantId: joined.participantId, sessionId: identity.sessionId, role: joined.role, ...localDetail(values), participants: joined.room.participants.map((participant) => ({participantId: participant.participantId, displayName: participant.displayName}))});
+        json({
+            roomId: joined.roomId,
+            name: joined.room.name,
+            serverUrl,
+            participantId: joined.participantId,
+            sessionId: identity.sessionId,
+            role: joined.role,
+            ...localDetail(values),
+            participants: joined.room.participants.map((participant) => ({participantId: participant.participantId, displayName: participant.displayName}))
+        });
         return 0;
     }
     const detail = localDetail(values);
@@ -583,85 +768,164 @@ async function joinRoom(store: LocalStore, values: Values, code?: string): Promi
     }
     out(`Joined ${joined.room.name} as ${identity.displayName}${joined.role === 'guest' ? ' (read-only guest)' : ''}`);
     out(`Session: ${identity.sessionId}`);
-    if (detail.conversationId) out(`Conversation: ${detail.conversationId}`);
+    if (detail.conversationId) {
+        out(`Conversation: ${detail.conversationId}`);
+    }
     out('');
     renderSnapshot(joined.room);
     return 0;
 }
 
 async function sendMessage(store: LocalStore, values: Values, text: string): Promise<number> {
-    if (text.trim().length === 0) throw new UsageError('pairlobby send needs a message');
-    const wait=Number(str(values,'wait-for-ack') ?? 30);
-    if(!Number.isFinite(wait)||wait<0||wait>300) throw new UsageError('--wait-for-ack must be between 0 and 300 seconds');
+    if (text.trim().length === 0) {
+        throw new UsageError('pairlobby send needs a message');
+    }
+    const wait = Number(str(values, 'wait-for-ack') ?? 30);
+    if (!Number.isFinite(wait) || wait < 0 || wait > 300) {
+        throw new UsageError('--wait-for-ack must be between 0 and 300 seconds');
+    }
     const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     const recipient = str(values, 'to');
-    const replyTo=str(values,'reply-to');
-    if(replyTo) return replyMessage(store,values,replyTo,text);
+    const replyTo = str(values, 'reply-to');
+    if (replyTo) {
+        return replyMessage(store, values, replyTo, text);
+    }
     const recipientId = recipient ? resolveRecipient((await client.snapshot(room.roomId, credential)).participants, recipient) : undefined;
     // The key is generated once so a retry after a lost response is a replay, not a second message.
-    const result = await client.send(room.roomId, credential, {type: 'message', payload: {text, priority: 'normal'}, idempotencyKey: newId('event'), ...(recipientId ? {recipientId} : {})});
+    const result = await client.send(room.roomId, credential, {
+        type: 'message',
+        payload: {text, priority: 'normal'},
+        idempotencyKey: newId('event'),
+        ...(recipientId ? {recipientId} : {})
+    });
 
-    const seconds=flag(values,'no-wait')?0:Number(str(values,'wait-for-ack') ?? 30);
-    if(!Number.isFinite(seconds)||seconds<0||seconds>300) throw new UsageError('--wait-for-ack must be between 0 and 300 seconds');
-    let acknowledged=false;
-    if(recipientId && seconds>0) {
-        const deadline=Date.now()+seconds*1000;
+    const seconds = flag(values, 'no-wait') ? 0 : Number(str(values, 'wait-for-ack') ?? 30);
+    if (!Number.isFinite(seconds) || seconds < 0 || seconds > 300) {
+        throw new UsageError('--wait-for-ack must be between 0 and 300 seconds');
+    }
+    let acknowledged = false;
+    if (recipientId && seconds > 0) {
+        const deadline = Date.now() + seconds * 1000;
         note(`queued ${result.event.eventId}; waiting for the recipient's acknowledgement`);
-        while(Date.now()<deadline) {
-            const request=await client.request(room.roomId,credential,result.event.eventId);
-            if(request.receivedAt!==null) {acknowledged=true;break;}
-            if(request.failureAt) break;
-            await sleep(Math.min(1000,Math.max(0,deadline-Date.now())));
+        while (Date.now() < deadline) {
+            const request = await client.request(room.roomId, credential, result.event.eventId);
+            if (request.receivedAt !== null) {
+                acknowledged = true;
+                break;
+            }
+            if (request.failureAt) {
+                break;
+            }
+            await sleep(Math.min(1000, Math.max(0, deadline - Date.now())));
         }
     }
-    const timedOut=!!recipientId && seconds>0 && !acknowledged;
-    if(flag(values,'json')) json({seq:result.event.seq,eventId:result.event.eventId,deduplicated:result.deduplicated,delivery:acknowledged?'acknowledged':timedOut?'unconfirmed':'queued',requiresReply:!!recipientId,error:timedOut?'Recipient did not acknowledge before the deadline. The request is still queued; do not resend it as a new request.':null});
-    else note(acknowledged?`acknowledged ${result.event.eventId}; a final reply is still required`:timedOut?`DELIVERY UNCONFIRMED: ${result.event.eventId}. The request remains pending; check the recipient adapter.`:`queued ${result.event.eventId}`);
-    return timedOut?1:0;
+    const timedOut = !!recipientId && seconds > 0 && !acknowledged;
+    if (flag(values, 'json')) {
+        json({
+            seq: result.event.seq,
+            eventId: result.event.eventId,
+            deduplicated: result.deduplicated,
+            delivery: acknowledged ? 'acknowledged' : timedOut ? 'unconfirmed' : 'queued',
+            requiresReply: !!recipientId,
+            error: timedOut ? 'Recipient did not acknowledge before the deadline. The request is still queued; do not resend it as a new request.' : null
+        });
+    } else {
+        note(
+            acknowledged
+                ? `acknowledged ${result.event.eventId}; a final reply is still required`
+                : timedOut ? `DELIVERY UNCONFIRMED: ${result.event.eventId}. The request remains pending; check the recipient adapter.` : `queued ${result.event.eventId}`
+        );
+    }
+    return timedOut ? 1 : 0;
 }
 
-async function receiptMessage(store: LocalStore,values: Values,eventId?: string): Promise<number> {
-    if(!eventId) throw new UsageError('receipt requires an event id');
-    const {room,credential,client}=select(store,str(values,'room'),str(values,'session'));
-    await client.acknowledgeMessage(room.roomId,credential,eventId);
-    if(flag(values,'json')) json({acknowledged:eventId});else note(`acknowledged ${eventId}`);
-    return 0;
-}
-async function replyMessage(store: LocalStore,values: Values,eventId: string | undefined,text: string): Promise<number> {
-    if(!eventId || !text.trim()) throw new UsageError('reply needs an event id and a non-empty answer (a refusal or unknown answer is valid)');
-    const {room,credential,client}=select(store,str(values,'room'),str(values,'session'));
-    const result=await client.reply(room.roomId,credential,eventId,text,flag(values,'progress'));
-    if(flag(values,'json')) json({eventId:result.event.eventId,replyTo:eventId,final:!flag(values,'progress')});
-    else note(`${flag(values,'progress')?'progress':'answer'} recorded for ${eventId}`);
-    return 0;
-}
-async function requestStatus(store: LocalStore,values: Values): Promise<number> {
-    const {room,credential,client}=select(store,str(values,'room'),str(values,'session'));
-    const page=await client.requests(room.roomId,credential,Number(str(values,'after') ?? 0));
-    const requests=page.requests.map(request=>({...request,state:requestState(request)}));
-    if(flag(values,'json')) json({requests,hasMore:page.hasMore});
-    else {
-        for(const request of requests) out(`${request.eventId}  ${request.state}  ${request.text.slice(0,100)}`);
-        if(!requests.length) out('No unanswered requests.');
-        if(page.hasMore) note('More requests remain; continue with --after using the last seq.');
+async function receiptMessage(store: LocalStore, values: Values, eventId?: string): Promise<number> {
+    if (!eventId) {
+        throw new UsageError('receipt requires an event id');
+    }
+    const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    await client.acknowledgeMessage(room.roomId, credential, eventId);
+    if (flag(values, 'json')) {
+        json({acknowledged: eventId});
+    } else {
+        note(`acknowledged ${eventId}`);
     }
     return 0;
 }
-async function guardStop(store: LocalStore,values: Values): Promise<number> {
-    let repeated=false;
-    if(!process.stdin.isTTY) {
-        try {const input=JSON.parse(readFileSync(0,'utf8')) as {stop_hook_active?:boolean};repeated=input.stop_hook_active===true;} catch { /* Manual invocation can supply an empty input. */ }
+async function replyMessage(store: LocalStore, values: Values, eventId: string | undefined, text: string): Promise<number> {
+    if (!eventId || !text.trim()) {
+        throw new UsageError('reply needs an event id and a non-empty answer (a refusal or unknown answer is valid)');
+    }
+    const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    const result = await client.reply(room.roomId, credential, eventId, text, flag(values, 'progress'));
+    if (flag(values, 'json')) {
+        json({eventId: result.event.eventId, replyTo: eventId, final: !flag(values, 'progress')});
+    } else {
+        note(`${flag(values, 'progress') ? 'progress' : 'answer'} recorded for ${eventId}`);
+    }
+    return 0;
+}
+async function requestStatus(store: LocalStore, values: Values): Promise<number> {
+    const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    const page = await client.requests(room.roomId, credential, Number(str(values, 'after') ?? 0));
+    const requests = page.requests.map((request) => ({...request, state: requestState(request)}));
+    if (flag(values, 'json')) {
+        json({requests, hasMore: page.hasMore});
+    } else {
+        for (const request of requests) out(`${request.eventId}  ${request.state}  ${request.text.slice(0, 100)}`);
+        if (!requests.length) {
+            out('No unanswered requests.');
+        }
+        if (page.hasMore) {
+            note('More requests remain; continue with --after using the last seq.');
+        }
+    }
+    return 0;
+}
+async function guardStop(store: LocalStore, values: Values): Promise<number> {
+    let repeated = false;
+    if (!process.stdin.isTTY) {
+        try {
+            const input = JSON.parse(readFileSync(0, 'utf8')) as {stop_hook_active?: boolean};
+            repeated = input.stop_hook_active === true;
+        } catch {
+            /* Manual invocation can supply an empty input. */
+        }
     }
     try {
-        const {room,credential,client,session}=select(store,str(values,'room'),str(values,'session'));
-        const pending=await client.pendingRequests(room.roomId,credential,session.participantId);
-        if(pending.length && repeated) {
-            for(const request of pending) await client.deliveryFailed(room.roomId,credential,request.eventId,'The runtime attempted to finish again without replying after a Stop-hook reminder. Human intervention is required. No final reply was fabricated.');
-            json({systemMessage:`PAIRLOBBY FAILURE: ${pending.length} requests remain unanswered. Adapter failure was recorded in the room. The runtime is allowed to stop to avoid an infinite model loop; these requests are NOT resolved.`});
-        } else if(pending.length) json({decision:'block',reason:`PairLobby has ${pending.length} unanswered requests. Run pairlobby read --room ${room.roomId} --session ${session.sessionId} --json, then use pairlobby reply <event-id> <answer> with the same --room and --session for each request. A refusal or unknown answer is valid; progress is not a final answer. Pending IDs: ${pending.map(r=>r.eventId).join(', ')}`});
-        else json({});
+        const {room, credential, client, session} = select(store, str(values, 'room'), str(values, 'session'));
+        const pending = await client.pendingRequests(room.roomId, credential, session.participantId);
+        if (pending.length && repeated) {
+            for (const request of pending)
+                await client.deliveryFailed(
+                    room.roomId,
+                    credential,
+                    request.eventId,
+                    'The runtime attempted to finish again without replying after a Stop-hook reminder. Human intervention is required. No final reply was fabricated.'
+                );
+            json({
+                systemMessage: `PAIRLOBBY FAILURE: ${pending.length} requests remain unanswered. Adapter failure was recorded in the room. The runtime is allowed to stop to avoid an infinite model loop; these requests are NOT resolved.`
+            });
+        } else if (pending.length) {
+            json({
+                decision: 'block',
+                reason: `PairLobby has ${pending.length} unanswered requests. Run pairlobby read --room ${room.roomId} --session ${session.sessionId} --json, then use pairlobby reply <event-id> <answer> with the same --room and --session for each request. A refusal or unknown answer is valid; progress is not a final answer. Pending IDs: ${pending.map((r) => r.eventId).join(', ')}`
+            });
+        } else {
+            json({});
+        }
     } catch {
-        json(repeated?{systemMessage:'PAIRLOBBY FAILURE: the relay is unreachable and completion could not be verified or recorded. Requests remain unconfirmed; human intervention is required.'}:{decision:'block',reason:'PairLobby could not verify your inbox. Restore relay access or report the failure explicitly. Do not claim that room requests were answered.'});
+        json(
+            repeated
+                ? {
+                      systemMessage:
+                          'PAIRLOBBY FAILURE: the relay is unreachable and completion could not be verified or recorded. Requests remain unconfirmed; human intervention is required.'
+                  }
+                : {
+                      decision: 'block',
+                      reason: 'PairLobby could not verify your inbox. Restore relay access or report the failure explicitly. Do not claim that room requests were answered.'
+                  }
+        );
     }
     return 0;
 }
@@ -670,22 +934,29 @@ async function readEvents(store: LocalStore, values: Values): Promise<number> {
     const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     const after = str(values, 'after') !== undefined ? Number(str(values, 'after')) : session.lastReadSeq;
     const waitSeconds = str(values, 'wait') !== undefined ? Number(str(values, 'wait')) : 0;
-    const before=await client.requests(room.roomId,credential,0,100,session.participantId);
-    const hasPending=before.requests.some(request=>request.to===session.participantId);
-    const page = waitSeconds > 0 && !hasPending
-        ? await waitForEvents(client, room.roomId, credential, session.participantId, after, waitSeconds, flag(values, 'all'), store.settings().pollIntervalMs)
-        : await client.readEvents(room.roomId, credential, after);
+    const before = await client.requests(room.roomId, credential, 0, 100, session.participantId);
+    const hasPending = before.requests.some((request) => request.to === session.participantId);
+    const page =
+        waitSeconds > 0 && !hasPending ? await waitForEvents(client, room.roomId, credential, session.participantId, after, waitSeconds, flag(values, 'all'), store.settings().pollIntervalMs) : await client.readEvents(room.roomId, credential, after);
     const snapshot = await client.snapshot(room.roomId, credential);
     const names = new Map(snapshot.participants.map((participant) => [participant.participantId, participant.displayName] as const));
 
-    const inbox=await client.requests(room.roomId,credential,0,100,session.participantId);
-    const owed=inbox.requests.filter(request=>request.to===session.participantId);
+    const inbox = await client.requests(room.roomId, credential, 0, 100, session.participantId);
+    const owed = inbox.requests.filter((request) => request.to === session.participantId);
     // Persist receipts before advancing the cursor. A failed receipt is retried
     // by the next read; it must never be swallowed as a courtesy failure.
-    const ids=new Set([...unreceipted(page.events,session.participantId).map(event=>event.eventId),...owed.filter(request=>request.receivedAt===null).map(request=>request.eventId)]);
-    for(const id of ids) await client.acknowledgeMessage(room.roomId,credential,id);
-    for(const request of owed) if(ids.has(request.eventId)) request.receivedAt ??= Date.now();
-    if (page.events.length > 0) store.updateCursor(room.roomId,session.sessionId,page.events.at(-1)!.seq);
+    const ids = new Set([
+        ...unreceipted(page.events, session.participantId).map((event) => event.eventId),
+        ...owed.filter((request) => request.receivedAt === null).map((request) => request.eventId)
+    ]);
+    for (const id of ids) await client.acknowledgeMessage(room.roomId, credential, id);
+    for (const request of owed)
+        if (ids.has(request.eventId)) {
+            request.receivedAt ??= Date.now();
+        }
+    if (page.events.length > 0) {
+        store.updateCursor(room.roomId, session.sessionId, page.events.at(-1)!.seq);
+    }
 
     if (flag(values, 'json')) {
         json({
@@ -694,7 +965,13 @@ async function readEvents(store: LocalStore, values: Values): Promise<number> {
             latestSeq: page.latestSeq,
             hasMore: page.hasMore,
             addressedToMe: page.events.filter((event) => event.recipientId === session.participantId).map((event) => event.eventId),
-            awaitingYourReply: owed.map((request) => ({eventId: request.eventId, from: names.get(request.from) ?? request.from, text: request.text, waitingSeconds: Math.round((Date.now()-request.at) / 1000), state: requestState(request)})),
+            awaitingYourReply: owed.map((request) => ({
+                eventId: request.eventId,
+                from: names.get(request.from) ?? request.from,
+                text: request.text,
+                waitingSeconds: Math.round((Date.now() - request.at) / 1000),
+                state: requestState(request)
+            }))
         });
         return 0;
     }
@@ -703,11 +980,13 @@ async function readEvents(store: LocalStore, values: Values): Promise<number> {
         return 0;
     }
     renderEvents(page.events, names);
-    if (page.hasMore) note('more events remain; run read again');
+    if (page.hasMore) {
+        note('more events remain; run read again');
+    }
     if (owed.length > 0) {
         note('');
         note(`${owed.length} ${owed.length === 1 ? 'request is' : 'requests are'} waiting on you. Answer, or say you will not:`);
-        for (const request of owed) note(`  ${names.get(request.from) ?? request.from}, ${Math.round((Date.now()-request.at) / 1000)}s ago: ${request.text.slice(0, 72)}`);
+        for (const request of owed) note(`  ${names.get(request.from) ?? request.from}, ${Math.round((Date.now() - request.at) / 1000)}s ago: ${request.text.slice(0, 72)}`);
     }
     return 0;
 }
@@ -719,7 +998,9 @@ function isInteractive(values: Values): boolean {
 /** Enters a room already joined on this device. */
 async function chatRoom(store: LocalStore, values: Values): Promise<number> {
     const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
-    if (!isInteractive(values)) return watchRoom(store, values);
+    if (!isInteractive(values)) {
+        return watchRoom(store, values);
+    }
     return runChatRoom({
         store,
         client,
@@ -731,7 +1012,7 @@ async function chatRoom(store: LocalStore, values: Values): Promise<number> {
         readOnly: session.role === 'guest',
         intervalMs: str(values, 'interval') !== undefined ? Number(str(values, 'interval')) : store.settings().pollIntervalMs,
         showIds: store.settings().showIds,
-        fromStart: true,
+        fromStart: true
     });
 }
 
@@ -755,7 +1036,10 @@ async function watchRoom(store: LocalStore, values: Values): Promise<number> {
     }
 
     let stopped = false;
-    const stop = () => {stopped = true; client.closeLive();};
+    const stop = () => {
+        stopped = true;
+        client.closeLive();
+    };
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
 
@@ -765,7 +1049,9 @@ async function watchRoom(store: LocalStore, values: Values): Promise<number> {
             page = await client.readEvents(room.roomId, credential, cursor);
         } catch (error) {
             // A relay that went away should not end the watch; a room that ended should.
-            if (error instanceof ProtocolError && (error.code === 'room_expired' || error.code === 'room_closed' || error.code === 'participant_revoked')) throw error;
+            if (error instanceof ProtocolError && (error.code === 'room_expired' || error.code === 'room_closed' || error.code === 'participant_revoked')) {
+                throw error;
+            }
             if (error instanceof ProtocolError && error.code === 'server_unavailable') {
                 note('relay unreachable, retrying');
                 await sleep(intervalMs * 2);
@@ -782,11 +1068,20 @@ async function watchRoom(store: LocalStore, values: Values): Promise<number> {
                     for (const participant of refreshed.participants) names.set(participant.participantId, participant.displayName);
                 }
             }
-            if (machine) for (const event of page.events) process.stdout.write(`${JSON.stringify(event)}\n`);
-            else renderEvents(page.events, names);
+            if (machine) {
+                for (const event of page.events) process.stdout.write(`${JSON.stringify(event)}\n`);
+            } else {
+                renderEvents(page.events, names);
+            }
         }
-        if (page.hasMore) continue;
-        await client.waitForChange(room.roomId, credential, cursor, 300_000, intervalMs).catch(async () => {if (!stopped) await sleep(Math.max(intervalMs, 1000));});
+        if (page.hasMore) {
+            continue;
+        }
+        await client.waitForChange(room.roomId, credential, cursor, 300_000, intervalMs).catch(async () => {
+            if (!stopped) {
+                await sleep(Math.max(intervalMs, 1000));
+            }
+        });
     }
     client.closeLive();
     return 0;
@@ -802,7 +1097,9 @@ async function sessionInfo(store: LocalStore, values: Values): Promise<number> {
     const conversation = str(values, 'conversation');
     if (conversation) {
         const target = resolveSession(room, str(values, 'session'));
-        if (!store.setConversation(room.roomId, target.sessionId, conversation)) throw new UsageError('could not update that session');
+        if (!store.setConversation(room.roomId, target.sessionId, conversation)) {
+            throw new UsageError('could not update that session');
+        }
         out(`Session ${target.sessionId} is conversation ${conversation}`);
         return 0;
     }
@@ -816,8 +1113,12 @@ async function sessionInfo(store: LocalStore, values: Values): Promise<number> {
         out(`  participant   ${entry.participantId}`);
         out(`  runtime       ${entry.runtime ?? 'unreported'}`);
         out(`  conversation  ${entry.conversationId ?? 'unknown — pairlobby session --session ' + entry.sessionId + ' --conversation <id>'}`);
-        if (entry.terminal) out(`  terminal      ${entry.terminal}`);
-        if (entry.pid) out(`  invoked by pid ${entry.pid}`);
+        if (entry.terminal) {
+            out(`  terminal      ${entry.terminal}`);
+        }
+        if (entry.pid) {
+            out(`  invoked by pid ${entry.pid}`);
+        }
         out(`  cwd           ${entry.cwd}`);
     }
     return 0;
@@ -832,34 +1133,45 @@ async function sessionInfo(store: LocalStore, values: Values): Promise<number> {
  * It returns empty on timeout rather than erroring, so a caller can simply wait
  * again.
  */
-async function waitForEvents(client: PairLobbyClient, roomId: string, credential: string, participantId: string, after: number, seconds: number, wakeOnAnything: boolean, intervalMs: number) {
+async function waitForEvents(client: PairLobbyClient, roomId: string, credential: string, participantId: string, after: number, seconds: number, wakeOnAnything: boolean, intervalMs: number
+) {
     const deadline = Date.now() + seconds * 1000;
     let cursor = after;
     let latest = after;
     const collected: Awaited<ReturnType<PairLobbyClient['readEvents']>>['events'] = [];
 
-    try { for (;;) {
-        const page = await client.readEvents(roomId, credential, cursor);
-        if (page.events.length > 0) {
-            cursor = page.events.at(-1)!.seq;
-            collected.push(...page.events);
-            const wakes = wakeOnAnything
-                ? page.events.some((event) => event.senderId !== participantId)
-                : page.events.some((event) => event.recipientId === participantId && event.senderId !== participantId);
-            if (wakes) return {events: collected, earliestSeq: 0, latestSeq: page.latestSeq, hasMore: page.hasMore};
+    try {
+        for (;;) {
+            const page = await client.readEvents(roomId, credential, cursor);
+            if (page.events.length > 0) {
+                cursor = page.events.at(-1)!.seq;
+                collected.push(...page.events);
+                const wakes = wakeOnAnything
+                    ? page.events.some((event) => event.senderId !== participantId)
+                    : page.events.some((event) => event.recipientId === participantId && event.senderId !== participantId);
+                if (wakes) {
+                    return {events: collected, earliestSeq: 0, latestSeq: page.latestSeq, hasMore: page.hasMore};
+                }
+            }
+            latest = page.latestSeq;
+            if (Date.now() >= deadline) {
+                return {events: collected, earliestSeq: 0, latestSeq: latest, hasMore: false};
+            }
+            if (!page.hasMore) {
+                await client.waitForChange(roomId, credential, cursor, Math.max(0, deadline - Date.now()), intervalMs);
+            }
         }
-        latest = page.latestSeq;
-        if (Date.now() >= deadline) return {events: collected, earliestSeq: 0, latestSeq: latest, hasMore: false};
-        if (!page.hasMore) await client.waitForChange(roomId, credential, cursor, Math.max(0, deadline - Date.now()), intervalMs);
-    } } finally { client.closeLive(); }
+    } finally {
+        client.closeLive();
+    }
 }
 
 async function status(store: LocalStore, values: Values): Promise<number> {
     const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     const snapshot = await client.snapshot(room.roomId, credential);
-    const pending=await client.requests(room.roomId,credential);
+    const pending = await client.requests(room.roomId, credential);
     const names = new Map(snapshot.participants.map((participant) => [participant.participantId, participant.displayName] as const));
-    const open = pending.requests.map(request=>({...request,received:request.receivedAt!==null,waitingMs:Date.now()-request.at,state:requestState(request)}));
+    const open = pending.requests.map((request) => ({...request, received: request.receivedAt !== null, waitingMs: Date.now() - request.at, state: requestState(request)}));
 
     if (flag(values, 'json')) {
         json({...snapshot, openRequests: open.map((request) => ({...request, from: names.get(request.from) ?? request.from, to: names.get(request.to) ?? request.to}))});
@@ -894,8 +1206,12 @@ async function offerHandover(store: LocalStore, values: Values): Promise<number>
     }
     const file = str(values, 'file');
     const recipient = str(values, 'to');
-    if (!file) throw new UsageError('pairlobby handover needs --file (or --template to print a starting point)');
-    if (!recipient) throw new UsageError('pairlobby handover needs --to');
+    if (!file) {
+        throw new UsageError('pairlobby handover needs --file (or --template to print a starting point)');
+    }
+    if (!recipient) {
+        throw new UsageError('pairlobby handover needs --to');
+    }
     const document = parseHandoverFile(readFileSync(file, 'utf8'));
     const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     const recipientId = resolveRecipient((await client.snapshot(room.roomId, credential)).participants, recipient);
@@ -903,7 +1219,9 @@ async function offerHandover(store: LocalStore, values: Values): Promise<number>
     // An amendment reuses the id and takes the next revision; a new offer starts at 1.
     const revision = str(values, 'revision') !== undefined ? Number(str(values, 'revision')) : 1;
     const existingId = str(values, 'handover-id');
-    if (revision > 1 && !existingId) throw new UsageError('amending a handover needs --handover-id naming the handover being revised');
+    if (revision > 1 && !existingId) {
+        throw new UsageError('amending a handover needs --handover-id naming the handover being revised');
+    }
     const handoverId = existingId ?? newId('handover');
     const result = await client.send(room.roomId, credential, {type: 'handover.offered', payload: {handoverId, revision, document}, idempotencyKey: newId('event'), recipientId});
 
@@ -917,9 +1235,13 @@ async function offerHandover(store: LocalStore, values: Values): Promise<number>
 }
 
 async function resolveHandover(store: LocalStore, values: Values, handoverId: string | undefined, accept: boolean): Promise<number> {
-    if (!handoverId) throw new UsageError(`pairlobby ${accept ? 'accept' : 'decline'} needs a handover id`);
+    if (!handoverId) {
+        throw new UsageError(`pairlobby ${accept ? 'accept' : 'decline'} needs a handover id`);
+    }
     const revisionText = str(values, 'revision');
-    if (!revisionText) throw new UsageError('pass --revision with the exact revision you read, so a newer one is never accepted by accident');
+    if (!revisionText) {
+        throw new UsageError('pass --revision with the exact revision you read, so a newer one is never accepted by accident');
+    }
     const revision = Number(revisionText);
     const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     const reason = str(values, 'reason');
@@ -931,7 +1253,9 @@ async function resolveHandover(store: LocalStore, values: Values, handoverId: st
         return 0;
     }
     out(`${accept ? 'Accepted' : 'Declined'} handover ${handoverId} revision ${revision}`);
-    if (accept) note('acceptance confirms receipt and responsibility; it is not a filesystem lock');
+    if (accept) {
+        note('acceptance confirms receipt and responsibility; it is not a filesystem lock');
+    }
     return 0;
 }
 
@@ -950,11 +1274,19 @@ async function acknowledge(store: LocalStore, values: Values): Promise<number> {
     const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     const snapshot = await client.snapshot(room.roomId, credential);
     const me = snapshot.participants.find((participant) => participant.participantId === session.participantId);
-    if (!me) throw new UsageError('this session is not a participant of the room any more');
+    if (!me) {
+        throw new UsageError('this session is not a participant of the room any more');
+    }
     const revision = str(values, 'revision') !== undefined ? Number(str(values, 'revision')) : me.controlRevision;
-    if (revision < 1) throw new UsageError('there is no control request outstanding for this session');
+    if (revision < 1) {
+        throw new UsageError('there is no control request outstanding for this session');
+    }
 
-    const result = await client.send(room.roomId, credential, {type: 'control.ack', payload: {targetParticipantId: session.participantId, revision, outcome: outcome as never}, idempotencyKey: newId('event')});
+    const result = await client.send(room.roomId, credential, {
+        type: 'control.ack',
+        payload: {targetParticipantId: session.participantId, revision, outcome: outcome as never},
+        idempotencyKey: newId('event')
+    });
     if (flag(values, 'json')) {
         json({revision, outcome, seq: result.event.seq});
         return 0;
@@ -964,7 +1296,9 @@ async function acknowledge(store: LocalStore, values: Values): Promise<number> {
 }
 
 async function setPaused(store: LocalStore, values: Values, target: string | undefined, paused: boolean): Promise<number> {
-    if (!target) throw new UsageError(`pairlobby ${paused ? 'pause' : 'resume'} needs a participant`);
+    if (!target) {
+        throw new UsageError(`pairlobby ${paused ? 'pause' : 'resume'} needs a participant`);
+    }
     const room = resolveRoom(store, str(values, 'room'));
     const credential = controllerCredential(store, room);
     const client = new PairLobbyClient(room.serverUrl);
@@ -1008,9 +1342,13 @@ async function serve(values: Values): Promise<number> {
         // Say what is wrong and what to do, rather than surfacing a raw errno. The
         // occupant is never probed: something else owning the port is not ours to poke.
         if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
-            throw new UsageError(`something is already listening on ${host}:${port}.\n  If it is your own PairLobby server, you do not need another one.\n  Otherwise pick a different port: pairlobby serve --port ${port + 1}`);
+            throw new UsageError(
+                `something is already listening on ${host}:${port}.\n  If it is your own PairLobby server, you do not need another one.\n  Otherwise pick a different port: pairlobby serve --port ${port + 1}`
+            );
         }
-        if ((error as NodeJS.ErrnoException).code === 'EACCES') throw new UsageError(`not allowed to listen on ${host}:${port}; ports below 1024 usually need elevated permissions`);
+        if ((error as NodeJS.ErrnoException).code === 'EACCES') {
+            throw new UsageError(`not allowed to listen on ${host}:${port}; ports below 1024 usually need elevated permissions`);
+        }
         throw error;
     }
     out(`PairLobby server on ${running.url}`);
@@ -1018,28 +1356,32 @@ async function serve(values: Values): Promise<number> {
     out('Press Ctrl+C to stop.');
     // Runs in the foreground: an auto-starting daemon is lifecycle complexity nobody has asked for yet.
     await new Promise<void>((resolve) => {
-        const stop = () => {void running.close().then(resolve);};
+        const stop = () => {
+            void running.close().then(resolve);
+        };
         process.once('SIGINT', stop);
         process.once('SIGTERM', stop);
     });
     return 0;
 }
 
-void main(process.argv.slice(2)).then((code) => {
-    process.exitCode = code;
-}).catch((error: unknown) => {
-    if (error instanceof UsageError) {
-        note(String(error.message));
-        process.exitCode = 2;
-        return;
-    }
-    if (error instanceof ProtocolError) {
-        note(`${error.code}: ${error.message}`);
+void main(process.argv.slice(2))
+    .then((code) => {
+        process.exitCode = code;
+    })
+    .catch((error: unknown) => {
+        if (error instanceof UsageError) {
+            note(String(error.message));
+            process.exitCode = 2;
+            return;
+        }
+        if (error instanceof ProtocolError) {
+            note(`${error.code}: ${error.message}`);
+            process.exitCode = 1;
+            return;
+        }
+        note(error instanceof Error ? error.message : String(error));
         process.exitCode = 1;
-        return;
-    }
-    note(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-});
+    });
 
 export {main};

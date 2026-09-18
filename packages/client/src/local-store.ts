@@ -8,6 +8,8 @@ import {chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync} from 'nod
 import {homedir, platform} from 'node:os';
 import {join} from 'node:path';
 
+type RoomResolution = {room: RoomEntry} | {ambiguous: RoomEntry[]} | {missing: true};
+
 export interface SessionEntry {
     participantId: string;
     sessionId: string;
@@ -70,12 +72,17 @@ export const DEFAULT_SETTINGS: Settings = {confirmDelete: true, pollIntervalMs: 
 
 export function dataDirectory(): string {
     const override = process.env['PAIRLOBBY_DATA_DIR'];
-    if (override) return override;
+    if (override) {
+        return override;
+    }
     const home = homedir();
     switch (platform()) {
-        case 'darwin': return join(home, 'Library', 'Application Support', 'PairLobby');
-        case 'win32':  return join(process.env['APPDATA'] ?? join(home, 'AppData', 'Roaming'), 'PairLobby');
-        default:       return join(process.env['XDG_DATA_HOME'] ?? join(home, '.local', 'share'), 'pairlobby');
+        case 'darwin':
+            return join(home, 'Library', 'Application Support', 'PairLobby');
+        case 'win32':
+            return join(process.env['APPDATA'] ?? join(home, 'AppData', 'Roaming'), 'PairLobby');
+        default:
+            return join(process.env['XDG_DATA_HOME'] ?? join(home, '.local', 'share'), 'pairlobby');
     }
 }
 
@@ -106,7 +113,9 @@ export class LocalStore {
     setProfile(profile: Profile): Profile {
         const merged = {...this.profile(), ...profile};
         for (const key of Object.keys(merged) as (keyof Profile)[]) {
-            if (merged[key] === undefined) delete merged[key];
+            if (merged[key] === undefined) {
+                delete merged[key];
+            }
         }
         writeJsonPrivate(this.profileFile, merged);
         return merged;
@@ -144,13 +153,19 @@ export class LocalStore {
     }
 
     /** Resolves a room by id, exact name, or unique name prefix. Ambiguity is reported, never guessed. */
-    resolveRoom(reference: string): {room: RoomEntry} | {ambiguous: RoomEntry[]} | {missing: true} {
+    resolveRoom(reference: string): RoomResolution {
         const rooms = this.rooms();
         const exact = rooms.find((entry) => entry.roomId === reference || entry.name === reference);
-        if (exact) return {room: exact};
+        if (exact) {
+            return {room: exact};
+        }
         const matches = rooms.filter((entry) => entry.name.startsWith(reference) || entry.roomId.startsWith(reference));
-        if (matches.length === 1) return {room: matches[0]!};
-        if (matches.length > 1) return {ambiguous: matches};
+        if (matches.length === 1) {
+            return {room: matches[0]!};
+        }
+        if (matches.length > 1) {
+            return {ambiguous: matches};
+        }
         return {missing: true};
     }
 
@@ -168,7 +183,9 @@ export class LocalStore {
 
     addSession(roomId: string, session: SessionEntry): void {
         const room = this.room(roomId);
-        if (!room) throw new Error(`room ${roomId} is not in the local registry`);
+        if (!room) {
+            throw new Error(`room ${roomId} is not in the local registry`);
+        }
         room.sessions = room.sessions.filter((candidate) => candidate.sessionId !== session.sessionId);
         room.sessions.push(session);
         this.upsertRoom(room);
@@ -178,7 +195,9 @@ export class LocalStore {
     setConversation(roomId: string, sessionId: string, conversationId: string): boolean {
         const room = this.room(roomId);
         const session = room?.sessions.find((candidate) => candidate.sessionId === sessionId);
-        if (!room || !session) return false;
+        if (!room || !session) {
+            return false;
+        }
         session.conversationId = conversationId;
         this.upsertRoom(room);
         return true;
@@ -187,16 +206,23 @@ export class LocalStore {
     updateCursor(roomId: string, sessionId: string, lastReadSeq: number): void {
         const room = this.room(roomId);
         const session = room?.sessions.find((candidate) => candidate.sessionId === sessionId);
-        if (!room || !session) return;
+        if (!room || !session) {
+            return;
+        }
         session.lastReadSeq = lastReadSeq;
         this.upsertRoom(room);
     }
 
     forgetRoom(roomId: string): void {
-        writeJsonPrivate(this.roomsFile, this.rooms().filter((entry) => entry.roomId !== roomId));
+        writeJsonPrivate(
+            this.roomsFile,
+            this.rooms().filter((entry) => entry.roomId !== roomId)
+        );
         const credentials = this.credentials();
         for (const key of Object.keys(credentials)) {
-            if (key.startsWith(`${roomId}:`)) delete credentials[key];
+            if (key.startsWith(`${roomId}:`)) {
+                delete credentials[key];
+            }
         }
         writeJsonPrivate(this.credentialsFile, credentials);
     }

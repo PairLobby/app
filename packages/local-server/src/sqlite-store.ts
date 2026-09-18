@@ -11,6 +11,8 @@ import type {EventPage, IdempotencyRecord, RoomStore} from '@pairlobby/server-co
 
 import {SCHEMA, SCHEMA_VERSION} from './schema.js';
 
+type IdempotencyKey = {key: string; requestDigest: string} | null;
+
 interface BodyRow {
     body: string;
 }
@@ -24,7 +26,9 @@ export class SqliteRoomStore implements RoomStore {
         this.db.exec('PRAGMA foreign_keys = ON');
         this.db.exec('PRAGMA busy_timeout = 5000');
         this.db.exec(SCHEMA);
-        if (!this.db.prepare("SELECT value FROM meta WHERE key='message_requests_v1'").get()) this.transaction(()=>this.db.exec(REQUEST_BACKFILL_SQL));
+        if (!this.db.prepare("SELECT value FROM meta WHERE key='message_requests_v1'").get()) {
+            this.transaction(() => this.db.exec(REQUEST_BACKFILL_SQL));
+        }
         this.db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING').run('schema_version', String(SCHEMA_VERSION));
     }
 
@@ -54,30 +58,40 @@ export class SqliteRoomStore implements RoomStore {
 
     async loadRoom(roomId: string): Promise<RoomView | null> {
         const row = this.db.prepare('SELECT earliest_seq, body FROM rooms WHERE room_id = ?').get(roomId) as {earliest_seq: number; body: string} | undefined;
-        if (!row) return null;
+        if (!row) {
+            return null;
+        }
         return {
             room: JSON.parse(row.body) as RoomRecord,
             participants: this.rows('SELECT body FROM participants WHERE room_id = ? ORDER BY participant_id', roomId),
             handovers: this.rows('SELECT body FROM handovers WHERE room_id = ? ORDER BY handover_id', roomId),
             controls: this.rows('SELECT body FROM controls WHERE room_id = ? ORDER BY target_participant_id', roomId),
-            earliestSeq: row.earliest_seq,
+            earliestSeq: row.earliest_seq
         };
     }
 
-    async apply(mutation: Mutation, idempotency: {key: string; requestDigest: string} | null): Promise<void> {
+    async apply(mutation: Mutation, idempotency: IdempotencyKey): Promise<void> {
         this.transaction(() => {
             this.db.prepare('UPDATE rooms SET body = ? WHERE room_id = ?').run(JSON.stringify(mutation.room), mutation.room.roomId);
             for (const participant of mutation.upsertParticipants) this.writeParticipant(participant);
             for (const handover of mutation.upsertHandovers) {
-                this.db.prepare('INSERT INTO handovers (handover_id, room_id, body) VALUES (?, ?, ?) ON CONFLICT (handover_id) DO UPDATE SET body = excluded.body').run(handover.handoverId, handover.roomId, JSON.stringify(handover));
+                this.db
+                    .prepare('INSERT INTO handovers (handover_id, room_id, body) VALUES (?, ?, ?) ON CONFLICT (handover_id) DO UPDATE SET body = excluded.body')
+                    .run(handover.handoverId, handover.roomId, JSON.stringify(handover));
             }
             for (const control of mutation.upsertControls) {
-                this.db.prepare('INSERT INTO controls (room_id, target_participant_id, body) VALUES (?, ?, ?) ON CONFLICT (room_id, target_participant_id) DO UPDATE SET body = excluded.body').run(control.roomId, control.targetParticipantId, JSON.stringify(control));
+                this.db
+                    .prepare(
+                        'INSERT INTO controls (room_id, target_participant_id, body) VALUES (?, ?, ?) ON CONFLICT (room_id, target_participant_id) DO UPDATE SET body = excluded.body'
+                    )
+                    .run(control.roomId, control.targetParticipantId, JSON.stringify(control));
             }
             for (const request of mutation.upsertRequests ?? []) this.writeRequest(request);
             this.writeEvent(mutation.appendEvent);
             if (idempotency) {
-                this.db.prepare('INSERT INTO idempotency (room_id, key, request_digest, seq) VALUES (?, ?, ?, ?)').run(mutation.room.roomId, idempotency.key, idempotency.requestDigest, mutation.appendEvent.seq);
+                this.db
+                    .prepare('INSERT INTO idempotency (room_id, key, request_digest, seq) VALUES (?, ?, ?, ?)')
+                    .run(mutation.room.roomId, idempotency.key, idempotency.requestDigest, mutation.appendEvent.seq);
             }
         });
     }
@@ -94,12 +108,16 @@ export class SqliteRoomStore implements RoomStore {
     }
 
     async idempotencyRecord(roomId: string, key: string): Promise<IdempotencyRecord | null> {
-        const row = this.db.prepare('SELECT request_digest, seq FROM idempotency WHERE room_id = ? AND key = ?').get(roomId, key) as {request_digest: string; seq: number} | undefined;
+        const row = this.db.prepare('SELECT request_digest, seq FROM idempotency WHERE room_id = ? AND key = ?').get(roomId, key) as
+            | {request_digest: string; seq: number}
+            | undefined;
         return row ? {requestDigest: row.request_digest, seq: row.seq} : null;
     }
 
     async putInvite(invite: InviteRecord): Promise<void> {
-        this.db.prepare('INSERT INTO invites (digest, room_id, state, bound_attempt_id, body) VALUES (?, ?, ?, ?, ?)').run(invite.digest, invite.roomId, invite.state, invite.boundAttemptId, JSON.stringify(invite));
+        this.db
+            .prepare('INSERT INTO invites (digest, room_id, state, bound_attempt_id, body) VALUES (?, ?, ?, ?, ?)')
+            .run(invite.digest, invite.roomId, invite.state, invite.boundAttemptId, JSON.stringify(invite));
     }
 
     async inviteByDigest(digest: string): Promise<InviteRecord | null> {
@@ -114,13 +132,23 @@ export class SqliteRoomStore implements RoomStore {
     async reserveInvite(digest: string, attemptId: string, credentialHash: string, expectedOccupantId: string | null): Promise<InviteRecord | null> {
         return this.transaction(() => {
             const row = this.db.prepare('SELECT body FROM invites WHERE digest = ?').get(digest) as BodyRow | undefined;
-            if (!row) return null;
+            if (!row) {
+                return null;
+            }
             const invite = JSON.parse(row.body) as InviteRecord;
-            if (invite.boundAttemptId === attemptId) return invite;
-            if (invite.state === 'reserved') return null;
+            if (invite.boundAttemptId === attemptId) {
+                return invite;
+            }
+            if (invite.state === 'reserved') {
+                return null;
+            }
             if (invite.state === 'redeemed') {
-                if (!invite.reusable) return null;
-                if (invite.redeemedParticipantId !== expectedOccupantId) return null;
+                if (!invite.reusable) {
+                    return null;
+                }
+                if (invite.redeemedParticipantId !== expectedOccupantId) {
+                    return null;
+                }
             } else if (expectedOccupantId !== null) {
                 return null;
             }
@@ -128,9 +156,8 @@ export class SqliteRoomStore implements RoomStore {
             // The WHERE clause repeats the precondition so a concurrent writer that
             // slipped in between the read and this update loses rather than overwrites.
             const previous = invite.state === 'redeemed' ? invite.redeemedParticipantId : null;
-            const result = previous === null
-                ? this.db.prepare("UPDATE invites SET state = 'reserved', bound_attempt_id = ?, body = ? WHERE digest = ? AND state = 'unused'").run(attemptId, JSON.stringify(reserved), digest)
-                : this.db.prepare("UPDATE invites SET state = 'reserved', bound_attempt_id = ?, body = ? WHERE digest = ? AND state = 'redeemed' AND json_extract(body, '$.redeemedParticipantId') = ?").run(attemptId, JSON.stringify(reserved), digest, previous);
+            const result =
+                previous === null ? this.db .prepare("UPDATE invites SET state = 'reserved', bound_attempt_id = ?, body = ? WHERE digest = ? AND state = 'unused'") .run(attemptId, JSON.stringify(reserved), digest) : this.db .prepare( "UPDATE invites SET state = 'reserved', bound_attempt_id = ?, body = ? WHERE digest = ? AND state = 'redeemed' AND json_extract(body, '$.redeemedParticipantId') = ?" ) .run(attemptId, JSON.stringify(reserved), digest, previous);
             return result.changes === 1 ? reserved : null;
         });
     }
@@ -138,7 +165,9 @@ export class SqliteRoomStore implements RoomStore {
     async completeInvite(digest: string, participantId: string): Promise<void> {
         this.transaction(() => {
             const row = this.db.prepare('SELECT body FROM invites WHERE digest = ?').get(digest) as BodyRow | undefined;
-            if (!row) return;
+            if (!row) {
+                return;
+            }
             const invite = {...(JSON.parse(row.body) as InviteRecord), state: 'redeemed' as const, redeemedParticipantId: participantId};
             this.db.prepare("UPDATE invites SET state = 'redeemed', body = ? WHERE digest = ?").run(JSON.stringify(invite), digest);
         });
@@ -154,25 +183,41 @@ export class SqliteRoomStore implements RoomStore {
     }
 
     async messageRequest(roomId: string, eventId: string): Promise<MessageRequest | null> {
-        const row=this.db.prepare('SELECT body FROM message_requests WHERE room_id=? AND event_id=?').get(roomId,eventId) as BodyRow | undefined;
-        return row ? JSON.parse(row.body) as MessageRequest : null;
+        const row = this.db.prepare('SELECT body FROM message_requests WHERE room_id=? AND event_id=?').get(roomId, eventId) as BodyRow | undefined;
+        return row ? (JSON.parse(row.body) as MessageRequest) : null;
     }
     async messageRequests(roomId: string, after: number, limit: number, recipientId?: string): Promise<RequestPage> {
-        const rows=this.db.prepare("SELECT body FROM message_requests WHERE room_id=? AND seq>? AND requires_reply=1 AND response_event_id IS NULL AND (? IS NULL OR json_extract(body,'$.to')=?) ORDER BY seq LIMIT ?").all(roomId,after,recipientId ?? null,recipientId ?? null,limit+1) as unknown as BodyRow[];
-        return {requests:rows.slice(0,limit).map(row=>JSON.parse(row.body) as MessageRequest),hasMore:rows.length>limit};
+        const rows = this.db
+            .prepare(
+                "SELECT body FROM message_requests WHERE room_id=? AND seq>? AND requires_reply=1 AND response_event_id IS NULL AND (? IS NULL OR json_extract(body,'$.to')=?) ORDER BY seq LIMIT ?"
+            )
+            .all(roomId, after, recipientId ?? null, recipientId ?? null, limit + 1) as unknown as BodyRow[];
+        return {requests: rows.slice(0, limit).map((row) => JSON.parse(row.body) as MessageRequest), hasMore: rows.length > limit};
     }
     private writeRequest(request: MessageRequest): void {
         // Keep concurrent receipt/progress writes from erasing an accepted reply.
-        const old=this.db.prepare('SELECT body FROM message_requests WHERE event_id=?').get(request.eventId) as BodyRow | undefined;
-        const previous=old ? JSON.parse(old.body) as MessageRequest : null;
-        const merged={...request,receivedAt:previous?.receivedAt ?? request.receivedAt,responseEventId:previous?.responseEventId ?? request.responseEventId,respondedAt:previous?.respondedAt ?? request.respondedAt,progressAt:Math.max(previous?.progressAt ?? 0,request.progressAt ?? 0) || null};
-        this.db.prepare('INSERT INTO message_requests(event_id,room_id,seq,received_at,response_event_id,requires_reply,body) VALUES(?,?,?,?,?,?,?) ON CONFLICT(event_id) DO UPDATE SET received_at=excluded.received_at,response_event_id=excluded.response_event_id,body=excluded.body').run(merged.eventId,merged.roomId,merged.seq,merged.receivedAt,merged.responseEventId,merged.requiresReply?1:0,JSON.stringify(merged));
+        const old = this.db.prepare('SELECT body FROM message_requests WHERE event_id=?').get(request.eventId) as BodyRow | undefined;
+        const previous = old ? (JSON.parse(old.body) as MessageRequest) : null;
+        const merged = {
+            ...request,
+            receivedAt: previous?.receivedAt ?? request.receivedAt,
+            responseEventId: previous?.responseEventId ?? request.responseEventId,
+            respondedAt: previous?.respondedAt ?? request.respondedAt,
+            progressAt: Math.max(previous?.progressAt ?? 0, request.progressAt ?? 0) || null
+        };
+        this.db
+            .prepare(
+                'INSERT INTO message_requests(event_id,room_id,seq,received_at,response_event_id,requires_reply,body) VALUES(?,?,?,?,?,?,?) ON CONFLICT(event_id) DO UPDATE SET received_at=excluded.received_at,response_event_id=excluded.response_event_id,body=excluded.body'
+            )
+            .run(merged.eventId, merged.roomId, merged.seq, merged.receivedAt, merged.responseEventId, merged.requiresReply ? 1 : 0, JSON.stringify(merged));
     }
 
     async setLifecycle(roomId: string, lifecycle: RoomRecord['lifecycle']): Promise<void> {
         this.transaction(() => {
             const row = this.db.prepare('SELECT body FROM rooms WHERE room_id = ?').get(roomId) as BodyRow | undefined;
-            if (!row) return;
+            if (!row) {
+                return;
+            }
             const room = {...(JSON.parse(row.body) as RoomRecord), lifecycle};
             this.db.prepare('UPDATE rooms SET body = ? WHERE room_id = ?').run(JSON.stringify(room), roomId);
         });
@@ -196,7 +241,11 @@ export class SqliteRoomStore implements RoomStore {
     }
 
     private writeParticipant(participant: ParticipantRecord): void {
-        this.db.prepare('INSERT INTO participants (participant_id, room_id, credential_hash, body) VALUES (?, ?, ?, ?) ON CONFLICT (participant_id) DO UPDATE SET body = excluded.body').run(participant.participantId, participant.roomId, participant.credentialHash, JSON.stringify(participant));
+        this.db
+            .prepare(
+                'INSERT INTO participants (participant_id, room_id, credential_hash, body) VALUES (?, ?, ?, ?) ON CONFLICT (participant_id) DO UPDATE SET body = excluded.body'
+            )
+            .run(participant.participantId, participant.roomId, participant.credentialHash, JSON.stringify(participant));
     }
 
     private writeEvent(event: RoomEvent): void {
