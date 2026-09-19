@@ -34,14 +34,18 @@ export const AdapterCapabilities = z.object({
     /** The adapter can stop a tool the session is currently running. */
     cancelTool: z.boolean().default(false),
     runtime: z.string().min(1).max(128).optional(),
-    runtimeVersion: z.string().min(1).max(64).optional(),
+    runtimeVersion: z.string().min(1).max(64).optional()
 });
 export type AdapterCapabilities = z.infer<typeof AdapterCapabilities>;
 
 const messagePayload = z.object({
-    text: z.string().min(1).max(32 * 1024).refine(text=>text.trim().length>0,'message must not be blank'),
+    text: z
+        .string()
+        .min(1)
+        .max(32 * 1024)
+        .refine((text) => text.trim().length > 0, 'message must not be blank'),
     priority: z.enum(['normal', 'priority']).default('normal'),
-    responseStage: z.enum(['progress', 'final']).optional(),
+    responseStage: z.enum(['progress', 'final']).optional()
 });
 
 /** Emitted when a participant has actually read something addressed to it. */
@@ -52,7 +56,13 @@ const handoverOfferedPayload = z.object({handoverId: HandoverId, revision: z.num
 const handoverAcceptedPayload = z.object({handoverId: HandoverId, revision: z.number().int().min(1), note: z.string().max(2048).optional()});
 const handoverDeclinedPayload = z.object({handoverId: HandoverId, revision: z.number().int().min(1), reason: z.string().max(2048).optional()});
 
-const participantJoinedPayload = z.object({participantId: ParticipantId, displayName: z.string().min(1).max(64), kind: ParticipantKind, role: ParticipantRole, capabilities: AdapterCapabilities.optional()});
+const participantJoinedPayload = z.object({
+    participantId: ParticipantId,
+    displayName: z.string().min(1).max(64),
+    kind: ParticipantKind,
+    role: ParticipantRole,
+    capabilities: AdapterCapabilities.optional()
+});
 const participantLeftPayload = z.object({participantId: ParticipantId});
 const participantRevokedPayload = z.object({participantId: ParticipantId});
 
@@ -75,7 +85,7 @@ export const EventSubmission = z.discriminatedUnion('type', [
     z.object({type: z.literal('handover.offered'), payload: handoverOfferedPayload}),
     z.object({type: z.literal('handover.accepted'), payload: handoverAcceptedPayload}),
     z.object({type: z.literal('handover.declined'), payload: handoverDeclinedPayload}),
-    z.object({type: z.literal('control.ack'), payload: controlAckPayload}),
+    z.object({type: z.literal('control.ack'), payload: controlAckPayload})
 ]);
 export type EventSubmission = z.infer<typeof EventSubmission>;
 
@@ -95,7 +105,7 @@ export const EventBody = z.discriminatedUnion('type', [
     z.object({type: z.literal('room.closed'), payload: roomClosedPayload}),
     z.object({type: z.literal('room.renamed'), payload: roomRenamedPayload}),
     z.object({type: z.literal('room.expiry_changed'), payload: roomExpiryChangedPayload}),
-    z.object({type: z.literal('room.access_changed'), payload: roomAccessChangedPayload}),
+    z.object({type: z.literal('room.access_changed'), payload: roomAccessChangedPayload})
 ]);
 export type EventBody = z.infer<typeof EventBody>;
 export type EventType = EventBody['type'];
@@ -111,7 +121,7 @@ const envelope = z.object({
     /** A routing hint, not a private-message boundary: every member reads the whole transcript. */
     recipientId: ParticipantId.nullable(),
     replyTo: EventId.nullable(),
-    at: z.number().int().nonnegative(),
+    at: z.number().int().nonnegative()
 });
 
 export const RoomEvent = z.intersection(envelope, EventBody);
@@ -121,9 +131,9 @@ export const SendEventRequest = z.intersection(
     z.object({
         idempotencyKey: z.string().min(1).max(128),
         recipientId: ParticipantId.optional(),
-        replyTo: EventId.optional(),
+        replyTo: EventId.optional()
     }),
-    EventSubmission,
+    EventSubmission
 );
 export type SendEventRequest = z.infer<typeof SendEventRequest>;
 

@@ -11,12 +11,17 @@
   ],
   "scripts": {
     "build": "tsc --build && node scripts/fix-bin.mjs",
+    "deploy": "npm run build && wrangler deploy --config packages/hosted/wrangler.jsonc",
+    "deploy:check": "npm run build && wrangler deploy --config packages/hosted/wrangler.jsonc --dry-run",
     "clean": "tsc --build --clean",
     "serve": "npm run build --silent && node packages/cli/dist/main.js serve",
     "install:cli": "npm run build && npm link --workspace @pairlobby/cli",
+    "install:local": "npm run build && node scripts/install-local.mjs",
     "uninstall:cli": "npm unlink -g pairlobby",
     "test": "tsc --build && node scripts/fix-bin.mjs && vitest run",
     "test:watch": "vitest",
+    "test:async-local": "npm run build && python3 scripts/test-async-local.py",
+    "install:async-prototype": "npm run build && node scripts/install-async-prototype.mjs",
     "typecheck": "tsc --build --force",
     "service": "node scripts/service.mjs",
     "service:install": "npm run install:cli && node scripts/service.mjs install",
@@ -27,6 +32,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "esbuild": "0.28.1",
     "typescript": "^5.7.2",
     "vitest": "^4.1.11"
   }

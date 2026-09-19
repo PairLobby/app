@@ -5,6 +5,8 @@
 import type {HandoverRecord, MessageRequest, RequestPage, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 
+type IdempotencyKey = {key: string; requestDigest: string} | null;
+
 export interface IdempotencyRecord {
     requestDigest: string;
     seq: number;
@@ -25,7 +27,7 @@ export interface RoomStore {
      * Applies every part of a mutation together with its idempotency record.
      * A partial application is a correctness bug, not a degraded mode.
      */
-    apply(mutation: Mutation, idempotency: {key: string; requestDigest: string} | null): Promise<void>;
+    apply(mutation: Mutation, idempotency: IdempotencyKey): Promise<void>;
 
     readEvents(roomId: string, after: number, limit: number): Promise<EventPage>;
     eventBySeq(roomId: string, seq: number): Promise<RoomEvent | null>;

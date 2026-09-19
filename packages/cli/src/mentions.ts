@@ -8,6 +8,38 @@ const ACCENT = '\u001b[1m';
 const DIM = '\u001b[2m';
 const RESET = '\u001b[0m';
 
+type MentionParticipant = {participantId: string; displayName: string; revoked: boolean; left: boolean};
+export type RoutedChatMessage = {text: string; recipientId: string | null};
+
+/** Resolve explicit mentions anywhere in a message without silently broadcasting typos. */
+export function routeChatMessage(text: string, participants: MentionParticipant[], fallbackRecipientId: string | null = null): RoutedChatMessage {
+    const references = [...text.matchAll(/(?:^|\s)@([\p{L}\p{N}_.-]+)/gu)].map((match) => match[1]!);
+    const active = participants.filter((participant) => !participant.revoked && !participant.left);
+    const recipients = new Set<string>();
+    for (const reference of references) {
+        let matches = active.filter((participant) => participant.participantId === reference || participant.displayName.toLowerCase() === reference.toLowerCase());
+        // Sentence punctuation is not part of a name unless an exact name exists.
+        if (matches.length === 0 && reference.endsWith('.')) {
+            const name = reference.replace(/\.+$/, '');
+            matches = active.filter((participant) => participant.displayName.toLowerCase() === name.toLowerCase());
+        }
+        if (matches.length === 0) {
+            throw new Error(`Nobody here is called @${reference}. Message not sent.`);
+        }
+        if (matches.length > 1) {
+            throw new Error(`Several participants are called @${reference}; mention their participant ID instead. Message not sent.`);
+        }
+        recipients.add(matches[0]!.participantId);
+    }
+    if (recipients.size > 1) {
+        throw new Error('This message mentions several recipients. Address one participant at a time; message not sent.');
+    }
+    if (references.length && !text.replace(/(?:^|\s)@[\p{L}\p{N}_.-]+/gu, '').replace(/[\s,!:;.?]/g, '')) {
+        throw new Error('Add a message alongside the mention.');
+    }
+    return {text, recipientId: recipients.values().next().value ?? fallbackRecipientId};
+}
+
 /** The partial name being typed, or null when the cursor is not in a mention. */
 export function currentMention(line: string, cursor = line.length): string | null {
     const before = line.slice(0, cursor);
@@ -25,7 +57,9 @@ export function currentMention(line: string, cursor = line.length): string | nul
  */
 export function matchNames(partial: string, names: string[]): string[] {
     const wanted = partial.toLowerCase();
-    if (wanted.length === 0) return [...names];
+    if (wanted.length === 0) {
+        return [...names];
+    }
     const prefix = names.filter((name) => name.toLowerCase().startsWith(wanted));
     const contains = names.filter((name) => !name.toLowerCase().startsWith(wanted) && name.toLowerCase().includes(wanted));
     return [...prefix, ...contains];
@@ -33,7 +67,9 @@ export function matchNames(partial: string, names: string[]): string[] {
 
 /** The longest prefix every match shares, so Tab advances without choosing. */
 export function commonPrefix(names: string[]): string {
-    if (names.length === 0) return '';
+    if (names.length === 0) {
+        return '';
+    }
     let prefix = names[0]!;
     for (const name of names.slice(1)) {
         let index = 0;
@@ -47,17 +83,23 @@ export function commonPrefix(names: string[]): string {
 export function applyMention(line: string, name: string, cursor = line.length): string {
     const before = line.slice(0, cursor);
     const match = /@([\p{L}\p{N}_.-]*)$/u.exec(before);
-    if (!match) return line;
+    if (!match) {
+        return line;
+    }
     const start = before.length - match[1]!.length;
     return `${line.slice(0, start)}${name}${line.slice(cursor)}`;
 }
 
 /** One rendered suggestion line: the typed part lit, the rest quiet. */
 export function renderSuggestions(partial: string, matches: string[], width = 80): string {
-    if (matches.length === 0) return `${DIM}  no participant matches @${partial}${RESET}`;
+    if (matches.length === 0) {
+        return `${DIM}  no participant matches @${partial}${RESET}`;
+    }
     const shown = matches.slice(0, 6).map((name) => {
         const at = name.toLowerCase().indexOf(partial.toLowerCase());
-        if (partial.length === 0 || at === -1) return `${DIM}${name}${RESET}`;
+        if (partial.length === 0 || at === -1) {
+            return `${DIM}${name}${RESET}`;
+        }
         // Empty runs would emit colour codes around nothing, which shows up in
         // any transcript of the terminal and reads as noise.
         const quiet = (text: string) => (text.length > 0 ? `${DIM}${text}${RESET}` : '');
@@ -81,7 +123,9 @@ function visibleLength(text: string): number {
  * whatever colour was half-applied.
  */
 function truncateVisible(text: string, width: number): string {
-    if (visibleLength(text) <= width) return text;
+    if (visibleLength(text) <= width) {
+        return text;
+    }
     let out = '';
     let visible = 0;
     let index = 0;

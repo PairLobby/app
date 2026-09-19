@@ -11,7 +11,10 @@ export type CredentialKind = 'controller' | 'participant' | 'attempt' | 'connect
 const CREDENTIAL_PREFIXES: Record<CredentialKind, string> = {controller: 'plc', participant: 'plp', attempt: 'pla', connect: 'plk'};
 
 function toBase64Url(bytes: Uint8Array): string {
-    return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return btoa(String.fromCharCode(...bytes))
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
 }
 
 export function newCredential(kind: CredentialKind): string {
@@ -33,7 +36,9 @@ export async function hashCredential(credential: string): Promise<string> {
 
 /** Compares two hex digests without an early exit on the first differing byte. */
 export function digestsEqual(a: string, b: string): boolean {
-    if (a.length !== b.length) return false;
+    if (a.length !== b.length) {
+        return false;
+    }
     let difference = 0;
     for (let index = 0; index < a.length; index += 1) difference |= a.charCodeAt(index) ^ b.charCodeAt(index);
     return difference === 0;

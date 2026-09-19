@@ -1,5 +1,6 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
+  "account_id": "a633403707f87dbc5de9aac0e55d5b99",
   "name": "pairlobby-api",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-14",

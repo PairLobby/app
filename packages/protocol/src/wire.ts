@@ -16,7 +16,7 @@ import {RoomSnapshot} from './records.js';
 export const ServerHello = z.object({
     type: z.literal('hello'),
     snapshot: RoomSnapshot,
-    watermarkSeq: z.number().int().nonnegative(),
+    watermarkSeq: z.number().int().nonnegative()
 });
 
 export const ServerEventFrame = z.object({type: z.literal('event'), event: RoomEvent});

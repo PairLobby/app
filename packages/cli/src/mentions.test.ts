@@ -1,10 +1,39 @@
 import {describe, expect, test} from 'vitest';
 
-import {applyMention, commonPrefix, currentMention, matchNames, renderSuggestions} from './mentions.js';
+import {applyMention, commonPrefix, currentMention, matchNames, renderSuggestions, routeChatMessage} from './mentions.js';
 
 const NAMES = ['claude', 'codex', 'hugo', 'cursor'];
 const BOLD = '\u001b[1m';
 const DIM = '\u001b[2m';
+
+const PARTICIPANTS = NAMES.map((displayName) => ({participantId: `pt_${displayName}`, displayName, revoked: false, left: false}));
+
+describe('routing complete chat messages', () => {
+    test('routes the screenshot message to Codex without changing its text', () => {
+        const text = 'Hey @codex, tell claude to say hi in the chat';
+        expect(routeChatMessage(text, PARTICIPANTS)).toEqual({text, recipientId: 'pt_codex'});
+    });
+
+    test('handles leading, repeated, mixed-case and sentence-ending mentions', () => {
+        for (const text of ['@codex hello', 'Hello @CODEX!', 'Hello @codex.', '@codex please reply, @codex']) {
+            expect(routeChatMessage(text, PARTICIPANTS).recipientId).toBe('pt_codex');
+        }
+    });
+
+    test('email addresses and paths do not redirect messages', () => {
+        expect(routeChatMessage('mail user@codex or inspect ./src@codex', PARTICIPANTS).recipientId).toBeNull();
+        expect(routeChatMessage('hello everyone', PARTICIPANTS, 'pt_claude').recipientId).toBe('pt_claude');
+        expect(routeChatMessage('hello @codex', PARTICIPANTS, 'pt_claude').recipientId).toBe('pt_codex');
+    });
+
+    test('rejects ambiguous, missing and multiple recipients instead of broadcasting or choosing one', () => {
+        expect(() => routeChatMessage('Hey @missing, hello', PARTICIPANTS)).toThrow('not sent');
+        expect(() => routeChatMessage('Hey @codex, hello', [...PARTICIPANTS, {...PARTICIPANTS[1]!, participantId: 'pt_other'}])).toThrow('Several');
+        expect(() => routeChatMessage('Hey @codex and @claude', PARTICIPANTS)).toThrow('several recipients');
+        expect(() => routeChatMessage('@codex', PARTICIPANTS)).toThrow('Add a message');
+        expect(() => routeChatMessage('Hey @codex, hello', PARTICIPANTS.map((participant) => ({...participant, left: true})))).toThrow('not sent');
+    });
+});
 
 function plain(text: string): string {
     return text.replace(/\u001b\[[0-9;]*m/g, '');

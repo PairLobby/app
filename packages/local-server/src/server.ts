@@ -37,15 +37,19 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
     // Loopback is not authentication: a page in the user's browser can reach it too.
     // Host is pinned to defeat DNS rebinding, and an unexpected Origin is refused.
     const allowedHosts: string[] = [];
-    if (options.publicUrl) allowedHosts.push(new URL(options.publicUrl).host);
+    if (options.publicUrl) {
+        allowedHosts.push(new URL(options.publicUrl).host);
+    }
     const route = createRouter({service, allowedOrigins: options.allowedOrigins ?? [], allowedHosts});
 
     // One local relay owns this store. Serialize mutating requests so two
     // async service calls cannot both choose the same next event sequence.
     let mutations: Promise<unknown> = Promise.resolve();
-    const handle=(request: Request): Promise<Response>=>{
-        const result=mutations.then(()=>route(request));
-        if(!['GET','HEAD'].includes(request.method)) mutations=result.catch(()=>{});
+    const handle = (request: Request): Promise<Response> => {
+        const result = mutations.then(() => route(request));
+        if (!['GET', 'HEAD'].includes(request.method)) {
+            mutations = result.catch(() => {});
+        }
         return result;
     };
 
@@ -66,7 +70,7 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
                 host,
                 port: boundPort,
                 dataFile: options.dataFile,
-                close: () => shutdown(server, store),
+                close: () => shutdown(server, store)
             });
         });
     });
@@ -89,7 +93,9 @@ async function toRequest(incoming: IncomingMessage, origin: string): Promise<Req
     const method = incoming.method ?? 'GET';
     const headers = new Headers();
     for (const [name, value] of Object.entries(incoming.headers)) {
-        if (value === undefined) continue;
+        if (value === undefined) {
+            continue;
+        }
         headers.set(name, Array.isArray(value) ? value.join(', ') : value);
     }
     const hasBody = method !== 'GET' && method !== 'HEAD' && chunks.length > 0;

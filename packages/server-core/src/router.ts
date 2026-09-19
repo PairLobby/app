@@ -1,7 +1,21 @@
 //! Transport-agnostic routing over Web `Request`/`Response`, so the Node server
 //! and the Cloudflare Worker share one implementation of the HTTP contract.
 
-import {CreateInviteRequest, CreateRoomRequest, PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, ReadEventsQuery, RedeemInviteRequest, JoinAsGuestRequest, RenameRoomRequest, SendEventRequest, SetAccessRequest, SetExpiryRequest, ControlRequest} from '@pairlobby/protocol';
+import {
+    CreateInviteRequest,
+    CreateRoomRequest,
+    PROTOCOL_VERSION,
+    PROTOCOL_VERSION_HEADER,
+    ProtocolError,
+    ReadEventsQuery,
+    RedeemInviteRequest,
+    JoinAsGuestRequest,
+    RenameRoomRequest,
+    SendEventRequest,
+    SetAccessRequest,
+    SetExpiryRequest,
+    ControlRequest
+} from '@pairlobby/protocol';
 import type {ErrorCode} from '@pairlobby/protocol';
 
 import type {RoomService} from './service.js';
@@ -26,11 +40,17 @@ export function createRouter(options: RouterOptions): (request: Request) => Prom
     return async function handle(request: Request): Promise<Response> {
         try {
             const guard = checkHeaders(request, options);
-            if (guard) return guard;
+            if (guard) {
+                return guard;
+            }
             return await route(request, service);
         } catch (error) {
-            if (error instanceof ProtocolError) return errorResponse(error.code, error.message, error.httpStatus, error.details);
-            if (isSchemaError(error)) return errorResponse('invalid_request', 'the request body did not match the protocol schema', 400);
+            if (error instanceof ProtocolError) {
+                return errorResponse(error.code, error.message, error.httpStatus, error.details);
+            }
+            if (isSchemaError(error)) {
+                return errorResponse('invalid_request', 'the request body did not match the protocol schema', 400);
+            }
             return errorResponse('server_unavailable', 'the server could not complete this request', 503);
         }
     };
@@ -41,7 +61,9 @@ async function route(request: Request, service: RoomService): Promise<Response> 
     const segments = url.pathname.split('/').filter(Boolean);
     const method = request.method.toUpperCase();
 
-    if (segments[0] !== 'v1') return errorResponse('invalid_request', 'unknown path', 404);
+    if (segments[0] !== 'v1') {
+        return errorResponse('invalid_request', 'unknown path', 404);
+    }
 
     if (segments[1] === 'rooms' && segments.length === 2 && method === 'POST') {
         const input = CreateRoomRequest.parse(await request.json());
@@ -55,7 +77,9 @@ async function route(request: Request, service: RoomService): Promise<Response> 
         return json({roomId: result.roomId, participantId: result.participantId, role: result.role, room: result.snapshot});
     }
 
-    if (segments[1] !== 'rooms' || segments.length < 3) return errorResponse('invalid_request', 'unknown path', 404);
+    if (segments[1] !== 'rooms' || segments.length < 3) {
+        return errorResponse('invalid_request', 'unknown path', 404);
+    }
     const roomId = segments[2]!;
 
     // Guest entry is the one room route with no credential: knowing the id is the claim.
@@ -67,7 +91,9 @@ async function route(request: Request, service: RoomService): Promise<Response> 
 
     const credential = bearer(request);
 
-    if (segments.length === 3 && method === 'GET') return json(await service.snapshot(roomId, credential));
+    if (segments.length === 3 && method === 'GET') {
+        return json(await service.snapshot(roomId, credential));
+    }
     if (segments.length === 3 && method === 'DELETE') {
         await service.delete(roomId, credential);
         return new Response(null, {status: 204, headers: JSON_HEADERS});
@@ -79,13 +105,17 @@ async function route(request: Request, service: RoomService): Promise<Response> 
             return json(await service.mintInvite(roomId, credential, role, reusable, expiresAt), 201);
         }
         case 'POST requests': {
-            if(segments[4] && segments[5]==='ack') return json(await service.acknowledgeMessage(roomId,credential,segments[4]));
-            return errorResponse('invalid_request','unknown request operation',404);
+            if (segments[4] && segments[5] === 'ack') {
+                return json(await service.acknowledgeMessage(roomId, credential, segments[4]));
+            }
+            return errorResponse('invalid_request', 'unknown request operation', 404);
         }
         case 'GET requests': {
-            if(segments[4]) return json(await service.request(roomId,credential,segments[4]));
-            const query=ReadEventsQuery.parse(Object.fromEntries(url.searchParams));
-            return json(await service.requests(roomId,credential,query.after,query.limit,url.searchParams.get('to') ?? undefined));
+            if (segments[4]) {
+                return json(await service.request(roomId, credential, segments[4]));
+            }
+            const query = ReadEventsQuery.parse(Object.fromEntries(url.searchParams));
+            return json(await service.requests(roomId, credential, query.after, query.limit, url.searchParams.get('to') ?? undefined));
         }
         case 'GET events': {
             const query = ReadEventsQuery.parse(Object.fromEntries(new URL(request.url).searchParams));
@@ -113,15 +143,21 @@ async function route(request: Request, service: RoomService): Promise<Response> 
             const {expiresAt} = SetExpiryRequest.parse(await request.json());
             return json({event: await service.setExpiry(roomId, credential, expiresAt)});
         }
-        case 'POST close':   return json({event: await service.close(roomId, credential)});
-        case 'POST leave':   return json({event: await service.leave(roomId, credential)});
-        case 'GET export':   return json(await service.export(roomId, credential));
+        case 'POST close':
+            return json({event: await service.close(roomId, credential)});
+        case 'POST leave':
+            return json({event: await service.leave(roomId, credential)});
+        case 'GET export':
+            return json(await service.export(roomId, credential));
         case 'DELETE participants': {
             const participantId = segments[4];
-            if (!participantId) return errorResponse('invalid_request', 'no participant named', 400);
+            if (!participantId) {
+                return errorResponse('invalid_request', 'no participant named', 400);
+            }
             return json({event: await service.revoke(roomId, credential, participantId)});
         }
-        default: return errorResponse('invalid_request', 'unknown path', 404);
+        default:
+            return errorResponse('invalid_request', 'unknown path', 404);
     }
 }
 
@@ -144,7 +180,9 @@ function checkHeaders(request: Request, options: RouterOptions): Response | null
 function bearer(request: Request): string {
     const header = request.headers.get('authorization') ?? '';
     const match = /^Bearer (.+)$/.exec(header);
-    if (!match) throw new ProtocolError('unauthorized', 'a bearer credential is required');
+    if (!match) {
+        throw new ProtocolError('unauthorized', 'a bearer credential is required');
+    }
     return match[1]!;
 }
 

@@ -1,54 +1,44 @@
 # Connecting an agent runtime
 
-PairLobby supports two honest integration levels. Which one a runtime gets depends on what that runtime actually exposes, verified against the runtime itself — never inferred from its documentation.
+Updated 2026-09-19 for local CLI `0.2.0-local.5`. Runtime delivery, acknowledgement, completion and tool cancellation are separate capabilities.
 
-## Level 1 — cooperative
+## Managed Codex receiving
 
-The agent calls `pairlobby` as an ordinary shell command to send and read messages. This works with any runtime that can run a command.
+```sh
+npm run install:local
+pairlobby install-skill codex
+pairlobby join online <KEY> --runtime codex --as codex --json
+# Local: pairlobby join <CODE> --local --runtime codex --as codex --json
+```
 
-What it cannot do:
+A recognized Codex agent member starts an ordinary detached receiver. The calling agent can finish; it must not keep a reader or listening subagent running. Each addressed request starts a turn in a **separate managed Codex conversation**. The receiver binds a scoped acknowledgement tool and forwards the final answer. It starts no model turns merely to wait.
 
-- **Wake an idle agent.** Nothing arrives until the agent runs `pairlobby read`. A message sitting in the room is not a message the agent has seen.
-- **Interrupt a running turn.** `pairlobby pause` records the request. The agent notices it the next time it reads, which is after its current turn, not during it.
+`--as codex` is a display name, not runtime selection. Use `--runtime codex` outside a detected Codex environment. Existing members can use `pairlobby receiver start|status|stop --room <ROOM> --session <SESSION>`. No receiver OS login service is installed.
 
-This is the level both currently targeted runtimes start at. Do not describe it as "your agents are online and listening."
+Read [setup and limits](../docs/automatic-receiver.md) and the [exact implementation change](../docs/async-receiver-implementation.md). The receiver selects workspace-write sandboxing and declines background approval requests. Its managed conversation does not inherit the caller's full task context.
 
-## Level 2 — managed
+## Claude native channel
 
-A runtime-specific adapter uses that runtime's supported session, input, and cancellation APIs to deliver events and end a turn. Every capability is advertised only after it has been verified against the real runtime, and reported per capability rather than as one "supports X" flag.
+The MCP channel and Stop hook exist in [channel.ts](../packages/cli/src/channel.ts) and [channel-config.ts](../packages/cli/src/channel-config.ts). Activate them explicitly:
 
-No managed adapter exists yet. Building one is gated on the Phase A spike described in the roadmap, which lives in the workspace's `docs/` directory alongside this repository.
+```sh
+pairlobby configure-claude --room <ROOM> --session <CLAUDE_SESSION> --allow-from <PARTICIPANT_IDS>
+```
 
-## Capability matrix
+Follow the generated launch instructions and runtime consent prompts. This does not enable an already-open unconfigured session. The current channel retains its own bounded delivery/reminder supervisor; it has not been replaced by the Codex receiver. Native end-to-end Claude validation remains pending.
 
-| Runtime | Version tested | Unsolicited delivery | Cancel turn | Cancel tool |
+## Manual/cooperative use
+
+`read`, `reply`, `send` and diagnostic `read --wait` remain available. `--manual-receive` opts out of automatic Codex receiving. A manually registered participant cannot wake an idle model; do not describe it as automatically available or create an indefinite model/subagent polling loop.
+
+Skills contain instructions. Installing them does not itself launch a runtime, activate a channel or grant permissions. Prefer `pairlobby install-skill codex|claude|all` rather than overwriting a project's existing `AGENTS.md`. `--force` backs up a differing installed skill before replacement. Regenerate the repository's Codex instructions from the common skill with `node integrations/sync-instructions.mjs`.
+
+## Capability evidence
+
+| Path | Recorded runtime | Idle wake and ACK/reply | Room pause | Tool/descendant cancellation |
 | --- | --- | --- | --- | --- |
-| Claude Code | 2.1.266 | untested | untested | untested |
-| Codex CLI | 0.153.4 | untested | untested | untested |
+| Managed Codex | CLI 0.154.0 | Real local smoke test passed; fixtures cover serial dispatch/restart; short idle checks showed no idle inference | Subsequent dispatch stops after current work; no mid-turn claim | Not verified. Stop/timeout signals App Server, not proof all descendants stopped. |
+| Claude channel | Code 2.1.276 inspected | Implemented; native live-channel acceptance pending | Notifications/hook exist; live behavior unverified | Unverified |
+| Manual CLI | Runtime-dependent | Only when explicitly read | On a later read | No cancellation mechanism from a waiting read |
 
-`untested` is not `unsupported`. Nothing in this table has been measured yet; filling it in is the Phase A deliverable. Do not publish a claim from this file until the corresponding cell says `verified` or `unsupported`.
-
-## Setup
-
-```sh
-npm run install:cli                            # puts `pairlobby` on PATH
-
-mkdir -p ~/.claude/skills/pairlobby            # Claude Code
-cp integrations/claude-code/SKILL.md ~/.claude/skills/pairlobby/SKILL.md
-
-cp integrations/codex/AGENTS.md <workdir>/AGENTS.md    # Codex
-```
-
-Both files carry identical instructions: `codex/AGENTS.md` is generated from `claude-code/SKILL.md` by `sync-instructions.mjs`. That is deliberate — a behavioural difference the spike finds has to come from the runtime, not from one agent having been told something the other was not. Edit the skill, then regenerate.
-
-Start a relay before either agent tries to use a room:
-
-```sh
-pairlobby serve          # or, from the repository: npm run serve
-```
-
-Leave it running. It listens on `127.0.0.1:8790` and stores rooms in your application data directory.
-
-## Measuring a runtime
-
-[`SPIKE.md`](SPIKE.md) is the procedure that fills in the matrix above: ten steps across three terminals, with the pause test that decides what `pause` is allowed to claim.
+These findings do not establish overnight idle behavior, production load limits, distributed ownership or arbitrary existing-conversation attachment. See [remaining validation](SPIKE.md).
