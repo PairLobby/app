@@ -8,6 +8,38 @@ const ACCENT = '\u001b[1m';
 const DIM = '\u001b[2m';
 const RESET = '\u001b[0m';
 
+type MentionParticipant = {participantId: string; displayName: string; revoked: boolean; left: boolean};
+export type RoutedChatMessage = {text: string; recipientId: string | null};
+
+/** Resolve explicit mentions anywhere in a message without silently broadcasting typos. */
+export function routeChatMessage(text: string, participants: MentionParticipant[], fallbackRecipientId: string | null = null): RoutedChatMessage {
+    const references = [...text.matchAll(/(?:^|\s)@([\p{L}\p{N}_.-]+)/gu)].map((match) => match[1]!);
+    const active = participants.filter((participant) => !participant.revoked && !participant.left);
+    const recipients = new Set<string>();
+    for (const reference of references) {
+        let matches = active.filter((participant) => participant.participantId === reference || participant.displayName.toLowerCase() === reference.toLowerCase());
+        // Sentence punctuation is not part of a name unless an exact name exists.
+        if (matches.length === 0 && reference.endsWith('.')) {
+            const name = reference.replace(/\.+$/, '');
+            matches = active.filter((participant) => participant.displayName.toLowerCase() === name.toLowerCase());
+        }
+        if (matches.length === 0) {
+            throw new Error(`Nobody here is called @${reference}. Message not sent.`);
+        }
+        if (matches.length > 1) {
+            throw new Error(`Several participants are called @${reference}; mention their participant ID instead. Message not sent.`);
+        }
+        recipients.add(matches[0]!.participantId);
+    }
+    if (recipients.size > 1) {
+        throw new Error('This message mentions several recipients. Address one participant at a time; message not sent.');
+    }
+    if (references.length && !text.replace(/(?:^|\s)@[\p{L}\p{N}_.-]+/gu, '').replace(/[\s,!:;.?]/g, '')) {
+        throw new Error('Add a message alongside the mention.');
+    }
+    return {text, recipientId: recipients.values().next().value ?? fallbackRecipientId};
+}
+
 /** The partial name being typed, or null when the cursor is not in a mention. */
 export function currentMention(line: string, cursor = line.length): string | null {
     const before = line.slice(0, cursor);

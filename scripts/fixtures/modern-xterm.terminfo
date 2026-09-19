@@ -1,0 +1,4 @@
+xterm-pairlobby-regression|PairLobby modern extended capability regression,
+    pairs#32767,
+    Setulc=\E[58::2::%p1%{65536}%/%d::%p1%{256}%/%{255}%&%d::%p1%{255}%&%d%;m,
+    use=xterm-256color,

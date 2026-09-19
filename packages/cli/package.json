@@ -13,6 +13,10 @@
     "@pairlobby/client": "*",
     "@pairlobby/local-server": "*",
     "@pairlobby/protocol": "*",
+    "blessed": "^0.1.81",
     "yaml": "^2.7.0"
+  },
+  "devDependencies": {
+    "@types/blessed": "^0.1.27"
   }
 }

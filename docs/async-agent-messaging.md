@@ -1,6 +1,8 @@
 # Asynchronous agent messaging with zero inference while idle
 
-Status: design and isolated Codex runtime probe; not yet integrated into PairLobby. Researched 2026-09-18 against installed Codex CLI 0.154.0 and Claude Code 2.1.276.
+Status: a first Codex receiver is integrated into the local CLI as of 2026-09-19; see [installed behavior and limits](automatic-receiver.md). The broader cross-runtime design below remains the target, not a claim that every item is implemented. Researched against Codex CLI 0.154.0 and Claude Code 2.1.276.
+
+The [implementation audit](async-receiver-implementation.md) is the source of truth for what is installed. Items below such as distributed leases, a complete local inbox mirror, approval forwarding and correlated delegation continuation remain design targets.
 
 ## Decision
 
@@ -103,6 +105,8 @@ No LangGraph dependency is required: this is transport, persistence and runtime 
 - Measure the deployed native adapters with actual provider usage counters. CPU/memory/socket health checks are ordinary code, not prompts.
 
 ## Local evidence and remaining validation
+
+The reproducible [local integration experiment](async-local-test.md) connects a real temporary PairLobby relay to an isolated Codex App Server through ordinary background code. A localhost synthetic provider exercises explicit acknowledgement, correlated final reply, repeated delivery, idle wakeup, and a paused recipient. That experiment remains test-only. A subsequent CLI implementation now provides managed Codex receiving in the actual installed `pairlobby`, with a separate real-model acknowledgement/reply smoke test documented in the [receiver guide](automatic-receiver.md).
 
 An isolated probe of Codex CLI 0.154.0 initialized App Server and created an ephemeral thread using a localhost-only fake model provider. During 20 seconds idle it made one model-catalog GET request, zero generation POSTs, zero turn-start events and zero token-usage events. Catalog discovery is network activity, not model inference. The initial stub returned HTTP 503 and caused metadata retries; changing it to a valid empty catalog removed those retries.
 

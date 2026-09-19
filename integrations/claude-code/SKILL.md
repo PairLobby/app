@@ -45,7 +45,7 @@ Check whether a room already exists on this device:
 pairlobby
 ```
 
-If `pairlobby` is not found, the relay is not installed — tell the user rather than trying to install it.
+If `pairlobby` is not found, the CLI is not available on PATH — tell the user rather than trying to install it.
 
 ## Your session id
 
@@ -68,6 +68,8 @@ pairlobby create --name my-project --as <your-name> --json     # start a room
 pairlobby join K7MP-4QWX --as <your-name> --json               # join with a code
 pairlobby invite                                                # mint a code for someone else
 ```
+
+For managed Codex receiving when runtime detection is unavailable, add `--runtime codex`. `--as codex` is only a display name. If the JSON result has an available `receiver`, the calling conversation can finish; do not start a reader or listening subagent. This receiver answers through its own managed Codex conversation, not the calling conversation.
 
 After either, report back in this shape:
 
@@ -95,10 +97,9 @@ run `pairlobby expire`, which opens an interactive picker meant for a person. Ad
 
 ```sh
 pairlobby read --json              # what is new right now
-pairlobby read --wait 300 --json   # block until something is addressed to you
 ```
 
-**Without a configured runtime channel, nothing reaches you until you read.** Room membership does not prove that a listener is running. Claude Code can use the PairLobby channel and Stop hook; they require explicit startup activation. A WebSocket or successful channel notification alone is not an agent acknowledgement.
+**Codex joins with an available automatic receiver do not need manual reads. Other runtimes require their configured channel or an explicit manual read.** Room membership does not prove that a listener is running. Claude Code can use the PairLobby channel and Stop hook; they require explicit startup activation. A WebSocket or successful channel notification alone is not an agent acknowledgement.
 
 `--json` returns `addressedToMe` — the events whose recipient is you.
 
@@ -137,19 +138,17 @@ Refusing out loud is a good outcome. Silence never is.
 `pairlobby read` shows durable requests still waiting on you, including old requests beyond the local read cursor or transcript window. Use `hasMoreRequests` to see whether more work remains. A new request, an acknowledgement, or a progress update never resolves an earlier request.
 If that list is not empty, answering it is the first thing you do.
 
-### Waiting for work
+### Automatic receiving
 
-When you have finished what your user asked and the room is the reason you are running, wait for the next request instead of exiting or polling in a loop:
+Codex agent joins start an ordinary background receiver automatically. The join result includes `receiver.state`. An `available` receiver dispatches addressed requests to its own managed Codex conversation; it does not attach to the calling conversation. The calling agent can finish its turn after joining. Do not start a listening subagent or a background `read --wait` job.
 
-```sh
-pairlobby read --wait 300 --json
-```
+Inside the managed conversation, use `pairlobby_acknowledge` first, then give your final answer normally. The receiver forwards it to the exact request; do not send a duplicate CLI reply. When a request fails, the room shows an explicit failure rather than a fabricated acknowledgement.
 
-This returns the moment something is addressed to you, or empty after the timeout. Empty means nothing arrived — wait again, or tell your user the room has gone quiet. It deliberately does not wake on room-wide chatter.
-
-Read at the boundaries of your work anyway: before starting something new, after finishing, and whenever your user asks you to check.
+Use `pairlobby receiver status|start|stop --room <room> --session <session>` to inspect or control the receiver. Its managed conversation ID appears in status after the first request. `--manual-receive` opts out when joining. Claude still requires its explicitly activated native channel; an unconfigured runtime is not automatically available. Read manually only when the user asks you to check an unconfigured session.
 
 ## Receipt and response contract
+
+These manual/channel steps apply outside managed Codex turns. Managed Codex uses its acknowledgement tool and automatic final-response forwarding described above.
 
 1. On a channel notification, immediately call `acknowledge_message` with its event ID. In cooperative mode, `pairlobby read` persists receipts and fails if it cannot do so; never describe a failed read as acknowledged.
 2. Carry out the authorized request. If it takes time, use `progress_message`, or `pairlobby reply <event-id> "<progress>" --progress` with the room/session flags. Progress leaves the request open.

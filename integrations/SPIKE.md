@@ -1,89 +1,42 @@
-# Phase A — the provider spike
+# Runtime validation
 
-The point is to find out what two real agent runtimes actually do in a room, and in particular what `pause` does to a running turn. Everything downstream depends on that answer: it decides whether PairLobby can honestly say "interrupt an agent" or only "an agent stops between turns".
+Updated 2026-09-19. The original spike asked an agent to run `read --wait`. That is now a legacy manual-path test, **not** the managed receiver acceptance criterion. The caller should finish its turn; ordinary code wakes the managed runtime on addressed work.
 
-Nothing in this repository's capability matrix has been measured. Fill it in from here.
+## Recorded evidence
 
-## Setup, once
+- Codex CLI 0.154.0: real acknowledgement-tool call, correlated final reply (`ASYNC_LIVE_OK`), then ten seconds with unchanged usage.
+- Synthetic App Server/provider harness: three 20-second idle intervals without generation calls, wake/ACK/reply, duplicate filtering and paused-recipient recovery.
+- Actual CLI/relay with deterministic runtime fixture: no runtime launch while initially idle, automatic dispatch, approval denial, thread resume, and no blind replay after uncertain execution.
+- Terminal PTY checks: hover/click/F2, in-place Seen, timestamps, typing, resize and scrolling. UI tests are not evidence of model comprehension.
 
-```sh
-npm run install:cli                            # puts `pairlobby` on PATH
+See [implementation limits](../docs/async-receiver-implementation.md) and the [capability matrix](README.md). A fixture is not a real-model test.
 
-mkdir -p ~/.claude/skills/pairlobby
-cp integrations/claude-code/SKILL.md ~/.claude/skills/pairlobby/SKILL.md
-```
-
-For Codex, put the instructions where it will read them in whatever directory you run it from:
+## Reproducible local checks
 
 ```sh
-cp integrations/codex/AGENTS.md <that-directory>/AGENTS.md
+npm test
+npm run test:async-local -- --idle-seconds 20
+# After building, in a Python environment with pyte:
+python scripts/test-terminal-receipts.py
 ```
 
-Use a **throwaway repository** for the handover steps, not this one. Step 7 asks an agent to describe uncommitted work it cannot reach, and you do not want that experiment in a repository you care about.
+The synthetic harness requires Codex CLI and Python 3.11+ but uses a localhost fake provider. Vitest's receiver test uses a deterministic Codex protocol fixture; it and the terminal test make no paid model calls.
 
-## Running it
+## Live acceptance procedure
 
-Three terminals: the relay, Claude Code, Codex. A fourth if you want to watch.
+Live requests consume runtime usage. Use a throwaway project, a local room, harmless requests and few turns. Record runtime version, model, authentication mode, permissions and usage counters without credentials.
 
-```sh
-# terminal 1
-pairlobby serve          # or, from the repository: npm run serve
-```
+1. Start `pairlobby serve`. Create a human room with `pairlobby create --name receiver-check --human --local --json`.
+2. From the throwaway project, join with `pairlobby join <CODE> --runtime codex --local --as codex --json`. Save room/session IDs. The command should return; no subagent should be left reading the room.
+3. Check `pairlobby receiver status --room <ROOM> --session <AGENT_SESSION>`. App Server starts lazily on first work, so initial availability is not proof of provider readiness.
+4. Send one harmless addressed request from the human session, with explicit room/session flags. Verify acknowledgement separately from the correlated final answer, without manually prompting the calling conversation.
+5. Compare usage during idle, then send another request. Do not use a model to poll a waiting tool to perform this measurement.
+6. Send unaddressed chatter. It must not wake the receiver under current policy. All-agent broadcast decisions are still planned.
+7. Stop the receiver, send a request and verify it remains queued without a fabricated receipt. Start the receiver and verify processing. Check the selected scope/model when restarting.
+8. Pause during harmless slow work. Verify subsequent dispatch stops; do not claim the current tool was cancelled. Resume and check queued work.
+9. Separately test receiver stop/timeout during a harmless tool. Observe the turn, tool and OS descendants independently. An agent's self-report is not cancellation evidence.
+10. Stop the test receiver and close the room. Record usage and failures.
 
-Then prompt each agent in plain language — **do not paste commands into them.** The spike is partly testing whether the instructions are enough on their own. If an agent cannot work out the command, that is a finding; write it down rather than helping it.
+## Still required
 
-| # | Terminal | Prompt | What to record |
-| --- | --- | --- | --- |
-| 1 | Claude Code | "Create a PairLobby room called spike and give me the invite code." | Did it find the skill unprompted? Did it report its session id? |
-| 2 | Codex | "Join PairLobby room with code `<CODE>` as codex." | Did it join without help? Did it keep its session id for later commands? |
-| 3 | Codex | "Wait for work in the room." | Did it use `read --wait` rather than polling or exiting? |
-| 4 | Claude Code | "Ask codex to write a joke to a .txt file on the Desktop and report the path." | Did it address the message rather than broadcasting? |
-| 4b | — | watch Codex | **Did it do the task and reply in the room, or just report the message to you and stop?** This is the behaviour the whole product depends on. |
-| 5 | Claude Code | "Prepare a handover to codex for finishing the recovery tests." | Did it write the document itself? Was `dirty` / `missingPaths` accurate? |
-| 6 | Codex | "Check the room and respond to the handover." | Did it name the exact revision? Did it verify the repo state before accepting? |
-| 7 | Claude Code | Amend the handover after Codex declines. | Did it reuse the id and increment the revision? |
-| 8 | **you** | While Codex is mid-task, run `pairlobby pause codex` | **The important one. See below.** |
-| 9 | Codex | "Check the room." | What outcome did it acknowledge? Was it honest? |
-| 10 | **you** | `pairlobby resume codex` | Did it resume, and acknowledge? |
-
-## Step 8 is the one that matters
-
-Give Codex something slow first — "run `sleep 60 && echo done`" — so there is a turn to interrupt. Then pause it from your terminal.
-
-Record these as **three separate facts**, because they are three separate capabilities:
-
-1. Did the **model's turn** end?
-2. Did the **tool** stop?
-3. Did any **child process** stop? (check with `ps`)
-
-An agent that says `current_turn_cancelled` while `sleep` is still running in `ps` has told you something false, and that is the single most important result the spike can produce.
-
-## Record the result
-
-Fill in `integrations/README.md`. The three values mean different things and are not interchangeable:
-
-- `verified` — you observed it work
-- `unsupported` — you observed it fail
-- `untested` — you did not try
-
-Do not promote a cell to `verified` from documentation, from a plausible-looking log line, or from the agent's own claim about itself. Only from behaviour you watched.
-
-```
-| Runtime | Version tested | Unsolicited delivery | Cancel turn | Cancel tool |
-```
-
-Also record, in whatever form you like:
-
-- **Every place an agent needed help** the instructions should have given it. This is the main product finding, and it is easy to forget because you will instinctively help.
-- Exact runtime versions (`claude --version`, `codex --version`) and how each was authenticated.
-- Anything that failed in a way the CLI reported badly.
-
-## The decision this feeds
-
-If neither runtime can end a turn on request, that is a legitimate outcome and the answer is **not** to build a workaround. It means:
-
-- `pause` means "paused between turns", said plainly in the docs
-- the README stops implying anything stronger
-- a managed adapter gets estimated as real work, not assumed as a later detail
-
-The roadmap's own gate: *"If managed interruption fails, keep cooperative messaging, change the promise, and estimate the adapter work before proceeding."*
+Overnight idle soak, hosted WebSocket end-to-end/reconnect and load testing, verified child-process cancellation, interactive approval handling, distributed ownership, and native Claude acceptance remain incomplete. Do not mark these verified based on documentation or a synthetic provider.

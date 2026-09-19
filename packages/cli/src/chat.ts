@@ -3,22 +3,21 @@
 //! This is where a human actually sits. Joining a room puts you here, not back
 //! at a shell prompt with a transcript printed behind you.
 
-import {createInterface, clearLine, cursorTo, type Interface} from 'node:readline';
+import type {Interface} from 'node:readline';
+import {ChatTerminal} from './chat-terminal.js';
 
 import {ProtocolError, requestState, newId} from '@pairlobby/protocol';
 import type {MessageRequest, RoomEvent, RoomSnapshot} from '@pairlobby/protocol';
 import {LocalStore, PairLobbyClient} from '@pairlobby/client';
 
 import {pickExpiry} from './picker.js';
-import {applyMention, commonPrefix, currentMention, matchNames, renderSuggestions} from './mentions.js';
+import {applyMention, commonPrefix, currentMention, matchNames, renderSuggestions, routeChatMessage} from './mentions.js';
 
 type ParticipantMatch = {id: string; name: string} | null;
 
 const DIM = '\u001b[2m';
 const BOLD = '\u001b[1m';
 const RESET = '\u001b[0m';
-const SAVE_CURSOR = '\u001b[s';
-const RESTORE_CURSOR = '\u001b[u';
 
 export interface ChatOptions {
     /** Guests may watch and leave; the composer is disabled for them. */
@@ -39,9 +38,10 @@ export interface ChatOptions {
 }
 
 const HELP = `  <message>          send to the room
-  @name <message>    send to one participant
+  @name anywhere    send to that participant (e.g. Hey @codex, hello)
   /to <name>         address every later message to one participant
   /to                clear the default recipient
+  /seen [message]    receipt details (latest sent message by default; F2 also works)
   /requests          show every unanswered request
   /reply <id> <text>  answer one exact request
   /who               who is registered in this room
@@ -67,13 +67,11 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             .map((participant) => participant.displayName);
     }
 
-    // readline's own completer gives Tab for free; the live preview below is
-    // separate because readline only offers completions when Tab is pressed.
-    const terminal = createInterface({
-        input: process.stdin,
-        output: process.stdout,
-        prompt: '',
-        completer: (line: string): [string[], string] => {
+    const view = new ChatTerminal({
+        names,
+        participantId,
+        format: (event) => format(event, names, participantId, showIds),
+        complete: (line) => {
             const partial = currentMention(line);
             if (partial === null) {
                 return [[], line];
@@ -86,375 +84,351 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             return [[applyMention(line, advance)], line];
         }
     });
-    const seen = new Set<string>();
-    let recipient: {id: string; name: string} | null = null;
-    let closed = false;
+    try {
+        const terminal = view.input;
+        const seen = new Set<string>();
+        let recipient: ParticipantMatch = null;
+        let closed = false;
+        let suspended = false;
 
-    /** Lines currently drawn beneath the prompt, so they can be cleared again. */
-    let hintLines = 0;
-    let suspended = false;
+        function clearHint(): void {
+            view.setHint('');
+        }
 
-    function clearHint(): void {
-        if (hintLines === 0) {
-            return;
-        }
-        process.stdout.write(SAVE_CURSOR);
-        for (let index = 0; index < hintLines; index += 1) process.stdout.write('\n\u001b[2K');
-        process.stdout.write(RESTORE_CURSOR);
-        hintLines = 0;
-    }
-
-    /**
-     * Draws the @-completion beneath the input without moving the cursor, so it
-     * never interrupts typing. Redrawn on every keypress; cleared when the
-     * partial name is gone.
-     */
-    function drawHint(): void {
-        if (suspended || options.readOnly === true) {
-            return;
-        }
-        const partial = currentMention(terminal.line ?? '', terminal.cursor ?? undefined);
-        clearHint();
-        if (partial === null) {
-            return;
-        }
-        const text = renderSuggestions(partial, matchNames(partial, mentionable()), (process.stdout.columns ?? 80) - 2);
-        process.stdout.write(SAVE_CURSOR);
-        process.stdout.write(`\n\u001b[2K${text}`);
-        process.stdout.write(RESTORE_CURSOR);
-        hintLines = 1;
-    }
-
-    /**
-     * Writes above the input line and redraws it, so an arriving message never
-     * eats what you are halfway through typing.
-     */
-    function emit(line: string): void {
-        clearHint();
-        cursorTo(process.stdout, 0);
-        clearLine(process.stdout, 0);
-        process.stdout.write(`${line}\n`);
-        terminal.prompt(true);
-        drawHint();
-    }
-
-    function setPrompt(): void {
-        if (options.readOnly === true) {
-            terminal.setPrompt(`${DIM}watching${RESET} `);
-            return;
-        }
-        terminal.setPrompt(recipient ? `${DIM}→ ${recipient.name}${RESET} ` : '> ');
-    }
-
-    function resolveName(reference: string): ParticipantMatch {
-        const active = snapshot.participants.filter((participant) => !participant.revoked && !participant.left);
-        const byId = active.find((participant) => participant.participantId === reference);
-        if (byId) {
-            return {id: byId.participantId, name: byId.displayName};
-        }
-        const matches = active.filter((participant) => participant.displayName.toLowerCase() === reference.toLowerCase());
-        if (matches.length === 1) {
-            return {id: matches[0]!.participantId, name: matches[0]!.displayName};
-        }
-        if (matches.length > 1) {
-            emit(`${DIM}  ${matches.length} participants are called ${reference}; use an id: ${matches.map((participant) => participant.participantId).join(', ')}${RESET}`);
-        } else {
-            emit(`${DIM}  nobody here is called ${reference}${RESET}`);
-        }
-        return null;
-    }
-
-    header(snapshot, participantId, sessionId, emit);
-
-    async function send(text: string, to: string | null): Promise<void> {
-        try {
-            const result = await client.send(roomId, credential, {
-                type: 'message',
-                payload: {text, priority: 'normal'},
-                idempotencyKey: newId('event'),
-                ...(to ? {recipientId: to} : {})
-            });
-            // Shown immediately and marked seen, so the poll does not print it twice.
-            seen.add(result.event.eventId);
-            emit(format(result.event, names, participantId, showIds));
-        } catch (error) {
-            emit(`${DIM}  not sent — ${error instanceof ProtocolError ? error.message : String(error)}${RESET}`);
-        }
-    }
-
-    async function control(reference: string, paused: boolean): Promise<void> {
-        if (!options.controllerCredential) {
-            emit(`${DIM}  this device does not hold the controller credential for this room${RESET}`);
-            return;
-        }
-        const target = resolveName(reference);
-        if (!target) {
-            return;
-        }
-        try {
-            const result = await client.control(roomId, options.controllerCredential, target.id, paused);
-            // A request, not a confirmation: what happened is whatever the agent acknowledges.
-            emit(`${DIM}  ${paused ? 'pause' : 'resume'} requested for ${target.name}, revision ${result.revision} — watch for the acknowledgement${RESET}`);
-        } catch (error) {
-            emit(`${DIM}  ${error instanceof ProtocolError ? error.message : String(error)}${RESET}`);
-        }
-    }
-
-    /**
-     * Hands stdin to the picker and takes it back afterwards. The readline
-     * interface is paused first, or both it and the picker consume the same
-     * keypresses and neither behaves.
-     */
-    async function changeExpiry(): Promise<void> {
-        if (!options.controllerCredential) {
-            emit(`${DIM}  this device does not hold the controller credential for this room${RESET}`);
-            return;
-        }
-        suspended = true;
-        clearHint();
-        terminal.pause();
-        process.stdout.write('\n');
-        try {
-            const chosen = await pickExpiry(snapshot.name, snapshot.expiresAt);
-            if (chosen === undefined || chosen === snapshot.expiresAt) {
-                emit(`${DIM}  expiry left unchanged${RESET}`);
-            } else {
-                await client.setExpiry(roomId, options.controllerCredential, chosen);
-                snapshot = await client.snapshot(roomId, credential);
-                emit(`${DIM}  ${chosen === null ? 'this room will not expire' : `this room expires ${new Date(chosen).toLocaleString()}`}${RESET}`);
+        function drawHint(): void {
+            if (suspended || options.readOnly === true) {
+                return;
             }
-        } catch (error) {
-            emit(`${DIM}  ${error instanceof ProtocolError ? error.message : String(error)}${RESET}`);
-        }
-        suspended = false;
-        terminal.resume();
-        terminal.prompt(true);
-    }
-
-    terminal.on('line', (raw) => {
-        const line = raw.trim();
-        clearHint();
-        terminal.prompt(true);
-        if (line.length === 0) {
-            return;
+            const partial = currentMention(terminal.line ?? '', terminal.cursor ?? undefined);
+            view.setHint(partial === null ? '' : renderSuggestions(partial, matchNames(partial, mentionable()), (process.stdout.columns ?? 80) - 2));
         }
 
-        if (line === '/quit' || line === '/exit') {
+        function emit(line: string): void {
+            view.log(line);
+            drawHint();
+        }
+
+        function setPrompt(): void {
+            if (options.readOnly === true) {
+                view.setPrompt(`${DIM}watching${RESET} `);
+                return;
+            }
+            view.setPrompt(recipient ? `${DIM}→ ${recipient.name}${RESET} ` : '> ');
+        }
+
+        function resolveName(reference: string): ParticipantMatch {
+            const active = snapshot.participants.filter((participant) => !participant.revoked && !participant.left);
+            const byId = active.find((participant) => participant.participantId === reference);
+            if (byId) {
+                return {id: byId.participantId, name: byId.displayName};
+            }
+            const matches = active.filter((participant) => participant.displayName.toLowerCase() === reference.toLowerCase());
+            if (matches.length === 1) {
+                return {id: matches[0]!.participantId, name: matches[0]!.displayName};
+            }
+            if (matches.length > 1) {
+                emit(`${DIM}  ${matches.length} participants are called ${reference}; use an id: ${matches.map((participant) => participant.participantId).join(', ')}${RESET}`);
+            } else {
+                emit(`${DIM}  nobody here is called ${reference}${RESET}`);
+            }
+            return null;
+        }
+
+        header(snapshot, participantId, sessionId, emit);
+
+        async function send(text: string, to: string | null): Promise<void> {
+            try {
+                const result = await client.send(roomId, credential, {
+                    type: 'message',
+                    payload: {text, priority: 'normal'},
+                    idempotencyKey: newId('event'),
+                    ...(to ? {recipientId: to} : {})
+                });
+                // Shown immediately and marked seen, so the poll does not print it twice.
+                seen.add(result.event.eventId);
+                view.addEvent(result.event);
+            } catch (error) {
+                emit(`${DIM}  not sent — ${error instanceof ProtocolError ? error.message : String(error)}${RESET}`);
+            }
+        }
+
+        async function control(reference: string, paused: boolean): Promise<void> {
+            if (!options.controllerCredential) {
+                emit(`${DIM}  this device does not hold the controller credential for this room${RESET}`);
+                return;
+            }
+            const target = resolveName(reference);
+            if (!target) {
+                return;
+            }
+            try {
+                const result = await client.control(roomId, options.controllerCredential, target.id, paused);
+                // A request, not a confirmation: what happened is whatever the agent acknowledges.
+                emit(`${DIM}  ${paused ? 'pause' : 'resume'} requested for ${target.name}, revision ${result.revision} — watch for the acknowledgement${RESET}`);
+            } catch (error) {
+                emit(`${DIM}  ${error instanceof ProtocolError ? error.message : String(error)}${RESET}`);
+            }
+        }
+
+        /**
+         * Hands stdin to the picker and takes it back afterwards. The readline
+         * interface is paused first, or both it and the picker consume the same
+         * keypresses and neither behaves.
+         */
+        async function changeExpiry(): Promise<void> {
+            if (!options.controllerCredential) {
+                emit(`${DIM}  this device does not hold the controller credential for this room${RESET}`);
+                return;
+            }
+            suspended = true;
+            clearHint();
+            terminal.pause();
+            view.suspend();
+            process.stdout.write('\n');
+            try {
+                const chosen = await pickExpiry(snapshot.name, snapshot.expiresAt);
+                if (chosen === undefined || chosen === snapshot.expiresAt) {
+                    emit(`${DIM}  expiry left unchanged${RESET}`);
+                } else {
+                    await client.setExpiry(roomId, options.controllerCredential, chosen);
+                    snapshot = await client.snapshot(roomId, credential);
+                    emit(`${DIM}  ${chosen === null ? 'this room will not expire' : `this room expires ${new Date(chosen).toLocaleString()}`}${RESET}`);
+                }
+            } catch (error) {
+                emit(`${DIM}  ${error instanceof ProtocolError ? error.message : String(error)}${RESET}`);
+            }
+            suspended = false;
+            terminal.resume();
+            view.resume();
+            terminal.prompt(true);
+        }
+
+        terminal.on('line', (raw) => {
+            const line = raw.trim();
+            clearHint();
+            terminal.prompt(true);
+            if (line.length === 0) {
+                return;
+            }
+
+            if (line === '/quit' || line === '/exit') {
+                closed = true;
+                terminal.close();
+                return;
+            }
+            if (options.readOnly === true && !line.startsWith('/')) {
+                emit(`${DIM}  you are a read-only guest in this room${RESET}`);
+                return;
+            }
+            if (line === '/help') {
+                emit(HELP);
+                return;
+            }
+            if (line === '/seen' || line.startsWith('/seen ')) {
+                view.showLatestReceipt(line.slice(5).trim() || undefined);
+                return;
+            }
+            if (line === '/requests') {
+                void client
+                    .requests(roomId, credential)
+                    .then((page) => {
+                        for (const request of page.requests) emit(`${request.eventId} ${requestState(request)} ${request.text.slice(0, 100)}`);
+                        if (page.hasMore) {
+                            emit('More requests remain; use pairlobby requests --after to page through them.');
+                        }
+                    })
+                    .catch((error) => emit(`Cannot verify requests: ${String(error)}`));
+                return;
+            }
+            if (line.startsWith('/reply ')) {
+                const [id, ...words] = line.slice(7).split(/\s+/);
+                if (!id || !words.length) {
+                    emit('Usage: /reply <event-id> <answer>');
+                    return;
+                }
+                void client
+                    .reply(roomId, credential, id, words.join(' '))
+                    .then(() => emit(`Answer recorded for ${id}`))
+                    .catch((error) => emit(`Reply failed: ${String(error)}`));
+                return;
+            }
+            if (line === '/who') {
+                emit(who(snapshot, showIds));
+                return;
+            }
+            if (line === '/to') {
+                recipient = null;
+                setPrompt();
+                emit(`${DIM}  addressing the room${RESET}`);
+                terminal.prompt(true);
+                return;
+            }
+            if (line.startsWith('/to ')) {
+                const found = resolveName(line.slice(4).trim());
+                if (found) {
+                    recipient = found;
+                    setPrompt();
+                    emit(`${DIM}  addressing ${found.name}${RESET}`);
+                    terminal.prompt(true);
+                }
+                return;
+            }
+            if (line === '/expiry') {
+                void changeExpiry();
+                return;
+            }
+            if (line.startsWith('/pause ')) {
+                void control(line.slice(7).trim(), true);
+                return;
+            }
+            if (line.startsWith('/resume ')) {
+                void control(line.slice(8).trim(), false);
+                return;
+            }
+            if (line.startsWith('/')) {
+                emit(`${DIM}  unknown command; /help${RESET}`);
+                return;
+            }
+
+            try {
+                const routed = routeChatMessage(line, snapshot.participants, recipient?.id ?? null);
+                void send(routed.text, routed.recipientId);
+            } catch (error) {
+                emit(`${DIM}  ${error instanceof Error ? error.message : String(error)}${RESET}`);
+            }
+        });
+
+        // readline emits keypress on stdin once an interface exists; observing is
+        // enough, since readline still owns the editing itself.
+        const onKeypress = () => {
+            if (!closed) {
+                setImmediate(drawHint);
+            }
+        };
+        view.onInput(onKeypress);
+
+        const finished = new Promise<void>((resolve) => terminal.once('close', resolve));
+        // readline intercepts Ctrl+C, so the interface is where the signal arrives.
+        terminal.on('SIGINT', () => {
             closed = true;
             terminal.close();
-            return;
+        });
+        process.once('SIGINT', () => {
+            closed = true;
+            terminal.close();
+        });
+
+        setPrompt();
+        terminal.prompt();
+
+        let cursor = options.fromStart ? 0 : snapshot.latestSeq;
+        if (options.fromStart) {
+            cursor = 0;
         }
-        if (options.readOnly === true && !line.startsWith('/')) {
-            emit(`${DIM}  you are a read-only guest in this room${RESET}`);
-            return;
-        }
-        if (line === '/help') {
-            emit(HELP);
-            return;
-        }
-        if (line === '/requests') {
-            void client
-                .requests(roomId, credential)
-                .then((page) => {
-                    for (const request of page.requests) emit(`${request.eventId} ${requestState(request)} ${request.text.slice(0, 100)}`);
-                    if (page.hasMore) {
-                        emit('More requests remain; use pairlobby requests --after to page through them.');
+        // An unreachable relay is reported once, not once per poll, and retried with
+        // widening gaps. The old behaviour filled the screen and buried the room.
+        let pendingRequests: MessageRequest[] = [];
+        let loadedRequests = false;
+        const shownRequestStates = new Map<string, string>();
+        let outageSince: number | null = null;
+        let backoffMs = intervalMs;
+
+        while (!closed) {
+            try {
+                const page = await client.readEvents(roomId, credential, cursor);
+                if (page.events.length > 0) {
+                    const nextCursor = page.events.at(-1)!.seq;
+                    if (page.events.some((event) => event.type === 'participant.joined' || event.type === 'participant.left' || event.type === 'participant.revoked')) {
+                        snapshot = await client.snapshot(roomId, credential);
+                        absorbNames(snapshot, names);
                     }
-                })
-                .catch((error) => emit(`Cannot verify requests: ${String(error)}`));
-            return;
-        }
-        if (line.startsWith('/reply ')) {
-            const [id, ...words] = line.slice(7).split(/\s+/);
-            if (!id || !words.length) {
-                emit('Usage: /reply <event-id> <answer>');
-                return;
-            }
-            void client
-                .reply(roomId, credential, id, words.join(' '))
-                .then(() => emit(`Answer recorded for ${id}`))
-                .catch((error) => emit(`Reply failed: ${String(error)}`));
-            return;
-        }
-        if (line === '/who') {
-            emit(who(snapshot, showIds));
-            return;
-        }
-        if (line === '/to') {
-            recipient = null;
-            setPrompt();
-            emit(`${DIM}  addressing the room${RESET}`);
-            terminal.prompt(true);
-            return;
-        }
-        if (line.startsWith('/to ')) {
-            const found = resolveName(line.slice(4).trim());
-            if (found) {
-                recipient = found;
-                setPrompt();
-                emit(`${DIM}  addressing ${found.name}${RESET}`);
-                terminal.prompt(true);
-            }
-            return;
-        }
-        if (line === '/expiry') {
-            void changeExpiry();
-            return;
-        }
-        if (line.startsWith('/pause ')) {
-            void control(line.slice(7).trim(), true);
-            return;
-        }
-        if (line.startsWith('/resume ')) {
-            void control(line.slice(8).trim(), false);
-            return;
-        }
-        if (line.startsWith('/')) {
-            emit(`${DIM}  unknown command; /help${RESET}`);
-            return;
-        }
-
-        if (line.startsWith('@')) {
-            const space = line.indexOf(' ');
-            if (space === -1) {
-                emit(`${DIM}  @name needs a message after it${RESET}`);
-                return;
-            }
-            const found = resolveName(line.slice(1, space));
-            if (found) {
-                void send(line.slice(space + 1).trim(), found.id);
-            }
-            return;
-        }
-        void send(line, recipient?.id ?? null);
-    });
-
-    // readline emits keypress on stdin once an interface exists; observing is
-    // enough, since readline still owns the editing itself.
-    const onKeypress = () => {
-        if (!closed) {
-            setImmediate(drawHint);
-        }
-    };
-    process.stdin.on('keypress', onKeypress);
-
-    const finished = new Promise<void>((resolve) => terminal.once('close', resolve));
-    // readline intercepts Ctrl+C, so the interface is where the signal arrives.
-    terminal.on('SIGINT', () => {
-        closed = true;
-        terminal.close();
-    });
-    process.once('SIGINT', () => {
-        closed = true;
-        terminal.close();
-    });
-
-    setPrompt();
-    terminal.prompt();
-
-    let cursor = options.fromStart ? 0 : snapshot.latestSeq;
-    if (options.fromStart) {
-        cursor = 0;
-    }
-    // An unreachable relay is reported once, not once per poll, and retried with
-    // widening gaps. The old behaviour filled the screen and buried the room.
-    let pendingRequests: MessageRequest[] = [];
-    let loadedRequests = false;
-    const shownRequestStates = new Map<string, string>();
-    let outageSince: number | null = null;
-    let backoffMs = intervalMs;
-
-    while (!closed) {
-        try {
-            const page = await client.readEvents(roomId, credential, cursor);
-            if (page.events.length > 0) {
-                const nextCursor = page.events.at(-1)!.seq;
-                if (page.events.some((event) => event.type === 'participant.joined' || event.type === 'participant.left' || event.type === 'participant.revoked')) {
-                    snapshot = await client.snapshot(roomId, credential);
-                    absorbNames(snapshot, names);
-                }
-                for (const event of page.events) {
-                    if (seen.has(event.eventId)) {
-                        continue;
-                    }
-                    seen.add(event.eventId);
-                    emit(format(event, names, participantId, showIds));
-                }
-                if (!options.readOnly) {
-                    for (const event of page.events)
-                        if (event.type === 'message' && event.recipientId === participantId && event.senderId !== participantId) {
-                            await client.acknowledgeMessage(roomId, credential, event.eventId);
+                    for (const event of page.events) {
+                        if (seen.has(event.eventId)) {
+                            continue;
                         }
+                        seen.add(event.eventId);
+                        view.addEvent(event);
+                    }
+                    if (!options.readOnly) {
+                        for (const event of page.events)
+                            if (event.type === 'message' && event.recipientId === participantId && event.senderId !== participantId) {
+                                await client.acknowledgeMessage(roomId, credential, event.eventId);
+                            }
+                    }
+                    cursor = nextCursor;
+                    store.updateCursor(roomId, sessionId, cursor);
                 }
-                cursor = nextCursor;
-                store.updateCursor(roomId, sessionId, cursor);
-            }
-            if (!loadedRequests || page.events.length) {
-                pendingRequests = (await client.requests(roomId, credential)).requests;
-                loadedRequests = true;
-            }
-            for (const request of pendingRequests) {
-                const state = requestState(request);
-                if (shownRequestStates.get(request.eventId) !== state) {
-                    shownRequestStates.set(request.eventId, state);
-                    emit(
-                        `${state.includes('overdue') || state === 'failed' ? 'ATTENTION: ' : ''}${names.get(request.from) ?? request.from} → ${names.get(request.to) ?? request.to}: ${state} [${request.eventId}]`
-                    );
+                if (!loadedRequests || page.events.length) {
+                    pendingRequests = (await client.requests(roomId, credential)).requests;
+                    loadedRequests = true;
+                }
+                for (const request of pendingRequests) {
+                    view.updateRequest(request);
+                    const state = requestState(request);
+                    if (shownRequestStates.get(request.eventId) !== state) {
+                        shownRequestStates.set(request.eventId, state);
+                        if (showIds || state.includes('overdue') || state === 'failed') {
+                            emit(formatRequestStatus(request, names, showIds));
+                        }
+                    }
+                }
+                if (outageSince !== null) {
+                    emit(`${DIM}  relay is back${RESET}`);
+                    outageSince = null;
+                    backoffMs = intervalMs;
+                }
+                if (page.hasMore) {
+                    continue;
+                }
+            } catch (error) {
+                if (error instanceof ProtocolError && (error.code === 'room_expired' || error.code === 'room_closed' || error.code === 'participant_revoked')) {
+                    emit(`${DIM}  ${error.message}${RESET}`);
+                    break;
+                }
+                if (error instanceof ProtocolError && error.code === 'server_unavailable') {
+                    if (outageSince === null) {
+                        outageSince = Date.now();
+                        emit(`${DIM}  relay unreachable — still here, retrying quietly${RESET}`);
+                    }
+                    backoffMs = Math.min(backoffMs * 2, 30_000);
+                } else {
+                    throw error;
                 }
             }
-            if (outageSince !== null) {
-                emit(`${DIM}  relay is back${RESET}`);
-                outageSince = null;
-                backoffMs = intervalMs;
-            }
-            if (page.hasMore) {
-                continue;
-            }
-        } catch (error) {
-            if (error instanceof ProtocolError && (error.code === 'room_expired' || error.code === 'room_closed' || error.code === 'participant_revoked')) {
-                emit(`${DIM}  ${error.message}${RESET}`);
-                break;
-            }
-            if (error instanceof ProtocolError && error.code === 'server_unavailable') {
-                if (outageSince === null) {
-                    outageSince = Date.now();
-                    emit(`${DIM}  relay unreachable — still here, retrying quietly${RESET}`);
-                }
-                backoffMs = Math.min(backoffMs * 2, 30_000);
-            } else {
-                throw error;
-            }
+            await Promise.race([
+                outageSince === null ? client.waitForChange(roomId, credential, cursor, 5000, intervalMs).catch(() => sleep(Math.max(1000, backoffMs))) : sleep(backoffMs),
+                finished
+            ]);
         }
-        await Promise.race([
-            outageSince === null ? client.waitForChange(roomId, credential, cursor, 5000, intervalMs).catch(() => sleep(Math.max(1000, backoffMs))) : sleep(backoffMs),
-            finished
-        ]);
-    }
 
-    client.closeLive();
-    clearHint();
-    process.stdin.off('keypress', onKeypress);
-    terminal.close();
-    // Closing the interface is not enough to end the process: stdin stays open and
-    // referenced, so the event loop never drains and the command appears to hang.
-    if (process.stdin.isTTY) {
-        process.stdin.setRawMode(false);
-    }
-    process.stdin.pause();
+        client.closeLive();
+        clearHint();
 
-    // Tell the room you are gone. Membership is durable, so without this the room
-    // shows you present indefinitely and your invite seat never reopens.
-    try {
-        await client.leave(roomId, credential);
-    } catch {
-        // Leaving is best effort: the room may already be closed, expired, or the
-        // relay gone. None of those should turn quitting into an error.
+        terminal.close();
+        view.close();
+        // Closing the interface is not enough to end the process: stdin stays open and
+        // referenced, so the event loop never drains and the command appears to hang.
+        if (process.stdin.isTTY) {
+            process.stdin.setRawMode(false);
+        }
+        process.stdin.pause();
+
+        // Tell the room you are gone. Membership is durable, so without this the room
+        // shows you present indefinitely and your invite seat never reopens.
+        try {
+            await client.leave(roomId, credential);
+        } catch {
+            // Leaving is best effort: the room may already be closed, expired, or the
+            // relay gone. None of those should turn quitting into an error.
+        }
+        // Node's fetch keeps pooled sockets referenced, so the event loop does not
+        // drain on its own and the command appears to hang after you quit. Leave
+        // deliberately, once output is flushed.
+        await new Promise<void>((resolve) => process.stdout.write('\n', () => resolve()));
+        process.exit(0);
+    } finally {
+        view.close();
     }
-    // Node's fetch keeps pooled sockets referenced, so the event loop does not
-    // drain on its own and the command appears to hang after you quit. Leave
-    // deliberately, once output is flushed.
-    await new Promise<void>((resolve) => process.stdout.write('\n', () => resolve()));
-    process.exit(0);
 }
 
 function header(snapshot: RoomSnapshot, participantId: string, sessionId: string, emit: (line: string) => void): void {
@@ -484,7 +458,7 @@ function who(snapshot: RoomSnapshot, showIds = false): string {
         .join('\n');
 }
 
-function format(event: RoomEvent, names: Map<string, string>, meParticipantId: string, showIds = false): string {
+export function format(event: RoomEvent, names: Map<string, string>, meParticipantId: string, showIds = false): string {
     const time = `${DIM}${new Date(event.at).toTimeString().slice(0, 5)}${RESET}`;
     const sender = event.senderId ? (names.get(event.senderId) ?? event.senderId) : 'room';
     const mine = event.senderId === meParticipantId;
@@ -493,15 +467,28 @@ function format(event: RoomEvent, names: Map<string, string>, meParticipantId: s
         const to = event.recipientId ? `${DIM} → ${names.get(event.recipientId) ?? event.recipientId}${RESET}` : '';
         const who = mine ? `${DIM}${sender}${RESET}` : `${BOLD}${sender}${RESET}`;
         const id = showIds && event.senderId ? `${DIM} ${event.senderId}${RESET}` : '';
-        const thread = event.replyTo
+        const thread = !showIds ? '' : event.replyTo
             ? `${event.payload.responseStage === 'progress' ? 'progress' : 'reply'} to ${event.replyTo}`
             : event.recipientId ? `request ${event.eventId}` : '';
         return `${time}  ${who}${id}${to}${thread ? `  [${thread}]` : ''}  ${event.payload.text}`;
     }
-    return `${time}  ${DIM}· ${systemLine(event, names, sender)}${RESET}`;
+    return `${time}  ${DIM}· ${systemLine(event, names, sender, showIds)}${RESET}`;
 }
 
-function systemLine(event: RoomEvent, names: Map<string, string>, sender: string): string {
+export function formatRequestStatus(request: MessageRequest, names: Map<string, string>, showIds = false): string {
+    const state = requestState(request);
+    const descriptions = {
+        awaiting_ack: 'Waiting for acknowledgement',
+        awaiting_reply: 'Acknowledged · waiting for reply',
+        ack_overdue: 'Acknowledgement overdue',
+        reply_overdue: 'Reply overdue',
+        answered: 'Answered',
+        failed: 'Delivery failed'
+    };
+    return `${state.includes('overdue') || state === 'failed' ? 'ATTENTION: ' : ''}${names.get(request.from) ?? request.from} → ${names.get(request.to) ?? request.to}: ${descriptions[state]}${showIds ? ` [${request.eventId}]` : ''}`;
+}
+
+function systemLine(event: RoomEvent, names: Map<string, string>, sender: string, showIds = false): string {
     switch (event.type) {
         case 'participant.joined':
             return `${event.payload.displayName} joined`;
@@ -530,7 +517,7 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
         case 'room.access_changed':
             return event.payload.joinPolicy === 'open_to_guests' ? `${sender} opened the room to read-only guests` : `${sender} made the room invite only`;
         case 'message.delivery_failed':
-            return `DELIVERY FAILURE for ${event.payload.eventId}: ${event.payload.reason} (request remains unanswered)`;
+            return `Delivery failed${showIds ? ` [${event.payload.eventId}]` : ''}: ${event.payload.reason} (request remains unanswered)`;
         case 'message.received':
             return `${sender} read it`;
         default:

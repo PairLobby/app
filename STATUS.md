@@ -1,78 +1,44 @@
 # Where PairLobby is
 
-Updated 2026-09-15. If you are picking this up, read this first, then [`README.md`](README.md) for how to run it.
+Updated 2026-09-19. Installed local CLI: **0.2.0-local.5**. This is local implementation and recorded validation, not a claim that public downloads or production services were redeployed.
 
-## What this is
+## What works
 
-A relay that lets a human put agents from different providers into one room, transfer context through an explicit handover, watch them talk, and intervene. It never runs models and never executes project commands — each agent's own runtime keeps control of its tools and permissions.
+- Rooms, reusable/single-use invitations, guests, expiry, handovers and explicit control state.
+- Managed Codex receiving: detached Node code waits; addressed work starts a turn in its own Codex conversation. No listening subagent or model polling loop.
+- SQLite execution ledger/outbox, serial dispatch, duplicate suppression and visible failure instead of blind replay after uncertain execution.
+- Confirmed acknowledgements and correlated final replies, verified by a real Codex smoke test and deterministic recovery tests.
+- Terminal inline mentions such as `Hey @codex, ...`, hidden normal-view message IDs, and right-aligned Seen with hover/click/F2 details.
+- Claude MCP channel and Stop-hook code, requiring explicit activation. Native end-to-end validation remains pending.
+- A browser demo in the sibling frontend checkout. Its receipt design has not been changed to match the terminal.
 
-A room is **a single trust domain**: every participant is assumed to be the owner's own agent or a human the owner trusts. Nothing here defends one participant against another, and that assumption is load-bearing for several open questions below.
+Latest recorded local validation: **309 passing tests**, plus PTY checks and the installed CLI/local-relay Seen check. The real Codex test used CLI 0.154.0 and observed unchanged usage for ten seconds after its reply. The earlier synthetic test measured three 20-second idle intervals. These do not certify overnight idle or production load behavior.
 
-## What works today
+## Read first
 
-Verified end to end against a local relay, not just in fixtures:
+- [Installation](docs/installation.md): current local checkout versus older website download.
+- [Automatic receiver setup](docs/automatic-receiver.md).
+- [Exactly how the waiting-agent implementation changed](docs/async-receiver-implementation.md).
+- [Terminal receipt controls](docs/terminal-receipts.md).
+- [Capability evidence](integrations/README.md) and [remaining validation](integrations/SPIKE.md).
 
-- **Rooms** — create, list with live participant counts, rename, delete, forget, close. No expiry by default; set per room or per device, by command or from an arrow-key picker (`pairlobby expire`, or `/expiry` in a room).
-- **Guests** — `pairlobby open <room>` lets anyone holding the room id join read-only. Enforced server-side across every write path; guests count against the participant cap.
-- **Membership** — invite codes are *seats*: one participant at a time, freed when they leave. `--once` for single use. Crash-recovery tested at every step of redemption.
-- **Messaging** — addressed and room-wide, with idempotent send and replay from a cursor.
-- **Live chat** — `pairlobby join <code>` puts you in the room: messages arrive above an input line you can type into. Polls locally; hosted rooms use WebSocket delivery.
-- **Blocking read** — `pairlobby read --wait <n>` returns the moment something is addressed to an agent. Measured at ~1s. Ignores room-wide chatter.
-- **Handover** — offer, decline, amend to a new revision, accept an exact revision. Resolution is terminal per revision.
-- **Control** — pause and resume, with the adapter's acknowledgement kept distinct from the request. `paused` and "no acknowledgement yet" are separate facts and the UI never conflates them.
-- **Storage** — an in-memory reference and a `node:sqlite` adapter, both passing one contract suite.
+## Boundaries
 
-264 tests pass with `npm test`, including both shared adapter contracts against real Durable Object SQLite. Seven additional hosted runtime scenarios run with `npm run test:hosted`.
-
-Hosted account login is deployed, along with the authenticated relay and bounded quotas. Stripe purchase activation and full payment lifecycle verification remain blocked on Stripe account authentication. See [`packages/hosted/README.md`](packages/hosted/README.md) and the [cost model](.docs/hosted-pricing.md).
-
-## What is not built
-
-| Missing | Consequence today |
+| Area | Current behavior |
 | --- | --- |
-| Local WebSocket delivery | Local relays still poll. Hosted readers use hibernating sockets and consume pushed events directly. |
-| Live subscription purchases | Hosted auth and relay are deployed; Stripe credentials and end-to-end payment verification are still needed before selling access. |
-| MCP server | Agents shell out to the CLI. Works, but it is not native tooling. |
-| Browser page | The CLI is the only human interface. Deliberate — the owner made the page optional. |
-| Managed runtime adapter | No agent can be interrupted mid-turn. See below. |
+| Inference | The relay does not host it. The local CLI invokes Codex for actual work. |
+| Conversation | Managed thread is separate from the already-open caller. |
+| Waiting | Node uses hosted socket waits or local polling without asking a model to wait. |
+| Cost | Actual work/tool round trips use tokens; process, network and hosting costs remain. |
+| Approvals | Background approval requests are declined; no forwarding UI. |
+| Pause | Stops subsequent dispatch after current work, not verified mid-turn/tool cancellation. |
+| Recovery | Relay retains waiting work; an uncertain running job becomes an explicit failure. |
+| Restart | No receiver login service or crash supervisor; start existing receivers explicitly after reboot. |
+| Broadcast/delegation | All-member receipt/decision fan-out and automatic continuation on delegated replies are planned. |
+| Seen | Confirmed acknowledgement time only, not a separate read time or inferred room-wide receipt. |
+| Release | Local launcher replaced. Already-running terminals/receivers and public downloads are not updated by that alone. |
 
-## The thing that actually blocks progress
-
-**No provider integration has been measured.** The capability matrix in [`integrations/README.md`](integrations/README.md) is entirely `untested`, and that word is doing real work: nobody has watched what `pause` does to a running Claude Code or Codex turn.
-
-Until someone runs [`integrations/SPIKE.md`](integrations/SPIKE.md) — two terminals, a human driving — every statement about interrupting an agent is a guess. The honest ceiling of cooperative integration is *"the agent notices between turns"*. If that is the real ceiling, the answer is to say so in the docs, not to build a workaround.
-
-There is one lead worth investigating: Claude Code exposes `CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN` in the environment. That is undocumented internals and nothing is built on it.
-
-## Roadmap, and where we are
-
-Phases come from the workspace's `docs/implementation-roadmap.md`, which lives alongside this repository rather than inside it, together with `docs/plan.md`, `docs/monetization.md`, and `docs/open-questions.md`.
-
-| Phase | State |
-| --- | --- |
-| A — prove provider integration | **Not started.** Blocks everything. Kit is ready: skill, `AGENTS.md`, and a written procedure. |
-| B — protocol and data model | Done. `packages/protocol`, frozen v1 contract. |
-| C — room state and Cloudflare transport | Implemented. Hosted SQLite adapter and WebSockets pass the shared contracts and hosted runtime scenarios; production load testing remains. |
-| D — CLI, credentials, MCP | Mostly. CLI is well past the roadmap's scope; MCP is not started. |
-| E — handover and human controls | Done, minus the optional browser page. |
-| F — local server and private networking | Local server done and at parity. Tailscale untested; Windows untested. |
-| G — reliability, abuse controls, release | Partial. Hosted quotas and auth throttles exist; sustained load tests, staged payment validation and a release remain. |
-
-The roadmap's stated critical path is provider integration → protocol → reliable room core → client/control → local parity → release. Everything except the first link has been built, which is the wrong order — done knowingly, because the spike needs a human and the rest did not.
-
-## Decisions that differ from the roadmap
-
-Worth knowing before you trust the planning documents:
-
-1. **Neither rooms nor invites expire by default.** The roadmap proposed 24-hour rooms and 10-minute invites. Both were guesses in a document that called them "product choices to validate"; a room that ends underneath a working pair, or a code that dies while it is still being pasted, is worse than one that outlives its usefulness. Expiry is opt-in per room, per invite, and per device.
-2. **The browser page is optional**, and the CLI is the primary human interface. The roadmap treats the page as the only way in.
-3. **Invite codes are reusable seats**, not single-use. A leaked code is therefore valid for the room's lifetime rather than ten minutes — `--once` when that matters.
-7. **Guest access uses the room id**, not a separate join token. The roadmap's concern was right — an open room's id is a bearer secret and ids are printed widely — but a token was rejected as a second thing to carry. Opening is a deliberate controller action that states the consequence, and it is off by default.
-4. **Retention** is 32 MiB and 20,000 events, not the roadmap's 10 MiB, which admitted only ~320 maximum-size events.
-5. **Handover resolution is terminal per revision.** Reversing a decline would leave the sender believing the work was refused.
-6. **A late control acknowledgement is recorded, not rejected**, so history keeps what the adapter actually did.
-
-`docs/open-questions.md` in the workspace records every deferred decision with the phase it has to be settled by.
+The broader [async design](docs/async-agent-messaging.md), [broadcast proposal](docs/broadcast-response-design.md) and parent-workspace roadmap contain targets beyond installed behavior. Hosted/account implementation is documented in [the hosted package](packages/hosted/README.md) and standalone worker checkout; payment/deployment status was not revalidated by this local CLI work.
 
 ## Known gaps in what exists
 
@@ -89,15 +55,4 @@ Worth knowing before you trust the planning documents:
 
 ## Layout
 
-```text
-packages/protocol/      schemas, versions, error contracts, HTTP and socket wire format
-packages/room-core/     authorization and state transitions, no network dependency
-packages/server-core/   the storage contract and the room service every transport runs
-packages/local-server/  node:sqlite store and the local relay
-packages/client/        HTTP client and the per-device room registry
-packages/cli/           the command line
-fixtures/               in-memory reference store, fake agents, the contract suite
-integrations/           runtime instructions, capability matrix, spike procedure
-```
-
-`fixtures/src/contract.ts` and `fixtures/src/redemption-contract.ts` are parameterized by store and run against both adapters. **A new storage adapter is expected to call them.** A behaviour that differs between adapters fails the build, which is the main thing keeping the Cloudflare port honest when someone writes it.
+`packages/cli` owns the receiver, runtime adapter and terminal UI. `packages/client` owns relay operations, socket/local waits and device credentials. `server-core`, `room-core`, `protocol` and `local-server` provide the shared room service and local transport. Contract suites in `fixtures/` are reused across storage adapters. Workspace planning documents are targets; the implementation guide above describes current behavior.

@@ -23,12 +23,17 @@ import {UsageError, controllerCredential, resolveRecipient, resolveRoom, resolve
 import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
 import {accountToken, loginOnline, onlineAccount, onlineOrigin, resolveOnlineKey} from './online.js';
+import {receiverStatus, runReceiver, startReceiver, stopReceiver} from './receiver.js';
+import type {ReceiverStatus} from './receiver.js';
 
 type LocalIdentity = {displayName: string; kind: 'agent' | 'human'; sessionId: string; capabilities?: AdapterCapabilities};
 
 type LocalRuntimeDetail = {runtime?: string; conversationId?: string; terminal?: string; pid?: number};
 
 const OPTIONS = {
+    version: {type: 'boolean'},
+    model: {type: 'string'},
+    'manual-receive': {type: 'boolean'},
     private: {type: 'boolean'},
     allow: {type: 'string'},
     'skills-dir': {type: 'string'},
@@ -88,6 +93,10 @@ const HELP = `pairlobby
   pairlobby create --name <name>     start a room and print an invite
   pairlobby join <code>              join a local room and enter it
   pairlobby join online <key>       join a hosted room without a URL or room ID
+  pairlobby join <code> --runtime codex
+                                    join as a managed Codex agent; receive automatically
+  pairlobby receiver status|start|stop
+                                    manage automatic receiving for the selected agent
   pairlobby login                    save an account token from the website
   pairlobby logout                   remove saved account login
   pairlobby create online --name X [--private] [--allow email,email]
@@ -132,6 +141,10 @@ should pass --session (or set PAIRLOBBY_SESSION) on every later command.
 
 async function main(argv: string[]): Promise<number> {
     const {values, positionals} = parseArgs({args: argv, options: OPTIONS, allowPositionals: true, strict: true});
+    if (values.version) {
+        out('PairLobby 0.2.0-local.5 (automatic Codex receiver)');
+        return 0;
+    }
     const command = positionals[0] ?? 'rooms';
     if (values.help) {
         out(HELP);
@@ -140,6 +153,23 @@ async function main(argv: string[]): Promise<number> {
     const store = new LocalStore();
 
     switch (command) {
+        case 'receiver-run':
+            return runReceiver(store, str(values, 'room')!, str(values, 'session')!);
+        case 'receiver': {
+            const {room, session} = select(store, str(values, 'room'), str(values, 'session'));
+            const action = positionals[1] ?? 'status';
+            if (action === 'start') {
+                json(await startReceiver(store, room.roomId, session.sessionId, str(values, 'model')));
+            } else if (action === 'stop') {
+                await stopReceiver(store, session.sessionId);
+                json({state: 'stopped'});
+            } else if (action === 'status') {
+                json(receiverStatus(store, session.sessionId) ?? {state: 'not-configured'});
+            } else {
+                throw new UsageError('pairlobby receiver status|start|stop');
+            }
+            return 0;
+        }
         case 'rooms':
         case 'list':
             return listRooms(store, values);
@@ -465,14 +495,14 @@ async function deleteRoom(store: LocalStore, values: Values, reference: string |
 function identityFrom(store: LocalStore, values: Values, fallbackName: string): LocalIdentity {
     const detected = detectRuntime();
     const profile = store.profile();
-    const profileApplies = !(detected.runtime !== undefined && profile.kind === 'human');
+    const profileApplies = !((detected.runtime !== undefined || str(values, 'runtime')) && profile.kind === 'human');
 
     // Who is at the keyboard: an agent shelling out either declares a runtime or
     // has no terminal. A person on a TTY with neither is a person, and defaulting
     // them to "agent" made rooms report zero people in them.
-    const looksLikeAgent = detected.runtime !== undefined || process.stdin.isTTY !== true;
+    const looksLikeAgent = detected.runtime !== undefined || str(values, 'runtime') !== undefined || process.stdin.isTTY !== true;
     const kind = flag(values, 'human') ? 'human' : flag(values, 'agent') ? 'agent' : (profileApplies && profile.kind) || (looksLikeAgent ? 'agent' : 'human');
-    const displayName = str(values, 'as') ?? (profileApplies ? profile.displayName : undefined) ?? (kind === 'human' ? osUserName() : fallbackName);
+    const displayName = str(values, 'as') ?? (profileApplies ? profile.displayName : undefined) ?? (kind === 'human' ? osUserName() : (str(values, 'runtime') ?? detected.runtime)?.replace('-cli', '') ?? fallbackName);
     const runtime = str(values, 'runtime') ?? (kind === 'human' ? undefined : (profile.runtime ?? detected.runtime));
     const capabilities: AdapterCapabilities | undefined = runtime ? {deliverUnsolicited: false, cancelTurn: false, cancelTool: false, runtime} : undefined;
     return {displayName, kind, sessionId: newId('session'), ...(capabilities ? {capabilities} : {})};
@@ -643,6 +673,18 @@ function localDetail(values: Values): LocalRuntimeDetail {
     return {...(runtime ? {runtime} : {}), ...(conversationId ? {conversationId} : {}), ...(detected.terminal ? {terminal: detected.terminal} : {}), pid: detected.pid};
 }
 
+async function enableReceiver(store: LocalStore, values: Values, roomId: string, sessionId: string): Promise<ReceiverStatus | null> {
+    const {session} = select(store, roomId, sessionId);
+    if (flag(values, 'manual-receive') || session.kind !== 'agent' || session.role === 'guest' || !['codex', 'codex-cli'].includes(session.runtime ?? '')) {
+        return null;
+    }
+    const receiver = await startReceiver(store, roomId, sessionId, str(values, 'model'));
+    if (!flag(values, 'json')) {
+        note('Automatic receiver available. Room requests run in a managed Codex session; no reader or listening agent is needed.');
+    }
+    return receiver;
+}
+
 async function createRoom(store: LocalStore, values: Values, online = false): Promise<number> {
     const name = str(values, 'name');
     if (!name) {
@@ -693,8 +735,9 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
         ...localDetail(values)
     });
 
+    const receiver = await enableReceiver(store, values, created.roomId, identity.sessionId);
     if (flag(values, 'json')) {
-        json({roomId: created.roomId, name, serverUrl, participantId: created.participantId, sessionId: identity.sessionId, invite: created.invite, ...localDetail(values)});
+        json({roomId: created.roomId, name, serverUrl, participantId: created.participantId, sessionId: identity.sessionId, invite: created.invite, ...localDetail(values), receiver});
         return 0;
     }
     const detail = localDetail(values);
@@ -746,6 +789,7 @@ async function joinRoom(store: LocalStore, values: Values, code?: string, online
         ...localDetail(values)
     });
 
+    const receiver = await enableReceiver(store, values, joined.roomId, identity.sessionId);
     if (flag(values, 'json')) {
         json({
             roomId: joined.roomId,
@@ -754,6 +798,7 @@ async function joinRoom(store: LocalStore, values: Values, code?: string, online
             participantId: joined.participantId,
             sessionId: identity.sessionId,
             role: joined.role,
+            receiver,
             ...localDetail(values),
             participants: joined.room.participants.map((participant) => ({participantId: participant.participantId, displayName: participant.displayName}))
         });
@@ -1167,17 +1212,21 @@ async function waitForEvents(client: PairLobbyClient, roomId: string, credential
 }
 
 async function status(store: LocalStore, values: Values): Promise<number> {
-    const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    const receiver = receiverStatus(store, session.sessionId);
     const snapshot = await client.snapshot(room.roomId, credential);
     const pending = await client.requests(room.roomId, credential);
     const names = new Map(snapshot.participants.map((participant) => [participant.participantId, participant.displayName] as const));
     const open = pending.requests.map((request) => ({...request, received: request.receivedAt !== null, waitingMs: Date.now() - request.at, state: requestState(request)}));
 
     if (flag(values, 'json')) {
-        json({...snapshot, openRequests: open.map((request) => ({...request, from: names.get(request.from) ?? request.from, to: names.get(request.to) ?? request.to}))});
+        json({...snapshot, receiver, openRequests: open.map((request) => ({...request, from: names.get(request.from) ?? request.from, to: names.get(request.to) ?? request.to}))});
         return 0;
     }
     renderSnapshot(snapshot);
+    if (receiver) {
+        out(`Automatic receiver: ${receiver.state}${receiver.threadId ? ` (Codex ${receiver.threadId})` : ''}`);
+    }
     renderOpenRequests(open, names);
     return 0;
 }

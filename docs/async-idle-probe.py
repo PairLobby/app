@@ -1,5 +1,5 @@
 # Isolated transport/idle probe: never connects to a real model provider.
-import json, subprocess, tempfile, threading, time, http.server, tomllib, queue
+import json, subprocess, tempfile, threading, time, http.server, tomllib, queue, re
 from pathlib import Path
 requests=[]
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -12,7 +12,10 @@ server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
 threading.Thread(target=server.serve_forever,daemon=True).start()
 config=tomllib.loads((Path.home() / '.codex/config.toml').read_text())
 args=['codex','app-server','--stdio','-c','model_provider="pairlobby_idle_probe"','-c','model="unused-idle-probe"','-c','model_providers.pairlobby_idle_probe.name="PairLobby idle probe"','-c',f'model_providers.pairlobby_idle_probe.base_url="http://127.0.0.1:{server.server_port}/v1"','-c','model_providers.pairlobby_idle_probe.wire_api="responses"','-c','model_providers.pairlobby_idle_probe.requires_openai_auth=false']
-for name in config.get('mcp_servers',{}): args.extend(['-c',f'mcp_servers.{json.dumps(name)}.enabled=false'])
+for name in config.get('mcp_servers',{}):
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', name):
+        raise ValueError('Unsupported MCP name for isolated CLI override')
+    args.extend(['-c',f'mcp_servers.{name}.enabled=false'])
 messages=queue.Queue();observed=[]
 with tempfile.TemporaryDirectory(prefix='pairlobby-idle-thread-') as cwd:
     process=subprocess.Popen(args,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)

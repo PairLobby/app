@@ -98,3 +98,43 @@ Installer skill prompts cannot read from ordinary stdin when invoked through cur
 ## 2026-09-18 02:26:48 UTC
 
 Applying the agreed TypeScript style requires syntax-aware postprocessing because a standard formatter expands signatures/JSX attributes and can collapse spaces in preformatted transcript text. Source snapshots, emitted-JavaScript comparisons and rendered-page comparisons were used to preserve behavior; generated and vendored code was excluded.
+
+## 2026-09-18 02:45:20 UTC
+
+The Cloudflare GitHub App has organization-wide repository access, so removing the CLI repository requires narrowing its installation to the website and worker repositories. GitHub requires sudo-mode re-authentication before showing those settings; the change is waiting on the account owner’s Mobile verification.
+
+## 2026-09-18 04:21:52 UTC
+
+A real Codex room session repeatedly polled a waiting background read, consuming extra model input tokens, then finished before a later directed request arrived. Registered membership therefore outlived the listener, leaving the request unacknowledged; the integration needs an event-driven runtime wake mechanism, not an indefinite model polling loop.
+
+## 2026-09-18 05:48:10 UTC
+
+The installed Codex CLI has native App Server and queue commands, but no shared default daemon is running, so existing private CLI sessions cannot be assumed attachable. An idle probe initially mistook model-catalog retries for inference; a valid catalog response established zero generation requests while idle and generation only after an explicit turn start.
+
+## 2026-09-18 14:39:14 UTC
+
+The local Codex integration test failed to initialize because quoted MCP names in `-c` dotted overrides became literal keys with no transport configuration. Plain validated MCP names fix the child-only disable overrides; the older idle probe needed the same correction.
+
+## 2026-09-19 20:15:12 UTC
+
+Installing the synthetic test as a separate prototype command did not replace the unusable room workflow. The CLI now owns an actual detached Codex receiver; the local installer replaces the existing managed launcher and preserves it for rollback.
+
+## 2026-09-19 21:19:11 UTC
+
+Chat completion recognized inline mentions, but sending only routed a mention at the beginning of the line, so “Hey @codex” silently became a broadcast. Routing now recognizes inline mentions; normal chat also respects show-ids for request/reply markers and displays readable delivery states.
+
+## 2026-09-19 22:07:35 UTC
+
+The append-only terminal renderer could not update Seen on its original message or provide hover targets. The terminal now uses a diff-rendered transcript with mouse hit targets and retains readline for editing; receipt storage exposes one acknowledgement time, so the UI does not invent a separate read timestamp.
+
+## 2026-09-19 22:13:00 UTC
+
+Long-history terminal QA exposed clipping in nested message widgets after scrolling. Flattening message text and receipt hit targets into the scrolling container fixed the blank transcript; the PTY check now covers scrolling, resize, hover, click and draft preservation.
+
+## 2026-09-19 22:18:30 UTC
+
+The README, status/capability matrix and generated package README still said no managed adapter existed and all agents needed manual reads. Updated them against the installed receiver and separated the historical prototype, local implementation, and unimplemented design targets to prevent reintroducing waiting-agent setup.
+
+## 2026-09-19 22:52:43 UTC
+
+Real terminal startup hit Blessed’s legacy compiler on a modern Setulc capability, printing generated JavaScript despite debug/warnings being disabled. The renderer now disables unused extended capabilities; a compiled modern-terminfo fixture reproduces the old dump and the PTY check asserts clean raw output.
