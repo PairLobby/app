@@ -9,7 +9,7 @@ import {fileURLToPath} from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const install = join(homedir(), '.local/share/pairlobby');
 const launcher = join(homedir(), '.local/bin/pairlobby');
-const version = '0.2.0-local.5';
+const version = JSON.parse(readFileSync(join(root, 'packages/cli/src/release.json'), 'utf8')).version;
 const work = mkdtempSync(join(tmpdir(), 'pairlobby-local-install-'));
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 

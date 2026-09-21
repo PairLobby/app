@@ -9,11 +9,11 @@ import {startServer} from '@pairlobby/local-server';
 
 type Joined = {roomId: string; sessionId: string; participantId: string; receiver: {pid: number; state: string}};
 
-test('normal CLI joins receive asynchronously, deduplicate, deny approvals, and recover without repeating uncertain work', async () => {
+test.each(['codex', 'claude'])('%s CLI joins receive asynchronously and recover without repeating uncertain work', async (runtime) => {
     const directory = mkdtempSync(join(tmpdir(), 'pairlobby-receiver-'));
     const record = join(directory, 'calls.txt');
-    const executable = join(directory, 'codex');
-    copyFileSync(resolve('scripts/fixtures/codex-receiver.mjs'), executable);
+    const executable = join(directory, runtime);
+    copyFileSync(resolve(`scripts/fixtures/${runtime}-receiver.mjs`), executable);
     chmodSync(executable, 0o755);
     const relay = await startServer({port: 0, dataFile: join(directory, 'relay.sqlite')});
     const client = new PairLobbyClient(relay.url);
@@ -24,7 +24,7 @@ test('normal CLI joins receive asynchronously, deduplicate, deny approvals, and 
 
     async function command(args: string[]): Promise<any> {
         return new Promise((done, reject) => {
-            const child = spawn(process.execPath, [cli, ...args], {env: environment, stdio: ['ignore', 'pipe', 'pipe']});
+            const child = spawn(process.execPath, [cli, ...args], {env: environment, stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000});
             let output = '', errors = '';
             child.stdout.on('data', (chunk) => { output += chunk; });
             child.stderr.on('data', (chunk) => { errors += chunk; });
@@ -51,9 +51,10 @@ test('normal CLI joins receive asynchronously, deduplicate, deny approvals, and 
 
     const calls = () => existsSync(record) ? readFileSync(record, 'utf8').split('\n') : [];
     try {
-        joined = await command(['join', host.invite.code, '--server', relay.url, '--runtime', 'codex', '--as', 'codex', '--json']) as Joined;
+        joined = await command(['join', host.invite.code, '--server', relay.url, '--runtime', runtime, '--as', runtime, '--workdir', directory, '--model', 'fixture-model', '--json']) as Joined;
         expect(joined.receiver.state).toBe('available');
         const scope = ['--room', joined.roomId, '--session', joined.sessionId];
+        await expect(command(['channel', ...scope, '--allow-from', host.participantId])).rejects.toThrow('managed receiver already owns');
         await sleep(1200);
         expect(calls()).toEqual([]);
         const request = {type: 'message' as const, recipientId: joined.participantId, payload: {text: 'Please answer', priority: 'normal' as const}, idempotencyKey: 'first'};
@@ -64,7 +65,10 @@ test('normal CLI joins receive asynchronously, deduplicate, deny approvals, and 
         await client.send(host.roomId, host.participantCredential, {type: 'message', payload: {text: 'Broadcast', priority: 'normal'}, idempotencyKey: 'broadcast'});
         await sleep(1200);
         expect(calls().filter((line) => line === 'turn/start')).toHaveLength(1);
-        expect(calls()).toContain('approval:decline');
+        expect(calls()).toContain(runtime === 'codex' ? 'approval:decline' : 'ack:confirmed');
+        if (runtime === 'claude') {
+            expect(calls()).toContain('process/exit');
+        }
 
         await command(['receiver', 'stop', ...scope]);
         const second = await client.send(host.roomId, host.participantCredential, {...request, idempotencyKey: 'second'});
@@ -86,6 +90,15 @@ test('normal CLI joins receive asynchronously, deduplicate, deny approvals, and 
         const failure = await client.request(host.roomId, host.participantCredential, uncertain.event.eventId);
         expect(failure.receivedAt).toBeNull();
         expect(failure.failureReason).toContain('uncertain');
+        if (runtime === 'claude') {
+            const next = await client.send(host.roomId, host.participantCredential, {...request, idempotencyKey: 'after-crash'});
+            await waitFor(async () => Boolean((await client.request(host.roomId, host.participantCredential, next.event.eventId)).responseEventId));
+            expect(calls().filter((line) => line === 'thread/start')).toHaveLength(2);
+            const invalid = await client.send(host.roomId, host.participantCredential, {...request, idempotencyKey: 'invalid-ack', payload: {text: 'invalid-ack', priority: 'normal'}});
+            await waitFor(async () => Boolean((await client.request(host.roomId, host.participantCredential, invalid.event.eventId)).failureAt));
+            expect((await client.request(host.roomId, host.participantCredential, invalid.event.eventId)).receivedAt).toBeNull();
+            expect(calls()).toContain('ack:rejected');
+        }
     } finally {
         if (joined) {
             await command(['receiver', 'stop', '--room', joined.roomId, '--session', joined.sessionId]);

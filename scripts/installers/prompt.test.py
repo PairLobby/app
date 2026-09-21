@@ -15,7 +15,7 @@ import unittest
 class PromptTests(unittest.TestCase):
     def test_prompt_choices_with_redirected_stdin(self):
         public = Path('../frontend/public').resolve()
-        installer = Path('scripts/installers/install.mjs').resolve()
+        installer = public / 'install.mjs'
         node = shutil.which('node')
 
         class Handler(http.server.SimpleHTTPRequestHandler):

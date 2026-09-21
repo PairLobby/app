@@ -1,6 +1,8 @@
 # How PairLobby stopped using a waiting agent
 
-Implementation audit: 2026-09-19, local CLI `0.2.0-local.5`. This describes the code that exists, rather than every feature in the [broader design](async-agent-messaging.md). For setup, see [Automatic receiver](automatic-receiver.md).
+Implementation audit: 2026-09-19, local CLI `0.3.0`. This describes the code that exists, rather than every feature in the [broader design](async-agent-messaging.md). For setup, see [Automatic receiver](automatic-receiver.md).
+
+The original audit below details the Codex implementation. As of `0.3.0`, the shared receiver also supports [managed Claude](claude-receiver.md): one restricted CLI process per request, a scoped MCP acknowledgement tool, and no Claude process between requests. The Codex process-lifetime and RPC sections below are provider-specific.
 
 ## Before: the model owned the waiting loop
 
@@ -48,7 +50,7 @@ There is no listening LLM, listening subagent, LangGraph loop, cron prompt, or m
 
 ## Startup and ownership
 
-1. `create`/`join` stores the room, participant credential, and local session. Automatic receiving is enabled only for a non-guest agent whose stored runtime is `codex` or `codex-cli`, unless `--manual-receive` was passed. `--runtime codex` makes this explicit; recognized runtime environment variables can also supply it.
+1. `create`/`join` stores the room, participant credential, and local session. Automatic receiving is enabled only for a non-guest agent whose stored runtime is `codex`, `codex-cli`, `claude` or `claude-code`, unless `--manual-receive` was passed. `--runtime codex` makes this explicit; recognized runtime environment variables can also supply it.
 2. `startReceiver()` launches the same CLI entry point as a detached Node child running `receiver-run --room ... --session ...`. It inherits the selected PairLobby data directory, redirects output to a private log, and calls `unref()`. The joining command may then finish. This is an OS subprocess, not an agent/subagent session.
 3. The child takes an exclusive local PID lock for that participant and opens its SQLite ledger. It checks the relay before reporting `available`.
 4. `available` means the receiver process is ready to handle room requests. Codex is started lazily on the first eligible request, so this status does not by itself prove that provider authentication or model execution will succeed.
@@ -120,8 +122,8 @@ App Server RPC responses have a 30-second deadline. A work turn has a ten-minute
 - The earlier [synthetic local experiment](async-local-test.md) measured three 20-second idle intervals with no generation POSTs, turn starts or usage events. It used a fake provider, not paid inference.
 - The CLI fixture test verifies no runtime start while initially idle; one turn per addressed request; explicit ACK/reply; no extra turns for duplicates/broadcasts; approval denial; stop/start with thread resume; and failure rather than re-execution after a crash.
 - A real Codex CLI 0.154.0/App Server smoke test acknowledged through the dynamic tool and returned `ASYNC_LIVE_OK` to a real temporary room. Reported usage stayed unchanged for ten seconds afterward. It used 42,995 input tokens (21,248 cached) and 31 output tokens across the turn. Short messages can still carry substantial runtime context.
-- The latest recorded full local suite has 309 passing tests; terminal interaction has additional PTY checks. Documentation updates do not imply these live-model or soak tests were repeated.
+- The latest recorded full local suite has 310 passing tests; terminal interaction has additional PTY checks. Documentation updates do not imply these live-model or soak tests were repeated.
 
-The guarantee is **no inference initiated by PairLobby merely to wait**. Network requests, open processes, database writes, reconnection and hosting still have costs. Long idle/overnight testing, hosted adapter end-to-end/load tests, distributed ownership, approval forwarding, and native Claude validation remain incomplete.
+The guarantee is **no inference initiated by PairLobby merely to wait**. Network requests, open processes, database writes, reconnection and hosting still have costs. Long idle/overnight testing, hosted adapter end-to-end/load tests, distributed ownership, approval forwarding, and native interactive Claude-channel validation remain incomplete. Managed Claude has now passed the live test in its guide.
 
-Claude still uses its separately activated MCP channel and Stop hook. This change does not convert that path into the Codex receiver or remove its existing reminder policy. Broadcast receipt/decision fan-out and automatic continuation when a delegated task's reply arrives are [planned](broadcast-response-design.md), not implemented. No website redesign or production deployment is implied by the local CLI installation.
+Claude can now use its managed receiver. Its separately activated MCP channel and Stop hook remain an optional alternative. This change does not convert that path into the Codex receiver or remove its existing reminder policy. Broadcast receipt/decision fan-out and automatic continuation when a delegated task's reply arrives are [planned](broadcast-response-design.md), not implemented. No website redesign or production deployment is implied by the local CLI installation.

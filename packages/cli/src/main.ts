@@ -7,6 +7,7 @@
 //! listing a room can never disclose one.
 
 import {readFileSync} from 'node:fs';
+import release from './release.json' with {type: 'json'};
 import {userInfo} from 'node:os';
 import {parseArgs} from 'node:util';
 
@@ -25,12 +26,15 @@ import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, rende
 import {accountToken, loginOnline, onlineAccount, onlineOrigin, resolveOnlineKey} from './online.js';
 import {receiverStatus, runReceiver, startReceiver, stopReceiver} from './receiver.js';
 import type {ReceiverStatus} from './receiver.js';
+import {receiverRuntimeName} from './receiver-runtime.js';
 
 type LocalIdentity = {displayName: string; kind: 'agent' | 'human'; sessionId: string; capabilities?: AdapterCapabilities};
 
 type LocalRuntimeDetail = {runtime?: string; conversationId?: string; terminal?: string; pid?: number};
 
 const OPTIONS = {
+    request: {type: 'string'},
+    workdir: {type: 'string'},
     version: {type: 'boolean'},
     model: {type: 'string'},
     'manual-receive': {type: 'boolean'},
@@ -93,8 +97,8 @@ const HELP = `pairlobby
   pairlobby create --name <name>     start a room and print an invite
   pairlobby join <code>              join a local room and enter it
   pairlobby join online <key>       join a hosted room without a URL or room ID
-  pairlobby join <code> --runtime codex
-                                    join as a managed Codex agent; receive automatically
+  pairlobby join <code> --runtime codex|claude
+                                    join as a managed agent; receive automatically
   pairlobby receiver status|start|stop
                                     manage automatic receiving for the selected agent
   pairlobby login                    save an account token from the website
@@ -132,6 +136,7 @@ Common options
   --session <id>        required when one room holds more than one local session
   --server <url>        choose the relay; --local means http://127.0.0.1:8790
   --json                machine-readable output on stdout
+  --workdir <directory> project scope when first starting a managed receiver
   --conversation <id>   the runtime's own conversation id, so a human can find
                         this agent outside the room (auto-detected where possible)
 
@@ -142,7 +147,7 @@ should pass --session (or set PAIRLOBBY_SESSION) on every later command.
 async function main(argv: string[]): Promise<number> {
     const {values, positionals} = parseArgs({args: argv, options: OPTIONS, allowPositionals: true, strict: true});
     if (values.version) {
-        out('PairLobby 0.2.0-local.5 (automatic Codex receiver)');
+        out(`PairLobby ${release.version} (automatic Codex and Claude receivers)`);
         return 0;
     }
     const command = positionals[0] ?? 'rooms';
@@ -153,13 +158,15 @@ async function main(argv: string[]): Promise<number> {
     const store = new LocalStore();
 
     switch (command) {
+        case 'receiver-tools':
+            return (await import('./receiver-tools.js')).runReceiverTools(store, str(values, 'room')!, str(values, 'session')!, str(values, 'request')!);
         case 'receiver-run':
             return runReceiver(store, str(values, 'room')!, str(values, 'session')!);
         case 'receiver': {
             const {room, session} = select(store, str(values, 'room'), str(values, 'session'));
             const action = positionals[1] ?? 'status';
             if (action === 'start') {
-                json(await startReceiver(store, room.roomId, session.sessionId, str(values, 'model')));
+                json(await startReceiver(store, room.roomId, session.sessionId, str(values, 'model'), str(values, 'workdir')));
             } else if (action === 'stop') {
                 await stopReceiver(store, session.sessionId);
                 json({state: 'stopped'});
@@ -675,12 +682,12 @@ function localDetail(values: Values): LocalRuntimeDetail {
 
 async function enableReceiver(store: LocalStore, values: Values, roomId: string, sessionId: string): Promise<ReceiverStatus | null> {
     const {session} = select(store, roomId, sessionId);
-    if (flag(values, 'manual-receive') || session.kind !== 'agent' || session.role === 'guest' || !['codex', 'codex-cli'].includes(session.runtime ?? '')) {
+    if (flag(values, 'manual-receive') || session.kind !== 'agent' || session.role === 'guest' || !receiverRuntimeName(session.runtime)) {
         return null;
     }
-    const receiver = await startReceiver(store, roomId, sessionId, str(values, 'model'));
+    const receiver = await startReceiver(store, roomId, sessionId, str(values, 'model'), str(values, 'workdir'));
     if (!flag(values, 'json')) {
-        note('Automatic receiver available. Room requests run in a managed Codex session; no reader or listening agent is needed.');
+        note(`Automatic receiver available. Room requests run in a managed ${receiver.runtime === 'claude' ? 'Claude' : 'Codex'} session; no reader or listening agent is needed.`);
     }
     return receiver;
 }
@@ -807,7 +814,7 @@ async function joinRoom(store: LocalStore, values: Values, code?: string, online
     const detail = localDetail(values);
     // Joining a room means being in it. Only a machine caller — --json, a pipe,
     // or an explicit --no-follow — gets a printed snapshot and its prompt back.
-    if (isInteractive(values)) {
+    if (isInteractive(values) && !receiver) {
         note(`joined ${joined.room.name} as ${identity.displayName}${joined.role === 'guest' ? ' — read-only guest' : ''}`);
         return chatRoom(store, {...values, room: joined.roomId, session: identity.sessionId});
     }
@@ -1225,7 +1232,7 @@ async function status(store: LocalStore, values: Values): Promise<number> {
     }
     renderSnapshot(snapshot);
     if (receiver) {
-        out(`Automatic receiver: ${receiver.state}${receiver.threadId ? ` (Codex ${receiver.threadId})` : ''}`);
+        out(`Automatic receiver: ${receiver.state}${receiver.threadId ? ` (${receiver.runtime} ${receiver.threadId})` : ''}`);
     }
     renderOpenRequests(open, names);
     return 0;

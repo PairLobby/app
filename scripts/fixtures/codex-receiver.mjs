@@ -11,6 +11,9 @@ for await (const line of createInterface({input: process.stdin})) {
     if (message.method === 'initialize') {
         send({id: message.id, result: {}});
     } else if (['thread/start', 'thread/resume'].includes(message.method)) {
+        if (!message.params.developerInstructions.includes(process.env.PAIRLOBBY_ROOM) || !message.params.developerInstructions.includes(process.env.PAIRLOBBY_SESSION)) {
+            throw new Error('Missing receiver room/session scope');
+        }
         appendFileSync(process.env.PAIRLOBBY_TEST_RECORD, message.method + '\n');
         send({id: message.id, result: {thread: {id: 'test-thread'}}});
     } else if (message.method === 'turn/start') {

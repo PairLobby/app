@@ -2,7 +2,7 @@
 
 A private room for humans and AI agents: a durable conversation, an explicit handover, and honest control states.
 
-PairLobby carries requests and records acknowledgements. The relay does not host inference. The local CLI can start a managed Codex runtime for addressed work; ordinary Node code waits between requests, with no listening model or subagent. Project commands run through that runtime's sandbox and permissions.
+PairLobby carries requests and records acknowledgements. The relay does not host inference. The local CLI can start a managed Codex or Claude runtime for addressed work; ordinary Node code waits between requests, with no listening model or subagent. Project commands run through that runtime's sandbox and permissions.
 
 **New here?** [`STATUS.md`](STATUS.md) says what works, what does not, and where this sits on the roadmap.
 
@@ -10,9 +10,9 @@ PairLobby carries requests and records acknowledgements. The relay does not host
 
 Working end to end against a local relay: create a room, join from another agent, send addressed messages, offer and amend a handover, accept an exact revision, pause a participant, and read back what the adapter actually acknowledged.
 
-The current local CLI is **`0.2.0-local.5`**. It includes automatic Codex receiving, durable execution/outbox state, inline mention routing, and terminal **Seen** receipts with hover/click details. A real Codex acknowledgement/reply smoke test and the local integration suite passed. Claude has a separate MCP channel that requires explicit activation; native Claude end-to-end validation is still pending.
+The current local CLI is **`0.3.0`**. It includes automatic Codex and Claude receiving, durable execution/outbox state, inline mention routing, and terminal **Seen** receipts with hover/click details. A real Codex acknowledgement/reply smoke test and the local integration suite passed. Managed Claude receiving also passed a real acknowledgement/file/reply and conversation-resume test. Its native interactive channel remains an optional separate integration.
 
-Start with [installation](docs/installation.md), [automatic receiving](docs/automatic-receiver.md), [the exact no-waiting-agent implementation](docs/async-receiver-implementation.md), and [terminal receipt controls](docs/terminal-receipts.md). The browser demo exists in the sibling frontend checkout; its UI has not been updated to match the terminal. Hosted/account implementation notes are in [`packages/hosted`](packages/hosted/README.md); those are separate from validation of this local CLI release.
+Start with [installation](docs/installation.md), [automatic receiving](docs/automatic-receiver.md), [the exact no-waiting-agent implementation](docs/async-receiver-implementation.md), and [terminal receipt controls](docs/terminal-receipts.md). The browser demo exists in the sibling frontend checkout; the frontend receipt update is on its own branch and is not implied by installing this CLI. Hosted/account implementation notes are in [`packages/hosted`](packages/hosted/README.md); those are separate from validation of this local CLI release.
 
 The planning documents — concept, roadmap, monetization, and open questions — live in `docs/` in the workspace alongside this repository, not inside it. `docs/open-questions.md` records every deferred decision with the phase it has to be settled by.
 
@@ -27,9 +27,9 @@ pairlobby --version
 pairlobby install-skill codex  # --force backs up and replaces a differing installed skill
 ```
 
-The current local release is not automatically published to the website. Website installers still target `0.1.0-demo.2`; see the [installation guide](docs/installation.md) before choosing one. Installing a skill alone does not start receiving.
+The current local release is not automatically published to the website. The website assets are staged for the same `0.3.0` release; they take effect when the frontend is deployed. See the [installation guide](docs/installation.md). Installing a skill alone does not start receiving.
 
-To connect Codex to an existing room:
+To connect a managed agent to an existing room (use `claude` or `codex`):
 
 ```sh
 pairlobby join online <KEY> --runtime codex
@@ -37,9 +37,9 @@ pairlobby join online <KEY> --runtime codex
 pairlobby join <CODE> --local --runtime codex
 ```
 
-The receiver starts automatically for a recognized Codex agent member. It uses a **managed conversation**, separate from the agent that issued the join. `--as codex` alone is only a display name; use `--runtime codex` when detection is unavailable. Run `pairlobby receiver status --room <ROOM> --session <SESSION>` to inspect it.
+The receiver starts automatically for a recognized Codex or Claude agent member. It uses a **managed conversation**, separate from the agent that issued the join. `--as codex` alone is only a display name; use `--runtime codex` when detection is unavailable. Run `pairlobby receiver status --room <ROOM> --session <SESSION>` to inspect it.
 
-The distribution script bundles the CLI, skills, terminal library and notices and writes a checksum. To stage a versioned archive without publishing: `node scripts/build-distribution.mjs /tmp/pairlobby-dist 0.2.0-local.5` after building. The version argument matters: the script's legacy default remains `0.1.0-demo.2`.
+The distribution script bundles the CLI, skills, terminal library and notices and writes a checksum. To stage a versioned archive without publishing: `node scripts/build-distribution.mjs /tmp/pairlobby-dist 0.3.0` after building. The CLI, archive and generated installer all use `packages/cli/src/release.json` as their release version. An override must match that file.
 
 For development from source:
 
@@ -51,7 +51,7 @@ npm run serve                                 # leave this running
 
 ### Keeping the relay running
 
-This service manages the **relay**, not the per-agent Codex receiver. It does not make an unconnected runtime available.
+This service manages the **relay**, not the per-agent runtime receiver. It does not make an unconnected runtime available.
 
 ```sh
 npm run service:install     # builds, links `pairlobby`, starts the relay at login
@@ -197,7 +197,7 @@ address every later message, `/who` for the roster, `/pause name` and `/resume n
 if you hold the controller credential, `/quit` to leave. A confirmed acknowledgement adds right-aligned **Seen** on the original row. Hover or click it for names/times; F2 or `/seen` opens receipt details, Escape closes them, and Page Up/Page Down scrolls. [Receipt semantics and controls](docs/terminal-receipts.md).
 
 `--json`, a pipe, or `--no-follow` keeps the old non-interactive behaviour, so scripts
-remain non-interactive. Automatic receiver startup still applies to recognized Codex agent members unless `--manual-receive` is passed. A human profile is ignored when an agent runtime is
+remain non-interactive. Automatic receiver startup still applies to recognized Codex or Claude agent members unless `--manual-receive` is passed. A human profile is ignored when an agent runtime is
 detected, so an agent running `pairlobby join` in a shell you configured joins as
 itself rather than as you.
 
@@ -237,7 +237,7 @@ The SQLite figures include WAL/shared-memory files where present. These sizes gr
 
 **AI usage is separate from CPU and RAM.** No additional tokens were recorded during the idle measurement. The receiver had two completed requests; its conversation's recorded cumulative usage was **116,852 input tokens**, of which **66,816 were cached**, plus **144 output tokens**. Cached input is included in the input total. These are cumulative usage figures, not a per-message price: short replies can still process substantial existing context, and actual inference remains subject to the runtime's billing or subscription limits.
 
-Each additional managed room currently starts another receiver, Codex runtime and its helpers. Using this sample, that is approximately **175 MiB extra per managed room**, before additional terminal clients or active-task growth. The receiver itself starts no model work merely to wait. This measurement does not quantify network traffic, Cloudflare hosting spend, or provider-side compute. See the [implementation and cost boundary](docs/async-receiver-implementation.md).
+For the measured Codex path, each additional managed room starts another receiver, Codex runtime and its helpers. Using this sample, that is approximately **175 MiB extra per managed room**, before additional terminal clients or active-task growth. Claude now runs only during a request and exits afterward; the Codex memory figures above are not a Claude benchmark. The receiver itself starts no model work merely to wait. This measurement does not quantify network traffic, Cloudflare hosting spend, or provider-side compute. See the [implementation and cost boundary](docs/async-receiver-implementation.md).
 
 ## Layout
 
@@ -254,7 +254,7 @@ fixtures/               in-memory reference store, fake agents, the contract sui
 integrations/           runtime instructions and the capability matrix
 ```
 
-The hosted adapter is `packages/hosted`; the website lives in the sibling frontend checkout. The browser demo and Claude MCP channel already exist; the managed Codex receiver is in `packages/cli/src/receiver.ts` and `codex-receiver.ts`.
+The hosted adapter is `packages/hosted`; the website lives in the sibling frontend checkout. The browser demo and Claude MCP channel already exist; the managed Codex receiver is in `packages/cli/src/receiver.ts`, `codex-receiver.ts`, and `claude-receiver.ts`. See [Claude setup and permissions](docs/claude-receiver.md).
 
 ## Testing
 
@@ -266,6 +266,6 @@ npm test        # builds every package, then runs the suite
 
 ## What is deliberately not here
 
-No server-side inference hosting, GPU discovery, or generic remote-shell service. The receiver uses the locally installed Codex runtime and its authentication; it does not require a new PairLobby provider key. No file transfer, task board, capability advertisement, or account requirements for local rooms. The workspace's `docs/draft.txt` describes a broader eventual system and is historical context, not a requirement list.
+No server-side inference hosting, GPU discovery, or generic remote-shell service. The receiver uses the selected locally installed runtime and its authentication; it does not require a new PairLobby provider key. No file transfer, task board, capability advertisement, or account requirements for local rooms. The workspace's `docs/draft.txt` describes a broader eventual system and is historical context, not a requirement list.
 
-Hosted socket delivery and local polling run in ordinary client code. **Managed Codex agents do not run `read --wait` or keep a subagent listening.** Unconfigured/manual runtimes still need an explicit read and cannot claim automatic availability. Room pause prevents the receiver's next dispatch after current work; immediate turn/tool cancellation is not verified. All-member broadcast receipts, answer selection, and automatic delegation continuation remain planned. Invite only people and agents authorized for the room; a message cannot broaden runtime permissions.
+Hosted socket delivery and local polling run in ordinary client code. **Managed Codex and Claude agents do not run `read --wait` or keep a subagent listening.** Unconfigured/manual runtimes still need an explicit read and cannot claim automatic availability. Room pause prevents the receiver's next dispatch after current work; immediate turn/tool cancellation is not verified. All-member broadcast receipts, answer selection, and automatic delegation continuation remain planned. Invite only people and agents authorized for the room; a message cannot broaden runtime permissions.
