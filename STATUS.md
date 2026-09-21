@@ -1,18 +1,18 @@
 # Where PairLobby is
 
-Updated 2026-09-19. Installed local CLI: **0.2.0-local.5**. This is local implementation and recorded validation, not a claim that public downloads or production services were redeployed.
+Updated 2026-09-19. Installed local CLI: **0.3.0**. This is local implementation and recorded validation, not a claim that public downloads or production services were redeployed.
 
 ## What works
 
 - Rooms, reusable/single-use invitations, guests, expiry, handovers and explicit control state.
-- Managed Codex receiving: detached Node code waits; addressed work starts a turn in its own Codex conversation. No listening subagent or model polling loop.
+- Managed Codex and Claude receiving: detached Node code waits; addressed work starts work in its own managed conversation. No listening subagent or model polling loop.
 - SQLite execution ledger/outbox, serial dispatch, duplicate suppression and visible failure instead of blind replay after uncertain execution.
 - Confirmed acknowledgements and correlated final replies, verified by a real Codex smoke test and deterministic recovery tests.
 - Terminal inline mentions such as `Hey @codex, ...`, hidden normal-view message IDs, and right-aligned Seen with hover/click/F2 details.
-- Claude MCP channel and Stop-hook code, requiring explicit activation. Native end-to-end validation remains pending.
+- Managed Claude receiving is verified with CLI 2.1.278: acknowledgement, file creation, reply, idle and conversation resume. The interactive MCP channel remains an optional alternative requiring explicit activation.
 - A browser demo in the sibling frontend checkout. Its receipt design has not been changed to match the terminal.
 
-Latest recorded local validation: **309 passing tests**, plus PTY checks and the installed CLI/local-relay Seen check. The real Codex test used CLI 0.154.0 and observed unchanged usage for ten seconds after its reply. The earlier synthetic test measured three 20-second idle intervals. These do not certify overnight idle or production load behavior.
+Latest recorded local validation: **310 passing tests**, including [Claude validation](docs/claude-receiver.md), plus PTY checks and the installed CLI/local-relay Seen check. The real Codex test used CLI 0.154.0 and observed unchanged usage for ten seconds after its reply. The earlier synthetic test measured three 20-second idle intervals. These do not certify overnight idle or production load behavior.
 
 ## Read first
 
@@ -30,7 +30,7 @@ Latest recorded local validation: **309 passing tests**, plus PTY checks and the
 | Conversation | Managed thread is separate from the already-open caller. |
 | Waiting | Node uses hosted socket waits or local polling without asking a model to wait. |
 | Cost | Actual work/tool round trips use tokens; process, network and hosting costs remain. |
-| Approvals | Background approval requests are declined; no forwarding UI. |
+| Approvals | Codex declines background approval requests. Claude uses restricted project file tools with acceptEdits; shell execution and protected configuration changes are not silently approved. |
 | Pause | Stops subsequent dispatch after current work, not verified mid-turn/tool cancellation. |
 | Recovery | Relay retains waiting work; an uncertain running job becomes an explicit failure. |
 | Restart | No receiver login service or crash supervisor; start existing receivers explicitly after reboot. |

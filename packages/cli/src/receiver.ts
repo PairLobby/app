@@ -1,5 +1,5 @@
 import {spawn} from 'node:child_process';
-import {closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync} from 'node:fs';
+import {closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {setTimeout as sleep} from 'node:timers/promises';
@@ -8,10 +8,13 @@ import {ProtocolError} from '@pairlobby/protocol';
 import type {MessageRequest} from '@pairlobby/protocol';
 import {select, UsageError} from './context.js';
 import {CodexReceiver} from './codex-receiver.js';
+import {ClaudeReceiver} from './claude-receiver.js';
+import {receiverRuntimeName} from './receiver-runtime.js';
+import type {ReceiverRuntime} from './receiver-runtime.js';
 
 export type ReceiverStatus = {pid: number; state: string; runtime: string; threadId?: string; eventId?: string; detail?: string; usage?: unknown};
 type Job = {event_id: string; phase: string; acknowledged: number; answer: string | null; failure: string | null};
-type ReceiverConfiguration = {runtime: 'codex'; cwd: string; model?: string};
+type ReceiverConfiguration = {runtime: 'codex' | 'claude'; cwd: string; model?: string};
 type ReceiverPaths = {directory: string; status: string; lock: string; stop: string; log: string; config: string; database: string};
 
 function paths(store: LocalStore, sessionId: string): ReceiverPaths {
@@ -54,27 +57,50 @@ export function receiverStatus(store: LocalStore, sessionId: string): ReceiverSt
     }
 }
 
-export async function startReceiver(store: LocalStore, roomRef: string, sessionRef: string, model?: string): Promise<ReceiverStatus> {
+export async function startReceiver(store: LocalStore, roomRef: string, sessionRef: string, model?: string, workdir?: string): Promise<ReceiverStatus> {
     const {room, session} = select(store, roomRef, sessionRef);
-    if (session.kind !== 'agent' || session.role === 'guest' || !['codex', 'codex-cli'].includes(session.runtime ?? '')) {
-        throw new UsageError('Automatic receiving currently requires a Codex agent member. Join with --agent --runtime codex.');
+    const runtimeName = receiverRuntimeName(session.runtime);
+    if (session.kind !== 'agent' || session.role === 'guest' || !runtimeName) {
+        throw new UsageError('Automatic receiving requires a Codex or Claude agent member. Join with --runtime codex or --runtime claude.');
+    }
+    const channelLock = join(store.directory, `channel-${session.sessionId}.lock`);
+    if (existsSync(channelLock) && alive(Number(readFileSync(channelLock, 'utf8')))) {
+        throw new UsageError('The native channel already owns this participant. Stop it before starting a managed receiver.');
     }
     const existing = receiverStatus(store, session.sessionId);
     if (existing && !['offline', 'stopped', 'error'].includes(existing.state)) {
         return existing;
     }
     const location = paths(store, session.sessionId);
-    const config: ReceiverConfiguration = {runtime: 'codex', cwd: session.cwd, ...(model ? {model} : {})};
+    if (existsSync(location.lock) && alive(Number(readFileSync(location.lock, 'utf8')))) {
+        throw new UsageError('A runtime already owns this participant. Stop its channel before starting a managed receiver.');
+    }
+    let previous: ReceiverConfiguration | undefined;
+    if (existsSync(location.config)) {
+        previous = JSON.parse(readFileSync(location.config, 'utf8')) as ReceiverConfiguration;
+        if (previous.runtime !== runtimeName) {
+            throw new UsageError('This receiver belongs to a different runtime; use a separate room membership.');
+        }
+    }
+    const cwd = realpathSync(workdir ? resolve(workdir) : previous?.cwd ?? session.cwd);
+    if (!statSync(cwd).isDirectory()) {
+        throw new UsageError('Receiver workdir must be an existing directory');
+    }
+    if (previous && previous.cwd !== cwd && existsSync(location.database)) {
+        throw new UsageError('An existing receiver cannot change project scope; use a separate membership.');
+    }
+    const selectedModel = model ?? previous?.model;
+    const config: ReceiverConfiguration = {runtime: runtimeName, cwd, ...(selectedModel ? {model: selectedModel} : {})};
     writePrivate(location.config, config);
     if (existsSync(location.stop)) {
         unlinkSync(location.stop);
     }
     const log = openSync(location.log, 'a', 0o600);
     const child = spawn(process.execPath, [resolve(process.argv[1]!), 'receiver-run', '--room', room.roomId, '--session', session.sessionId], {
-        cwd: session.cwd,
+        cwd,
         detached: true,
         stdio: ['ignore', log, log],
-        env: {...process.env, PAIRLOBBY_DATA_DIR: store.directory}
+        env: {...process.env, PAIRLOBBY_DATA_DIR: store.directory, PAIRLOBBY_ROOM: room.roomId, PAIRLOBBY_SESSION: session.sessionId}
     });
     closeSync(log);
     let startupError: Error | undefined;
@@ -131,7 +157,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         CREATE TABLE IF NOT EXISTS jobs(event_id TEXT PRIMARY KEY, phase TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0, answer TEXT, failure TEXT, turn_id TEXT);
         CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
     database.exec("UPDATE jobs SET phase='failed', failure='Receiver restarted during execution. Outcome is uncertain; not automatically rerun.' WHERE phase='running'");
-    let state: ReceiverStatus = {pid: process.pid, state: 'starting', runtime: 'codex'};
+    let state: ReceiverStatus = {pid: process.pid, state: 'starting', runtime: config.runtime};
     const status = (update: Partial<ReceiverStatus>) => {
         const next = {...state, ...update};
         if (JSON.stringify(next) !== JSON.stringify(state) || !existsSync(location.status)) {
@@ -140,7 +166,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         state = next;
     };
     let stopped = false;
-    let runtime: CodexReceiver | undefined;
+    let runtime: ReceiverRuntime | undefined;
     const stop = () => {
         stopped = true;
         runtime?.close();
@@ -187,7 +213,10 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         try {
             if (!runtime) {
                 const saved = database.prepare("SELECT value FROM metadata WHERE key='thread'").get() as {value: string} | undefined;
-                runtime = new CodexReceiver({cwd: config.cwd, ...(saved ? {threadId: saved.value} : {}), ...(config.model ? {model: config.model} : {})});
+                const runtimeOptions = {cwd: config.cwd, roomId: room.roomId, sessionId: session.sessionId, ...(saved ? {threadId: saved.value} : {}), ...(config.model ? {model: config.model} : {})};
+                runtime = config.runtime === 'claude'
+                    ? new ClaudeReceiver({...runtimeOptions, stateDirectory: location.directory, cliPath: resolve(process.argv[1]!), dataDirectory: store.directory, roomId: room.roomId, sessionId: session.sessionId})
+                    : new CodexReceiver(runtimeOptions);
                 const threadId = await runtime.connect();
                 database.prepare("INSERT OR REPLACE INTO metadata(key, value) VALUES ('thread', ?)").run(threadId);
                 status({threadId});

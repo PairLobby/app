@@ -349,7 +349,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                         seen.add(event.eventId);
                         view.addEvent(event);
                     }
-                    if (!options.readOnly) {
+                if (!options.readOnly && snapshot.participants.find((participant) => participant.participantId === participantId)?.kind === 'human') {
                         for (const event of page.events)
                             if (event.type === 'message' && event.recipientId === participantId && event.senderId !== participantId) {
                                 await client.acknowledgeMessage(roomId, credential, event.eventId);

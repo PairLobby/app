@@ -1,8 +1,8 @@
 # Connecting an agent runtime
 
-Updated 2026-09-19 for local CLI `0.2.0-local.5`. Runtime delivery, acknowledgement, completion and tool cancellation are separate capabilities.
+Updated 2026-09-19 for local CLI `0.3.0`. Runtime delivery, acknowledgement, completion and tool cancellation are separate capabilities.
 
-## Managed Codex receiving
+## Managed Codex and Claude receiving
 
 ```sh
 npm run install:local
@@ -11,13 +11,15 @@ pairlobby join online <KEY> --runtime codex --as codex --json
 # Local: pairlobby join <CODE> --local --runtime codex --as codex --json
 ```
 
-A recognized Codex agent member starts an ordinary detached receiver. The calling agent can finish; it must not keep a reader or listening subagent running. Each addressed request starts a turn in a **separate managed Codex conversation**. The receiver binds a scoped acknowledgement tool and forwards the final answer. It starts no model turns merely to wait.
+A recognized Codex or Claude agent member starts an ordinary detached receiver. The calling agent can finish; it must not keep a reader or listening subagent running. Each addressed request starts a turn in a **separate managed runtime conversation**. The receiver binds a scoped acknowledgement tool and forwards the final answer. It starts no model turns merely to wait.
 
 `--as codex` is a display name, not runtime selection. Use `--runtime codex` outside a detected Codex environment. Existing members can use `pairlobby receiver start|status|stop --room <ROOM> --session <SESSION>`. No receiver OS login service is installed.
 
 Read [setup and limits](../docs/automatic-receiver.md) and the [exact implementation change](../docs/async-receiver-implementation.md). The receiver selects workspace-write sandboxing and declines background approval requests. Its managed conversation does not inherit the caller's full task context.
 
-## Claude native channel
+Use `--runtime claude` for managed Claude. It uses a request-scoped acknowledgement tool and exits after each request. See [Claude permissions and validation](../docs/claude-receiver.md).
+
+## Claude native channel (optional alternative)
 
 The MCP channel and Stop hook exist in [channel.ts](../packages/cli/src/channel.ts) and [channel-config.ts](../packages/cli/src/channel-config.ts). Activate them explicitly:
 
@@ -25,7 +27,7 @@ The MCP channel and Stop hook exist in [channel.ts](../packages/cli/src/channel.
 pairlobby configure-claude --room <ROOM> --session <CLAUDE_SESSION> --allow-from <PARTICIPANT_IDS>
 ```
 
-Follow the generated launch instructions and runtime consent prompts. This does not enable an already-open unconfigured session. The current channel retains its own bounded delivery/reminder supervisor; it has not been replaced by the Codex receiver. Native end-to-end Claude validation remains pending.
+First stop any managed receiver for the membership (or join with `--manual-receive`). Follow the generated launch instructions and runtime consent prompts. This does not enable an already-open unconfigured session. The current channel retains its own bounded delivery/reminder supervisor; it has not been replaced by the Codex receiver. Native end-to-end Claude validation remains pending.
 
 ## Manual/cooperative use
 
@@ -38,6 +40,7 @@ Skills contain instructions. Installing them does not itself launch a runtime, a
 | Path | Recorded runtime | Idle wake and ACK/reply | Room pause | Tool/descendant cancellation |
 | --- | --- | --- | --- | --- |
 | Managed Codex | CLI 0.154.0 | Real local smoke test passed; fixtures cover serial dispatch/restart; short idle checks showed no idle inference | Subsequent dispatch stops after current work; no mid-turn claim | Not verified. Stop/timeout signals App Server, not proof all descendants stopped. |
+| Managed Claude | Code 2.1.278 | Real local ACK/file/reply and resume test passed; no process between requests | Subsequent dispatch stops after current work | Shutdown signalled; no blanket descendant guarantee |
 | Claude channel | Code 2.1.276 inspected | Implemented; native live-channel acceptance pending | Notifications/hook exist; live behavior unverified | Unverified |
 | Manual CLI | Runtime-dependent | Only when explicitly read | On a later read | No cancellation mechanism from a waiting read |
 

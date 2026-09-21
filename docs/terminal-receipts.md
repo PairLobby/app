@@ -1,6 +1,6 @@
 # Terminal receipt design
 
-Local CLI version `0.2.0-local.5` renders the room as a live terminal transcript. A confirmed receipt updates **Seen** on the right of the original message's first row. Wrapped text keeps the receipt column clear. Normal chat no longer appends “read it,” “Waiting for acknowledgement,” or “Acknowledged · waiting for reply” lines. Overdue and failed delivery alerts remain visible.
+Local CLI version `0.3.0` renders the room as a live terminal transcript. A confirmed receipt updates **Seen** on the right of the original message's first row. Wrapped text keeps the receipt column clear. Normal chat no longer appends “read it,” “Waiting for acknowledgement,” or “Acknowledged · waiting for reply” lines. Overdue and failed delivery alerts remain visible.
 
 - Hover **Seen** to view one row per receipt: name on the left, acknowledgement and date/time aligned right. The popup omits the closing hint; Escape still dismisses it.
 - Click **Seen** to keep the popup open; Escape dismisses it.

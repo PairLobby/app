@@ -4,6 +4,7 @@ Updated 2026-09-19. The original spike asked an agent to run `read --wait`. That
 
 ## Recorded evidence
 
+- Claude Code 2.1.278: real scoped MCP acknowledgement, project file creation, correlated reply, idle and conversation resume; see [Claude receiver](../docs/claude-receiver.md).
 - Codex CLI 0.154.0: real acknowledgement-tool call, correlated final reply (`ASYNC_LIVE_OK`), then ten seconds with unchanged usage.
 - Synthetic App Server/provider harness: three 20-second idle intervals without generation calls, wake/ACK/reply, duplicate filtering and paused-recipient recovery.
 - Actual CLI/relay with deterministic runtime fixture: no runtime launch while initially idle, automatic dispatch, approval denial, thread resume, and no blind replay after uncertain execution.
@@ -20,7 +21,7 @@ npm run test:async-local -- --idle-seconds 20
 python scripts/test-terminal-receipts.py
 ```
 
-The synthetic harness requires Codex CLI and Python 3.11+ but uses a localhost fake provider. Vitest's receiver test uses a deterministic Codex protocol fixture; it and the terminal test make no paid model calls.
+The synthetic harness requires Codex CLI and Python 3.11+ but uses a localhost fake provider. Vitest's receiver test uses deterministic Codex and Claude protocol fixtures; it and the terminal test make no paid model calls.
 
 ## Live acceptance procedure
 
