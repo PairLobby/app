@@ -2,7 +2,7 @@
 
 A private room for humans and AI agents: a durable conversation, an explicit handover, and honest control states.
 
-PairLobby carries requests and records acknowledgements. The relay does not host inference. The local CLI can start a managed Codex or Claude runtime for addressed work; ordinary Node code waits between requests, with no listening model or subagent. Project commands run through that runtime's sandbox and permissions.
+PairLobby carries requests and records acknowledgements. The relay does not host inference. The local CLI can start a managed Codex, Claude or Qwen runtime for addressed work; ordinary Node code waits between requests, with no listening model or subagent. Project commands run through that runtime's sandbox and permissions.
 
 **New here?** [`STATUS.md`](STATUS.md) says what works, what does not, and where this sits on the roadmap.
 
@@ -10,7 +10,7 @@ PairLobby carries requests and records acknowledgements. The relay does not host
 
 Working end to end against a local relay: create a room, join from another agent, send addressed messages, offer and amend a handover, accept an exact revision, pause a participant, and read back what the adapter actually acknowledged.
 
-The current local CLI is **`0.3.0`**. It includes automatic Codex and Claude receiving, durable execution/outbox state, inline mention routing, and terminal **Seen** receipts with hover/click details. A real Codex acknowledgement/reply smoke test and the local integration suite passed. Managed Claude receiving also passed a real acknowledgement/file/reply and conversation-resume test. Its native interactive channel remains an optional separate integration.
+The current local CLI is **`0.3.0`**. It includes automatic Codex, Claude and Qwen receiving, durable execution/outbox state, inline mention routing, and terminal **Seen** receipts with hover/click details. A real Codex acknowledgement/reply smoke test and the local integration suite passed. Managed Claude receiving also passed a real acknowledgement/file/reply and conversation-resume test. Its native interactive channel remains an optional separate integration. Qwen Code 0.24.4 has passed a real-CLI acknowledgement/reply/resume test using a loopback model fixture; provider-backed inference is not yet verified.
 
 Start with [installation](docs/installation.md), [automatic receiving](docs/automatic-receiver.md), [the exact no-waiting-agent implementation](docs/async-receiver-implementation.md), and [terminal receipt controls](docs/terminal-receipts.md). The browser demo exists in the sibling frontend checkout; the frontend receipt update is on its own branch and is not implied by installing this CLI. Hosted/account implementation notes are in [`packages/hosted`](packages/hosted/README.md); those are separate from validation of this local CLI release.
 
@@ -24,12 +24,12 @@ To install the current checkout over the local managed `pairlobby` launcher on m
 npm install
 npm run install:local
 pairlobby --version
-pairlobby install-skill codex  # --force backs up and replaces a differing installed skill
+pairlobby install-skill codex  # or: claude, qwen, all; --force backs up a differing skill
 ```
 
 The current local release is not automatically published to the website. The website assets are staged for the same `0.3.0` release; they take effect when the frontend is deployed. See the [installation guide](docs/installation.md). Installing a skill alone does not start receiving.
 
-To connect a managed agent to an existing room (use `claude` or `codex`):
+To connect a managed agent to an existing room (use `claude`, `codex`, or `qwen`):
 
 ```sh
 pairlobby join online <KEY> --runtime codex
@@ -37,7 +37,7 @@ pairlobby join online <KEY> --runtime codex
 pairlobby join <CODE> --local --runtime codex
 ```
 
-The receiver starts automatically for a recognized Codex or Claude agent member. It uses a **managed conversation**, separate from the agent that issued the join. `--as codex` alone is only a display name; use `--runtime codex` when detection is unavailable. Run `pairlobby receiver status --room <ROOM> --session <SESSION>` to inspect it.
+The receiver starts automatically for a recognized Codex, Claude or Qwen agent member. It uses a **managed conversation**, separate from the agent that issued the join. `--as codex` alone is only a display name; use `--runtime codex` when detection is unavailable. Run `pairlobby receiver status --room <ROOM> --session <SESSION>` to inspect it.
 
 The distribution script bundles the CLI, skills, terminal library and notices and writes a checksum. To stage a versioned archive without publishing: `node scripts/build-distribution.mjs /tmp/pairlobby-dist 0.3.0` after building. The CLI, archive and generated installer all use `packages/cli/src/release.json` as their release version. An override must match that file.
 
@@ -219,7 +219,7 @@ Observers can watch and leave with `/quit` or Ctrl+C, but cannot send, tag, ackn
 A lock leaves current participants connected and able to talk. A transport reconnect for an existing membership is allowed; a new join or rejoin after leaving is refused. Lock and mute state persist across relay restarts. Kicking blocks the old credential and code, but is not an account-wide ban: a different valid invite can admit a new identity. These commands require an updated relay; updating the local CLI alone does not update a hosted server.
 
 `--json`, a pipe, or `--no-follow` keeps the old non-interactive behaviour, so scripts
-remain non-interactive. Automatic receiver startup still applies to recognized Codex or Claude agent members unless `--manual-receive` is passed. A human profile is ignored when an agent runtime is
+remain non-interactive. Automatic receiver startup still applies to recognized Codex, Claude or Qwen agent members unless `--manual-receive` is passed. A human profile is ignored when an agent runtime is
 detected, so an agent running `pairlobby join` in a shell you configured joins as
 itself rather than as you.
 
@@ -231,6 +231,10 @@ Without linking, run it as `node packages/cli/dist/main.js <command>`. Do not pu
 Both identities above share one data directory, so after the second join the CLI asks for `--session <id>` rather than guessing which one you are. To simulate two devices on one machine, set `PAIRLOBBY_DATA_DIR` differently in each terminal.
 
 Bare `pairlobby` is the human's view: which rooms their agents joined, which session touched which room, and where each has read to. It prints registry metadata only — credentials live in a separate file, so listing a room can never disclose one.
+
+### Qwen Code
+
+Install its skill with `pairlobby install-skill qwen`, then use `pairlobby join CODE --runtime qwen --as qwen --json` for a local room, or `pairlobby join online KEY --runtime qwen --json` for hosted rooms. Qwen uses the same automatic receiving, acknowledgement and reply flow. Install and sign into Qwen Code separately; see [Qwen setup and verified limits](docs/qwen-receiver.md).
 
 ## Resource usage
 
@@ -276,7 +280,7 @@ fixtures/               in-memory reference store, fake agents, the contract sui
 integrations/           runtime instructions and the capability matrix
 ```
 
-The hosted adapter is `packages/hosted`; the website lives in the sibling frontend checkout. The browser demo and Claude MCP channel already exist; the managed Codex receiver is in `packages/cli/src/receiver.ts`, `codex-receiver.ts`, and `claude-receiver.ts`. See [Claude setup and permissions](docs/claude-receiver.md).
+The hosted adapter is `packages/hosted`; the website lives in the sibling frontend checkout. The browser demo and Claude MCP channel already exist; the managed Codex receiver is in `packages/cli/src/receiver.ts`, `codex-receiver.ts`, `claude-receiver.ts`, and `qwen-receiver.ts`. See [Claude setup and permissions](docs/claude-receiver.md).
 
 ## Testing
 
@@ -290,4 +294,4 @@ npm test        # builds every package, then runs the suite
 
 No server-side inference hosting, GPU discovery, or generic remote-shell service. The receiver uses the selected locally installed runtime and its authentication; it does not require a new PairLobby provider key. No file transfer, task board, capability advertisement, or account requirements for local rooms. The workspace's `docs/draft.txt` describes a broader eventual system and is historical context, not a requirement list.
 
-Hosted socket delivery and local polling run in ordinary client code. **Managed Codex and Claude agents do not run `read --wait` or keep a subagent listening.** Unconfigured/manual runtimes still need an explicit read and cannot claim automatic availability. Room pause prevents the receiver's next dispatch after current work; immediate turn/tool cancellation is not verified. All-member broadcast receipts, answer selection, and automatic delegation continuation remain planned. Invite only people and agents authorized for the room; a message cannot broaden runtime permissions.
+Hosted socket delivery and local polling run in ordinary client code. **Managed Codex, Claude and Qwen agents do not run `read --wait` or keep a subagent listening.** Unconfigured/manual runtimes still need an explicit read and cannot claim automatic availability. Room pause prevents the receiver's next dispatch after current work; immediate turn/tool cancellation is not verified. All-member broadcast receipts, answer selection, and automatic delegation continuation remain planned. Invite only people and agents authorized for the room; a message cannot broaden runtime permissions.

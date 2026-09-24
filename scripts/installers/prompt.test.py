@@ -14,7 +14,7 @@ import unittest
 
 class PromptTests(unittest.TestCase):
     def test_prompt_choices_with_redirected_stdin(self):
-        public = Path('../frontend/public').resolve()
+        public = Path(os.environ.get('PAIRLOBBY_TEST_INSTALLER_DIR', '../frontend/public')).resolve()
         installer = public / 'install.mjs'
         node = shutil.which('node')
 
@@ -29,7 +29,7 @@ class PromptTests(unittest.TestCase):
         server_process = multiprocessing.get_context('fork').Process(target=server.serve_forever)
         server_process.start()
         try:
-            for answer, choice, agent in [('n', None, None), ('y', '1', 'claude'), ('y', '2', 'codex')]:
+            for answer, choice, agent in [('n', None, None), ('y', '1', 'claude'), ('y', '2', 'codex'), ('y', '3', 'qwen')]:
                 with self.subTest(agent=agent), tempfile.TemporaryDirectory(prefix='pairlobby-prompt-') as directory:
                     root = Path(directory)
                     args = [node, str(installer)]

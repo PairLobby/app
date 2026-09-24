@@ -9,12 +9,17 @@ export interface ReceiverRuntime {
     close(): void;
 }
 
-export function receiverRuntimeName(runtime?: string): 'codex' | 'claude' | null {
+export type ReceiverRuntimeName = 'codex' | 'claude' | 'qwen';
+
+export function receiverRuntimeName(runtime?: string): ReceiverRuntimeName | null {
     if (runtime === 'codex' || runtime === 'codex-cli') {
         return 'codex';
     }
     if (runtime === 'claude' || runtime === 'claude-code') {
         return 'claude';
+    }
+    if (runtime === 'qwen' || runtime === 'qwen-code') {
+        return 'qwen';
     }
     return null;
 }

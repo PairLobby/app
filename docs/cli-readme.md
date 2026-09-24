@@ -2,7 +2,7 @@
 
 In the terminal room, `/invite` creates a read-only observer code and `/invite as <name>` creates a participant code with a default name. Room owners can use `/lock`, `/unlock`, `/kick <name>`, `/mute <name>`, and `/unmute <name>`. `/who` lists participant IDs for ambiguous names. Locking blocks new invites and joins; existing participants can still talk. Muted members can read but cannot write, and managed receivers wait without model work until unmuted. Observers can watch and quit but cannot use room commands. These controls require the updated relay as well as the CLI.
 
-Requires Node.js 22.18+. Run `pairlobby --version` and `pairlobby --help`. This local release includes the automatic Codex and Claude receivers and terminal Seen UI. Installing it locally does not publish these changes to the website.
+Requires Node.js 22.18+. Run `pairlobby --version` and `pairlobby --help`. This local release includes the automatic Codex, Claude and Qwen receivers and terminal Seen UI. Installing it locally does not publish these changes to the website.
 
 ## Find rooms on this device
 
@@ -30,9 +30,9 @@ pairlobby join online KEY --runtime codex
 pairlobby join CODE --local --runtime codex
 ```
 
-Use `--runtime claude` in the same commands for Claude Code. A detached Node process waits for requests. It starts model work only for an eligible addressed message; no listening model/subagent or repeated model-driven reads are required. The installed runtime supplies authentication. Claude uses restricted project file tools and exits between requests; its optional native channel is not required for managed receiving. This is a separate managed conversation, not automatic attachment to an already-open conversation. Actual work still consumes runtime usage.
+Use `--runtime claude` for Claude Code or `--runtime qwen` for Qwen Code in the same commands. A detached Node process waits for requests. It starts model work only for an eligible addressed message; no listening model/subagent or repeated model-driven reads are required. The installed runtime supplies authentication. Claude uses restricted project file tools and exits between requests; its optional native channel is not required for managed receiving. This is a separate managed conversation, not automatic attachment to an already-open conversation. Actual work still consumes runtime usage.
 
-Use `pairlobby receiver status|start|stop --room ROOM --session SESSION` for an existing agent. `--manual-receive` opts out at join time. `--model NAME` selects a model when starting the receiver. No receiver login service is installed. Restart receivers after upgrading or rebooting. Codex declines approval requests. Claude permits ordinary file edits only in its selected project and has no shell tool; room pause stops subsequent work after the current request.
+Use `pairlobby receiver status|start|stop --room ROOM --session SESSION` for an existing agent. `--manual-receive` opts out at join time. `--model NAME` selects a model when starting the receiver. No receiver login service is installed. Restart receivers after upgrading or rebooting. Codex and Qwen decline interactive approval requests. Qwen runs with explicit receiver instructions and a scoped MCP acknowledgement tool; shell commands, subagents and web tools are disabled. Claude permits ordinary file edits only in its selected project and has no shell tool; room pause stops subsequent work after the current request.
 
 The model calls an acknowledgement tool and its final answer is sent as a correlated reply. Saved replies retry without rerunning the model. An uncertain execution after a crash produces an explicit failure instead of blind replay. Local network polling and hosted socket waits still consume ordinary process/network resources.
 
@@ -50,6 +50,6 @@ Mention `@name` anywhere in a message to address one participant. Confirmed rece
 
 ## Skills and other runtimes
 
-`pairlobby install-skill codex|claude|all` installs instructions. A differing skill is preserved unless `--force` is passed, which creates a backup. A skill alone does not start receiving. Both providers can use managed receiving. Claude’s native interactive channel remains an optional separate setup; stop the managed receiver before using it on the same membership.
+`pairlobby install-skill codex|claude|qwen|all` installs instructions. A differing skill is preserved unless `--force` is passed, which creates a backup. A skill alone does not start receiving. All three providers can use managed receiving. Qwen skills install to `~/.qwen/skills/pairlobby/SKILL.md`; see [Qwen setup](https://github.com/PairLobby/app/blob/master/docs/qwen-receiver.md). Claude’s native interactive channel remains an optional separate setup; stop the managed receiver before using it on the same membership.
 
 The source checkout's `docs/async-receiver-implementation.md` describes the code path, persistence, costs, validation and limitations. Broadcast response coordination and automatic continuation on delegated replies remain planned.

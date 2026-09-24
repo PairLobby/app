@@ -6,14 +6,15 @@ import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {spawn,execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-const installer=resolve('../frontend/public/install.mjs');
+const publicDirectory=resolve(process.env.PAIRLOBBY_TEST_INSTALLER_DIR??'../frontend/public');
+const installer=join(publicDirectory,'install.mjs');
 const version=JSON.parse(readFileSync('packages/cli/src/release.json','utf8')).version;
-const archive=readFileSync(`../frontend/public/downloads/pairlobby-cli-${version}.tgz`);
+const archive=readFileSync(join(publicDirectory,`downloads/pairlobby-cli-${version}.tgz`));
 const hash=createHash('sha256').update(archive).digest('hex');
 test('staged installers and checksum match the shared release version',()=>{
  assert.equal(readFileSync(installer,'utf8'),readFileSync('scripts/installers/install.mjs','utf8').replaceAll('__PAIRLOBBY_RELEASE_VERSION__',version));
- for(const file of ['install.sh','install.ps1'])assert.equal(readFileSync('../frontend/public/'+file,'utf8'),readFileSync('scripts/installers/'+file,'utf8'));
- assert.equal(readFileSync(`../frontend/public/downloads/pairlobby-cli-${version}.tgz.sha256`,'utf8').trim().split(/\s+/)[0],hash);
+ for(const file of ['install.sh','install.ps1'])assert.equal(readFileSync(join(publicDirectory,file),'utf8'),readFileSync('scripts/installers/'+file,'utf8'));
+ assert.equal(readFileSync(join(publicDirectory,`downloads/pairlobby-cli-${version}.tgz.sha256`),'utf8').trim().split(/\s+/)[0],hash);
 });
 function run(command,args,env){return new Promise((resolve,reject)=>{let output='';const child=spawn(command,args,{env,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe']});child.stdout.on('data',c=>output+=c);child.stderr.on('data',c=>output+=c);child.on('error',reject);child.on('exit',code=>resolve({code,output}));});}
 test('installer verifies downloads, preserves customized skills, and installs a working user command',async()=>{
@@ -36,7 +37,12 @@ test('installer verifies downloads, preserves customized skills, and installs a 
   writeFileSync(join(legacySkill,'SKILL.md'),'Previous bundled skill');writeFileSync(skill,'Previous bundled skill');
   result=await run(process.execPath,args,env);assert.equal(result.code,0,result.output);assert.match(result.output,/Updating bundled claude skill/);assert.match(readFileSync(skill,'utf8'),/managed Claude/i);
   writeFileSync(skill,'My customized skill');result=await run(process.execPath,args,env);assert.equal(result.code,0,result.output);assert.equal(readFileSync(skill,'utf8'),'My customized skill');
-  result=await run(process.execPath,[installer],env);assert.equal(result.code,0,result.output);assert.match(result.output,/No interactive terminal; skipping agent skills/);assert.doesNotMatch(result.output,/Installed (claude|codex) skill/);
+  const qwenArgs=[installer,'--skills','qwen','--skills-dir',join(root,'qwen-skills')];
+  result=await run(process.execPath,qwenArgs,env);assert.equal(result.code,0,result.output);assert.match(result.output,/Installed qwen skill/);
+  const qwenSkill=join(root,'qwen-skills/pairlobby/SKILL.md');assert.match(readFileSync(qwenSkill,'utf8'),/--runtime qwen/);
+  writeFileSync(qwenSkill,'Customized Qwen skill');result=await run(process.execPath,qwenArgs,env);assert.equal(result.code,0,result.output);assert.equal(readFileSync(qwenSkill,'utf8'),'Customized Qwen skill');
+  result=await run(join(root,'bin/pairlobby'),['install-skill','qwen','--skills-dir',join(root,'qwen-cli-skills'),'--json'],env);assert.equal(result.code,0,result.output);assert.ok(JSON.parse(result.output).installed[0].endsWith('pairlobby/SKILL.md'));
+  result=await run(process.execPath,[installer],env);assert.equal(result.code,0,result.output);assert.match(result.output,/No interactive terminal; skipping agent skills/);assert.doesNotMatch(result.output,/Installed (claude|codex|qwen) skill/);
   const before=readFileSync(join(root,'bin/pairlobby'),'utf8');bad=true;
   result=await run(process.execPath,args,env);assert.notEqual(result.code,0);assert.match(result.output,/checksum/);assert.equal(readFileSync(join(root,'bin/pairlobby'),'utf8'),before);
   bad=false;

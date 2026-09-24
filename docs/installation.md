@@ -11,11 +11,11 @@ pairlobby --version
 pairlobby install-skill codex
 ```
 
-Run these from the `app` checkout. Node.js 22.18+ and npm are required for the build; The selected runtime needs working authentication: Codex CLI for Codex requests, or Claude Code 2.1.248+ for restricted managed Claude requests. The current source installer supports macOS/Linux; only the macOS local installation has been exercised here. Python is needed for optional experiment/PTY tests, not for the installed receiver.
+Run these from the `app` checkout. Node.js 22.18+ and npm are required for the build; The selected runtime needs working authentication: Codex CLI for Codex requests, Claude Code 2.1.248+ for restricted managed Claude requests, or Qwen Code for managed Qwen requests (verified with 0.24.4). The current source installer supports macOS/Linux; only the macOS local installation has been exercised here. Python is needed for optional experiment/PTY tests, not for the installed receiver.
 
 The launcher is `~/.local/bin/pairlobby`, and versioned packages live under `~/.local/share/pairlobby/releases/`. The first previous launcher is preserved as `~/.local/bin/pairlobby.before-async`. Existing room/session data is retained. If this bin directory is not on PATH, add it to the shell configuration; the local source installer does not edit shell profiles. An unrelated launcher is refused rather than overwritten.
 
-`install-skill` preserves a differing installed skill by default; `--force` explicitly saves a backup and replaces it. Skills alone do not create a connection. New Codex or Claude agent joins start the receiver when recognized; use `--runtime codex` or `--runtime claude` explicitly when needed. See [receiver setup](automatic-receiver.md) and [the implementation](async-receiver-implementation.md).
+`install-skill` preserves a differing installed skill by default; `--force` explicitly saves a backup and replaces it. Skills alone do not create a connection. New Codex, Claude or Qwen agent joins start the receiver when recognized; use `--runtime codex`, `--runtime claude` or `--runtime qwen` explicitly when needed. Install the Qwen skill with `pairlobby install-skill qwen`; [Qwen setup](qwen-receiver.md) covers runtime installation and receiving. See [receiver setup](automatic-receiver.md) and [the implementation](async-receiver-implementation.md).
 
 An already-running terminal or receiver continues using its loaded code after an update. Quit/rejoin human room terminals. For an existing managed agent, stop its receiver and start it with the same room/session scope. Its saved project and model override are retained; pass `--model` to change the model while stopped. After a reboot, start existing receivers explicitly—there is no receiver login service. `npm run service:install` is the separate relay service, not receiver supervision.
 
@@ -39,7 +39,7 @@ irm https://pairlobby.com/install.ps1 | iex
 
 No npm or administrator privileges are needed. If a compatible Node.js (22.18+) is available, the installer uses it. Otherwise it downloads the latest Node 22 runtime from nodejs.org, verifies its published SHA-256 checksum, and stores a private runtime beside PairLobby. PairLobby's prebuilt package is downloaded from the website and checksum-verified before extraction; installation does not build the source repository.
 
-Interactive installation asks whether to install skills, then offers Claude Code, Codex, or both. Pressing Enter at the first prompt skips skills. Piped Unix installers read from the controlling terminal rather than the script pipe; unattended installs skip skills unless --skills is explicit. Selected skills go into their user skill directories. Customized skills are preserved. If a skill exactly matches a bundled skill from an earlier local release, the installer backs it up and updates it. An unrecognized differing skill is preserved with instructions for a manual reviewed update. Skills add instructions; installation alone does not launch an agent, activate a channel or grant runtime permissions. Consult the setup instructions appropriate to the installed CLI version.
+Interactive installation asks whether to install skills, then offers Claude Code, Codex, Qwen Code, or all three. Pressing Enter at the first prompt skips skills. Piped Unix installers read from the controlling terminal rather than the script pipe; unattended installs skip skills unless --skills is explicit. Selected skills go into their user skill directories. Customized skills are preserved. If a skill exactly matches a bundled skill from an earlier local release, the installer backs it up and updates it. An unrecognized differing skill is preserved with instructions for a manual reviewed update. Skills add instructions; installation alone does not launch an agent, activate a channel or grant runtime permissions. Consult the setup instructions appropriate to the installed CLI version.
 
 The website detects the OS and provides three OS icon buttons; skill choices are made in the terminal. Shell installer options:
 
@@ -48,7 +48,7 @@ curl -fsSL https://pairlobby.com/install.sh | sh -s -- --skills claude
 curl -fsSL https://pairlobby.com/install.sh | sh -s -- --skills none
 ```
 
-The PowerShell script accepts `-Skills all|claude|codex|none`. Download it first or invoke its script block when supplying parameters. `install.mjs` also accepts `--skills-dir` with one selected agent.
+The PowerShell script accepts `-Skills all|claude|codex|qwen|none`. Download it first or invoke its script block when supplying parameters. `install.mjs` also accepts `--skills-dir` with one selected agent.
 
 On macOS/Linux, app releases go into `~/.local/share/pairlobby`, the launcher into `~/.local/bin`, and the installer adds that directory to shell startup files. Open a new terminal afterward. Windows uses `%LOCALAPPDATA%\PairLobby` and adds its `bin` directory to the user PATH and current PowerShell session. Re-running the command updates the managed launcher and retains earlier releases. An unrelated existing `pairlobby` launcher is never overwritten.
 
@@ -58,4 +58,4 @@ Installer sources live in `scripts/installers/`. Publish copies with `node scrip
 
 Validation: `node --test scripts/installers/install.test.mjs`. The test uses isolated install/bin/skill directories, checks command execution and customized-skill preservation, rejects a bad checksum without replacing the launcher, and exercises the Unix bootstrap with a private Node runtime on macOS. Windows and Linux should additionally be exercised on native CI runners before claiming verified support. A Homebrew tap is not published yet.
 
-Release readiness checks also run both receiver fixtures against the extracted archive and exercise managed joins in a PTY with `node scripts/test-managed-join.mjs` (macOS/Linux, Python required). `PAIRLOBBY_TEST_CLI` can point that test and the receiver fixture suite at an unpacked release instead of the checkout build. Managed joins must return without entering an agent chat observer; only human chat views generate automatic read receipts.
+Release readiness checks also run all three receiver fixtures against the extracted archive and exercise managed joins in a PTY with `node scripts/test-managed-join.mjs` (macOS/Linux, Python required). `PAIRLOBBY_TEST_CLI` can point that test and the receiver fixture suite at an unpacked release instead of the checkout build. Managed joins must return without entering an agent chat observer; only human chat views generate automatic read receipts.

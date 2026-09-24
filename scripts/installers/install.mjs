@@ -13,7 +13,7 @@ function selectSkills(requested) {
     try {
         terminal = openSync('/dev/tty', 'r+');
     } catch {
-        console.log('No interactive terminal; skipping agent skills. Use --skills all, claude or codex to include them.');
+        console.log('No interactive terminal; skipping agent skills. Use --skills all, claude, codex or qwen to include them.');
         return 'none';
     }
 
@@ -37,12 +37,13 @@ function selectSkills(requested) {
             writeSync(terminal, 'Please enter y or n.\n');
         }
         while (true) {
-            const answer = ask('Which agents? 1) Claude Code  2) Codex  3) Both [3]: ');
+            const answer = ask('Which agents? 1) Claude Code  2) Codex  3) Qwen Code  4) All [4]: ');
             if (answer === null) return 'none';
             if (['1', 'claude', 'claude code'].includes(answer)) return 'claude';
             if (['2', 'codex'].includes(answer)) return 'codex';
-            if (['', '3', 'both', 'all'].includes(answer)) return 'all';
-            writeSync(terminal, 'Please enter 1, 2 or 3.\n');
+            if (['3', 'qwen', 'qwen code'].includes(answer)) return 'qwen';
+            if (['', '4', 'all'].includes(answer)) return 'all';
+            writeSync(terminal, 'Please enter 1, 2, 3 or 4.\n');
         }
     } finally {
         closeSync(terminal);
@@ -50,7 +51,7 @@ function selectSkills(requested) {
 }
 
 values.skills = selectSkills(values.skills);
-if(!['all','claude','codex','none'].includes(values.skills)) throw new Error('Skills must be all, claude, codex or none.');
+if(!['all','claude','codex','qwen','none'].includes(values.skills)) throw new Error('Skills must be all, claude, codex, qwen or none.');
 if(values['skills-dir']&&['all','none'].includes(values.skills)) throw new Error('--skills-dir requires a single agent.');
 const windows=platform()==='win32';
 const root=resolve(process.env.PAIRLOBBY_INSTALL_DIR??(windows?join(process.env.LOCALAPPDATA??homedir(),'PairLobby'):join(homedir(),'.local/share/pairlobby')));
@@ -91,10 +92,10 @@ try {
     execFileSync(process.execPath,[cli,'--help'],{stdio:'pipe'});
     const release=join(root,'releases',`${version}-${expected.slice(0,12)}`);mkdirSync(join(root,'releases'),{recursive:true});
     if(!existsSync(release))renameSync(packageRoot,release);
-    const targets=values.skills==='none'?[]:values.skills==='all'?['claude','codex']:[values.skills];
+    const targets=values.skills==='none'?[]:values.skills==='all'?['claude','codex','qwen']:[values.skills];
     const skill=readFileSync(join(release,'skills/pairlobby/SKILL.md'),'utf8');
     for(const agent of targets){
-        const skillsRoot=values['skills-dir']?resolve(values['skills-dir']):join(agent==='claude'?join(homedir(),'.claude'):(process.env.CODEX_HOME??join(homedir(),'.codex')),'skills');
+        const skillsRoot=values['skills-dir']?resolve(values['skills-dir']):join(agent==='codex'?(process.env.CODEX_HOME??join(homedir(),'.codex')):join(homedir(),agent==='qwen'?'.qwen':'.claude'),'skills');
         const target=join(skillsRoot,'pairlobby/SKILL.md');
         if(existsSync(target)&&readFileSync(target,'utf8')!==skill){
             const current=readFileSync(target,'utf8');
@@ -121,5 +122,5 @@ try {
             for(const file of profiles)if(!existsSync(file)||!readFileSync(file,'utf8').includes(line.trim()))appendFileSync(file,line);
         }
     }
-    console.log(`PairLobby ${version} installed: ${target}\nOpen a new terminal and run: pairlobby --version\nInstall and sign into Codex CLI or Claude Code separately. From your project, join with --runtime codex or --runtime claude for automatic receiving. Each uses a separate managed conversation; no listening subagent is needed.`);
+    console.log(`PairLobby ${version} installed: ${target}\nOpen a new terminal and run: pairlobby --version\nInstall and sign into Codex CLI, Claude Code or Qwen Code separately. From your project, join with --runtime codex, --runtime claude or --runtime qwen for automatic receiving. Each uses a separate managed conversation; no listening subagent is needed.`);
 } finally {rmSync(work,{recursive:true,force:true});}
