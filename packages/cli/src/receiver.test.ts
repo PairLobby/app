@@ -9,7 +9,7 @@ import {startServer} from '@pairlobby/local-server';
 
 type Joined = {roomId: string; sessionId: string; participantId: string; receiver: {pid: number; state: string}};
 
-test.each(['codex', 'claude'])('%s CLI joins receive asynchronously and recover without repeating uncertain work', async (runtime) => {
+test.each(['codex', 'claude', 'qwen'])('%s CLI joins receive asynchronously and recover without repeating uncertain work', async (runtime) => {
     const directory = mkdtempSync(join(tmpdir(), 'pairlobby-receiver-'));
     const record = join(directory, 'calls.txt');
     const executable = join(directory, runtime);
@@ -71,7 +71,7 @@ test.each(['codex', 'claude'])('%s CLI joins receive asynchronously and recover 
         await sleep(1200);
         expect(calls().filter((line) => line === 'turn/start')).toHaveLength(1);
         expect(calls()).toContain(runtime === 'codex' ? 'approval:decline' : 'ack:confirmed');
-        if (runtime === 'claude') {
+        if (runtime !== 'codex') {
             expect(calls()).toContain('process/exit');
         }
 
@@ -95,7 +95,7 @@ test.each(['codex', 'claude'])('%s CLI joins receive asynchronously and recover 
         const failure = await client.request(host.roomId, host.participantCredential, uncertain.event.eventId);
         expect(failure.receivedAt).toBeNull();
         expect(failure.failureReason).toContain('uncertain');
-        if (runtime === 'claude') {
+        if (runtime !== 'codex') {
             const next = await client.send(host.roomId, host.participantCredential, {...request, idempotencyKey: 'after-crash'});
             await waitFor(async () => Boolean((await client.request(host.roomId, host.participantCredential, next.event.eventId)).responseEventId));
             expect(calls().filter((line) => line === 'thread/start')).toHaveLength(2);
@@ -103,6 +103,16 @@ test.each(['codex', 'claude'])('%s CLI joins receive asynchronously and recover 
             await waitFor(async () => Boolean((await client.request(host.roomId, host.participantCredential, invalid.event.eventId)).failureAt));
             expect((await client.request(host.roomId, host.participantCredential, invalid.event.eventId)).receivedAt).toBeNull();
             expect(calls()).toContain('ack:rejected');
+        }
+        if (runtime === 'qwen') {
+            expect(calls()).toContain('approval:decline');
+            const missing = await client.send(host.roomId, host.participantCredential, {...request, idempotencyKey: 'no-ack', payload: {text: 'no-ack', priority: 'normal'}});
+            await waitFor(async () => Boolean((await client.request(host.roomId, host.participantCredential, missing.event.eventId)).failureAt));
+            const outcome = await client.request(host.roomId, host.participantCredential, missing.event.eventId);
+            expect(outcome.receivedAt).toBeNull();
+            expect(outcome.responseEventId).toBeNull();
+            const state = JSON.parse(readFileSync(join(environment.PAIRLOBBY_DATA_DIR, 'receivers', joined.sessionId, 'qwen-session.json'), 'utf8'));
+            expect(state.completed).toBe(false);
         }
     } finally {
         if (joined) {

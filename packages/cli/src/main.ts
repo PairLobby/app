@@ -100,7 +100,7 @@ const HELP = `pairlobby
   pairlobby create --name <name>     start a room and print an invite
   pairlobby join <code>              join a local room and enter it
   pairlobby join online <key>       join a hosted room without a URL or room ID
-  pairlobby join <code> --runtime codex|claude
+  pairlobby join <code> --runtime codex|claude|qwen
                                     join as a managed agent; receive automatically
   pairlobby receiver status|start|stop
                                     manage automatic receiving for the selected agent
@@ -110,7 +110,7 @@ const HELP = `pairlobby
   pairlobby allow [email ...]       replace the room allowlist (creator retained)
   pairlobby chat                     re-enter a room you already joined
   pairlobby send <text> --to <who>   send a message to one participant
-  pairlobby install-skill <agent>   install instructions for claude, codex, or all
+  pairlobby install-skill <agent>   install instructions for claude, codex, qwen, or all
   pairlobby configure-claude        prepare a scoped Claude channel and Stop hook
   pairlobby reply <event-id> <text>  answer one exact request; --progress keeps it open
   pairlobby receipt <event-id>       explicitly acknowledge delivery
@@ -150,7 +150,7 @@ should pass --session (or set PAIRLOBBY_SESSION) on every later command.
 async function main(argv: string[]): Promise<number> {
     const {values, positionals} = parseArgs({args: argv, options: OPTIONS, allowPositionals: true, strict: true});
     if (values.version) {
-        out(`PairLobby ${release.version} (automatic Codex and Claude receivers)`);
+        out(`PairLobby ${release.version} (automatic Codex, Claude and Qwen receivers)`);
         return 0;
     }
     const command = positionals[0] ?? 'rooms';
@@ -722,7 +722,8 @@ async function enableReceiver(store: LocalStore, values: Values, roomId: string,
     }
     const receiver = await startReceiver(store, roomId, sessionId, str(values, 'model'), str(values, 'workdir'));
     if (!flag(values, 'json')) {
-        note(`Automatic receiver available. Room requests run in a managed ${receiver.runtime === 'claude' ? 'Claude' : 'Codex'} session; no reader or listening agent is needed.`);
+        const name = receiver.runtime === 'claude' ? 'Claude' : receiver.runtime === 'qwen' ? 'Qwen' : 'Codex';
+        note(`Automatic receiver available. Room requests run in a managed ${name} session; no reader or listening agent is needed.`);
     }
     return receiver;
 }

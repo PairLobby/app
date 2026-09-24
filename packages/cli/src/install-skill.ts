@@ -4,8 +4,8 @@ import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 export function installSkill(agent: string | undefined, force = false, skillsDirectory?: string): string[] {
-    if (!agent || !['claude', 'codex', 'all'].includes(agent)) {
-        throw new Error('Usage: pairlobby install-skill claude|codex|all [--force]');
+    if (!agent || !['claude', 'codex', 'qwen', 'all'].includes(agent)) {
+        throw new Error('Usage: pairlobby install-skill claude|codex|qwen|all [--force] [--skills-dir <directory>]');
     }
     const candidates = [new URL('../skills/pairlobby/SKILL.md', import.meta.url), new URL('../../../integrations/claude-code/SKILL.md', import.meta.url)];
     const source = candidates.map((url) => fileURLToPath(url)).find(existsSync);
@@ -13,13 +13,13 @@ export function installSkill(agent: string | undefined, force = false, skillsDir
         throw new Error('This installation is missing its skill file. Reinstall the official PairLobby package.');
     }
     const content = readFileSync(source, 'utf8');
-    const agents = agent === 'all' ? ['claude', 'codex'] : [agent];
+    const agents = agent === 'all' ? ['claude', 'codex', 'qwen'] : [agent];
     if (skillsDirectory && agent === 'all') {
         throw new Error('Choose one agent when using --skills-dir');
     }
     const destinations = agents.map((name) =>
         join(
-            skillsDirectory ? resolve(skillsDirectory) : join(name === 'claude' ? join(homedir(), '.claude') : (process.env['CODEX_HOME'] ?? join(homedir(), '.codex')), 'skills'),
+            skillsDirectory ? resolve(skillsDirectory) : join(name === 'codex' ? (process.env['CODEX_HOME'] ?? join(homedir(), '.codex')) : join(homedir(), name === 'qwen' ? '.qwen' : '.claude'), 'skills'),
             'pairlobby',
             'SKILL.md'
         )

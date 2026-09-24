@@ -9,12 +9,13 @@ import type {MessageRequest} from '@pairlobby/protocol';
 import {select, UsageError} from './context.js';
 import {CodexReceiver} from './codex-receiver.js';
 import {ClaudeReceiver} from './claude-receiver.js';
+import {QwenReceiver} from './qwen-receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
-import type {ReceiverRuntime} from './receiver-runtime.js';
+import type {ReceiverRuntime, ReceiverRuntimeName} from './receiver-runtime.js';
 
 export type ReceiverStatus = {pid: number; state: string; runtime: string; threadId?: string; eventId?: string; detail?: string; usage?: unknown};
 type Job = {event_id: string; phase: string; acknowledged: number; answer: string | null; failure: string | null};
-type ReceiverConfiguration = {runtime: 'codex' | 'claude'; cwd: string; model?: string};
+type ReceiverConfiguration = {runtime: ReceiverRuntimeName; cwd: string; model?: string};
 type ReceiverPaths = {directory: string; status: string; lock: string; stop: string; log: string; config: string; database: string};
 
 function paths(store: LocalStore, sessionId: string): ReceiverPaths {
@@ -61,7 +62,7 @@ export async function startReceiver(store: LocalStore, roomRef: string, sessionR
     const {room, session} = select(store, roomRef, sessionRef);
     const runtimeName = receiverRuntimeName(session.runtime);
     if (session.kind !== 'agent' || session.role === 'guest' || !runtimeName) {
-        throw new UsageError('Automatic receiving requires a Codex or Claude agent member. Join with --runtime codex or --runtime claude.');
+        throw new UsageError('Automatic receiving requires a Codex, Claude or Qwen agent member. Join with --runtime codex, --runtime claude or --runtime qwen.');
     }
     const channelLock = join(store.directory, `channel-${session.sessionId}.lock`);
     if (existsSync(channelLock) && alive(Number(readFileSync(channelLock, 'utf8')))) {
@@ -222,9 +223,14 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
             if (!runtime) {
                 const saved = database.prepare("SELECT value FROM metadata WHERE key='thread'").get() as {value: string} | undefined;
                 const runtimeOptions = {cwd: config.cwd, roomId: room.roomId, sessionId: session.sessionId, ...(saved ? {threadId: saved.value} : {}), ...(config.model ? {model: config.model} : {})};
-                runtime = config.runtime === 'claude'
-                    ? new ClaudeReceiver({...runtimeOptions, stateDirectory: location.directory, cliPath: resolve(process.argv[1]!), dataDirectory: store.directory, roomId: room.roomId, sessionId: session.sessionId})
-                    : new CodexReceiver(runtimeOptions);
+                const mcpOptions = {...runtimeOptions, stateDirectory: location.directory, cliPath: resolve(process.argv[1]!), dataDirectory: store.directory, roomId: room.roomId, sessionId: session.sessionId};
+                if (config.runtime === 'qwen') {
+                    runtime = new QwenReceiver(mcpOptions);
+                } else if (config.runtime === 'claude') {
+                    runtime = new ClaudeReceiver(mcpOptions);
+                } else {
+                    runtime = new CodexReceiver(runtimeOptions);
+                }
                 const threadId = await runtime.connect();
                 database.prepare("INSERT OR REPLACE INTO metadata(key, value) VALUES ('thread', ?)").run(threadId);
                 status({threadId});
@@ -237,6 +243,12 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                 started: (turnId) => { database.prepare('UPDATE jobs SET turn_id=? WHERE event_id=?').run(turnId, request.eventId); },
                 usage: (usage) => status({usage})
             });
+            if (config.runtime === 'qwen' && !database.prepare('SELECT acknowledged FROM jobs WHERE event_id=?').get(request.eventId)?.['acknowledged']) {
+                if (runtime instanceof QwenReceiver) {
+                    runtime.discardSession();
+                }
+                throw new Error('Qwen completed without explicitly acknowledging the request; no receipt or reply was fabricated.');
+            }
             // Persist before transmission; retries reuse the server's reply idempotency key.
             database.prepare("UPDATE jobs SET phase='reply', answer=? WHERE event_id=?").run(answer, request.eventId);
         } catch (error) {
