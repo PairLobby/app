@@ -13,6 +13,7 @@ export const ROUTES = {
     redeemInvite: {method: 'POST', path: '/v1/invites/redeem'},
     createInvite: {method: 'POST', path: '/v1/rooms/:roomId/invites'},
     getRoom: {method: 'GET', path: '/v1/rooms/:roomId'},
+    rejoinRoom: {method: 'POST', path: '/v1/rooms/:roomId/rejoin'},
     readEvents: {method: 'GET', path: '/v1/rooms/:roomId/events'},
     sendEvent: {method: 'POST', path: '/v1/rooms/:roomId/events'},
     connectTicket: {method: 'POST', path: '/v1/rooms/:roomId/connect-ticket'},
@@ -21,6 +22,8 @@ export const ROUTES = {
     revokeParticipant: {method: 'DELETE', path: '/v1/rooms/:roomId/participants/:participantId'},
     renameRoom: {method: 'POST', path: '/v1/rooms/:roomId/name'},
     setExpiry: {method: 'POST', path: '/v1/rooms/:roomId/expiry'},
+    setLocked: {method: 'POST', path: '/v1/rooms/:roomId/lock'},
+    setMuted: {method: 'POST', path: '/v1/rooms/:roomId/participants/:participantId/mute'},
     setAccess: {method: 'POST', path: '/v1/rooms/:roomId/access'},
     joinAsGuest: {method: 'POST', path: '/v1/rooms/:roomId/guests'},
     closeRoom: {method: 'POST', path: '/v1/rooms/:roomId/close'},
@@ -59,6 +62,7 @@ export const RedeemInviteRequest = z.intersection(
     identity,
     z.object({
         code: z.string().min(1).max(32),
+        useInviteName: z.boolean().optional(),
         /** Stable across retries of the same join, so a crashed redemption resumes instead of forking. */
         attemptId: AttemptId,
         attemptSecret: z.string().min(32).max(256),
@@ -75,7 +79,11 @@ export const RedeemInviteResponse = z.object({
 });
 export type RedeemInviteResponse = z.infer<typeof RedeemInviteResponse>;
 
+export const SetLockedRequest = z.object({locked: z.boolean()});
+export const SetMutedRequest = z.object({muted: z.boolean()});
+
 export const CreateInviteRequest = z.object({
+    defaultName: z.string().trim().min(1).max(64).optional(),
     role: ParticipantRole.default('member'),
     reusable: z.boolean().default(true),
     /** Absolute expiry. Null means it never expires; omitted takes the room's policy. */

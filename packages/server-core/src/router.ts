@@ -13,6 +13,8 @@ import {
     RenameRoomRequest,
     SendEventRequest,
     SetAccessRequest,
+    SetLockedRequest,
+    SetMutedRequest,
     SetExpiryRequest,
     ControlRequest
 } from '@pairlobby/protocol';
@@ -100,9 +102,11 @@ async function route(request: Request, service: RoomService): Promise<Response> 
     }
 
     switch (`${method} ${segments[3]}`) {
+        case 'POST rejoin':
+            return json(await service.rejoin(roomId, credential));
         case 'POST invites': {
-            const {role, reusable, expiresAt} = CreateInviteRequest.parse(await readOptionalJson(request));
-            return json(await service.mintInvite(roomId, credential, role, reusable, expiresAt), 201);
+            const {role, reusable, expiresAt, defaultName} = CreateInviteRequest.parse(await readOptionalJson(request));
+            return json(await service.mintInvite(roomId, credential, role, reusable, expiresAt, defaultName), 201);
         }
         case 'POST requests': {
             if (segments[4] && segments[5] === 'ack') {
@@ -134,6 +138,17 @@ async function route(request: Request, service: RoomService): Promise<Response> 
         case 'POST name': {
             const {name} = RenameRoomRequest.parse(await request.json());
             return json({event: await service.rename(roomId, credential, name)});
+        }
+        case 'POST lock': {
+            const {locked} = SetLockedRequest.parse(await request.json());
+            return json({event: await service.setLocked(roomId, credential, locked)});
+        }
+        case 'POST participants': {
+            if (segments.length !== 6 || segments[5] !== 'mute') {
+                return errorResponse('invalid_request', 'unknown participant operation', 404);
+            }
+            const {muted} = SetMutedRequest.parse(await request.json());
+            return json({event: await service.setMuted(roomId, credential, segments[4]!, muted)});
         }
         case 'POST access': {
             const {joinPolicy} = SetAccessRequest.parse(await request.json());

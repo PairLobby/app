@@ -182,6 +182,14 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
 
     async function flush(): Promise<void> {
         const jobs = database.prepare("SELECT * FROM jobs WHERE phase IN ('reply', 'failed')").all() as Job[];
+        if (jobs.length === 0) {
+            return;
+        }
+        const snapshot = await client.snapshot(room.roomId, credential);
+        const member = snapshot.participants.find((participant) => participant.participantId === session.participantId);
+        if (member?.muted) {
+            return;
+        }
         for (const job of jobs) {
             if (job.phase === 'reply') {
                 await client.reply(room.roomId, credential, job.event_id, job.answer!);
@@ -196,7 +204,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         // Re-read authorization and obligation immediately before dispatch.
         const snapshot = await client.snapshot(room.roomId, credential);
         const member = snapshot.participants.find((participant) => participant.participantId === session.participantId);
-        if (!member || member.paused || member.revoked || member.left) {
+        if (!member || member.paused || member.muted || member.revoked || member.left) {
             return;
         }
         const current = await client.request(room.roomId, credential, request.eventId);
@@ -254,7 +262,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                 if (!member || member.revoked || member.left) {
                     break;
                 }
-                if (!member.paused) {
+                if (!member.paused && !member.muted) {
                     const requests = await client.pendingRequests(room.roomId, credential, session.participantId);
                     for (const request of requests) {
                         if (stopped) {
@@ -263,7 +271,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                         await execute(request);
                     }
                 }
-                status({state: member.paused ? 'paused' : 'available'});
+                status({state: member.paused || member.muted ? 'paused' : 'available'});
                 failures = 0;
                 await client.waitForChange(room.roomId, credential, snapshot.latestSeq, 300_000, 1000);
             } catch (error) {

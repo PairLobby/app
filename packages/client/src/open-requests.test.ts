@@ -98,10 +98,14 @@ describe('open requests', () => {
         expect(open[0]!.received).toBe(true);
     });
 
-    test('test_unreceipted_finds_only_what_this_participant_owes_a_receipt_for', () => {
+    test('unreceipted includes other members messages and broadcasts without creating reply obligations', () => {
         const mine = message('codex', 'claude', 'for claude');
         const theirs = message('codex', 'hugo', 'for hugo');
-        expect(unreceipted([mine, theirs], 'claude').map((event) => event.eventId)).toEqual([mine.eventId]);
-        expect(unreceipted([mine, theirs, receipt('claude', mine.eventId)], 'claude')).toHaveLength(0);
+        const broadcast = message('hugo', null, 'for everyone');
+        const own = message('claude', null, 'my own message');
+        expect(unreceipted([mine, theirs, broadcast, own], 'claude', true).map((event) => event.eventId)).toEqual([mine.eventId, theirs.eventId, broadcast.eventId]);
+        expect(unreceipted([mine, theirs, receipt('claude', mine.eventId)], 'claude', true).map((event) => event.eventId)).toEqual([theirs.eventId]);
+        expect(unreceipted([mine, theirs, broadcast, own], 'claude').map((event) => event.eventId)).toEqual([mine.eventId]);
+        expect(owedByMe([mine, theirs, broadcast], 'claude').map((request) => request.eventId)).toEqual([mine.eventId]);
     });
 });

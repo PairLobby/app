@@ -68,6 +68,10 @@ export class MemoryStore implements RoomStore {
         return this.require(roomId).events.find((event) => event.seq === seq) ?? null;
     }
 
+    async eventById(roomId: string, eventId: string): Promise<RoomEvent | null> {
+        return this.require(roomId).events.find((event) => event.eventId === eventId) ?? null;
+    }
+
     async idempotencyRecord(roomId: string, key: string): Promise<IdempotencyRecord | null> {
         return this.require(roomId).idempotency.get(key) ?? null;
     }

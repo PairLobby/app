@@ -42,7 +42,7 @@ export function runRequestContract(label: string, makeStore: StoreFactory) {
             const pending = await service.requests(roomId, bob, 0, 100, bobId);
             expect(pending.requests.map((r) => r.eventId)).toEqual([first.event.eventId, second.event.eventId]);
         });
-        test('only the recipient may acknowledge, and a final reply requires a receipt', async () => {
+        test('senders cannot acknowledge themselves, and a final reply requires the recipients receipt', async () => {
             const {event} = await ask('work');
             await expect(service.acknowledgeMessage(roomId, alice, event.eventId)).rejects.toMatchObject({code: 'unauthorized'});
             await expect(answer(event.eventId)).rejects.toMatchObject({code: 'invalid_request'});
@@ -57,6 +57,50 @@ export function runRequestContract(label: string, makeStore: StoreFactory) {
                 })
             ).rejects.toMatchObject({code: 'unauthorized'});
             expect((await service.requests(roomId, bob)).requests).toHaveLength(1);
+        });
+        test('human and agent readers have separate receipts without satisfying another recipients obligation', async () => {
+            const invite = await service.mintInvite(roomId, alice, 'member');
+            const humanCredential = newCredential('participant');
+            const human = await service.redeemInvite({code: invite.code, displayName: 'human', kind: 'human', participantCredential: humanCredential, attemptId: newId('attempt')});
+            const {event} = await ask('agent to agent');
+            await service.acknowledgeMessage(roomId, humanCredential, event.eventId);
+            expect((await service.request(roomId, alice, event.eventId)).receivedAt).toBeNull();
+            await expect(answer(event.eventId)).rejects.toMatchObject({code: 'invalid_request'});
+            await service.acknowledgeMessage(roomId, bob, event.eventId);
+            await service.acknowledgeMessage(roomId, humanCredential, event.eventId);
+            const receipts = (await service.read(roomId, alice, 0, 100)).events.filter((entry) => entry.type === 'message.received' && entry.payload.eventId === event.eventId);
+            expect(receipts.map((entry) => entry.senderId)).toEqual([human.participantId, bobId]);
+            const reply = await answer(event.eventId);
+            await service.acknowledgeMessage(roomId, alice, reply.event.eventId);
+            expect((await service.request(roomId, bob, reply.event.eventId)).receivedAt).not.toBeNull();
+            expect((await service.requests(roomId, alice)).requests).toHaveLength(0);
+        });
+        test('broadcast receipts are idempotent per reader and never create reply obligations', async () => {
+            const {event} = await service.send(roomId, alice, {type: 'message', payload: {text: 'everyone', priority: 'normal'}, idempotencyKey: newId('event')});
+            await service.acknowledgeMessage(roomId, bob, event.eventId);
+            await service.send(roomId, bob, {type: 'message.received', payload: {eventId: event.eventId}, idempotencyKey: newId('event')});
+            const receipts = (await service.read(roomId, alice, 0, 100)).events.filter((entry) => entry.type === 'message.received');
+            expect(receipts).toHaveLength(1);
+            expect((await service.requests(roomId, bob)).requests).toHaveLength(0);
+            store.dropHistoryBefore(roomId, receipts[0]!.seq + 1);
+            await new RoomService(store).acknowledgeMessage(roomId, bob, event.eventId);
+            expect((await service.read(roomId, bob, 0, 100)).events).toHaveLength(0);
+        });
+        test('receipts reject system events, missing messages and guest writers', async () => {
+            const joined = (await service.read(roomId, alice, 0, 100)).events[0]!;
+            await expect(service.acknowledgeMessage(roomId, bob, joined.eventId)).rejects.toMatchObject({code: 'invalid_request'});
+            await expect(service.acknowledgeMessage(roomId, bob, newId('event'))).rejects.toMatchObject({code: 'invalid_request'});
+            const invite = await service.mintInvite(roomId, alice, 'guest');
+            const guestCredential = newCredential('participant');
+            await service.redeemInvite({code: invite.code, displayName: 'guest', kind: 'human', participantCredential: guestCredential, attemptId: newId('attempt')});
+            const {event} = await ask('work');
+            await expect(service.acknowledgeMessage(roomId, guestCredential, event.eventId)).rejects.toMatchObject({code: 'unauthorized'});
+        });
+        test('an unrelated event using a receipt key cannot fabricate successful acknowledgement', async () => {
+            const {event} = await ask('work');
+            await service.send(roomId, alice, {type: 'message', payload: {text: 'collision', priority: 'normal'}, idempotencyKey: `receipt-${event.eventId}-${bobId}`});
+            await expect(service.acknowledgeMessage(roomId, bob, event.eventId)).rejects.toMatchObject({code: 'idempotency_conflict'});
+            expect((await service.request(roomId, alice, event.eventId)).receivedAt).toBeNull();
         });
         test('receipt and progress do not complete a request; a refusal closes exactly one', async () => {
             const first = await ask('first'),

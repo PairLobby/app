@@ -17,18 +17,25 @@ import type {
 } from '@pairlobby/protocol';
 import {
     assertRoomWritable,
+    assertRoomJoinable,
+    assertCanWrite,
+    assertActiveMember,
+    assertController,
     authenticate,
     closeRoom,
     createRoom,
     joinAsGuest,
     joinRoom,
     leaveRoom,
+    rejoinRoom,
     renameRoom,
     requestControl,
     revokeParticipant,
     sendEvent,
     setExpiry,
     setJoinPolicy,
+    setLocked,
+    setMuted,
     toSnapshot
 } from '@pairlobby/room-core';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
@@ -69,6 +76,7 @@ export interface CreatedRoom {
 }
 
 export interface RedeemInput extends Identity {
+    useInviteName?: boolean | undefined;
     code: string;
     attemptId: string;
     participantCredential: string;
@@ -131,13 +139,19 @@ export class RoomService {
         return {roomId: created.room.roomId, participantId: created.participant.participantId, invite, snapshot: toSnapshot(view)};
     }
 
-    async mintInvite(roomId: string, credential: string, role: ParticipantRole, reusable = true, expiresAt?: number | null): Promise<MintedInvite> {
+    async mintInvite(roomId: string, credential: string, role: ParticipantRole, reusable = true, expiresAt?: number | null, defaultName?: string): Promise<MintedInvite> {
         const view = await this.view(roomId);
         const actor = authenticate(view, await hashCredential(credential), this.now());
-        if (actor.kind === 'participant' && actor.participant.role === 'guest') {
-            throw new ProtocolError('unauthorized', 'guests cannot invite others into a room');
+        if (actor.kind === 'participant') {
+            assertCanWrite(actor);
         }
-        assertRoomWritable(view, this.now());
+        if (role === 'controller') {
+            assertController(actor);
+        }
+        if (defaultName !== undefined && (!defaultName.trim() || defaultName.trim().length > 64)) {
+            throw new ProtocolError('invalid_request', 'invite name must be between 1 and 64 characters');
+        }
+        assertRoomJoinable(view, this.now());
         const now = this.now();
         const lifetime = view.room.policy.inviteLifetimeMs;
         const deadline = expiresAt !== undefined ? expiresAt : lifetime === null ? null : now + lifetime;
@@ -164,6 +178,7 @@ export class RoomService {
             createdAt: now,
             expiresAt: deadline,
             state: 'unused',
+            ...(defaultName !== undefined ? {defaultName: defaultName.trim()} : {}),
             reusable,
             boundAttemptId: null,
             boundCredentialHash: null,
@@ -189,13 +204,22 @@ export class RoomService {
             throw new ProtocolError('invite_unknown', 'that invite code is not valid');
         }
         const now = this.now();
+        const view = await this.view(invite.roomId);
+        assertRoomJoinable(view, now);
         let expectedOccupantId: string | null = null;
         const credentialHash = await hashCredential(input.participantCredential);
+        if (invite.boundAttemptId === input.attemptId && invite.boundCredentialHash !== credentialHash) {
+            throw new ProtocolError('unauthorized', 'this join attempt belongs to another participant');
+        }
 
         if (invite.state === 'redeemed') {
             // The same attempt retrying gets its original membership back.
             if (invite.boundAttemptId === input.attemptId) {
-                const view = await this.view(invite.roomId);
+                const actor = authenticate(view, credentialHash, now);
+                if (invite.boundCredentialHash !== credentialHash || actor.kind !== 'participant' || actor.participant.participantId !== invite.redeemedParticipantId) {
+                    throw new ProtocolError('unauthorized', 'this join attempt belongs to another participant');
+                }
+                assertActiveMember(actor);
                 return {roomId: invite.roomId, participantId: invite.redeemedParticipantId!, role: invite.role, replayed: true, snapshot: toSnapshot(view)};
             }
             if (!invite.reusable) {
@@ -218,9 +242,6 @@ export class RoomService {
             throw new ProtocolError('invite_expired', 'that invite code has expired');
         }
 
-        const view = await this.view(invite.roomId);
-        assertRoomWritable(view, now);
-
         const reserved = await this.store.reserveInvite(digest, input.attemptId, credentialHash, expectedOccupantId);
         if (!reserved) {
             throw new ProtocolError('invite_already_redeemed', 'that invite code is being redeemed by another attempt');
@@ -229,6 +250,7 @@ export class RoomService {
         // Recovery path: the previous attempt created membership but lost its response.
         const existing = await this.store.participantByCredential(invite.roomId, credentialHash);
         if (existing) {
+            assertActiveMember(authenticate(view, credentialHash, now));
             await this.store.completeInvite(digest, existing.participantId);
             return {roomId: invite.roomId, participantId: existing.participantId, role: existing.role, replayed: true, snapshot: toSnapshot(await this.view(invite.roomId))};
         }
@@ -238,13 +260,17 @@ export class RoomService {
             {
                 role: reserved.role,
                 credentialHash,
-                displayName: input.displayName,
+                displayName: input.useInviteName !== false ? reserved.defaultName ?? input.displayName : input.displayName,
                 kind: input.kind,
                 sessionId: input.sessionId ?? null,
                 capabilities: input.capabilities ?? null
             },
             this.ctx()
         );
+        const previousOccupant = view.participants.find((participant) => participant.participantId === invite.redeemedParticipantId);
+        if (previousOccupant?.muted) {
+            joined.participant.muted = true;
+        }
         await this.store.apply(joined.mutation, null);
         await this.store.completeInvite(digest, joined.participant.participantId);
         return {roomId: invite.roomId, participantId: joined.participant.participantId, role: reserved.role, replayed: false, snapshot: toSnapshot(await this.view(invite.roomId))};
@@ -253,6 +279,11 @@ export class RoomService {
     async send(roomId: string, credential: string, request: SendEventRequest): Promise<SentEventResult> {
         const view = await this.view(roomId);
         const actor = authenticate(view, await hashCredential(credential), this.now());
+        if (request.type === 'message.received') {
+            const participant = assertCanWrite(actor);
+            // One receipt per reader, regardless of caller-supplied retry keys.
+            request = {...request, idempotencyKey: `receipt-${request.payload.eventId}-${participant.participantId}`};
+        }
         const requestDigest = stableStringify({type: request.type, payload: request.payload, recipientId: request.recipientId ?? null, replyTo: request.replyTo ?? null});
         const previous = await this.store.idempotencyRecord(roomId, request.idempotencyKey);
         if (previous) {
@@ -266,8 +297,23 @@ export class RoomService {
             return {event, deduplicated: true};
         }
         const updates: MessageRequest[] = [];
-        if (request.type === 'message.received' || request.type === 'message.delivery_failed' || (request.type === 'message' && request.replyTo)) {
-            const id = request.type === 'message.received' || request.type === 'message.delivery_failed' ? request.payload.eventId : request.replyTo!;
+        if (request.type === 'message.received') {
+            const participant = assertCanWrite(actor);
+            const target = await this.store.messageRequest(roomId, request.payload.eventId);
+            const original = target ? null : await this.store.eventById(roomId, request.payload.eventId);
+            if (!target && original?.type !== 'message') {
+                throw new ProtocolError('invalid_request', 'no such retained message in this room');
+            }
+            const senderId = target?.from ?? original?.senderId;
+            if (senderId === participant.participantId) {
+                throw new ProtocolError('unauthorized', 'a sender cannot acknowledge their own message');
+            }
+            // Other readers do not satisfy the addressed recipient's obligation.
+            if (target?.to === participant.participantId) {
+                updates.push({...target, receivedAt: target.receivedAt ?? this.now()});
+            }
+        } else if (request.type === 'message.delivery_failed' || (request.type === 'message' && request.replyTo)) {
+            const id = request.type === 'message.delivery_failed' ? request.payload.eventId : request.replyTo!;
             const target = await this.store.messageRequest(roomId, id);
             if (!target) {
                 throw new ProtocolError('invalid_request', 'no such addressed message in this room');
@@ -280,8 +326,6 @@ export class RoomService {
                     throw new ProtocolError('invalid_request', 'this request is already answered');
                 }
                 updates.push({...target, failureAt: this.now(), failureReason: request.payload.reason});
-            } else if (request.type === 'message.received') {
-                updates.push({...target, receivedAt: target.receivedAt ?? this.now()});
             } else {
                 if (request.recipientId !== target.from) {
                     throw new ProtocolError('invalid_request', 'a reply must be addressed to the original sender');
@@ -332,16 +376,24 @@ export class RoomService {
         return {event: mutation.appendEvent, deduplicated: false};
     }
 
-    async acknowledgeMessage(roomId: string, credential: string, eventId: string): Promise<MessageRequest> {
+    async acknowledgeMessage(roomId: string, credential: string, eventId: string): Promise<MessageRequest | null> {
         const actor = authenticate(await this.view(roomId), await hashCredential(credential), this.now());
-        const target = await this.request(roomId, credential, eventId);
-        if (actor.kind !== 'participant' || actor.participant.participantId !== target.to) {
-            throw new ProtocolError('unauthorized', 'only the addressed recipient may acknowledge this message');
+        const participant = assertCanWrite(actor);
+        const target = await this.store.messageRequest(roomId, eventId);
+        if (target?.to === participant.participantId && target.receivedAt !== null) {
+            return target;
         }
-        if (target.receivedAt === null) {
-            await this.send(roomId, credential, {type: 'message.received', payload: {eventId}, idempotencyKey: `receipt-${eventId}`});
+        const key = `receipt-${eventId}-${participant.participantId}`;
+        const saved = await this.store.idempotencyRecord(roomId, key);
+        const digest = stableStringify({type: 'message.received', payload: {eventId}, recipientId: null, replyTo: null});
+        if (saved && saved.requestDigest !== digest) {
+            throw new ProtocolError('idempotency_conflict', 'the receipt key was used with different content');
         }
-        return this.request(roomId, credential, eventId);
+        // A saved receipt remains confirmed even after its event was pruned.
+        if (!saved) {
+            await this.send(roomId, credential, {type: 'message.received', payload: {eventId}, idempotencyKey: key});
+        }
+        return this.store.messageRequest(roomId, eventId);
     }
 
     async requests(roomId: string, credential: string, after = 0, limit = 100, recipientId?: string): Promise<RequestPage> {
@@ -357,6 +409,14 @@ export class RoomService {
         return request;
     }
 
+    async setLocked(roomId: string, credential: string, locked: boolean): Promise<RoomEvent> {
+        return this.applyOne(setLocked(await this.view(roomId), await hashCredential(credential), locked, this.ctx()));
+    }
+
+    async setMuted(roomId: string, credential: string, participantId: string, muted: boolean): Promise<RoomEvent> {
+        return this.applyOne(setMuted(await this.view(roomId), await hashCredential(credential), participantId, muted, this.ctx()));
+    }
+
     async control(roomId: string, credential: string, targetParticipantId: string, paused: boolean): Promise<RoomEvent> {
         return this.applyOne(requestControl(await this.view(roomId), await hashCredential(credential), targetParticipantId, paused, this.ctx()));
     }
@@ -367,6 +427,20 @@ export class RoomService {
 
     async leave(roomId: string, credential: string): Promise<RoomEvent> {
         return this.applyOne(leaveRoom(await this.view(roomId), await hashCredential(credential), this.ctx()));
+    }
+
+    async rejoin(roomId: string, credential: string): Promise<RoomSnapshot> {
+        const view = await this.view(roomId);
+        const hash = await hashCredential(credential);
+        const actor = authenticate(view, hash, this.now());
+        if (actor.kind !== 'participant') {
+            throw new ProtocolError('unauthorized', 'rejoining requires the saved participant credential');
+        }
+        if (actor.participant.leftAt === null) {
+            return toSnapshot(view);
+        }
+        await this.applyOne(rejoinRoom(view, hash, this.ctx()));
+        return this.snapshot(roomId, credential);
     }
 
     async rename(roomId: string, credential: string, name: string): Promise<RoomEvent> {
@@ -380,10 +454,11 @@ export class RoomService {
     /** Guest entry. Knowing the room id is the entire claim, so the room must allow it. */
     async joinAsGuest(roomId: string, input: GuestJoinInput): Promise<RedeemResult> {
         const view = await this.view(roomId);
-        assertRoomWritable(view, this.now());
+        assertRoomJoinable(view, this.now());
         const credentialHash = await hashCredential(input.participantCredential);
         const existing = await this.store.participantByCredential(roomId, credentialHash);
         if (existing) {
+            authenticate(view, credentialHash, this.now());
             return {roomId, participantId: existing.participantId, role: existing.role, replayed: true, snapshot: toSnapshot(view)};
         }
 

@@ -22,6 +22,7 @@ export class FaultyStore implements TestableRoomStore {
             'loadRoom',
             'readEvents',
             'eventBySeq',
+            'eventById',
             'idempotencyRecord',
             'putInvite',
             'inviteByDigest',

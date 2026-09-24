@@ -20,6 +20,14 @@ view.input.on('line', (line) => {
         for (let index = 0; index < 40; index++) {
             view.log(`History row ${index}`);
         }
+    } else if (line === '/exchange') {
+        for (const [sender, recipient] of [['codex', 'claude'], ['claude', 'codex']]) {
+            const id = `ev_${sender}_to_${recipient}`;
+            view.addEvent({...event, eventId: id, senderId: `pt_${sender}`, recipientId: `pt_${recipient}`, payload: {text: `${sender} to ${recipient}`, priority: 'normal'}});
+            for (const reader of [recipient, 'human']) {
+                view.addEvent({...event, eventId: `${id}_${reader}_receipt`, senderId: `pt_${reader}`, type: 'message.received', payload: {eventId: id}});
+            }
+        }
     } else if (line === '/seen') {
         view.showLatestReceipt();
     } else {

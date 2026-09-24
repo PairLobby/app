@@ -48,7 +48,7 @@ const messagePayload = z.object({
     responseStage: z.enum(['progress', 'final']).optional()
 });
 
-/** Emitted when a participant has actually read something addressed to it. */
+/** A participant confirms receipt of a message; only the target satisfies an addressed request. */
 const messageReceivedPayload = z.object({eventId: EventId});
 const deliveryFailedPayload = z.object({eventId: EventId, reason: z.string().min(1).max(1024)});
 
@@ -105,7 +105,9 @@ export const EventBody = z.discriminatedUnion('type', [
     z.object({type: z.literal('room.closed'), payload: roomClosedPayload}),
     z.object({type: z.literal('room.renamed'), payload: roomRenamedPayload}),
     z.object({type: z.literal('room.expiry_changed'), payload: roomExpiryChangedPayload}),
-    z.object({type: z.literal('room.access_changed'), payload: roomAccessChangedPayload})
+    z.object({type: z.literal('room.access_changed'), payload: roomAccessChangedPayload}),
+    z.object({type: z.literal('room.lock_changed'), payload: z.object({locked: z.boolean()})}),
+    z.object({type: z.literal('participant.mute_changed'), payload: z.object({participantId: ParticipantId, muted: z.boolean()})})
 ]);
 export type EventBody = z.infer<typeof EventBody>;
 export type EventType = EventBody['type'];

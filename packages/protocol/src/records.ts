@@ -30,6 +30,7 @@ export const RoomRecord = z.object({
     expiresAt: z.number().int().nonnegative().nullable(),
     closedAt: z.number().int().nonnegative().nullable(),
     lifecycle: RoomLifecycle,
+    locked: z.boolean().optional(),
     policy: RoomPolicySchema,
     controllerCredentialHash: z.string().length(64),
     /** Bumped by every control request so a late acknowledgement cannot overwrite newer state. */
@@ -53,7 +54,8 @@ export const ParticipantRecord = z.object({
     capabilities: AdapterCapabilities.nullable(),
     joinedAt: z.number().int().nonnegative(),
     revokedAt: z.number().int().nonnegative().nullable(),
-    leftAt: z.number().int().nonnegative().nullable()
+    leftAt: z.number().int().nonnegative().nullable(),
+    muted: z.boolean().optional()
 });
 export type ParticipantRecord = z.infer<typeof ParticipantRecord>;
 
@@ -65,6 +67,7 @@ export const InviteRecord = z.object({
     digest: z.string().length(64),
     roomId: RoomId,
     role: ParticipantRole,
+    defaultName: z.string().trim().min(1).max(64).optional(),
     createdAt: z.number().int().nonnegative(),
     /** Null for an invite that does not expire. */
     expiresAt: z.number().int().nonnegative().nullable(),
@@ -122,6 +125,7 @@ export const ParticipantView = z.object({
     revoked: z.boolean(),
     left: z.boolean(),
     paused: z.boolean(),
+    muted: z.boolean().optional(),
     controlRevision: z.number().int().nonnegative(),
     acknowledgedOutcome: ControlOutcome.nullable()
 });
@@ -129,8 +133,12 @@ export type ParticipantView = z.infer<typeof ParticipantView>;
 
 export const RoomSnapshot = z.object({
     roomId: RoomId,
+    /** Absent on older relays, which only accept addressed-recipient receipts. */
+    messageReceiptScope: z.enum(['recipient', 'members']).optional(),
+    rejoinSupported: z.boolean().optional(),
     name: z.string(),
     lifecycle: RoomLifecycle,
+    locked: z.boolean().optional(),
     createdAt: z.number().int().nonnegative(),
     expiresAt: z.number().int().nonnegative().nullable(),
     closedAt: z.number().int().nonnegative().nullable(),

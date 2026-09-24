@@ -27,12 +27,14 @@ import {accountToken, loginOnline, onlineAccount, onlineOrigin, resolveOnlineKey
 import {receiverStatus, runReceiver, startReceiver, stopReceiver} from './receiver.js';
 import type {ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
+import {findRooms, formatFoundRooms} from './find.js';
 
 type LocalIdentity = {displayName: string; kind: 'agent' | 'human'; sessionId: string; capabilities?: AdapterCapabilities};
 
 type LocalRuntimeDetail = {runtime?: string; conversationId?: string; terminal?: string; pid?: number};
 
 const OPTIONS = {
+    active: {type: 'boolean'},
     request: {type: 'string'},
     workdir: {type: 'string'},
     version: {type: 'boolean'},
@@ -86,6 +88,7 @@ const OPTIONS = {
 const HELP = `pairlobby
 
   pairlobby, pairlobby list          rooms on this device, with live participant counts
+  pairlobby find [--active] --json   ping known rooms; members, dates and latest message
   pairlobby name <room> <new name>   rename a room (controller only)
   pairlobby expiry [room] <when>     never | in 10 hours | at 2026-09-20 18:00
   pairlobby expire [room]            pick expiry from a menu
@@ -180,6 +183,8 @@ async function main(argv: string[]): Promise<number> {
         case 'rooms':
         case 'list':
             return listRooms(store, values);
+        case 'find':
+            return findCommand(store, values);
         case 'name':
             return renameRoom(store, values, positionals[1], positionals.slice(2).join(' '));
         case 'expiry':
@@ -319,6 +324,36 @@ async function listRooms(store: LocalStore, values: Values): Promise<number> {
         return 0;
     }
     renderRoomList(detailed);
+    return 0;
+}
+
+async function findCommand(store: LocalStore, values: Values): Promise<number> {
+    let rooms = str(values, 'room') ? [resolveRoom(store, str(values, 'room'))] : store.rooms();
+    const server = str(values, 'server');
+    if (server && flag(values, 'local')) {
+        throw new UsageError('use either --server or --local, not both');
+    }
+    if (server) {
+        rooms = rooms.filter((room) => room.serverUrl.replace(/\/+$/, '') === server.replace(/\/+$/, ''));
+    } else if (flag(values, 'local')) {
+        rooms = rooms.filter((room) => {
+            try {
+                return ['localhost', '127.0.0.1', '[::1]'].includes(new URL(room.serverUrl).hostname);
+            } catch {
+                return false;
+            }
+        });
+    }
+    const result = await findRooms(store, {rooms});
+    if (flag(values, 'active')) {
+        result.rooms = result.rooms.filter((room) => room.active === true);
+        result.count = result.rooms.length;
+    }
+    if (flag(values, 'json')) {
+        json(result);
+    } else {
+        out(formatFoundRooms(result));
+    }
     return 0;
 }
 
@@ -772,7 +807,8 @@ async function joinRoom(store: LocalStore, values: Values, code?: string, online
     const token = new URL(serverUrl).origin === onlineOrigin() ? accountToken(store) : undefined;
     const client = new PairLobbyClient(serverUrl, token);
     // A room id and an invite code are not confusable, so one command takes either.
-    const joined = code.startsWith('rm_') ? await client.joinAsGuest(code, identity) : await client.redeemInvite(code, identity);
+    const joined = code.startsWith('rm_') ? await client.joinAsGuest(code, identity) : await client.redeemInvite(code, identity, undefined, str(values, 'as') === undefined);
+    identity.displayName = joined.room.participants.find((participant) => participant.participantId === joined.participantId)?.displayName ?? identity.displayName;
 
     store.upsertRoom({
         roomId: joined.roomId,
@@ -997,10 +1033,11 @@ async function readEvents(store: LocalStore, values: Values): Promise<number> {
     const owed = inbox.requests.filter((request) => request.to === session.participantId);
     // Persist receipts before advancing the cursor. A failed receipt is retried
     // by the next read; it must never be swallowed as a courtesy failure.
-    const ids = new Set([
-        ...unreceipted(page.events, session.participantId).map((event) => event.eventId),
+    const member = snapshot.participants.find((participant) => participant.participantId === session.participantId);
+    const ids = new Set(member && member.role !== 'guest' && !member.muted ? [
+        ...unreceipted(page.events, session.participantId, snapshot.messageReceiptScope === 'members').map((event) => event.eventId),
         ...owed.filter((request) => request.receivedAt === null).map((request) => request.eventId)
-    ]);
+    ] : []);
     for (const id of ids) await client.acknowledgeMessage(room.roomId, credential, id);
     for (const request of owed)
         if (ids.has(request.eventId)) {

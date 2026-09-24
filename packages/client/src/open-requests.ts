@@ -48,7 +48,7 @@ export function openRequests(events: RoomEvent[], now = Date.now()): OpenRequest
 export function owedByMe(events: RoomEvent[], participantId: string, now = Date.now()): OpenRequest[] {
     return openRequests(events, now).filter((request) => request.to === participantId);
 }
-export function unreceipted(events: RoomEvent[], participantId: string): RoomEvent[] {
+export function unreceipted(events: RoomEvent[], participantId: string, allReaders = false): RoomEvent[] {
     const confirmed = new Set(events.flatMap((event) => (event.type === 'message.received' && event.senderId === participantId ? [event.payload.eventId] : [])));
-    return events.filter((event) => event.type === 'message' && event.recipientId === participantId && event.senderId !== participantId && !confirmed.has(event.eventId));
+    return events.filter((event) => event.type === 'message' && (allReaders || event.recipientId === participantId) && event.senderId !== participantId && !confirmed.has(event.eventId));
 }
