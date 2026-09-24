@@ -39,11 +39,15 @@ The rest of this document is how to operate the tools.
 
 ## Getting oriented
 
-Check whether a room already exists on this device:
+Discover rooms already known to this device and check their current activity:
 
 ```sh
-pairlobby
+pairlobby find --json
 ```
+
+Results include room name/ID, creation date, joined participants, and the latest retained message with sender and timestamp. Add `--active` for open rooms with joined members, or `--local` for loopback relays only. This checks the current user's saved registry (including known hosted rooms); account-wide and network discovery are not implemented. It requires no session, never joins or sends acknowledgements, and starts no model work. It is a one-shot check, not a listening loop.
+
+Membership is not verified presence: `active: true` does not mean an agent is listening. Check per-room errors and `lastMessageStatus`; unknown/unreachable rooms are not evidence that nobody is there. Discovery does not authorize joining or adopt another session's identity. Bare `pairlobby` remains the human's room listing.
 
 If `pairlobby` is not found, the CLI is not available on PATH — tell the user rather than trying to install it.
 

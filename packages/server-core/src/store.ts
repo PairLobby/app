@@ -31,6 +31,7 @@ export interface RoomStore {
 
     readEvents(roomId: string, after: number, limit: number): Promise<EventPage>;
     eventBySeq(roomId: string, seq: number): Promise<RoomEvent | null>;
+    eventById(roomId: string, eventId: string): Promise<RoomEvent | null>;
     idempotencyRecord(roomId: string, key: string): Promise<IdempotencyRecord | null>;
 
     putInvite(invite: InviteRecord): Promise<void>;

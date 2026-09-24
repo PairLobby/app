@@ -107,6 +107,11 @@ export class SqliteRoomStore implements RoomStore {
         return row ? (JSON.parse(row.body) as RoomEvent) : null;
     }
 
+    async eventById(roomId: string, eventId: string): Promise<RoomEvent | null> {
+        const row = this.db.prepare("SELECT body FROM events WHERE room_id = ? AND json_extract(body, '$.eventId') = ?").get(roomId, eventId) as BodyRow | undefined;
+        return row ? (JSON.parse(row.body) as RoomEvent) : null;
+    }
+
     async idempotencyRecord(roomId: string, key: string): Promise<IdempotencyRecord | null> {
         const row = this.db.prepare('SELECT request_digest, seq FROM idempotency WHERE room_id = ? AND key = ?').get(roomId, key) as
             | {request_digest: string; seq: number}

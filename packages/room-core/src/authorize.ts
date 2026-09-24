@@ -40,6 +40,9 @@ export function authenticate(view: RoomView, credentialHash: string, now: number
     if (participant.revokedAt !== null) {
         throw new ProtocolError('participant_revoked', 'this participant was removed from the room');
     }
+    if (participant.leftAt !== null && view.room.locked) {
+        throw new ProtocolError('room_locked', 'this room is locked; a participant who left cannot rejoin');
+    }
     return {kind: 'participant', participant};
 }
 
@@ -62,6 +65,9 @@ export function assertCanWrite(actor: Actor): ParticipantRecord {
     if (participant.role === 'guest') {
         throw new ProtocolError('unauthorized', 'guests can read this room but cannot take part in it');
     }
+    if (participant.muted) {
+        throw new ProtocolError('participant_muted', 'you are muted in this room');
+    }
     return participant;
 }
 
@@ -81,4 +87,11 @@ export function assertRecipientExists(view: RoomView, recipientId: string): Part
         throw new ProtocolError('invalid_request', 'recipient is not an active participant of this room');
     }
     return recipient;
+}
+
+export function assertRoomJoinable(view: RoomView, now: number): void {
+    assertRoomWritable(view, now);
+    if (view.room.locked) {
+        throw new ProtocolError('room_locked', 'this room is locked; joins and new invites are disabled');
+    }
 }

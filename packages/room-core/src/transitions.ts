@@ -15,7 +15,7 @@ import type {
 } from '@pairlobby/protocol';
 
 import {appendEvent} from './append.js';
-import {assertActiveMember, assertCanWrite, assertController, assertRecipientExists, assertRoomWritable, authenticate, type Actor} from './authorize.js';
+import {assertActiveMember, assertCanWrite, assertRoomJoinable, assertController, assertRecipientExists, assertRoomWritable, authenticate, type Actor} from './authorize.js';
 import {applyHandoverAccepted, applyHandoverDeclined, applyHandoverOffered} from './handover.js';
 import {activeParticipants, controlFor, emptyMutation, findParticipant, isActive, type CoreContext, type Mutation, type RoomView} from './state.js';
 
@@ -87,7 +87,7 @@ export interface JoinedRoom {
 
 /** Called by invite redemption once the invite object has bound this attempt. */
 export function joinRoom(view: RoomView, input: JoinRoomInput, ctx: CoreContext): JoinedRoom {
-    assertRoomWritable(view, ctx.now);
+    assertRoomJoinable(view, ctx.now);
     const existing = view.participants.find((candidate) => candidate.credentialHash === input.credentialHash);
     if (existing) {
         throw new ProtocolError('idempotency_conflict', 'this credential already belongs to a participant of this room');
@@ -224,6 +224,28 @@ export function leaveRoom(view: RoomView, credentialHash: string, ctx: CoreConte
     return {...emptyMutation(room, event), upsertParticipants: [left]};
 }
 
+/** Restore the same authenticated membership without creating a new identity or role. */
+export function rejoinRoom(view: RoomView, credentialHash: string, ctx: CoreContext): Mutation {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    if (actor.kind !== 'participant') {
+        throw new ProtocolError('unauthorized', 'rejoining requires the saved participant credential');
+    }
+    assertRoomJoinable(view, ctx.now);
+    const activeCount = activeParticipants(view).length;
+    if (activeCount >= view.room.policy.maxParticipants) {
+        throw new ProtocolError('participant_limit_reached', 'this room has reached its participant limit');
+    }
+    const participant: ParticipantRecord = {...actor.participant, leftAt: null};
+    const {room, event} = appendEvent(view.room, {
+        senderId: participant.participantId,
+        idempotencyKey: null,
+        recipientId: null,
+        replyTo: null,
+        body: {type: 'participant.joined', payload: joinPayload(participant)}
+    }, ctx);
+    return {...emptyMutation(room, event), upsertParticipants: [participant]};
+}
+
 export function renameRoom(view: RoomView, credentialHash: string, name: string, ctx: CoreContext): Mutation {
     const actor = authenticate(view, credentialHash, ctx.now);
     assertController(actor);
@@ -351,3 +373,28 @@ function joinPayload(participant: ParticipantRecord) {
 }
 
 export type {Actor};
+
+export function setLocked(view: RoomView, credentialHash: string, locked: boolean, ctx: CoreContext): Mutation {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
+    const {room, event} = appendEvent({...view.room, locked}, {
+        senderId, idempotencyKey: null, recipientId: null, replyTo: null,
+        body: {type: 'room.lock_changed', payload: {locked}}
+    }, ctx);
+    return emptyMutation(room, event);
+}
+
+export function setMuted(view: RoomView, credentialHash: string, participantId: string, muted: boolean, ctx: CoreContext): Mutation {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    const target = assertRecipientExists(view, participantId);
+    const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
+    const {room, event} = appendEvent(view.room, {
+        senderId, idempotencyKey: null, recipientId: null, replyTo: null,
+        body: {type: 'participant.mute_changed', payload: {participantId, muted}}
+    }, ctx);
+    return {...emptyMutation(room, event), upsertParticipants: [{...target, muted}]};
+}

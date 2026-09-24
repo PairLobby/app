@@ -295,6 +295,9 @@ export class Workspace extends DurableObject<Env> {
             const actor = authenticate(view, await hashCredential(credential), Date.now());
             if (actor.kind === 'participant') {
                 await this.authorizeParticipant(roomId, actor.participant.participantId);
+                if (action === 'rejoin' && request.method === 'POST' && actor.participant.leftAt !== null) {
+                    this.checkParticipants(actor.participant.kind);
+                }
             }
             this.chargeRequest(workspace, control);
             if (action === 'allowed-accounts') {

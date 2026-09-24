@@ -224,6 +224,10 @@ function describe(event: RoomEvent): string {
             return `resume requested, revision ${event.payload.revision}`;
         case 'control.ack':
             return `acknowledged revision ${event.payload.revision}: ${event.payload.outcome}`;
+        case 'room.lock_changed':
+            return event.payload.locked ? 'the room was locked' : 'the room was unlocked';
+        case 'participant.mute_changed':
+            return `${event.payload.participantId} was ${event.payload.muted ? 'muted' : 'unmuted'}`;
         case 'room.closed':
             return 'the room was closed';
         case 'room.renamed':

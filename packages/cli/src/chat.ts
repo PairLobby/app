@@ -11,6 +11,7 @@ import type {MessageRequest, RoomEvent, RoomSnapshot} from '@pairlobby/protocol'
 import {LocalStore, PairLobbyClient} from '@pairlobby/client';
 
 import {pickExpiry} from './picker.js';
+import {isRoomCommand, runRoomCommand} from './chat-commands.js';
 import {applyMention, commonPrefix, currentMention, matchNames, renderSuggestions, routeChatMessage} from './mentions.js';
 
 type ParticipantMatch = {id: string; name: string} | null;
@@ -45,6 +46,13 @@ const HELP = `  <message>          send to the room
   /requests          show every unanswered request
   /reply <id> <text>  answer one exact request
   /who               who is registered in this room
+  /invite            create a read-only observer invite
+  /invite as <name>  create a participant invite with a default name
+  /lock              block joining, rejoining, and new invites (owner)
+  /unlock            allow joining and invitations again (owner)
+  /kick <name>       remove a participant and disable their invite (owner)
+  /mute <name>       prevent a participant from writing (owner)
+  /unmute <name>     allow them to write again (owner)
   /expiry            set when this room expires
   /pause <name>      controller only
   /resume <name>     controller only
@@ -57,6 +65,12 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
 
     const showIds = options.showIds === true;
     let snapshot = await client.snapshot(roomId, credential);
+    if (snapshot.participants.some((participant) => participant.participantId === participantId && participant.left)) {
+        if (!snapshot.rejoinSupported) {
+            throw new ProtocolError('unsupported_capability', 'This relay needs an update to rejoin a saved session. Join again with an invite for this older relay.');
+        }
+        snapshot = await client.rejoin(roomId, credential);
+    }
     const names = new Map<string, string>();
     absorbNames(snapshot, names);
 
@@ -216,8 +230,12 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 terminal.close();
                 return;
             }
-            if (options.readOnly === true && !line.startsWith('/')) {
+            if (options.readOnly === true) {
                 emit(`${DIM}  you are a read-only guest in this room${RESET}`);
+                return;
+            }
+            if (isRoomCommand(line)) {
+                void runRoomCommand(line, options).then(emit).catch((error) => emit(error instanceof Error ? error.message : String(error)));
                 return;
             }
             if (line === '/help') {
@@ -253,7 +271,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 return;
             }
             if (line === '/who') {
-                emit(who(snapshot, showIds));
+                emit(who(snapshot, true));
                 return;
             }
             if (line === '/to') {
@@ -307,7 +325,10 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         };
         view.onInput(onKeypress);
 
-        const finished = new Promise<void>((resolve) => terminal.once('close', resolve));
+        const finished = new Promise<void>((resolve) => terminal.once('close', () => {
+            closed = true;
+            resolve();
+        }));
         // readline intercepts Ctrl+C, so the interface is where the signal arrives.
         terminal.on('SIGINT', () => {
             closed = true;
@@ -338,7 +359,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 const page = await client.readEvents(roomId, credential, cursor);
                 if (page.events.length > 0) {
                     const nextCursor = page.events.at(-1)!.seq;
-                    if (page.events.some((event) => event.type === 'participant.joined' || event.type === 'participant.left' || event.type === 'participant.revoked')) {
+                    if (page.events.some((event) => event.type === 'participant.joined' || event.type === 'participant.left' || event.type === 'participant.revoked' || event.type === 'participant.mute_changed' || event.type === 'room.lock_changed')) {
                         snapshot = await client.snapshot(roomId, credential);
                         absorbNames(snapshot, names);
                     }
@@ -349,9 +370,9 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                         seen.add(event.eventId);
                         view.addEvent(event);
                     }
-                if (!options.readOnly && snapshot.participants.find((participant) => participant.participantId === participantId)?.kind === 'human') {
+                    if (!options.readOnly && snapshot.participants.some((participant) => participant.participantId === participantId && participant.kind === 'human' && !participant.muted)) {
                         for (const event of page.events)
-                            if (event.type === 'message' && event.recipientId === participantId && event.senderId !== participantId) {
+                            if (event.type === 'message' && event.senderId !== participantId && (snapshot.messageReceiptScope === 'members' || event.recipientId === participantId)) {
                                 await client.acknowledgeMessage(roomId, credential, event.eventId);
                             }
                     }
@@ -424,7 +445,9 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         // Node's fetch keeps pooled sockets referenced, so the event loop does not
         // drain on its own and the command appears to hang after you quit. Leave
         // deliberately, once output is flushed.
-        await new Promise<void>((resolve) => process.stdout.write('\n', () => resolve()));
+        // Print after restoring the normal buffer and finishing leave, so the
+        // command stays in shell scrollback and cannot race a pending departure.
+        await new Promise<void>((resolve) => process.stdout.write(`\nTo rejoin this room:\n  pairlobby chat --room ${roomId} --session ${sessionId}\n\n`, () => resolve()));
         process.exit(0);
     } finally {
         view.close();
@@ -442,7 +465,7 @@ function header(snapshot: RoomSnapshot, participantId: string, sessionId: string
     emit(
         `${DIM}registered in this room:${RESET} ${active.length}  (${plural(people, 'person', 'people')}, ${plural(agents, 'agent', 'agents')})  ${DIM}${active.map((participant) => participant.displayName).join(', ')}${RESET}`
     );
-    emit(`${DIM}/help for commands, /quit to leave${RESET}`);
+    emit(`${DIM}${me?.role === 'guest' ? 'Read-only observer. /quit to leave.' : '/help for commands, /quit to leave'}${snapshot.locked ? ' Room locked.' : ''}${RESET}`);
     emit('');
 }
 
@@ -453,7 +476,7 @@ function who(snapshot: RoomSnapshot, showIds = false): string {
             const control =
                 participant.controlRevision > 0 ? `  ${DIM}control ${participant.controlRevision}: ${participant.acknowledgedOutcome ?? 'no acknowledgement yet'}${RESET}` : '';
             const id = showIds ? `  ${DIM}${participant.participantId}${RESET}` : '';
-            return `  ${participant.displayName}${id}  ${DIM}${participant.kind}${participant.paused ? ', paused' : ''}${RESET}${control}`;
+            return `  ${participant.displayName}${id}  ${DIM}${participant.kind}${participant.paused ? ', paused' : ''}${participant.muted ? ', muted' : ''}${participant.role === 'guest' ? ', observer' : ''}${RESET}${control}`;
         })
         .join('\n');
 }
@@ -495,7 +518,7 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
         case 'participant.left':
             return `${sender} left`;
         case 'participant.revoked':
-            return `${sender} was removed`;
+            return `${names.get(event.payload.participantId) ?? event.payload.participantId} was removed`;
         case 'handover.offered':
             return `${sender} offered handover ${event.payload.handoverId} rev ${event.payload.revision}: ${event.payload.document.metadata.goal}`;
         case 'handover.accepted':
@@ -508,6 +531,10 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
             return `resume requested for ${names.get(event.payload.targetParticipantId) ?? 'someone'}, revision ${event.payload.revision}`;
         case 'control.ack':
             return `${sender} acknowledged revision ${event.payload.revision}: ${event.payload.outcome}`;
+        case 'room.lock_changed':
+            return event.payload.locked ? 'the room was locked' : 'the room was unlocked';
+        case 'participant.mute_changed':
+            return `${names.get(event.payload.participantId) ?? event.payload.participantId} was ${event.payload.muted ? 'muted' : 'unmuted'}`;
         case 'room.closed':
             return 'the room was closed';
         case 'room.renamed':

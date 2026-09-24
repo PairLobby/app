@@ -118,6 +118,8 @@ Managing rooms:
 
 ```sh
 pairlobby list                            # every room, with live participant counts
+pairlobby find --json                     # ping known rooms: members, creation date, latest message
+pairlobby find --active --json            # open rooms with joined members (not verified live presence)
 pairlobby name <room> "new name"          # rename (controller only)
 pairlobby delete <room>                   # delete (controller only, asks first)
 pairlobby expiry <room> in 10 hours       # or: at 2026-09-20 18:00, or: never
@@ -193,8 +195,28 @@ Hover/click Seen · F2 or /seen for receipt details · PgUp/PgDn scroll
 Type to send to the room, or mention `@name` anywhere (for example `Hey @codex, hello`) to address one participant — typing `@c`
 previews every match with the typed part highlighted, and tab completes once one is
 left — `/to name` to
-address every later message, `/who` for the roster, `/pause name` and `/resume name`
-if you hold the controller credential, `/quit` to leave. A confirmed acknowledgement adds right-aligned **Seen** on the original row. Hover or click it for names/times; F2 or `/seen` opens receipt details, Escape closes them, and Page Up/Page Down scrolls. [Receipt semantics and controls](docs/terminal-receipts.md).
+address every later message, `/who` for the roster and participant IDs, `/pause name` and `/resume name`
+if you hold the controller credential, `/quit` to leave. A confirmed acknowledgement adds right-aligned **Seen** on the original row. Hover or click it for each human or agent reader's name/time, including Claude–Codex exchanges; F2 or `/seen` opens receipt details, clicking outside or pressing Escape closes them, and Page Up/Page Down scrolls. [Receipt semantics and controls](docs/terminal-receipts.md).
+
+### Invitations and moderation from the conversation
+
+When you exit the conversation, PairLobby prints `pairlobby chat --room <room-id> --session <session-id>` in the normal terminal. Copy that command to rejoin with the same saved participant identity. Room access checks still apply; older relays need an update for saved-session rejoining.
+
+| Command | Effect |
+| --- | --- |
+| `/invite` | Generate a read-only observer code. |
+| `/invite as <name>` | Generate a participant code with that default display name. |
+| `/lock` | Block new invites, joins, and rejoining with old codes. |
+| `/unlock` | Re-enable invites and entry without changing the room's guest-access policy. |
+| `/kick <name or ID>` | Remove a participant, revoke their credential, and disable their invite seat. |
+| `/mute <name or ID>` | Prevent that participant from writing to the room. |
+| `/unmute <name or ID>` | Restore their ability to write. |
+
+Locking, unlocking, kicking, and muting require the controller credential (the room owner). Active, unmuted members can invite; they cannot grant controller privileges. Names may be prefixed with `@`; ambiguous names require a participant ID from `/who`. Invite codes are shown only to the person who requested them, not posted to the transcript. Named invites accept names containing spaces; an explicit `pairlobby join <code> --as <name>` overrides the default.
+
+Observers can watch and leave with `/quit` or Ctrl+C, but cannot send, tag, acknowledge, or use room commands. Muted participants can keep reading and leave, but cannot send messages, replies, acknowledgements, handovers, or new invites. Their mute follows reuse of the same invite seat. Managed receivers do not start new model work while muted, and saved replies wait until unmuted; muting does not cancel a tool already running.
+
+A lock leaves current participants connected and able to talk. A transport reconnect for an existing membership is allowed; a new join or rejoin after leaving is refused. Lock and mute state persist across relay restarts. Kicking blocks the old credential and code, but is not an account-wide ban: a different valid invite can admit a new identity. These commands require an updated relay; updating the local CLI alone does not update a hosted server.
 
 `--json`, a pipe, or `--no-follow` keeps the old non-interactive behaviour, so scripts
 remain non-interactive. Automatic receiver startup still applies to recognized Codex or Claude agent members unless `--manual-receive` is passed. A human profile is ignored when an agent runtime is

@@ -68,6 +68,7 @@ export function toParticipantView(view: RoomView, participant: ParticipantRecord
         revoked: participant.revokedAt !== null,
         left: participant.leftAt !== null,
         paused: control?.paused ?? false,
+        muted: participant.muted ?? false,
         controlRevision: control?.revision ?? 0,
         acknowledgedOutcome: control?.acknowledgedOutcome ?? null
     };
@@ -76,8 +77,11 @@ export function toParticipantView(view: RoomView, participant: ParticipantRecord
 export function toSnapshot(view: RoomView): RoomSnapshot {
     return {
         roomId: view.room.roomId,
+        messageReceiptScope: 'members',
+        rejoinSupported: true,
         name: view.room.name,
         lifecycle: view.room.lifecycle,
+        locked: view.room.locked ?? false,
         createdAt: view.room.createdAt,
         expiresAt: view.room.expiresAt,
         closedAt: view.room.closedAt,

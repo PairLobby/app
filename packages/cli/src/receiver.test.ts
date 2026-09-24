@@ -17,7 +17,7 @@ test.each(['codex', 'claude'])('%s CLI joins receive asynchronously and recover 
     chmodSync(executable, 0o755);
     const relay = await startServer({port: 0, dataFile: join(directory, 'relay.sqlite')});
     const client = new PairLobbyClient(relay.url);
-    const host = await client.createRoom('receiver test', {displayName: 'host', kind: 'human'});
+    const host = await client.createRoom('receiver test', {displayName: runtime === 'codex' ? 'claude' : 'codex', kind: 'agent'});
     const environment = {...process.env, PATH: `${directory}:${process.env['PATH']}`, PAIRLOBBY_DATA_DIR: join(directory, 'device'), PAIRLOBBY_TEST_RECORD: record};
     const cli = process.env['PAIRLOBBY_TEST_CLI'] ?? resolve('packages/cli/dist/main.js');
     let joined: Joined | undefined;
@@ -57,8 +57,13 @@ test.each(['codex', 'claude'])('%s CLI joins receive asynchronously and recover 
         await expect(command(['channel', ...scope, '--allow-from', host.participantId])).rejects.toThrow('managed receiver already owns');
         await sleep(1200);
         expect(calls()).toEqual([]);
+        await client.setMuted(host.roomId, host.controllerCredential, joined.participantId, true);
         const request = {type: 'message' as const, recipientId: joined.participantId, payload: {text: 'Please answer', priority: 'normal' as const}, idempotencyKey: 'first'};
         const sent = await client.send(host.roomId, host.participantCredential, request);
+        await sleep(1200);
+        expect(calls()).toEqual([]);
+        expect((await client.request(host.roomId, host.participantCredential, sent.event.eventId)).receivedAt).toBeNull();
+        await client.setMuted(host.roomId, host.controllerCredential, joined.participantId, false);
         await waitFor(async () => Boolean((await client.request(host.roomId, host.participantCredential, sent.event.eventId)).responseEventId));
         expect((await client.request(host.roomId, host.participantCredential, sent.event.eventId)).receivedAt).not.toBeNull();
         await client.send(host.roomId, host.participantCredential, request);

@@ -98,6 +98,23 @@ test('the CLI client consumes live deliveries without another HTTP read',async()
     } finally {client.closeLive();}
 },{timeout:5000});
 
+test('saved-session rejoin preserves hosted identity and enforces workspace session limits', async () => {
+    // Isolate session limits from the preceding tests' per-second message burst.
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    const client = new PairLobbyClient(localOrigin + relay);
+    const firstInvite = await client.mintInvite(room, controller);
+    const first = await client.redeemInvite(firstInvite.code, {displayName: 'returning human', kind: 'human'});
+    await client.leave(room, first.participantCredential);
+    const secondInvite = await client.mintInvite(room, controller);
+    const second = await client.redeemInvite(secondInvite.code, {displayName: 'current human', kind: 'human'});
+    await assert.rejects(client.rejoin(room, first.participantCredential), {code: 'quota_exceeded'});
+    await client.leave(room, second.participantCredential);
+    const restored = await client.rejoin(room, first.participantCredential);
+    assert.equal(restored.participants.find(entry => entry.participantId === first.participantId).left, false);
+    assert.equal((await client.rejoin(room, first.participantCredential)).latestSeq, restored.latestSeq);
+    await client.leave(room, first.participantCredential);
+});
+
 test('Team seats are allocated atomically and members cannot manage billing',async()=>{
     await db.prepare("UPDATE workspaces SET plan='team' WHERE id=?").bind(workspace).run();
     const candidates=[];
@@ -147,8 +164,12 @@ test('online keys resolve globally and private rooms reject unauthorized account
     assert.equal((await call(path+'/allowed-accounts',{method:'PUT',body:{private:true,accounts:[member.email]},headers:{authorization:'Bearer '+input.controllerCredential}})).response.status,200);
     const joined=await call(relay+'/v1/invites/redeem',{body:join,headers:{'x-pairlobby-account-token':memberToken}});assert.equal(joined.response.status,200,JSON.stringify(joined.data));
     assert.equal((await call(path,{headers:{authorization:'Bearer '+join.participantCredential}})).response.status,200);
+    assert.equal((await call(path+'/leave',{body:{},headers:{authorization:'Bearer '+join.participantCredential}})).response.status,200);
+    assert.equal((await call(path+'/rejoin',{body:{},headers:{authorization:'Bearer '+join.participantCredential}})).response.status,200);
+    assert.equal((await call(path+'/leave',{body:{},headers:{authorization:'Bearer '+join.participantCredential}})).response.status,200);
     assert.equal((await call(path+'/allowed-accounts',{method:'PUT',body:{private:true,accounts:[]},headers:{authorization:'Bearer '+input.controllerCredential}})).response.status,200);
     assert.equal((await call(path,{headers:{authorization:'Bearer '+join.participantCredential}})).response.status,403,'removal also closes existing access');
+    assert.equal((await call(path+'/rejoin',{body:{},headers:{authorization:'Bearer '+join.participantCredential}})).response.status,403,'saved-session rejoining cannot bypass account removal');
     await db.prepare('DELETE FROM api_tokens WHERE digest=?').bind(hash(memberToken)).run();
     assert.equal((await call('/api/online/account',{headers:{'x-pairlobby-account-token':memberToken}})).response.status,401);
     const keys=await db.prepare('SELECT digest FROM online_invites').all();assert.equal(new Set(keys.results.map(row=>row.digest)).size,keys.results.length);

@@ -80,6 +80,18 @@ export class ChatTerminal {
         this.input.once('close', () => this.close());
         this.body.on('wheeldown', () => { this.follow = this.body.getScrollPerc() >= 99; this.hideDetails(); });
         this.body.on('wheelup', () => { this.follow = false; this.hideDetails(); });
+        this.screen.on('mouse', (event: blessed.Widgets.Events.IMouseEventArg) => {
+            if (event.action !== 'mousedown' || !this.detailsId || this.closed || this.suspended) {
+                return;
+            }
+            const contains = (element: blessed.Widgets.BoxElement | undefined): boolean => {
+                const bounds = element?.lpos;
+                return Boolean(element?.visible && bounds && event.x >= bounds.xi && event.x < bounds.xl && event.y >= bounds.yi && event.y < bounds.yl);
+            };
+            if (!contains(this.popup) && !contains(this.labels.get(this.detailsId))) {
+                this.hideDetails();
+            }
+        });
         this.screen.on('resize', () => {
             this.output.columns = Number(this.screen.width);
             this.rebuild();

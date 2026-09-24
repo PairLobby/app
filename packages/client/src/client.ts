@@ -64,8 +64,7 @@ export class PairLobbyClient {
     private liveRoom: string | null = null;
     private changed = new Set<() => void>();
 
-    constructor(serverUrl: string, private readonly accountToken?: string
-    ) {
+    constructor(serverUrl: string, private readonly accountToken?: string, private readonly signal?: AbortSignal) {
         this.serverUrl = serverUrl.replace(/\/+$/, '');
     }
 
@@ -85,11 +84,12 @@ export class PairLobbyClient {
     }
 
     /** `attemptId` and the credential must be reused across retries, or a crashed join forks a second membership. */
-    async redeemInvite(code: string, identity: ClientIdentity, attempt?: InviteAttempt): Promise<JoinedRoom> {
+    async redeemInvite(code: string, identity: ClientIdentity, attempt?: InviteAttempt, useInviteName = true): Promise<JoinedRoom> {
         const attemptId = attempt?.attemptId ?? newId('attempt');
         const participantCredential = attempt?.participantCredential ?? newCredential('participant');
         const body = await this.call<{roomId: string; participantId: string; role: ParticipantRole; room: RoomSnapshot}>('POST', '/v1/invites/redeem', null, {
             code,
+            useInviteName,
             attemptId,
             attemptSecret: newCredential('attempt'),
             participantCredential,
@@ -102,8 +102,16 @@ export class PairLobbyClient {
         return this.call('GET', `/v1/rooms/${roomId}`, credential);
     }
 
-    mintInvite(roomId: string, credential: string, role: ParticipantRole = 'member', reusable = true, expiresAt?: number | null): Promise<CreateInviteResponse> {
-        return this.call('POST', `/v1/rooms/${roomId}/invites`, credential, {role, reusable, ...(expiresAt !== undefined ? {expiresAt} : {})});
+    mintInvite(roomId: string, credential: string, role: ParticipantRole = 'member', reusable = true, expiresAt?: number | null, defaultName?: string): Promise<CreateInviteResponse> {
+        return this.call('POST', `/v1/rooms/${roomId}/invites`, credential, {role, reusable, ...(expiresAt !== undefined ? {expiresAt} : {}), ...(defaultName !== undefined ? {defaultName} : {})});
+    }
+
+    setLocked(roomId: string, credential: string, locked: boolean): Promise<RoomEventResult> {
+        return this.call('POST', `/v1/rooms/${roomId}/lock`, credential, {locked});
+    }
+
+    setMuted(roomId: string, credential: string, participantId: string, muted: boolean): Promise<RoomEventResult> {
+        return this.call('POST', `/v1/rooms/${roomId}/participants/${participantId}/mute`, credential, {muted});
     }
 
     setAllowedAccounts(roomId: string, credential: string, accounts: string[]): Promise<OperationResult> {
@@ -181,6 +189,10 @@ export class PairLobbyClient {
 
     leave(roomId: string, credential: string): Promise<RoomEventResult> {
         return this.call('POST', `/v1/rooms/${roomId}/leave`, credential, {});
+    }
+
+    rejoin(roomId: string, credential: string): Promise<RoomSnapshot> {
+        return this.call('POST', `/v1/rooms/${roomId}/rejoin`, credential, {});
     }
 
     rename(roomId: string, credential: string, name: string): Promise<RoomEventResult> {
@@ -321,7 +333,7 @@ export class PairLobbyClient {
                 method,
                 headers,
                 redirect: 'error',
-                signal: AbortSignal.timeout(path.endsWith('/export') ? 60_000 : 15_000),
+                signal: this.signal ? AbortSignal.any([this.signal, AbortSignal.timeout(path.endsWith('/export') ? 60_000 : 15_000)]) : AbortSignal.timeout(path.endsWith('/export') ? 60_000 : 15_000),
                 ...(body === undefined ? {} : {body: JSON.stringify(body)})
             });
         } catch {

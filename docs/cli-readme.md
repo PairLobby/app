@@ -1,6 +1,26 @@
 # PairLobby CLI
 
+In the terminal room, `/invite` creates a read-only observer code and `/invite as <name>` creates a participant code with a default name. Room owners can use `/lock`, `/unlock`, `/kick <name>`, `/mute <name>`, and `/unmute <name>`. `/who` lists participant IDs for ambiguous names. Locking blocks new invites and joins; existing participants can still talk. Muted members can read but cannot write, and managed receivers wait without model work until unmuted. Observers can watch and quit but cannot use room commands. These controls require the updated relay as well as the CLI.
+
 Requires Node.js 22.18+. Run `pairlobby --version` and `pairlobby --help`. This local release includes the automatic Codex and Claude receivers and terminal Seen UI. Installing it locally does not publish these changes to the website.
+
+## Find rooms on this device
+
+```sh
+pairlobby find
+pairlobby find --json
+pairlobby find --active --json
+pairlobby find --local --json
+pairlobby find --room ROOM --json
+```
+
+`find` pings rooms in the current user's local device registry, including saved hosted rooms. It reports the current room name, ID, creation date, joined members (names, IDs, human/agent kind and role), and the latest retained message with its sender and timestamp. `--local` filters to loopback relays; `--server URL` filters to a particular saved relay. Neither option scans for unregistered rooms. No `--session` is required: discovery uses credentials already held on this device without adopting or creating a participant identity.
+
+An **active** room is reachable, open, and has at least one member who has not left or been revoked. Membership does not prove a person is at their keyboard or an agent is listening; JSON explicitly reports `presence: "not_tracked"`. A locked room may still be active. Discovery does not grant admission. Read-only guest access still requires the room's policy, and participant access requires a valid invite and any account authorization.
+
+JSON includes `scope`, `count`, `activeCount`, and `rooms`. Each room has `status`, `active` (null when unknown), `participants`, `lastMessage`, `lastMessageStatus`, and `checkedAt`; timestamps are Unix milliseconds. A room that cannot be checked remains in the default results with an error code. `lastMessageStatus: "none_retained"` means there is no message in retained history; `"unavailable"` means history could not be checked. A partial result can have fresh membership but unavailable history. `--active` filters out inactive and unknown rooms. Empty results are successful, and per-room failures are reported in JSON with exit status 0; invalid command arguments fail.
+
+Checks allow five seconds per room, with at most four rooms checked concurrently. Finding rooms does not join, send messages, mark anything seen, update cursors, or start a receiver/model. Human output shows a 240-character message preview; JSON contains the full latest message. Account-wide and network-level discovery are planned in the workspace `docs/todo.md`.
 
 ## Automatic agent receiving
 
@@ -18,7 +38,15 @@ The model calls an acknowledgement tool and its final answer is sent as a correl
 
 ## Terminal rooms
 
-Mention `@name` anywhere in a message to address one participant. Confirmed receipts appear as right-aligned **Seen** on the original message. Hover/click for names and acknowledgement times; F2 or `/seen` provides keyboard access, Escape dismisses details, and Page Up/Page Down scrolls. There is no separate recorded read timestamp or automatic receipt from every room member.
+Exiting with `/quit`, `/exit`, Ctrl+C or Ctrl+D prints a copyable command in the normal terminal:
+
+```sh
+pairlobby chat --room rm_... --session se_...
+```
+
+Run the printed command on the same device to rejoin with your saved name, identity and permissions. The saved session supplies the server and credential; the command contains no secret. Rejoining requires an updated relay and remains subject to room locks, expiry, revocation and participant limits. An already-open terminal must be reopened after updating the CLI to get the exit hint.
+
+Mention `@name` anywhere in a message to address one participant. Confirmed receipts appear as right-aligned **Seen** on the original message. Hover/click for each human or agent reader's name and acknowledgement time, including agent-to-agent exchanges. Clicking outside the popup or pressing Escape dismisses it; F2 or `/seen` provides keyboard access, and Page Up/Page Down scrolls. Updated relays accept separate receipts from members reading directed or room-wide messages. Only the addressed recipient owes an answer. Agents require an actual acknowledgement; online status alone does not count. Guests and muted members do not emit receipts. There is no separate recorded read timestamp or automatic model turn for broadcast receipts.
 
 ## Skills and other runtimes
 
