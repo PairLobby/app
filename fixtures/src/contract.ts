@@ -10,6 +10,7 @@ import {afterEach, beforeEach, describe, expect, test} from 'vitest';
 
 import {runRequestContract} from './request-contract.js';
 import {runRejoinContract} from './rejoin-contract.js';
+import {runGroupContract} from './group-contract.js';
 import {FakeAgent} from './fake-agent.js';
 import {RoomHarness, fixedClock} from './harness.js';
 import type {Clock, TestableRoomStore} from './harness.js';
@@ -31,6 +32,7 @@ export type StoreFactory = () => TestableRoomStore;
 export function runRoomContract(label: string, makeStore: StoreFactory): void {
     runRequestContract(label, makeStore);
     runRejoinContract(label, makeStore);
+    runGroupContract(label, makeStore);
     describe(label, () => {
         const opened: RoomHarness[] = [];
         function track(harness: RoomHarness): RoomHarness {

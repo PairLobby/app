@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Qwen stream-json fixture. The acknowledgement goes through the real scoped MCP server.
 import {spawn} from 'node:child_process';
+import {setTimeout as sleep} from 'node:timers/promises';
 import {createInterface} from 'node:readline';
 import {appendFileSync, readFileSync} from 'node:fs';
 
@@ -12,7 +13,7 @@ const session = args.includes('--resume') ? value('--resume') : value('--session
 if (value('--model') !== 'fixture-model') {
     throw new Error('Receiver did not preserve its model selection');
 }
-if (!args.includes('--bare') || value('--approval-mode') !== 'default' || value('--allowed-mcp-server-names') !== 'pairlobby_receiver' || value('--allowed-tools') !== 'mcp__pairlobby_receiver__acknowledge_message' || !value('--exclude-tools').includes('run_shell_command')) {
+if (!args.includes('--bare') || value('--approval-mode') !== 'default' || value('--allowed-mcp-server-names') !== 'pairlobby_receiver' || !value('--allowed-tools').split(',').includes('mcp__pairlobby_receiver__acknowledge_message') || !value('--exclude-tools').includes('run_shell_command')) {
     throw new Error('Missing restricted receiver policy');
 }
 record(args.includes('--resume') ? 'thread/resume' : 'thread/start');
@@ -58,6 +59,12 @@ for await (const line of source) {
         throw new Error('Unexpected scoped acknowledgement result');
     }
     record(invalid ? 'ack:rejected' : 'ack:confirmed');
+    if (!invalid && text.includes('qwen-pass')) {
+        const passed = await call(3, 'tools/call', {name: 'pass_message', arguments: {}});
+        if (passed.result?.isError) throw new Error('Pass was rejected');
+        record('pass:confirmed');
+    }
+    await sleep(Number(process.env.PAIRLOBBY_TEST_DELAY_MS ?? 0));
     child.stdin.end();
     await new Promise((resolve) => child.once('close', resolve));
     send({type: 'result', subtype: invalid ? 'error_ack' : 'success', is_error: invalid, session_id: session, result: invalid ? '' : 'Qwen fixture answer: ' + text, usage: {input_tokens: 10, output_tokens: 10}});

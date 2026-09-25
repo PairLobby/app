@@ -1,6 +1,7 @@
 import {ProtocolError} from '@pairlobby/protocol';
 import type {RoomSnapshot} from '@pairlobby/protocol';
 import type {PairLobbyClient} from '@pairlobby/client';
+import {formatTurnQueue, runTurnCommand} from './turn-commands.js';
 
 export type RoomCommandContext = {
     client: PairLobbyClient;
@@ -11,7 +12,7 @@ export type RoomCommandContext = {
 };
 
 export function isRoomCommand(line: string): boolean {
-    return /^\/(invite|lock|unlock|kick|mute|unmute)(?:\s|$)/.test(line);
+    return /^\/(invite|lock|unlock|kick|mute|unmute|turns)(?:\s|$)/.test(line);
 }
 
 function targetParticipant(snapshot: RoomSnapshot, reference: string): string {
@@ -32,6 +33,9 @@ export async function runRoomCommand(line: string, context: RoomCommandContext):
     }
     const [command] = line.split(/\s+/);
     const argument = line.slice(command!.length).trim();
+    if (command === '/turns') {
+        return formatTurnQueue(await runTurnCommand(argument, context), true);
+    }
     if (command === '/invite') {
         if (argument && !/^as\s+\S/.test(argument)) {
             throw new Error('Usage: /invite or /invite as <name>');

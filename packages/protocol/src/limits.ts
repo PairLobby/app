@@ -68,6 +68,7 @@ export const QUOTA_EXEMPT_EVENT_TYPES = [
     'room.expiry_changed',
     'room.access_changed',
     'message.received',
+    'conversation.turn_changed',
     'message.delivery_failed'
 ] as const;
 

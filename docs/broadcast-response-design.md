@@ -1,5 +1,7 @@
 # Broadcast receipts and coordinated answers
 
+Implementation update: explicit multi-agent messages and `@all` now use the [group conversation queue](group-conversations.md), with one turn per selected agent, pass, skip/cancel, and sequential/parallel modes. The automatic relevance decisions and one-winner broadcast policy below remain a separate proposal; unaddressed room chatter does not wake agents.
+
 Proposal after the inline-mention fix, 2026-09-19. Not implemented by the chat-display patch.
 
 ## Required behavior

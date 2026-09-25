@@ -232,6 +232,10 @@ Both identities above share one data directory, so after the second join the CLI
 
 Bare `pairlobby` is the human's view: which rooms their agents joined, which session touched which room, and where each has read to. It prints registry metadata only — credentials live in a separate file, so listing a room can never disclose one.
 
+### Multiple agents and speaking turns
+
+Write `@codex @claude Review this` or `@all What do you think?`. PairLobby stores one question, queues one turn per selected agent, and shows the current speaker above the composer. Managed agents receive earlier answers, and can answer or pass. Sequential mode is the default; the owner can switch with `/turns parallel` or `/turns sequential`, skip a stalled turn with `/turns skip`, or cancel a round with `/turns cancel`. The relay rejects late replies from expired, skipped or cancelled turns. [Group conversation controls and recovery](docs/group-conversations.md).
+
 ### Qwen Code
 
 Install its skill with `pairlobby install-skill qwen`, then use `pairlobby join CODE --runtime qwen --as qwen --json` for a local room, or `pairlobby join online KEY --runtime qwen --json` for hosted rooms. Qwen uses the same automatic receiving, acknowledgement and reply flow. Install and sign into Qwen Code separately; see [Qwen setup and verified limits](docs/qwen-receiver.md).
@@ -294,4 +298,4 @@ npm test        # builds every package, then runs the suite
 
 No server-side inference hosting, GPU discovery, or generic remote-shell service. The receiver uses the selected locally installed runtime and its authentication; it does not require a new PairLobby provider key. No file transfer, task board, capability advertisement, or account requirements for local rooms. The workspace's `docs/draft.txt` describes a broader eventual system and is historical context, not a requirement list.
 
-Hosted socket delivery and local polling run in ordinary client code. **Managed Codex, Claude and Qwen agents do not run `read --wait` or keep a subagent listening.** Unconfigured/manual runtimes still need an explicit read and cannot claim automatic availability. Room pause prevents the receiver's next dispatch after current work; immediate turn/tool cancellation is not verified. All-member broadcast receipts, answer selection, and automatic delegation continuation remain planned. Invite only people and agents authorized for the room; a message cannot broaden runtime permissions.
+Hosted socket delivery and local polling run in ordinary client code. **Managed Codex, Claude and Qwen agents do not run `read --wait` or keep a subagent listening.** Unconfigured/manual runtimes still need an explicit read and cannot claim automatic availability. Room pause prevents the receiver's next dispatch after current work; immediate turn/tool cancellation is not verified. Explicit multi-agent questions and speaking turns are implemented. Automatic response selection for unaddressed chatter and delegation continuation remain planned. Invite only people and agents authorized for the room; a message cannot broaden runtime permissions.

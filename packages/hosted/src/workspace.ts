@@ -205,7 +205,7 @@ export class Workspace extends DurableObject<Env> {
         const roomId = parts[2];
         const action = parts[3];
         const controlAck = request.method === 'POST' && action === 'events' && ((await request.clone().json()) as {type?: string}).type === 'control.ack';
-        const control = controlAck || request.method === 'DELETE' || ['control', 'close', 'leave', 'export'].includes(action ?? '');
+        const control = controlAck || request.method === 'DELETE' || ['control', 'close', 'leave', 'export'].includes(action ?? '') || (request.method === 'POST' && action === 'turns');
         if (!active && !control && request.method !== 'GET') {
             fail(402, 'An active subscription is required');
         }
@@ -544,7 +544,8 @@ export class Workspace extends DurableObject<Env> {
             quota('This room has reached its active handover limit');
         }
         // Bound full SQL storage, not only JSON payload; reserve 20% for controls.
-        if (this.ctx.storage.sql.databaseSize + bytes * 3 > plan.storageBytes * (exempt ? 1.2 : 1)) {
+        const requestBytes = (mutation.upsertRequests ?? []).reduce((sum, request) => sum + new TextEncoder().encode(JSON.stringify(request)).byteLength, 0);
+        if (this.ctx.storage.sql.databaseSize + bytes * 3 + requestBytes > plan.storageBytes * (exempt ? 1.2 : 1)) {
             quota('Retained storage allowance reached');
         }
         if (!exempt) {

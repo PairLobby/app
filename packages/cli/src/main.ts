@@ -28,12 +28,15 @@ import {receiverStatus, runReceiver, startReceiver, stopReceiver} from './receiv
 import type {ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
 import {findRooms, formatFoundRooms} from './find.js';
+import {formatTurnQueue, runTurnCommand} from './turn-commands.js';
 
 type LocalIdentity = {displayName: string; kind: 'agent' | 'human'; sessionId: string; capabilities?: AdapterCapabilities};
 
 type LocalRuntimeDetail = {runtime?: string; conversationId?: string; terminal?: string; pid?: number};
 
 const OPTIONS = {
+    'turn-token': {type: 'string'},
+    'claim-id': {type: 'string'},
     active: {type: 'boolean'},
     request: {type: 'string'},
     workdir: {type: 'string'},
@@ -110,6 +113,9 @@ const HELP = `pairlobby
   pairlobby allow [email ...]       replace the room allowlist (creator retained)
   pairlobby chat                     re-enter a room you already joined
   pairlobby send <text> --to <who>   send a message to one participant
+  pairlobby send <text> --to codex,claude   ask several agents; --to all asks all agents
+  pairlobby turns [sequential|parallel|skip|cancel]   inspect/control speaking turns
+  pairlobby turn claim|renew|pass <request>          cooperative agent turn tools
   pairlobby install-skill <agent>   install instructions for claude, codex, qwen, or all
   pairlobby configure-claude        prepare a scoped Claude channel and Stop hook
   pairlobby reply <event-id> <text>  answer one exact request; --progress keeps it open
@@ -221,6 +227,39 @@ async function main(argv: string[]): Promise<number> {
         }
         case 'send':
             return sendMessage(store, values, positionals.slice(1).join(' '));
+        case 'turns': {
+            const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+            const queue = await runTurnCommand(positionals.slice(1).join(' '), {roomId: room.roomId, participantId: session.participantId, credential, client, controllerCredential: store.credential(room.roomId, 'controller')});
+            if (flag(values, 'json')) {
+                json(queue);
+            } else {
+                out(formatTurnQueue(queue, true));
+            }
+            return 0;
+        }
+        case 'turn': {
+            const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+            const action = positionals[1];
+            const id = positionals[2];
+            if (!id) {
+                throw new UsageError('turn requires claim|renew|pass and a request ID');
+            }
+            if (action === 'claim') {
+                const claimId = str(values, 'claim-id') ?? newId('event');
+                json({claimId, ...await client.claimTurn(room.roomId, credential, id, claimId)});
+            } else if ((action === 'renew' || action === 'pass') && str(values, 'turn-token')) {
+                const token = str(values, 'turn-token')!;
+                if (action === 'renew') {
+                    json(await client.renewTurn(room.roomId, credential, id, token));
+                } else {
+                    await client.passTurn(room.roomId, credential, id, token);
+                    json({passed: id});
+                }
+            } else {
+                throw new UsageError('Use turn claim <request>, or turn renew|pass <request> --turn-token <token>');
+            }
+            return 0;
+        }
         case 'install-skill': {
             const paths = (await import('./install-skill.js')).installSkill(positionals[1], flag(values, 'force'), str(values, 'skills-dir'));
             if (flag(values, 'json')) {
@@ -879,13 +918,25 @@ async function sendMessage(store: LocalStore, values: Values, text: string): Pro
     if (replyTo) {
         return replyMessage(store, values, replyTo, text);
     }
-    const recipientId = recipient ? resolveRecipient((await client.snapshot(room.roomId, credential)).participants, recipient) : undefined;
+    const snapshot = recipient ? await client.snapshot(room.roomId, credential) : undefined;
+    const references = recipient?.split(',').map((name) => name.trim().replace(/^@/, '')).filter(Boolean) ?? [];
+    if (recipient && !references.length) {
+        throw new UsageError('--to needs one or more names, or all');
+    }
+    const allRecipients = references.length === 1 && references[0]!.toLowerCase() === 'all';
+    const selected = allRecipients ? [] : [...new Set(references.map((reference) => resolveRecipient(snapshot!.participants, reference)))];
+    const group = allRecipients || selected.length > 1;
+    if (group && !snapshot?.groupTurnsSupported) {
+        throw new UsageError('Update this relay before sending to multiple agents.');
+    }
+    const recipientId = !group ? selected[0] : undefined;
     // The key is generated once so a retry after a lost response is a replay, not a second message.
     const result = await client.send(room.roomId, credential, {
         type: 'message',
         payload: {text, priority: 'normal'},
         idempotencyKey: newId('event'),
-        ...(recipientId ? {recipientId} : {})
+        ...(recipientId ? {recipientId} : {}),
+        ...(allRecipients ? {allRecipients: true} : group ? {recipientIds: selected} : {})
     });
 
     const seconds = flag(values, 'no-wait') ? 0 : Number(str(values, 'wait-for-ack') ?? 30);
@@ -893,6 +944,30 @@ async function sendMessage(store: LocalStore, values: Values, text: string): Pro
         throw new UsageError('--wait-for-ack must be between 0 and 300 seconds');
     }
     let acknowledged = false;
+    let queuedForTurn = false;
+    const waitForGroup = group && str(values, 'wait-for-ack') !== undefined && !flag(values, 'no-wait');
+    if (waitForGroup && seconds > 0) {
+        const expected = new Set(result.event.recipientIds ?? []);
+        const received = new Set<string>();
+        const deadline = Date.now() + seconds * 1000;
+        let cursor = result.event.seq;
+        while (Date.now() < deadline) {
+            const page = await client.readEvents(room.roomId, credential, cursor);
+            for (const event of page.events) {
+                if (event.type === 'message.received' && event.payload.eventId === result.event.eventId && event.senderId && expected.has(event.senderId)) {
+                    received.add(event.senderId);
+                }
+            }
+            cursor = page.events.at(-1)?.seq ?? cursor;
+            if (received.size === expected.size) {
+                acknowledged = true;
+                break;
+            }
+            if (!page.hasMore) {
+                await sleep(Math.min(1000, Math.max(0, deadline - Date.now())));
+            }
+        }
+    }
     if (recipientId && seconds > 0) {
         const deadline = Date.now() + seconds * 1000;
         note(`queued ${result.event.eventId}; waiting for the recipient's acknowledgement`);
@@ -905,17 +980,27 @@ async function sendMessage(store: LocalStore, values: Values, text: string): Pro
             if (request.failureAt) {
                 break;
             }
+            if (snapshot?.groupTurnsSupported) {
+                const queue = await client.turnQueue(room.roomId, credential);
+                const position = queue.entries.findIndex((entry) => entry.requestId === result.event.eventId);
+                if (position > 0 || queue.entries[position]?.state === 'stalled') {
+                    queuedForTurn = true;
+                    break;
+                }
+            }
             await sleep(Math.min(1000, Math.max(0, deadline - Date.now())));
         }
     }
-    const timedOut = !!recipientId && seconds > 0 && !acknowledged;
+    const timedOut = (!!recipientId || waitForGroup) && seconds > 0 && !acknowledged && !queuedForTurn;
     if (flag(values, 'json')) {
         json({
             seq: result.event.seq,
             eventId: result.event.eventId,
             deduplicated: result.deduplicated,
             delivery: acknowledged ? 'acknowledged' : timedOut ? 'unconfirmed' : 'queued',
-            requiresReply: !!recipientId,
+            requiresReply: !!recipientId || group,
+            ...(group ? {recipientIds: result.event.recipientIds} : {}),
+            ...(queuedForTurn ? {waitingForTurn: true} : {}),
             error: timedOut ? 'Recipient did not acknowledge before the deadline. The request is still queued; do not resend it as a new request.' : null
         });
     } else {
@@ -946,7 +1031,7 @@ async function replyMessage(store: LocalStore, values: Values, eventId: string |
         throw new UsageError('reply needs an event id and a non-empty answer (a refusal or unknown answer is valid)');
     }
     const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
-    const result = await client.reply(room.roomId, credential, eventId, text, flag(values, 'progress'));
+    const result = await client.reply(room.roomId, credential, eventId, text, flag(values, 'progress'), str(values, 'turn-token'));
     if (flag(values, 'json')) {
         json({eventId: result.event.eventId, replyTo: eventId, final: !flag(values, 'progress')});
     } else {
@@ -983,7 +1068,7 @@ async function guardStop(store: LocalStore, values: Values): Promise<number> {
     }
     try {
         const {room, credential, client, session} = select(store, str(values, 'room'), str(values, 'session'));
-        const pending = await client.pendingRequests(room.roomId, credential, session.participantId);
+        const pending = (await client.pendingRequests(room.roomId, credential, session.participantId)).filter((request) => !request.turnRequired);
         if (pending.length && repeated) {
             for (const request of pending)
                 await client.deliveryFailed(
@@ -1054,7 +1139,7 @@ async function readEvents(store: LocalStore, values: Values): Promise<number> {
             hasMoreRequests: inbox.hasMore,
             latestSeq: page.latestSeq,
             hasMore: page.hasMore,
-            addressedToMe: page.events.filter((event) => event.recipientId === session.participantId).map((event) => event.eventId),
+            addressedToMe: page.events.filter((event) => event.recipientId === session.participantId || event.recipientIds?.includes(session.participantId)).map((event) => event.eventId),
             awaitingYourReply: owed.map((request) => ({
                 eventId: request.eventId,
                 from: names.get(request.from) ?? request.from,

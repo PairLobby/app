@@ -5,6 +5,8 @@ import {runRoomContract, runRedemptionContract} from '@pairlobby/fixtures';
 import type {TestableRoomStore} from '@pairlobby/fixtures';
 import type {StoreFixture} from '../test/store-worker';
 import type {HostedRoomStore} from './store';
+import {ProtocolError} from '@pairlobby/protocol';
+import type {ErrorCode} from '@pairlobby/protocol';
 
 const harness = createTestHarness({workers: [{configPath: 'packages/hosted/test/wrangler.jsonc'}]});
 let namespace: DurableObjectNamespace<StoreFixture>;
@@ -32,7 +34,11 @@ function factory(): TestableRoomStore {
             }
             return async (...args: unknown[]) => {
                 await pending;
-                return stub.call(method as keyof HostedRoomStore, args);
+                const result = await stub.call(method as keyof HostedRoomStore, args);
+                if (!result.ok) {
+                    throw new ProtocolError(result.error.code as ErrorCode, result.error.message);
+                }
+                return JSON.parse(result.value) as unknown;
             };
         }
     });

@@ -182,7 +182,7 @@ export async function runChannel(store: LocalStore, roomRef: string | undefined,
                     }
                 }
                 if (!paused && (Date.now() >= nextCheck || events.events.length)) {
-                    const inbox = await client.pendingRequests(room.roomId, credential, session.participantId);
+                    const inbox = (await client.pendingRequests(room.roomId, credential, session.participantId)).filter((request) => !request.turnRequired);
                     if (stopped) {
                         return;
                     }

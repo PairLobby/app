@@ -14,7 +14,7 @@ export class ReceiptView {
 
     observeRequest(request: MessageRequest): void {
         if (request.receivedAt !== null) {
-            this.add(request.eventId, request.to, request.receivedAt);
+            this.add(request.conversationId ?? request.eventId, request.to, request.receivedAt);
         }
     }
 

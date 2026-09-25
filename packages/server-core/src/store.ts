@@ -56,6 +56,9 @@ export interface RoomStore {
     participantByCredential(roomId: string, credentialHash: string): Promise<ParticipantRecord | null>;
     handovers(roomId: string): Promise<HandoverRecord[]>;
     messageRequest(roomId: string, eventId: string): Promise<MessageRequest | null>;
+    groupRequests(roomId: string, conversationId: string): Promise<MessageRequest[]>;
+    /** Renew a lease without appending a transcript event; compare revision atomically. */
+    updateTurns(room: RoomRecord, requests: MessageRequest[], expectedRevision: number): Promise<void>;
     messageRequests(roomId: string, after: number, limit: number, recipientId?: string): Promise<RequestPage>;
 
     setLifecycle(roomId: string, lifecycle: RoomRecord['lifecycle']): Promise<void>;

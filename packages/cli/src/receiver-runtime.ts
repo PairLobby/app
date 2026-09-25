@@ -1,7 +1,7 @@
 import type {MessageRequest} from '@pairlobby/protocol';
 
 export type RuntimeOptions = {cwd: string; threadId?: string; model?: string; executable?: string; args?: string[]; roomId?: string; sessionId?: string};
-export type RuntimeHooks = {acknowledge: () => Promise<void>; started: (turnId: string) => void; usage: (value: unknown) => void};
+export type RuntimeHooks = {acknowledge: () => Promise<void>; pass?: () => Promise<void>; started: (turnId: string) => void; usage: (value: unknown) => void};
 
 export interface ReceiverRuntime {
     connect(): Promise<string>;

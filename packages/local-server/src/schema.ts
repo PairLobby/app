@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS message_requests (
     body TEXT NOT NULL
 ) STRICT;
 CREATE INDEX IF NOT EXISTS message_requests_pending ON message_requests(room_id,seq) WHERE requires_reply=1 AND response_event_id IS NULL;
+CREATE INDEX IF NOT EXISTS message_requests_group ON message_requests(room_id,json_extract(body,'$.conversationId'));
 
 CREATE INDEX IF NOT EXISTS events_message_id ON events(room_id,json_extract(body,'$.eventId'));
 CREATE INDEX IF NOT EXISTS events_reply_to ON events(room_id,json_extract(body,'$.replyTo')) WHERE json_extract(body,'$.type')='message';

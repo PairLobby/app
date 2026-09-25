@@ -15,6 +15,10 @@ import {
     SetAccessRequest,
     SetLockedRequest,
     SetMutedRequest,
+    TurnClaimRequest,
+    TurnTokenRequest,
+    TurnModeRequest,
+    TurnActionRequest,
     SetExpiryRequest,
     ControlRequest
 } from '@pairlobby/protocol';
@@ -102,6 +106,15 @@ async function route(request: Request, service: RoomService): Promise<Response> 
     }
 
     switch (`${method} ${segments[3]}`) {
+        case 'GET turns':
+            return json(await service.turns.status(roomId, credential));
+        case 'POST turns': {
+            const input = await readOptionalJson(request);
+            if (segments[4] === 'mode') {
+                return json(await service.turns.mode(roomId, credential, TurnModeRequest.parse(input).mode));
+            }
+            return json(await service.turns.control(roomId, credential, TurnActionRequest.parse(input)));
+        }
         case 'POST rejoin':
             return json(await service.rejoin(roomId, credential));
         case 'POST invites': {
@@ -109,6 +122,16 @@ async function route(request: Request, service: RoomService): Promise<Response> 
             return json(await service.mintInvite(roomId, credential, role, reusable, expiresAt, defaultName), 201);
         }
         case 'POST requests': {
+            if (segments[4] && segments[5] === 'claim') {
+                return json(await service.turns.claim(roomId, credential, segments[4], TurnClaimRequest.parse(await request.json()).claimId));
+            }
+            if (segments[4] && segments[5] === 'renew') {
+                return json(await service.turns.renew(roomId, credential, segments[4], TurnTokenRequest.parse(await request.json()).token));
+            }
+            if (segments[4] && segments[5] === 'pass') {
+                await service.turns.pass(roomId, credential, segments[4], TurnTokenRequest.parse(await request.json()).token);
+                return json({ok: true});
+            }
             if (segments[4] && segments[5] === 'ack') {
                 return json(await service.acknowledgeMessage(roomId, credential, segments[4]));
             }
@@ -119,7 +142,7 @@ async function route(request: Request, service: RoomService): Promise<Response> 
                 return json(await service.request(roomId, credential, segments[4]));
             }
             const query = ReadEventsQuery.parse(Object.fromEntries(url.searchParams));
-            return json(await service.requests(roomId, credential, query.after, query.limit, url.searchParams.get('to') ?? undefined));
+            return json(await service.requests(roomId, credential, query.after, query.limit, url.searchParams.get('to') ?? undefined, url.searchParams.get('turns') === '1'));
         }
         case 'GET events': {
             const query = ReadEventsQuery.parse(Object.fromEntries(new URL(request.url).searchParams));

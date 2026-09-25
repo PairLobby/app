@@ -196,7 +196,8 @@ function describeWait(ms: number): string {
 export function renderEvents(events: RoomEvent[], names: Map<string, string>): void {
     for (const event of events) {
         const sender = event.senderId ? (names.get(event.senderId) ?? event.senderId) : 'room';
-        const to = event.recipientId ? ` -> ${names.get(event.recipientId) ?? event.recipientId}` : '';
+        const targets = event.recipientIds ?? (event.recipientId ? [event.recipientId] : []);
+        const to = targets.length ? ` -> ${targets.map((id) => names.get(id) ?? id).join(', ')}` : '';
         out(`#${event.seq}  ${sender}${to}  ${dim(event.type)}`);
         out(`  ${describe(event)}`);
     }
@@ -240,6 +241,8 @@ function describe(event: RoomEvent): string {
             return `adapter delivery failure for ${event.payload.eventId}: ${event.payload.reason} (not an agent answer)`;
         case 'message.received':
             return `acknowledged ${event.payload.eventId}`;
+        case 'conversation.turn_changed':
+            return `speaking turns: ${event.payload.action} (${event.payload.mode})`;
     }
 }
 

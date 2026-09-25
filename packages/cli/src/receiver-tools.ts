@@ -7,7 +7,7 @@ import {CallToolRequestSchema, ListToolsRequestSchema} from '@modelcontextprotoc
 import type {LocalStore} from '@pairlobby/client';
 import {select, UsageError} from './context.js';
 
-/** One scoped receipt tool, without channel notifications, reminders or inbox polling. */
+/** Scoped acknowledgement and pass tools, without notifications or inbox polling. */
 export async function runReceiverTools(store: LocalStore, roomRef: string, sessionRef: string, eventId: string): Promise<number> {
     const {room, session, credential, client} = select(store, roomRef, sessionRef);
     if (session.kind !== 'agent' || session.role === 'guest' || !/^ev_[A-Z0-9]+$/.test(eventId)) {
@@ -21,10 +21,14 @@ export async function runReceiverTools(store: LocalStore, roomRef: string, sessi
         name: 'acknowledge_message',
         description: 'Confirm receipt of the current PairLobby request before doing work. The final answer is sent automatically by the receiver.',
         inputSchema: {type: 'object', properties: {}, additionalProperties: false}
+    }, {
+        name: 'pass_message',
+        description: 'Pass the current speaking turn when you have nothing to add. End your turn after this; no public answer is posted.',
+        inputSchema: {type: 'object', properties: {}, additionalProperties: false}
     }]}));
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
         try {
-            if (request.params.name !== 'acknowledge_message' || Object.keys(request.params.arguments ?? {}).length) {
+            if (!['acknowledge_message', 'pass_message'].includes(request.params.name) || Object.keys(request.params.arguments ?? {}).length) {
                 throw new Error('Only the current request can be acknowledged');
             }
             const pid = Number(readFileSync(join(directory, 'owner.lock'), 'utf8'));
@@ -38,6 +42,13 @@ export async function runReceiverTools(store: LocalStore, roomRef: string, sessi
             }
             await client.acknowledgeMessage(room.roomId, credential, eventId);
             database.prepare('UPDATE jobs SET acknowledged=1 WHERE event_id=?').run(eventId);
+            if (request.params.name === 'pass_message') {
+                if (!database.prepare('SELECT value FROM metadata WHERE key=?').get(`turn:${eventId}`)) {
+                    throw new Error('This request has no speaking turn to pass');
+                }
+                database.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES (?,?)').run(`pass:${eventId}`, '1');
+                return {content: [{type: 'text', text: 'Pass recorded. End your turn now; the receiver will release your slot without posting an answer.'}]};
+            }
             return {content: [{type: 'text', text: 'Request acknowledged. Do the authorized work and give your final answer.'}]};
         } catch (error) {
             return {isError: true, content: [{type: 'text', text: error instanceof Error ? error.message : 'Acknowledgement failed'}]};

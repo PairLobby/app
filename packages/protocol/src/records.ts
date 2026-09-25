@@ -35,6 +35,11 @@ export const RoomRecord = z.object({
     controllerCredentialHash: z.string().length(64),
     /** Bumped by every control request so a late acknowledgement cannot overwrite newer state. */
     controlRevision: z.number().int().nonnegative(),
+    turnMode: z.enum(['sequential', 'parallel']).optional(),
+    turnRevision: z.number().int().nonnegative().optional(),
+    turnChangedAt: z.number().int().nonnegative().optional(),
+    allStartIndex: z.number().int().nonnegative().optional(),
+    nextRequestSeq: z.number().int().nonnegative().optional(),
     nextSeq: z.number().int().min(1),
     retainedEventBytes: z.number().int().nonnegative(),
     retainedEvents: z.number().int().nonnegative()
@@ -136,6 +141,8 @@ export const RoomSnapshot = z.object({
     /** Absent on older relays, which only accept addressed-recipient receipts. */
     messageReceiptScope: z.enum(['recipient', 'members']).optional(),
     rejoinSupported: z.boolean().optional(),
+    groupTurnsSupported: z.boolean().optional(),
+    turnMode: z.enum(['sequential', 'parallel']).optional(),
     name: z.string(),
     lifecycle: RoomLifecycle,
     locked: z.boolean().optional(),

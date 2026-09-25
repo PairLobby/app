@@ -33,6 +33,7 @@ export class ChatTerminal {
     private body = blessed.box({parent: this.screen, top: 0, bottom: 3, left: 0, right: 0, scrollable: true, alwaysScroll: true, mouse: true, tags: false, scrollbar: {ch: '│', style: {fg: 'gray'}}});
     private composer = blessed.box({parent: this.screen, bottom: 1, left: 0, right: 0, height: 1, tags: false});
     private hint = blessed.box({parent: this.screen, bottom: 0, left: 0, right: 0, height: 1, tags: false, style: {fg: 'gray'}});
+    private turns = blessed.box({parent: this.screen, bottom: 2, left: 0, right: 0, height: 1, tags: false, style: {fg: 'cyan'}});
     private popup = blessed.box({parent: this.screen, right: 1, top: 0, width: 58, height: 8, border: 'line', padding: {left: 1, right: 1}, tags: false, hidden: true, mouse: true, style: {fg: 'white', bg: 'black', border: {fg: 'gray'}}});
     private entries: TranscriptEntry[] = [];
     private events = new Set<string>();
@@ -115,6 +116,11 @@ export class ChatTerminal {
         this.renderInput();
     }
 
+    setTurnStatus(text: string): void {
+        this.turns.setContent(stripVTControlCharacters(text));
+        this.renderInput();
+    }
+
     log(text: string): void {
         this.entries.push({text});
         this.rebuild();
@@ -124,7 +130,7 @@ export class ChatTerminal {
         this.receipts.observe(event);
         if (!this.events.has(event.eventId)) {
             this.events.add(event.eventId);
-            if (event.type !== 'message.received') {
+            if (event.type !== 'message.received' && !(event.type === 'conversation.turn_changed' && event.payload.action === 'claimed')) {
                 this.entries.push({text: this.options.format(event), event});
             }
         }
