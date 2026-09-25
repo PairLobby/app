@@ -4,7 +4,7 @@
 import {z} from 'zod';
 
 import {AdapterCapabilities, ParticipantKind, ParticipantRole, RoomEvent, SendEventRequest} from './events.js';
-import {AttemptId, ParticipantId, RoomId, SessionId} from './ids.js';
+import {AttemptId, EventId, ParticipantId, RoomId, SessionId} from './ids.js';
 import {HandoverRecord, RoomSnapshot} from './records.js';
 import {ERROR_CODES} from './errors.js';
 
@@ -14,6 +14,12 @@ export const ROUTES = {
     createInvite: {method: 'POST', path: '/v1/rooms/:roomId/invites'},
     getRoom: {method: 'GET', path: '/v1/rooms/:roomId'},
     rejoinRoom: {method: 'POST', path: '/v1/rooms/:roomId/rejoin'},
+    turnQueue: {method: 'GET', path: '/v1/rooms/:roomId/turns'},
+    turnMode: {method: 'POST', path: '/v1/rooms/:roomId/turns/mode'},
+    turnControl: {method: 'POST', path: '/v1/rooms/:roomId/turns'},
+    claimTurn: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/claim'},
+    renewTurn: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/renew'},
+    passTurn: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/pass'},
     readEvents: {method: 'GET', path: '/v1/rooms/:roomId/events'},
     sendEvent: {method: 'POST', path: '/v1/rooms/:roomId/events'},
     connectTicket: {method: 'POST', path: '/v1/rooms/:roomId/connect-ticket'},
@@ -81,6 +87,10 @@ export type RedeemInviteResponse = z.infer<typeof RedeemInviteResponse>;
 
 export const SetLockedRequest = z.object({locked: z.boolean()});
 export const SetMutedRequest = z.object({muted: z.boolean()});
+export const TurnClaimRequest = z.object({claimId: z.string().min(16).max(128)});
+export const TurnTokenRequest = z.object({token: z.string().min(16).max(128)});
+export const TurnModeRequest = z.object({mode: z.enum(['sequential', 'parallel'])});
+export const TurnActionRequest = z.object({action: z.enum(['skip', 'cancel']), requestId: EventId.optional(), participantId: ParticipantId.optional()});
 
 export const CreateInviteRequest = z.object({
     defaultName: z.string().trim().min(1).max(64).optional(),

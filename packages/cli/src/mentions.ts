@@ -9,14 +9,19 @@ const DIM = '\u001b[2m';
 const RESET = '\u001b[0m';
 
 type MentionParticipant = {participantId: string; displayName: string; revoked: boolean; left: boolean};
-export type RoutedChatMessage = {text: string; recipientId: string | null};
+export type RoutedChatMessage = {text: string; recipientId: string | null; recipientIds?: string[]; allRecipients?: boolean};
 
 /** Resolve explicit mentions anywhere in a message without silently broadcasting typos. */
 export function routeChatMessage(text: string, participants: MentionParticipant[], fallbackRecipientId: string | null = null): RoutedChatMessage {
-    const references = [...text.matchAll(/(?:^|\s)@([\p{L}\p{N}_.-]+)/gu)].map((match) => match[1]!);
+    const references = [...text.matchAll(/(?:^|[\s,])@([\p{L}\p{N}_.-]+)/gu)].map((match) => match[1]!);
     const active = participants.filter((participant) => !participant.revoked && !participant.left);
     const recipients = new Set<string>();
+    let allRecipients = false;
     for (const reference of references) {
+        if (reference.replace(/\.+$/, '').toLowerCase() === 'all') {
+            allRecipients = true;
+            continue;
+        }
         let matches = active.filter((participant) => participant.participantId === reference || participant.displayName.toLowerCase() === reference.toLowerCase());
         // Sentence punctuation is not part of a name unless an exact name exists.
         if (matches.length === 0 && reference.endsWith('.')) {
@@ -31,11 +36,14 @@ export function routeChatMessage(text: string, participants: MentionParticipant[
         }
         recipients.add(matches[0]!.participantId);
     }
-    if (recipients.size > 1) {
-        throw new Error('This message mentions several recipients. Address one participant at a time; message not sent.');
-    }
-    if (references.length && !text.replace(/(?:^|\s)@[\p{L}\p{N}_.-]+/gu, '').replace(/[\s,!:;.?]/g, '')) {
+    if (references.length && !text.replace(/(?:^|[\s,])@[\p{L}\p{N}_.-]+/gu, '').replace(/[\s,!:;.?]/g, '')) {
         throw new Error('Add a message alongside the mention.');
+    }
+    if (allRecipients) {
+        return {text, recipientId: null, allRecipients: true};
+    }
+    if (recipients.size > 1) {
+        return {text, recipientId: null, recipientIds: [...recipients]};
     }
     return {text, recipientId: recipients.values().next().value ?? fallbackRecipientId};
 }
@@ -45,7 +53,7 @@ export function currentMention(line: string, cursor = line.length): string | nul
     const before = line.slice(0, cursor);
     // A mention starts at the beginning or after whitespace, so an email address
     // or a path containing @ never opens the completer.
-    const match = /(?:^|\s)@([\p{L}\p{N}_.-]*)$/u.exec(before);
+    const match = /(?:^|[\s,])@([\p{L}\p{N}_.-]*)$/u.exec(before);
     return match ? match[1]! : null;
 }
 

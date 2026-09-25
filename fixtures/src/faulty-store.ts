@@ -30,6 +30,8 @@ export class FaultyStore implements TestableRoomStore {
             'participantByCredential',
             'handovers',
             'messageRequest',
+            'groupRequests',
+            'updateTurns',
             'messageRequests',
             'setLifecycle',
             'deleteRoom'

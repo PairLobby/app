@@ -4,7 +4,7 @@ import {join, resolve} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {setTimeout as sleep} from 'node:timers/promises';
 import type {LocalStore} from '@pairlobby/client';
-import {ProtocolError} from '@pairlobby/protocol';
+import {ProtocolError, newId} from '@pairlobby/protocol';
 import type {MessageRequest} from '@pairlobby/protocol';
 import {select, UsageError} from './context.js';
 import {CodexReceiver} from './codex-receiver.js';
@@ -181,8 +181,16 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
     process.once('SIGTERM', stop);
     process.once('SIGINT', stop);
 
+    function savedValue(key: string): string | undefined {
+        return database.prepare('SELECT value FROM metadata WHERE key=?').get(key)?.['value'] as string | undefined;
+    }
+
+    function saveValue(key: string, value: string): void {
+        database.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES (?,?)').run(key, value);
+    }
+
     async function flush(): Promise<void> {
-        const jobs = database.prepare("SELECT * FROM jobs WHERE phase IN ('reply', 'failed')").all() as Job[];
+        const jobs = database.prepare("SELECT * FROM jobs WHERE phase IN ('reply', 'failed', 'pass')").all() as Job[];
         if (jobs.length === 0) {
             return;
         }
@@ -192,12 +200,24 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
             return;
         }
         for (const job of jobs) {
-            if (job.phase === 'reply') {
-                await client.reply(room.roomId, credential, job.event_id, job.answer!);
-            } else {
-                await client.deliveryFailed(room.roomId, credential, job.event_id, job.failure ?? 'Execution failed');
+            const token = savedValue(`turn:${job.event_id}`);
+            try {
+                if (job.phase === 'reply') {
+                    await client.reply(room.roomId, credential, job.event_id, job.answer!, false, token);
+                } else if (job.phase === 'pass' && token) {
+                    await client.passTurn(room.roomId, credential, job.event_id, token);
+                } else {
+                    await client.deliveryFailed(room.roomId, credential, job.event_id, job.failure ?? 'Execution failed', token);
+                }
+                database.prepare("UPDATE jobs SET phase='done' WHERE event_id=?").run(job.event_id);
+            } catch (error) {
+                if (error instanceof ProtocolError && ['turn_required', 'turn_expired'].includes(error.code)) {
+                    database.prepare("UPDATE jobs SET phase='withheld', failure=? WHERE event_id=?").run('Speaking turn ended; saved output was not posted.', job.event_id);
+                    status({detail: 'Speaking turn ended; saved output was not posted.'});
+                } else {
+                    throw error;
+                }
             }
-            database.prepare("UPDATE jobs SET phase='done' WHERE event_id=?").run(job.event_id);
         }
     }
 
@@ -208,7 +228,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         if (!member || member.paused || member.muted || member.revoked || member.left) {
             return;
         }
-        const current = await client.request(room.roomId, credential, request.eventId);
+        let current = await client.request(room.roomId, credential, request.eventId);
         if (current.responseEventId || current.failureAt || !current.requiresReply) {
             return;
         }
@@ -217,6 +237,35 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         if (job.phase !== 'queued') {
             return;
         }
+        let token: string | undefined;
+        if (snapshot.groupTurnsSupported) {
+            const claimId = savedValue(`claim:${request.eventId}`) ?? newId('event');
+            saveValue(`claim:${request.eventId}`, claimId);
+            const grant = await client.claimTurn(room.roomId, credential, request.eventId, claimId);
+            if (grant.state !== 'granted') {
+                status({state: grant.state === 'stalled' ? 'stalled' : 'waiting', eventId: request.eventId, detail: 'Waiting for a speaking turn.'});
+                return;
+            }
+            token = grant.token!;
+            saveValue(`turn:${request.eventId}`, token);
+            current = grant.request ?? current;
+        }
+        let leaseFailure: Error | undefined;
+        let renewing = false;
+        let renewal: Promise<void> = Promise.resolve();
+        const heartbeat = token ? setInterval(() => {
+            if (renewing) {
+                return;
+            }
+            renewing = true;
+            renewal = client.renewTurn(room.roomId, credential, request.eventId, token!).then(() => {}).catch((error: unknown) => {
+                if (error instanceof ProtocolError && error.code === 'turn_conflict') {
+                    return;
+                }
+                leaseFailure = error instanceof Error ? error : new Error('Speaking turn could not be renewed');
+                runtime?.close();
+            }).finally(() => { renewing = false; });
+        }, 10_000) : undefined;
         database.prepare("UPDATE jobs SET phase='running' WHERE event_id=?").run(request.eventId);
         status({state: 'working', eventId: request.eventId, detail: ''});
         try {
@@ -240,6 +289,14 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                     await client.acknowledgeMessage(room.roomId, credential, request.eventId);
                     database.prepare('UPDATE jobs SET acknowledged=1 WHERE event_id=?').run(request.eventId);
                 },
+                pass: async () => {
+                    if (!token) {
+                        throw new Error('This relay does not support passing turns');
+                    }
+                    await client.acknowledgeMessage(room.roomId, credential, request.eventId);
+                    database.prepare('UPDATE jobs SET acknowledged=1 WHERE event_id=?').run(request.eventId);
+                    saveValue(`pass:${request.eventId}`, '1');
+                },
                 started: (turnId) => { database.prepare('UPDATE jobs SET turn_id=? WHERE event_id=?').run(turnId, request.eventId); },
                 usage: (usage) => status({usage})
             });
@@ -249,14 +306,20 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                 }
                 throw new Error('Qwen completed without explicitly acknowledging the request; no receipt or reply was fabricated.');
             }
+            if (leaseFailure) {
+                throw leaseFailure;
+            }
             // Persist before transmission; retries reuse the server's reply idempotency key.
-            database.prepare("UPDATE jobs SET phase='reply', answer=? WHERE event_id=?").run(answer, request.eventId);
+            database.prepare('UPDATE jobs SET phase=?, answer=? WHERE event_id=?').run(savedValue(`pass:${request.eventId}`) === '1' ? 'pass' : 'reply', answer, request.eventId);
         } catch (error) {
             const reason = error instanceof Error ? error.message : 'Runtime failed';
             database.prepare("UPDATE jobs SET phase='failed', failure=? WHERE event_id=?").run(reason, request.eventId);
             runtime?.close();
             runtime = undefined;
             status({detail: reason});
+        } finally {
+            clearInterval(heartbeat);
+            await renewal;
         }
         await flush();
         status({state: 'available', eventId: ''});
@@ -274,16 +337,24 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                 if (!member || member.revoked || member.left) {
                     break;
                 }
+                let waiting = false;
                 if (!member.paused && !member.muted) {
                     const requests = await client.pendingRequests(room.roomId, credential, session.participantId);
                     for (const request of requests) {
                         if (stopped) {
                             break;
                         }
+                        if (request.failureAt) {
+                            continue;
+                        }
                         await execute(request);
+                        if (['waiting', 'stalled'].includes(state.state) && state.eventId === request.eventId) {
+                            waiting = true;
+                            break;
+                        }
                     }
                 }
-                status({state: member.paused || member.muted ? 'paused' : 'available'});
+                status({state: member.paused || member.muted ? 'paused' : waiting ? state.state : 'available', eventId: waiting ? state.eventId ?? '' : '', detail: !waiting && state.detail === 'Waiting for a speaking turn.' ? '' : state.detail ?? ''});
                 failures = 0;
                 await client.waitForChange(room.roomId, credential, snapshot.latestSeq, 300_000, 1000);
             } catch (error) {

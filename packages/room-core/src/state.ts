@@ -20,6 +20,7 @@ export interface Mutation {
     upsertHandovers: HandoverRecord[];
     upsertControls: ControlRecord[];
     upsertRequests?: MessageRequest[];
+    expectedTurnRevision?: number;
 }
 
 export interface CoreContext {
@@ -79,6 +80,8 @@ export function toSnapshot(view: RoomView): RoomSnapshot {
         roomId: view.room.roomId,
         messageReceiptScope: 'members',
         rejoinSupported: true,
+        groupTurnsSupported: true,
+        turnMode: view.room.turnMode ?? 'sequential',
         name: view.room.name,
         lifecycle: view.room.lifecycle,
         locked: view.room.locked ?? false,

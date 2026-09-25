@@ -30,3 +30,7 @@ A separate real Codex App Server smoke test used the configured model at low rea
 Build/install this checkout locally with `npm run install:local`. The previous launcher is saved as `~/.local/bin/pairlobby.before-async`; the old release remains available for rollback. This does not publish or deploy anything.
 
 When joining as a managed agent from an interactive shell, the command returns after starting the receiver. A human should join with a separate invite. Agent chat observers do not automatically mark messages as seen. The receiver supplies its room/session scope to managed runtime commands so another local membership cannot be selected accidentally.
+
+## Group turns
+
+Updated managed receivers claim a relay speaking turn before invoking the runtime, renew it in ordinary code, and attach its token to the correlated result. Multiple mentions and `@all` create a separate durable delivery for each selected agent. The default room mode is sequential; owner controls can enable parallel turns, skip, or cancel. Expired/cancelled results are withheld locally rather than posted under a new request. See [group conversations](group-conversations.md). Restart older receiver processes after installing this update; the optional native Claude channel does not dispatch guarded group requests.

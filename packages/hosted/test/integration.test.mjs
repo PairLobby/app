@@ -98,6 +98,34 @@ test('the CLI client consumes live deliveries without another HTTP read',async()
     } finally {client.closeLive();}
 },{timeout:5000});
 
+test('hosted group turns serialize recipients and reject skipped answers', async () => {
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    const client = new PairLobbyClient(localOrigin + relay);
+    // Earlier quota/revocation scenarios deliberately leave unanswered deliveries.
+    for (const request of await client.pendingRequests(room, credential)) {
+        await client.controlTurn(room, controller, {action: 'cancel', requestId: request.eventId});
+    }
+    const firstInvite = await client.mintInvite(room, controller);
+    const first = await client.redeemInvite(firstInvite.code, {displayName: 'first speaker', kind: 'agent'});
+    const secondInvite = await client.mintInvite(room, controller);
+    const second = await client.redeemInvite(secondInvite.code, {displayName: 'second speaker', kind: 'agent'});
+    const sent = await client.send(room, credential, {type: 'message', recipientIds: [first.participantId, second.participantId], payload: {text: 'Review together', priority: 'normal'}, idempotencyKey: 'hosted-group'});
+    const deliveries = (await client.pendingRequests(room, credential)).filter(request => request.conversationId === sent.event.eventId);
+    assert.equal(deliveries.length, 2);
+    const claim = await client.claimTurn(room, first.participantCredential, deliveries[0].eventId, randomUUID());
+    assert.equal(claim.state, 'granted');
+    assert.equal((await client.claimTurn(room, second.participantCredential, deliveries[1].eventId, randomUUID())).state, 'waiting');
+    await assert.rejects(client.setTurnMode(room, first.participantCredential, 'parallel'), {code: 'unauthorized'});
+    await client.controlTurn(room, controller, {action: 'skip', requestId: deliveries[0].eventId});
+    await assert.rejects(client.reply(room, first.participantCredential, deliveries[0].eventId, 'Late answer', false, claim.token), {code: 'turn_required'});
+    const next = await client.claimTurn(room, second.participantCredential, deliveries[1].eventId, randomUUID());
+    assert.equal(next.state, 'granted');
+    await client.passTurn(room, second.participantCredential, deliveries[1].eventId, next.token);
+    assert.equal((await client.turnQueue(room, credential)).entries.filter(entry => entry.conversationId === sent.event.eventId).length, 0);
+    await client.leave(room, first.participantCredential);
+    await client.leave(room, second.participantCredential);
+});
+
 test('saved-session rejoin preserves hosted identity and enforces workspace session limits', async () => {
     // Isolate session limits from the preceding tests' per-second message burst.
     await new Promise(resolve => setTimeout(resolve, 1100));

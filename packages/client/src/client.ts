@@ -6,6 +6,10 @@ import {PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, ServerFrame, n
 import type {
     AdapterCapabilities,
     MessageRequest,
+    TurnAction,
+    TurnGrant,
+    TurnMode,
+    TurnQueue,
     RequestPage,
     CreateInviteResponse,
     ErrorCode,
@@ -129,7 +133,25 @@ export class PairLobbyClient {
     }
 
     requests(roomId: string, credential: string, after = 0, limit = 100, recipientId?: string): Promise<RequestPage> {
-        return this.call('GET', `/v1/rooms/${roomId}/requests?after=${after}&limit=${limit}${recipientId ? `&to=${encodeURIComponent(recipientId)}` : ''}`, credential);
+        return this.call('GET', `/v1/rooms/${roomId}/requests?turns=1&after=${after}&limit=${limit}${recipientId ? `&to=${encodeURIComponent(recipientId)}` : ''}`, credential);
+    }
+    turnQueue(roomId: string, credential: string): Promise<TurnQueue> {
+        return this.call('GET', `/v1/rooms/${roomId}/turns`, credential);
+    }
+    setTurnMode(roomId: string, credential: string, mode: TurnMode): Promise<TurnQueue> {
+        return this.call('POST', `/v1/rooms/${roomId}/turns/mode`, credential, {mode});
+    }
+    controlTurn(roomId: string, credential: string, action: TurnAction): Promise<TurnQueue> {
+        return this.call('POST', `/v1/rooms/${roomId}/turns`, credential, action);
+    }
+    claimTurn(roomId: string, credential: string, requestId: string, claimId: string): Promise<TurnGrant> {
+        return this.call('POST', `/v1/rooms/${roomId}/requests/${requestId}/claim`, credential, {claimId});
+    }
+    renewTurn(roomId: string, credential: string, requestId: string, token: string): Promise<TurnGrant> {
+        return this.call('POST', `/v1/rooms/${roomId}/requests/${requestId}/renew`, credential, {token});
+    }
+    async passTurn(roomId: string, credential: string, requestId: string, token: string): Promise<void> {
+        await this.call('POST', `/v1/rooms/${roomId}/requests/${requestId}/pass`, credential, {token});
     }
     async pendingRequests(roomId: string, credential: string, recipientId?: string): Promise<MessageRequest[]> {
         const requests: MessageRequest[] = [];
@@ -154,14 +176,14 @@ export class PairLobbyClient {
     async acknowledgeMessage(roomId: string, credential: string, eventId: string): Promise<void> {
         await this.call('POST', `/v1/rooms/${roomId}/requests/${eventId}/ack`, credential, {});
     }
-    async deliveryFailed(roomId: string, credential: string, eventId: string, reason: string): Promise<void> {
+    async deliveryFailed(roomId: string, credential: string, eventId: string, reason: string, turnToken?: string): Promise<void> {
         const request = await this.request(roomId, credential, eventId);
         if (request.failureAt || request.responseEventId) {
             return;
         }
-        await this.send(roomId, credential, {type: 'message.delivery_failed', payload: {eventId, reason}, idempotencyKey: `failure-${eventId}`});
+        await this.send(roomId, credential, {type: 'message.delivery_failed', payload: {eventId: request.eventId, reason}, idempotencyKey: `failure-${request.eventId}`, ...(turnToken ? {turnToken} : {})});
     }
-    async reply(roomId: string, credential: string, eventId: string, text: string, progress = false): Promise<SendEventResponse> {
+    async reply(roomId: string, credential: string, eventId: string, text: string, progress = false, turnToken?: string): Promise<SendEventResponse> {
         const target = await this.request(roomId, credential, eventId);
         if (target.receivedAt === null) {
             await this.acknowledgeMessage(roomId, credential, eventId);
@@ -169,9 +191,10 @@ export class PairLobbyClient {
         return this.send(roomId, credential, {
             type: 'message',
             recipientId: target.from,
-            replyTo: eventId,
+            replyTo: target.eventId,
+            ...(turnToken ? {turnToken} : {}),
             payload: {text, priority: 'normal', responseStage: progress ? 'progress' : 'final'},
-            idempotencyKey: progress ? newId('event') : `reply-${eventId}`
+            idempotencyKey: progress ? newId('event') : `reply-${target.eventId}`
         });
     }
 

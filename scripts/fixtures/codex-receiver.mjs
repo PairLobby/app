@@ -2,6 +2,7 @@
 // Protocol fixture: no model provider or network calls.
 import {createInterface} from 'node:readline';
 import {appendFileSync} from 'node:fs';
+import {setTimeout as sleep} from 'node:timers/promises';
 
 const send = (message) => process.stdout.write(JSON.stringify(message) + '\n');
 let turn = '';
@@ -27,10 +28,15 @@ for await (const line of createInterface({input: process.stdin})) {
     } else if (message.id === 'approval') {
         appendFileSync(process.env.PAIRLOBBY_TEST_RECORD, `approval:${message.result.decision}\n`);
         send({id: 'ack', method: 'item/tool/call', params: {threadId: 'test-thread', turnId: turn, tool: 'pairlobby_acknowledge', arguments: {}}});
-    } else if (message.id === 'ack') {
+    } else if (message.id === 'ack' || message.id === 'pass') {
         if (!message.result.success) {
             throw new Error('Acknowledgement failed');
         }
+        if (message.id === 'ack' && text.includes('codex-pass')) {
+            send({id: 'pass', method: 'item/tool/call', params: {threadId: 'test-thread', turnId: turn, tool: 'pairlobby_pass', arguments: {}}});
+            continue;
+        }
+        await sleep(Number(process.env.PAIRLOBBY_TEST_DELAY_MS ?? 0));
         send({method: 'item/completed', params: {threadId: 'test-thread', turnId: turn, item: {type: 'agentMessage', phase: 'final_answer', text: 'Fixture answer: ' + text}}});
         send({method: 'turn/completed', params: {threadId: 'test-thread', turn: {id: turn, status: 'completed'}}});
     }

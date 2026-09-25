@@ -2,7 +2,7 @@
 //! transaction: the JavaScript event loop is not a substitute for SQL isolation
 //! once two requests interleave around an await.
 
-import {ProtocolError} from '@pairlobby/protocol';
+import {ProtocolError, mergeMessageRequest} from '@pairlobby/protocol';
 import {SCHEMA} from './schema';
 
 import type {HandoverRecord, MessageRequest, RequestPage, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
@@ -57,9 +57,12 @@ export class HostedRoomStore implements RoomStore {
 
     async apply(mutation: Mutation, idempotency: IdempotencyKey): Promise<void> {
         this.transaction(() => {
+            if (mutation.expectedTurnRevision !== undefined) {
+                this.checkTurnRevision(mutation.room, mutation.expectedTurnRevision);
+            }
             const current = this.db.prepare('SELECT body FROM rooms WHERE room_id = ?').get(mutation.room.roomId) as BodyRow | undefined;
             if (!current || JSON.parse(current.body).nextSeq !== mutation.appendEvent.seq) {
-                throw new ProtocolError('server_unavailable', 'concurrent room mutation; retry with the same idempotency key');
+                throw new ProtocolError(mutation.expectedTurnRevision === undefined ? 'server_unavailable' : 'turn_conflict', 'concurrent room mutation; retry with the same idempotency key');
             }
             this.beforeApply(mutation);
             this.db.prepare('UPDATE rooms SET body = ? WHERE room_id = ?').run(JSON.stringify(mutation.room), mutation.room.roomId);
@@ -191,6 +194,32 @@ export class HostedRoomStore implements RoomStore {
         const row = this.db.prepare('SELECT body FROM message_requests WHERE room_id=? AND event_id=?').get(roomId, eventId) as BodyRow | undefined;
         return row ? (JSON.parse(row.body) as MessageRequest) : null;
     }
+    async groupRequests(roomId: string, conversationId: string): Promise<MessageRequest[]> {
+        const rows = this.db.prepare("SELECT body FROM message_requests WHERE room_id=? AND json_extract(body,'$.conversationId')=? ORDER BY seq").all(roomId, conversationId) as unknown as BodyRow[];
+        return rows.map((row) => JSON.parse(row.body) as MessageRequest);
+    }
+
+    private checkTurnRevision(room: RoomRecord, expected: number): void {
+        const row = this.db.prepare('SELECT body FROM rooms WHERE room_id=?').get(room.roomId) as BodyRow | undefined;
+        if (!row || (JSON.parse(row.body).turnRevision ?? 0) !== expected) {
+            throw new ProtocolError('turn_conflict', 'the room turn changed; retry');
+        }
+    }
+
+    async updateTurns(room: RoomRecord, requests: MessageRequest[], expectedRevision: number): Promise<void> {
+        this.transaction(() => {
+            this.checkTurnRevision(room, expectedRevision);
+            const current = this.db.prepare('SELECT body FROM rooms WHERE room_id=?').get(room.roomId) as BodyRow | undefined;
+            if (!current || JSON.parse(current.body).nextSeq !== room.nextSeq) {
+                throw new ProtocolError('turn_conflict', 'the room changed while renewing the turn');
+            }
+            this.db.prepare('UPDATE rooms SET body=? WHERE room_id=?').run(JSON.stringify(room), room.roomId);
+            for (const request of requests) {
+                this.writeRequest(request);
+            }
+        });
+    }
+
     async messageRequests(roomId: string, after: number, limit: number, recipientId?: string): Promise<RequestPage> {
         const rows = this.db
             .prepare(
@@ -203,16 +232,10 @@ export class HostedRoomStore implements RoomStore {
         // Keep concurrent receipt/progress writes from erasing an accepted reply.
         const old = this.db.prepare('SELECT body FROM message_requests WHERE event_id=?').get(request.eventId) as BodyRow | undefined;
         const previous = old ? (JSON.parse(old.body) as MessageRequest) : null;
-        const merged = {
-            ...request,
-            receivedAt: previous?.receivedAt ?? request.receivedAt,
-            responseEventId: previous?.responseEventId ?? request.responseEventId,
-            respondedAt: previous?.respondedAt ?? request.respondedAt,
-            progressAt: Math.max(previous?.progressAt ?? 0, request.progressAt ?? 0) || null
-        };
+        const merged = mergeMessageRequest(previous, request);
         this.db
             .prepare(
-                'INSERT INTO message_requests(event_id,room_id,seq,received_at,response_event_id,requires_reply,body) VALUES(?,?,?,?,?,?,?) ON CONFLICT(event_id) DO UPDATE SET received_at=excluded.received_at,response_event_id=excluded.response_event_id,body=excluded.body'
+                'INSERT INTO message_requests(event_id,room_id,seq,received_at,response_event_id,requires_reply,body) VALUES(?,?,?,?,?,?,?) ON CONFLICT(event_id) DO UPDATE SET received_at=excluded.received_at,response_event_id=excluded.response_event_id,requires_reply=excluded.requires_reply,body=excluded.body'
             )
             .run(merged.eventId, merged.roomId, merged.seq, merged.receivedAt, merged.responseEventId, merged.requiresReply ? 1 : 0, JSON.stringify(merged));
     }

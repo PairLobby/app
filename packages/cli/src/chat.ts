@@ -13,6 +13,8 @@ import {LocalStore, PairLobbyClient} from '@pairlobby/client';
 import {pickExpiry} from './picker.js';
 import {isRoomCommand, runRoomCommand} from './chat-commands.js';
 import {applyMention, commonPrefix, currentMention, matchNames, renderSuggestions, routeChatMessage} from './mentions.js';
+import type {RoutedChatMessage} from './mentions.js';
+import {formatTurnQueue} from './turn-commands.js';
 
 type ParticipantMatch = {id: string; name: string} | null;
 
@@ -40,6 +42,11 @@ export interface ChatOptions {
 
 const HELP = `  <message>          send to the room
   @name anywhere    send to that participant (e.g. Hey @codex, hello)
+  @codex @claude    ask multiple agents; @all asks all eligible agents
+  /turns            show the speaking queue
+  /turns sequential|parallel  set response mode (owner)
+  /turns skip [name or request]  skip a queued or stalled turn (owner)
+  /turns cancel [request]  cancel the active group round (owner)
   /to <name>         address every later message to one participant
   /to                clear the default recipient
   /seen [message]    receipt details (latest sent message by default; F2 also works)
@@ -76,9 +83,9 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
 
     /** Active members other than you: the only names worth completing to. */
     function mentionable(): string[] {
-        return snapshot.participants
+        return ['all', ...snapshot.participants
             .filter((participant) => !participant.revoked && !participant.left && participant.participantId !== participantId)
-            .map((participant) => participant.displayName);
+            .map((participant) => participant.displayName)];
     }
 
     const view = new ChatTerminal({
@@ -150,13 +157,18 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
 
         header(snapshot, participantId, sessionId, emit);
 
-        async function send(text: string, to: string | null): Promise<void> {
+        async function send(routed: RoutedChatMessage): Promise<void> {
             try {
+                if ((routed.recipientIds || routed.allRecipients) && !snapshot.groupTurnsSupported) {
+                    throw new Error('Update this relay before sending to multiple agents.');
+                }
                 const result = await client.send(roomId, credential, {
                     type: 'message',
-                    payload: {text, priority: 'normal'},
+                    payload: {text: routed.text, priority: 'normal'},
                     idempotencyKey: newId('event'),
-                    ...(to ? {recipientId: to} : {})
+                    ...(routed.recipientId ? {recipientId: routed.recipientId} : {}),
+                    ...(routed.recipientIds ? {recipientIds: routed.recipientIds} : {}),
+                    ...(routed.allRecipients ? {allRecipients: true} : {})
                 });
                 // Shown immediately and marked seen, so the poll does not print it twice.
                 seen.add(result.event.eventId);
@@ -310,7 +322,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
 
             try {
                 const routed = routeChatMessage(line, snapshot.participants, recipient?.id ?? null);
-                void send(routed.text, routed.recipientId);
+                void send(routed);
             } catch (error) {
                 emit(`${DIM}  ${error instanceof Error ? error.message : String(error)}${RESET}`);
             }
@@ -379,16 +391,19 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                     cursor = nextCursor;
                     store.updateCursor(roomId, sessionId, cursor);
                 }
-                if (!loadedRequests || page.events.length) {
+                if (!loadedRequests || page.events.length || snapshot.groupTurnsSupported) {
                     pendingRequests = (await client.requests(roomId, credential)).requests;
                     loadedRequests = true;
+                }
+                if (snapshot.groupTurnsSupported) {
+                    view.setTurnStatus(formatTurnQueue(await client.turnQueue(roomId, credential)));
                 }
                 for (const request of pendingRequests) {
                     view.updateRequest(request);
                     const state = requestState(request);
                     if (shownRequestStates.get(request.eventId) !== state) {
                         shownRequestStates.set(request.eventId, state);
-                        if (showIds || state.includes('overdue') || state === 'failed') {
+                        if (showIds || state.includes('overdue') || state === 'failed' || state === 'stalled') {
                             emit(formatRequestStatus(request, names, showIds));
                         }
                     }
@@ -487,7 +502,8 @@ export function format(event: RoomEvent, names: Map<string, string>, meParticipa
     const mine = event.senderId === meParticipantId;
 
     if (event.type === 'message') {
-        const to = event.recipientId ? `${DIM} → ${names.get(event.recipientId) ?? event.recipientId}${RESET}` : '';
+        const targets = event.recipientIds ?? (event.recipientId ? [event.recipientId] : []);
+        const to = targets.length ? `${DIM} → ${targets.map((id) => names.get(id) ?? id).join(', ')}${RESET}` : '';
         const who = mine ? `${DIM}${sender}${RESET}` : `${BOLD}${sender}${RESET}`;
         const id = showIds && event.senderId ? `${DIM} ${event.senderId}${RESET}` : '';
         const thread = !showIds ? '' : event.replyTo
@@ -506,9 +522,10 @@ export function formatRequestStatus(request: MessageRequest, names: Map<string, 
         ack_overdue: 'Acknowledgement overdue',
         reply_overdue: 'Reply overdue',
         answered: 'Answered',
-        failed: 'Delivery failed'
+        failed: 'Delivery failed',
+        waiting_turn: 'Waiting for a speaking turn', answering: 'Answering', stalled: 'Speaking turn stalled', passed: 'Passed', skipped: 'Skipped', cancelled: 'Cancelled'
     };
-    return `${state.includes('overdue') || state === 'failed' ? 'ATTENTION: ' : ''}${names.get(request.from) ?? request.from} → ${names.get(request.to) ?? request.to}: ${descriptions[state]}${showIds ? ` [${request.eventId}]` : ''}`;
+    return `${state.includes('overdue') || state === 'failed' || state === 'stalled' ? 'ATTENTION: ' : ''}${names.get(request.from) ?? request.from} → ${names.get(request.to) ?? request.to}: ${descriptions[state]}${showIds ? ` [${request.eventId}]` : ''}`;
 }
 
 function systemLine(event: RoomEvent, names: Map<string, string>, sender: string, showIds = false): string {
@@ -537,6 +554,13 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
             return `${names.get(event.payload.participantId) ?? event.payload.participantId} was ${event.payload.muted ? 'muted' : 'unmuted'}`;
         case 'room.closed':
             return 'the room was closed';
+        case 'conversation.turn_changed': {
+            const agents = event.payload.participantIds.map((id) => names.get(id) ?? id).join(', ');
+            if (event.payload.action === 'mode') {
+                return `reply mode is now ${event.payload.mode}`;
+            }
+            return `${agents}: turn ${event.payload.action}`;
+        }
         case 'room.renamed':
             return `${sender} renamed the room to ${event.payload.name}`;
         case 'room.expiry_changed':

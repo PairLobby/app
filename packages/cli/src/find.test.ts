@@ -67,7 +67,7 @@ test('find CLI reports fresh members and latest message without reading on behal
         name: 'renamed', createdAt: created.room.createdAt, reachable: true, active: true, participantCount: 2, presence: 'not_tracked',
         lastMessage: {eventId: message.event.eventId, senderId: agent.participantId, senderName: 'helper', text: 'Ready to help'}, lastMessageStatus: 'found'
     });
-    expect(result.rooms[0]!.participants!.map((participant) => participant.displayName)).toEqual(['owner', 'helper']);
+    expect(result.rooms[0]!.participants!.map((participant) => participant.displayName).sort()).toEqual(['helper', 'owner']);
     expect((await client.request(created.roomId, created.participantCredential, message.event.eventId)).receivedAt).toBeNull();
     expect(store.room(created.roomId)!.sessions.find((session) => session.sessionId === sessionId)!.lastReadSeq).toBe(0);
     expect(['rooms.json', 'credentials.json'].map((file) => readFileSync(join(store.directory, file), 'utf8'))).toEqual(files);

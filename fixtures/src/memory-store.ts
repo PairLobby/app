@@ -2,6 +2,7 @@
 //! stores are measured against, and it is deliberately strict: `apply` either
 //! lands every part of a mutation or throws before touching anything.
 
+import {ProtocolError, mergeMessageRequest} from '@pairlobby/protocol';
 import type {HandoverRecord, MessageRequest, RequestPage, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 import type {EventPage, IdempotencyRecord, RoomStore} from '@pairlobby/server-core';
@@ -37,19 +38,19 @@ export class MemoryStore implements RoomStore {
 
     async apply(mutation: Mutation, idempotency: IdempotencyKey): Promise<void> {
         const table = this.require(mutation.room.roomId);
+        if (mutation.expectedTurnRevision !== undefined && (table.room.turnRevision ?? 0) !== mutation.expectedTurnRevision) {
+            throw new ProtocolError('turn_conflict', 'the room turn changed; retry');
+        }
+        if (table.room.nextSeq !== mutation.appendEvent.seq) {
+            throw new ProtocolError(mutation.expectedTurnRevision === undefined ? 'server_unavailable' : 'turn_conflict', 'concurrent room mutation; retry with the same idempotency key');
+        }
         table.room = mutation.room;
         for (const participant of mutation.upsertParticipants) table.participants = upsert(table.participants, participant, 'participantId');
         for (const handover of mutation.upsertHandovers) table.handovers = upsert(table.handovers, handover, 'handoverId');
         for (const control of mutation.upsertControls) table.controls = upsert(table.controls, control, 'targetParticipantId');
         for (const request of mutation.upsertRequests ?? []) {
             const previous = this.requests.get(request.eventId);
-            this.requests.set(request.eventId, {
-                ...request,
-                receivedAt: previous?.receivedAt ?? request.receivedAt,
-                responseEventId: previous?.responseEventId ?? request.responseEventId,
-                respondedAt: previous?.respondedAt ?? request.respondedAt,
-                progressAt: Math.max(previous?.progressAt ?? 0, request.progressAt ?? 0) || null
-            });
+            this.requests.set(request.eventId, mergeMessageRequest(previous, request));
         }
         table.events.push(mutation.appendEvent);
         if (idempotency) {
@@ -130,6 +131,21 @@ export class MemoryStore implements RoomStore {
         const value = this.requests.get(eventId);
         return value?.roomId === roomId ? value : null;
     }
+    async groupRequests(roomId: string, conversationId: string): Promise<MessageRequest[]> {
+        return [...this.requests.values()].filter((request) => request.roomId === roomId && request.conversationId === conversationId).sort((a, b) => a.seq - b.seq);
+    }
+
+    async updateTurns(room: RoomRecord, requests: MessageRequest[], expectedRevision: number): Promise<void> {
+        const table = this.require(room.roomId);
+        if ((table.room.turnRevision ?? 0) !== expectedRevision || table.room.nextSeq !== room.nextSeq) {
+            throw new ProtocolError('turn_conflict', 'the room turn changed; retry');
+        }
+        table.room = room;
+        for (const request of requests) {
+            this.requests.set(request.eventId, mergeMessageRequest(this.requests.get(request.eventId), request));
+        }
+    }
+
     async messageRequests(roomId: string, after: number, limit: number, recipientId?: string): Promise<RequestPage> {
         const records = [...this.requests.values()]
             .filter((r) => r.roomId === roomId && r.seq > after && r.requiresReply && !r.responseEventId && (!recipientId || r.to === recipientId))

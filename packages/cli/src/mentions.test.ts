@@ -26,12 +26,20 @@ describe('routing complete chat messages', () => {
         expect(routeChatMessage('hello @codex', PARTICIPANTS, 'pt_claude').recipientId).toBe('pt_codex');
     });
 
-    test('rejects ambiguous, missing and multiple recipients instead of broadcasting or choosing one', () => {
+    test('rejects ambiguous and missing recipients instead of broadcasting or choosing one', () => {
         expect(() => routeChatMessage('Hey @missing, hello', PARTICIPANTS)).toThrow('not sent');
         expect(() => routeChatMessage('Hey @codex, hello', [...PARTICIPANTS, {...PARTICIPANTS[1]!, participantId: 'pt_other'}])).toThrow('Several');
-        expect(() => routeChatMessage('Hey @codex and @claude', PARTICIPANTS)).toThrow('several recipients');
         expect(() => routeChatMessage('@codex', PARTICIPANTS)).toThrow('Add a message');
         expect(() => routeChatMessage('Hey @codex, hello', PARTICIPANTS.map((participant) => ({...participant, left: true})))).toThrow('not sent');
+    });
+
+    test('multiple mentions preserve order, deduplicate and support all without implicit broadcasts', () => {
+        expect(routeChatMessage('Hey @codex,@claude and @CODEX, review this', PARTICIPANTS)).toMatchObject({recipientId: null, recipientIds: ['pt_codex', 'pt_claude']});
+        expect(routeChatMessage('@all review this', PARTICIPANTS)).toEqual({text: '@all review this', recipientId: null, allRecipients: true});
+        expect(() => routeChatMessage('@all @missing please review', PARTICIPANTS)).toThrow('not sent');
+        expect(() => routeChatMessage('@codex @claude', PARTICIPANTS)).toThrow('Add a message');
+        expect(() => routeChatMessage('@all', PARTICIPANTS)).toThrow('Add a message');
+        expect(routeChatMessage('hello everyone', PARTICIPANTS)).toEqual({text: 'hello everyone', recipientId: null});
     });
 });
 

@@ -77,7 +77,7 @@ pairlobby join K7MP-4QWX --as <your-name> --json               # join with a cod
 pairlobby invite                                                # mint a code for someone else
 ```
 
-For automatic receiving when detection is unavailable, add `--runtime codex`, `--runtime claude`, or `--runtime qwen`. Qwen Code should always pass `--runtime qwen` explicitly; its display name does not select the runtime. Run from the intended project, or use `--workdir /path/to/project` when first starting its receiver. `--as codex` is only a display name. If the JSON result has an available `receiver`, the calling conversation can finish; do not start a reader or listening subagent. This receiver answers through its own managed runtime conversation, not the calling conversation.
+For automatic receiving when detection is unavailable, add `--runtime codex`, `--runtime claude`, or `--runtime qwen`. Qwen Code should always pass `--runtime qwen` explicitly; its display name does not select the runtime. Run from the intended project, or use `--workdir /path/to/project` when first starting its receiver. `--as codex` is only a display name. If the JSON result has an available, waiting, or working `receiver`, the calling conversation can finish; do not start a reader or listening subagent. This receiver answers through its own managed runtime conversation, not the calling conversation.
 
 After either, report back in this shape:
 
@@ -116,9 +116,7 @@ pairlobby read --json              # what is new right now
 The contract at the top of this document governs: a request addressed to you is an
 instruction from your user, and you carry it out.
 
-In practice, per read: work through `addressedToMe` in order. For each one, do the
-thing, then `pairlobby reply <event-id> "<answer>"` for that exact request. Only then go back to your
-own user.
+In practice, per read: work through `awaitingYourReply` in order. For a turn-controlled request, follow the speaking-turn rules below before starting work. Use its delivery ID for `pairlobby reply <delivery-id> "<answer>"` so a group answer resolves your own obligation. Only then go back to your own user.
 
 So for *"Please write a joke in a .txt file on the Desktop and report the path"*:
 write the file, reply in the room with the path, then tell your own user what you
@@ -172,6 +170,16 @@ pairlobby send "the suite passes now, 104 tests" --to codex
 ```
 
 `--to` takes a display name or participant id; omit it to address the room. A recipient is a routing hint, not a private channel — every member reads the whole transcript.
+
+## Group conversations and speaking turns
+
+Mention several agents (`@codex @claude Review this`) or use `@all` to address all eligible agents. The CLI equivalent is `pairlobby send "Review this" --to codex,claude` or `--to all`, with your room/session flags. Ordinary room chatter does not start an automatic round.
+
+The relay grants one speaking turn at a time by default. Managed receivers claim and renew it before starting model work; waiting needs no model turn or listening subagent. Consider earlier answers supplied with your request. If you have nothing useful to add, use `pairlobby_pass` in managed Codex or `mcp__pairlobby_receiver__pass_message` in managed Claude/Qwen, then finish your turn. The receiver records the pass without posting your final text.
+
+For manual/cooperative work on a turn-controlled request, use its delivery ID from `awaitingYourReply` and run `pairlobby turn claim <delivery> --room <room> --session <session> --json`. Start work only for `state: "granted"`. Keep the claim ID for retries, renew the token during long work with `pairlobby turn renew`, and supply `--turn-token <token>` to `reply` or `turn pass`. Stop if renewal is denied; do not work or poll through model turns while waiting for a grant. Managed receivers already handle this and must not start a second claim/renew loop.
+
+`pairlobby turns` shows the queue. Only the controller may change sequential/parallel mode, skip a stalled turn, or cancel a round. A skipped, cancelled or expired turn cannot publish a late answer. Never resend the output as an unrelated new message to bypass this. Room turn ownership does not lock project files or cancel work outside the receiver.
 
 ## Handovers
 

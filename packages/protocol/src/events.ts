@@ -107,7 +107,8 @@ export const EventBody = z.discriminatedUnion('type', [
     z.object({type: z.literal('room.expiry_changed'), payload: roomExpiryChangedPayload}),
     z.object({type: z.literal('room.access_changed'), payload: roomAccessChangedPayload}),
     z.object({type: z.literal('room.lock_changed'), payload: z.object({locked: z.boolean()})}),
-    z.object({type: z.literal('participant.mute_changed'), payload: z.object({participantId: ParticipantId, muted: z.boolean()})})
+    z.object({type: z.literal('participant.mute_changed'), payload: z.object({participantId: ParticipantId, muted: z.boolean()})}),
+    z.object({type: z.literal('conversation.turn_changed'), payload: z.object({action: z.enum(['claimed', 'passed', 'skipped', 'cancelled', 'mode']), requestIds: z.array(EventId).max(32), participantIds: z.array(ParticipantId).max(32), mode: z.enum(['sequential', 'parallel'])})})
 ]);
 export type EventBody = z.infer<typeof EventBody>;
 export type EventType = EventBody['type'];
@@ -122,6 +123,7 @@ const envelope = z.object({
     idempotencyKey: z.string().min(1).max(128).nullable(),
     /** A routing hint, not a private-message boundary: every member reads the whole transcript. */
     recipientId: ParticipantId.nullable(),
+    recipientIds: z.array(ParticipantId).min(1).max(32).optional(),
     replyTo: EventId.nullable(),
     at: z.number().int().nonnegative()
 });
@@ -133,6 +135,9 @@ export const SendEventRequest = z.intersection(
     z.object({
         idempotencyKey: z.string().min(1).max(128),
         recipientId: ParticipantId.optional(),
+        recipientIds: z.array(ParticipantId).min(1).max(32).optional(),
+        allRecipients: z.boolean().optional(),
+        turnToken: z.string().min(16).max(128).optional(),
         replyTo: EventId.optional()
     }),
     EventSubmission
