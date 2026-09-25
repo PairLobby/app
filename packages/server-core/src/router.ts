@@ -11,6 +11,7 @@ import {
     RedeemInviteRequest,
     JoinAsGuestRequest,
     RenameRoomRequest,
+    RenameSelfRequest,
     SendEventRequest,
     SetAccessRequest,
     SetLockedRequest,
@@ -115,6 +116,12 @@ async function route(request: Request, service: RoomService): Promise<Response> 
             }
             return json(await service.turns.control(roomId, credential, TurnActionRequest.parse(input)));
         }
+        case 'POST self': {
+            if (segments.length !== 5 || segments[4] !== 'name') {
+                return errorResponse('invalid_request', 'unknown self operation', 404);
+            }
+            return json(await service.renameSelf(roomId, credential, RenameSelfRequest.parse(await request.json())));
+        }
         case 'POST rejoin':
             return json(await service.rejoin(roomId, credential));
         case 'POST invites': {
@@ -124,6 +131,10 @@ async function route(request: Request, service: RoomService): Promise<Response> 
         case 'POST requests': {
             if (segments[4] && segments[5] === 'claim') {
                 return json(await service.turns.claim(roomId, credential, segments[4], TurnClaimRequest.parse(await request.json()).claimId));
+            }
+            if (segments[4] && segments[5] === 'working') {
+                await service.turns.working(roomId, credential, segments[4], TurnTokenRequest.parse(await request.json()).token);
+                return json({ok: true});
             }
             if (segments[4] && segments[5] === 'renew') {
                 return json(await service.turns.renew(roomId, credential, segments[4], TurnTokenRequest.parse(await request.json()).token));

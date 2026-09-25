@@ -3,6 +3,7 @@
 
 import {z} from 'zod';
 
+import {NameSource} from './names.js';
 import {AdapterCapabilities, ControlOutcome, ParticipantKind, ParticipantRole} from './events.js';
 import {AttemptId, EventId, HandoverId, ParticipantId, RoomId, SessionId} from './ids.js';
 import {HandoverDocument, HandoverState} from './handover.js';
@@ -51,6 +52,7 @@ export const ParticipantRecord = z.object({
     roomId: RoomId,
     /** A label for humans. Never an authentication identity and never a routing key on its own. */
     displayName: z.string().min(1).max(64),
+    nameSource: NameSource.optional(),
     kind: ParticipantKind,
     role: ParticipantRole,
     /** Distinguishes two sessions of the same runtime in the same working directory. */
@@ -123,6 +125,7 @@ export type ControlRecord = z.infer<typeof ControlRecord>;
 export const ParticipantView = z.object({
     participantId: ParticipantId,
     displayName: z.string(),
+    nameSource: NameSource.optional(),
     kind: ParticipantKind,
     role: ParticipantRole,
     capabilities: AdapterCapabilities.nullable(),
@@ -141,7 +144,10 @@ export const RoomSnapshot = z.object({
     /** Absent on older relays, which only accept addressed-recipient receipts. */
     messageReceiptScope: z.enum(['recipient', 'members']).optional(),
     rejoinSupported: z.boolean().optional(),
+    renameSelfSupported: z.boolean().optional(),
+    quotedMessagesSupported: z.boolean().optional(),
     groupTurnsSupported: z.boolean().optional(),
+    workingStatusSupported: z.boolean().optional(),
     turnMode: z.enum(['sequential', 'parallel']).optional(),
     name: z.string(),
     lifecycle: RoomLifecycle,

@@ -2,6 +2,7 @@
 //! sequence, id, and timestamp and persists a `RoomEvent`.
 
 import {z} from 'zod';
+import {NameSource, ParticipantName} from './names.js';
 
 import {EventId, HandoverId, ParticipantId, RoomId} from './ids.js';
 import {HandoverDocument} from './handover.js';
@@ -97,6 +98,7 @@ export const EventBody = z.discriminatedUnion('type', [
     z.object({type: z.literal('handover.accepted'), payload: handoverAcceptedPayload}),
     z.object({type: z.literal('handover.declined'), payload: handoverDeclinedPayload}),
     z.object({type: z.literal('participant.joined'), payload: participantJoinedPayload}),
+    z.object({type: z.literal('participant.renamed'), payload: z.object({participantId: ParticipantId, previousName: z.string(), name: ParticipantName, source: NameSource})}),
     z.object({type: z.literal('participant.left'), payload: participantLeftPayload}),
     z.object({type: z.literal('participant.revoked'), payload: participantRevokedPayload}),
     z.object({type: z.literal('control.pause'), payload: controlPausePayload}),
@@ -108,7 +110,7 @@ export const EventBody = z.discriminatedUnion('type', [
     z.object({type: z.literal('room.access_changed'), payload: roomAccessChangedPayload}),
     z.object({type: z.literal('room.lock_changed'), payload: z.object({locked: z.boolean()})}),
     z.object({type: z.literal('participant.mute_changed'), payload: z.object({participantId: ParticipantId, muted: z.boolean()})}),
-    z.object({type: z.literal('conversation.turn_changed'), payload: z.object({action: z.enum(['claimed', 'passed', 'skipped', 'cancelled', 'mode']), requestIds: z.array(EventId).max(32), participantIds: z.array(ParticipantId).max(32), mode: z.enum(['sequential', 'parallel'])})})
+    z.object({type: z.literal('conversation.turn_changed'), payload: z.object({action: z.enum(['claimed', 'working', 'passed', 'skipped', 'cancelled', 'mode']), requestIds: z.array(EventId).max(32), participantIds: z.array(ParticipantId).max(32), mode: z.enum(['sequential', 'parallel'])})})
 ]);
 export type EventBody = z.infer<typeof EventBody>;
 export type EventType = EventBody['type'];
@@ -125,6 +127,8 @@ const envelope = z.object({
     recipientId: ParticipantId.nullable(),
     recipientIds: z.array(ParticipantId).min(1).max(32).optional(),
     replyTo: EventId.nullable(),
+    /** A conversational follow-up; unlike replyTo, this does not complete a request. */
+    quoteOf: EventId.optional(),
     at: z.number().int().nonnegative()
 });
 
@@ -138,7 +142,8 @@ export const SendEventRequest = z.intersection(
         recipientIds: z.array(ParticipantId).min(1).max(32).optional(),
         allRecipients: z.boolean().optional(),
         turnToken: z.string().min(16).max(128).optional(),
-        replyTo: EventId.optional()
+        replyTo: EventId.optional(),
+        quoteOf: EventId.optional()
     }),
     EventSubmission
 );

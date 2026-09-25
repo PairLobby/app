@@ -1,12 +1,13 @@
 //! Room state transitions. Each returns one atomic mutation for a storage
 //! adapter to apply together with its idempotency record.
 
-import {DEFAULT_ROOM_POLICY, ProtocolError, newId} from '@pairlobby/protocol';
+import {RenameSelfRequest, DEFAULT_ROOM_POLICY, ProtocolError, newId} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
     EventSubmission,
     HandoverRecord,
     ParticipantKind,
+    NameSource,
     ParticipantRecord,
     ParticipantRole,
     RoomPolicy,
@@ -23,6 +24,7 @@ type ControlAcknowledgement = {targetParticipantId: string; revision: number; ou
 
 export interface Identity {
     displayName: string;
+    nameSource?: NameSource | undefined;
     kind: ParticipantKind;
     sessionId: string | null;
     capabilities: AdapterCapabilities | null;
@@ -146,6 +148,7 @@ export function sendEvent(view: RoomView, credentialHash: string, request: SendE
             idempotencyKey: request.idempotencyKey,
             recipientId,
             replyTo: request.replyTo ?? null,
+            ...(request.quoteOf ? {quoteOf: request.quoteOf} : {}),
             body: submission
         },
         ctx
@@ -244,6 +247,31 @@ export function rejoinRoom(view: RoomView, credentialHash: string, ctx: CoreCont
         body: {type: 'participant.joined', payload: joinPayload(participant)}
     }, ctx);
     return {...emptyMutation(room, event), upsertParticipants: [participant]};
+}
+
+/** Change only the authenticated participant's label, preserving membership and permissions. */
+export function renameSelf(view: RoomView, credentialHash: string, input: RenameSelfRequest, ctx: CoreContext): Mutation | null {
+    const participant = assertCanWrite(authenticate(view, credentialHash, ctx.now));
+    assertRoomWritable(view, ctx.now);
+    const parsed = RenameSelfRequest.safeParse(input);
+    if (!parsed.success) {
+        throw new ProtocolError('invalid_request', 'Use a name of 1–64 characters without control characters; all is reserved.');
+    }
+    const {name, source} = parsed.data;
+    if (source === 'profile' && participant.nameSource === 'room') {
+        return null;
+    }
+    if (participant.displayName === name && participant.nameSource === source) {
+        return null;
+    }
+    const {room, event} = appendEvent(view.room, {
+        senderId: participant.participantId,
+        idempotencyKey: null,
+        recipientId: null,
+        replyTo: null,
+        body: {type: 'participant.renamed', payload: {participantId: participant.participantId, previousName: participant.displayName, name, source}}
+    }, ctx);
+    return {...emptyMutation(room, event), upsertParticipants: [{...participant, displayName: name, nameSource: source}]};
 }
 
 export function renameRoom(view: RoomView, credentialHash: string, name: string, ctx: CoreContext): Mutation {
@@ -351,6 +379,7 @@ function buildParticipant(roomId: string, identity: Identity, role: ParticipantR
         participantId: newId('participant'),
         roomId,
         displayName: identity.displayName,
+        ...(identity.nameSource ? {nameSource: identity.nameSource} : {}),
         kind: identity.kind,
         role,
         sessionId: identity.sessionId,

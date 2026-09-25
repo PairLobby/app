@@ -16,6 +16,7 @@ export interface MessageRequest {
     failureReason?: string | null;
     /** Group messages have one durable delivery ID per recipient. */
     conversationId?: string;
+    workingAt?: number;
     turnRequired?: boolean;
     turnRevision?: number;
     turnClaimId?: string;
@@ -25,7 +26,7 @@ export interface MessageRequest {
     responseText?: string;
 }
 export type TurnMode = 'sequential' | 'parallel';
-export type TurnEntry = {requestId: string; conversationId: string; participantId: string; name: string; state: 'waiting' | 'answering' | 'stalled' | 'paused' | 'unavailable' | 'failed'; expiresAt: number | null};
+export type TurnEntry = {requestId: string; conversationId: string; participantId: string; name: string; state: 'waiting' | 'answering' | 'stalled' | 'paused' | 'unavailable' | 'failed'; expiresAt: number | null; workingAt?: number; runtime?: string};
 export type TurnQueue = {mode: TurnMode; entries: TurnEntry[]};
 export type TurnGrant = {state: 'granted' | 'waiting' | 'finished' | 'stalled'; token?: string; expiresAt?: number; request?: MessageRequest};
 export type TurnAction = {action: 'skip' | 'cancel'; requestId?: string | undefined; participantId?: string | undefined};
@@ -65,6 +66,7 @@ export function mergeMessageRequest(previous: MessageRequest | null | undefined,
         ...request,
         ...(newerTurn.turnRevision === undefined ? {} : {
             turnRevision: newerTurn.turnRevision,
+            workingAt: newerTurn.workingAt,
             turnRequired: newerTurn.turnRequired,
             turnClaimId: newerTurn.turnClaimId,
             turnToken: newerTurn.turnToken,

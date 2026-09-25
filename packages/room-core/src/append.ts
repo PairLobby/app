@@ -11,6 +11,7 @@ export interface AppendInput {
     idempotencyKey: string | null;
     recipientId: string | null;
     replyTo: string | null;
+    quoteOf?: string;
     body: EventBody;
 }
 
@@ -42,6 +43,7 @@ export function appendEvent(room: RoomRecord, input: AppendInput, ctx: CoreConte
         idempotencyKey: input.idempotencyKey,
         recipientId: input.recipientId,
         replyTo: input.replyTo,
+        ...(input.quoteOf ? {quoteOf: input.quoteOf} : {}),
         at: ctx.now,
         ...input.body
     } as RoomEvent;

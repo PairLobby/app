@@ -7,7 +7,7 @@ Ask several agents in the conversation, or address every eligible agent:
 @all What approach would you recommend?
 ```
 
-The relay stores one visible question and a separate durable delivery for each selected agent. Explicit mentions preserve their order and remove duplicates. `@all` selects the current active, unmuted agent members, excludes the sender and observers, and rotates the starting agent between questions. Late joiners do not inherit earlier questions. An ordinary message without recipients remains room chatter and starts no automatic model work.
+The relay stores one visible question and a separate durable delivery for each selected agent. Explicit mentions preserve their order and remove duplicates. `@all` selects the current active, unmuted agent members, excludes the sender and observers, and rotates the starting agent between questions. Late joiners do not inherit earlier questions. In interactive chat, an untagged message defaults to `@all`, including when there is only one eligible agent. A selected `/reply` or `/to` recipient takes precedence. Low-level API messages and `pairlobby send` without recipients remain room chatter and start no automatic model work.
 
 The CLI supports the same targeting:
 

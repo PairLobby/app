@@ -289,6 +289,12 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                     await client.acknowledgeMessage(room.roomId, credential, request.eventId);
                     database.prepare('UPDATE jobs SET acknowledged=1 WHERE event_id=?').run(request.eventId);
                 },
+                working: async () => {
+                    if (!snapshot.workingStatusSupported || !token) {
+                        throw new Error('Update this relay to declare working status');
+                    }
+                    await client.declareWorking(room.roomId, credential, request.eventId, token);
+                },
                 pass: async () => {
                     if (!token) {
                         throw new Error('This relay does not support passing turns');

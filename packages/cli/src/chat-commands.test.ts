@@ -53,11 +53,30 @@ test('plain invite creates an observer that cannot write or run room commands', 
     const snapshot = await client.snapshot(guest.roomId, guest.credential);
     expect(snapshot.participants.find((participant) => participant.participantId === guest.participantId)?.role).toBe('guest');
     await expect(say(guest)).rejects.toMatchObject({code: 'unauthorized'});
-    for (const command of ['/invite', '/invite as writer', '/lock', '/unlock', '/kick owner', '/mute owner', '/unmute owner']) {
+    for (const command of ['/name someone', '/invite', '/invite as writer', '/lock', '/unlock', '/kick owner', '/mute owner', '/unmute owner']) {
         await expect(runRoomCommand(command, guest)).rejects.toMatchObject({code: 'unauthorized'});
     }
     await expect(client.mintInvite(guest.roomId, guest.credential)).rejects.toMatchObject({code: 'unauthorized'});
     await client.leave(guest.roomId, guest.credential);
+});
+
+test('members can rename themselves without controller credentials, and extra target fields are rejected', async () => {
+    const {owner, code} = await createRoom();
+    const {context: member} = await joinRoom(code);
+    expect(isRoomCommand('/name New name')).toBe(true);
+    await expect(runRoomCommand('/name New name', member)).resolves.toContain('default profile is unchanged');
+    const snapshot = await client.snapshot(owner.roomId, owner.credential);
+    expect(snapshot.participants.find((participant) => participant.participantId === member.participantId)).toMatchObject({displayName: 'New name', nameSource: 'room'});
+    expect(snapshot.participants.find((participant) => participant.participantId === owner.participantId)?.displayName).toBe('owner');
+    await expect(runRoomCommand('/name', member)).rejects.toThrow('Usage: /name');
+    await expect(runRoomCommand('/name ALL', member)).rejects.toThrow('Usage: /name');
+    const result = await fetch(`${server.url}/v1/rooms/${owner.roomId}/self/name`, {
+        method: 'POST', headers: {'content-type': 'application/json', authorization: `Bearer ${member.credential}`},
+        body: JSON.stringify({name: 'imposter', participantId: owner.participantId})
+    });
+    expect(result.status).toBe(400);
+    await client.setMuted(owner.roomId, owner.controllerCredential!, member.participantId, true);
+    await expect(runRoomCommand('/name Muted', member)).rejects.toMatchObject({code: 'participant_muted'});
 });
 
 test('named invite sets the default name and explicit overrides remain possible', async () => {

@@ -59,6 +59,11 @@ for await (const line of source) {
         throw new Error('Unexpected scoped acknowledgement result');
     }
     record(invalid ? 'ack:rejected' : 'ack:confirmed');
+    if (!invalid && text.includes('declare-working')) {
+        const working = await call(4, 'tools/call', {name: 'working_message', arguments: {}});
+        if (working.result?.isError) throw new Error('Working declaration rejected');
+        record('working:confirmed');
+    }
     if (!invalid && text.includes('qwen-pass')) {
         const passed = await call(3, 'tools/call', {name: 'pass_message', arguments: {}});
         if (passed.result?.isError) throw new Error('Pass was rejected');

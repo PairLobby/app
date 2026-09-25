@@ -14,6 +14,7 @@ export interface SessionEntry {
     participantId: string;
     sessionId: string;
     displayName: string;
+    nameSource?: 'profile' | 'room';
     kind: 'agent' | 'human';
     /** The runtime that created this session, when it identified itself. A claim, never a verified fact. */
     runtime?: string;
@@ -44,6 +45,8 @@ export interface RoomEntry {
     /** True when this device holds the controller credential for the room. */
     controls: boolean;
     sessions: SessionEntry[];
+    /** Chosen by a human chat, never inferred from a matching display name. */
+    preferredHumanSessionId?: string;
 }
 
 /** Defaults for this device, so a human does not retype their identity on every join. */
@@ -176,9 +179,32 @@ export class LocalStore {
     }
 
     upsertRoom(entry: RoomEntry): void {
-        const rooms = this.rooms().filter((candidate) => candidate.roomId !== entry.roomId);
-        rooms.push(entry);
+        const previous = this.rooms();
+        const rooms = previous.filter((candidate) => candidate.roomId !== entry.roomId);
+        rooms.push({...previous.find((candidate) => candidate.roomId === entry.roomId), ...entry});
         writeJsonPrivate(this.roomsFile, rooms);
+    }
+
+    rememberHumanSession(roomId: string, sessionId: string): void {
+        const room = this.room(roomId);
+        const session = room?.sessions.find((candidate) => candidate.sessionId === sessionId);
+        if (!room || session?.kind !== 'human' || !this.credential(roomId, sessionId)) {
+            throw new Error('a preferred human session must have a saved human membership and credential');
+        }
+        this.upsertRoom({...room, preferredHumanSessionId: sessionId});
+    }
+
+    updateSessionName(roomId: string, sessionId: string, displayName: string, nameSource?: 'profile' | 'room'): void {
+        const room = this.room(roomId);
+        const session = room?.sessions.find((candidate) => candidate.sessionId === sessionId);
+        if (!room || !session) {
+            return;
+        }
+        session.displayName = displayName;
+        if (nameSource) {
+            session.nameSource = nameSource;
+        }
+        this.upsertRoom(room);
     }
 
     addSession(roomId: string, session: SessionEntry): void {

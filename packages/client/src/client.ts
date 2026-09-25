@@ -15,6 +15,7 @@ import type {
     ErrorCode,
     ExportResponse,
     ParticipantKind,
+    NameSource,
     ParticipantRole,
     ReadEventsResponse,
     RoomEvent,
@@ -35,6 +36,7 @@ type RoomEventResult = {event: RoomEvent};
 
 export interface ClientIdentity {
     displayName: string;
+    nameSource?: NameSource;
     kind: ParticipantKind;
     sessionId?: string;
     capabilities?: AdapterCapabilities;
@@ -150,6 +152,9 @@ export class PairLobbyClient {
     renewTurn(roomId: string, credential: string, requestId: string, token: string): Promise<TurnGrant> {
         return this.call('POST', `/v1/rooms/${roomId}/requests/${requestId}/renew`, credential, {token});
     }
+    async declareWorking(roomId: string, credential: string, requestId: string, token: string): Promise<void> {
+        await this.call('POST', `/v1/rooms/${roomId}/requests/${requestId}/working`, credential, {token});
+    }
     async passTurn(roomId: string, credential: string, requestId: string, token: string): Promise<void> {
         await this.call('POST', `/v1/rooms/${roomId}/requests/${requestId}/pass`, credential, {token});
     }
@@ -216,6 +221,10 @@ export class PairLobbyClient {
 
     rejoin(roomId: string, credential: string): Promise<RoomSnapshot> {
         return this.call('POST', `/v1/rooms/${roomId}/rejoin`, credential, {});
+    }
+
+    renameSelf(roomId: string, credential: string, name: string, source: NameSource = 'room'): Promise<RoomSnapshot> {
+        return this.call('POST', `/v1/rooms/${roomId}/self/name`, credential, {name, source});
     }
 
     rename(roomId: string, credential: string, name: string): Promise<RoomEventResult> {
