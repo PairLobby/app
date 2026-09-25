@@ -11,9 +11,27 @@ const RESET = '\u001b[0m';
 type MentionParticipant = {participantId: string; displayName: string; revoked: boolean; left: boolean};
 export type RoutedChatMessage = {text: string; recipientId: string | null; recipientIds?: string[]; allRecipients?: boolean};
 
+const MENTION = /(?:^|[\s,])@("(?:\\.|[^"\\])*"|[\p{L}\p{N}_.-]+)/gu;
+const PARTIAL_MENTION = /@("(?:\\.|[^"\\])*|[\p{L}\p{N}_.-]*)$/u;
+
 /** Resolve explicit mentions anywhere in a message without silently broadcasting typos. */
 export function routeChatMessage(text: string, participants: MentionParticipant[], fallbackRecipientId: string | null = null): RoutedChatMessage {
-    const references = [...text.matchAll(/(?:^|[\s,])@([\p{L}\p{N}_.-]+)/gu)].map((match) => match[1]!);
+    const matches = [...text.matchAll(MENTION)];
+    const remainder = text.replace(MENTION, '');
+    if (/(?:^|[\s,])@"/u.test(remainder)) {
+        throw new Error('Close the quoted participant name before sending. Message not sent.');
+    }
+    const references = matches.map((match) => {
+        const raw = match[1]!;
+        if (!raw.startsWith('"')) {
+            return raw;
+        }
+        try {
+            return JSON.parse(raw) as string;
+        } catch {
+            throw new Error('Invalid quoted participant name. Message not sent.');
+        }
+    });
     const active = participants.filter((participant) => !participant.revoked && !participant.left);
     const recipients = new Set<string>();
     let allRecipients = false;
@@ -36,7 +54,7 @@ export function routeChatMessage(text: string, participants: MentionParticipant[
         }
         recipients.add(matches[0]!.participantId);
     }
-    if (references.length && !text.replace(/(?:^|[\s,])@[\p{L}\p{N}_.-]+/gu, '').replace(/[\s,!:;.?]/g, '')) {
+    if (references.length && !remainder.replace(/[\s,!:;.?]/g, '')) {
         throw new Error('Add a message alongside the mention.');
     }
     if (allRecipients) {
@@ -45,7 +63,8 @@ export function routeChatMessage(text: string, participants: MentionParticipant[
     if (recipients.size > 1) {
         return {text, recipientId: null, recipientIds: [...recipients]};
     }
-    return {text, recipientId: recipients.values().next().value ?? fallbackRecipientId};
+    const recipientId = recipients.values().next().value ?? fallbackRecipientId;
+    return recipientId ? {text, recipientId} : {text, recipientId: null, allRecipients: true};
 }
 
 /** The partial name being typed, or null when the cursor is not in a mention. */
@@ -53,8 +72,19 @@ export function currentMention(line: string, cursor = line.length): string | nul
     const before = line.slice(0, cursor);
     // A mention starts at the beginning or after whitespace, so an email address
     // or a path containing @ never opens the completer.
-    const match = /(?:^|[\s,])@([\p{L}\p{N}_.-]*)$/u.exec(before);
-    return match ? match[1]! : null;
+    const match = new RegExp(`(?:^|[\\s,])${PARTIAL_MENTION.source}`, 'u').exec(before);
+    if (!match) {
+        return null;
+    }
+    const raw = match[1]!;
+    if (raw.startsWith('"')) {
+        try {
+            return JSON.parse(`${raw}"`) as string;
+        } catch {
+            return null;
+        }
+    }
+    return raw;
 }
 
 /**
@@ -90,12 +120,16 @@ export function commonPrefix(names: string[]): string {
 /** Replaces the partial under the cursor with `name`, returning the new line. */
 export function applyMention(line: string, name: string, cursor = line.length): string {
     const before = line.slice(0, cursor);
-    const match = /@([\p{L}\p{N}_.-]*)$/u.exec(before);
+    const match = PARTIAL_MENTION.exec(before);
     if (!match) {
         return line;
     }
     const start = before.length - match[1]!.length;
-    return `${line.slice(0, start)}${name}${line.slice(cursor)}`;
+    const complete = name.endsWith(' ');
+    const label = complete ? name.slice(0, -1) : name;
+    const quoted = /[^\p{L}\p{N}_.-]/u.test(label) || match[1]!.startsWith('"');
+    const replacement = quoted ? (complete ? `${JSON.stringify(label)} ` : JSON.stringify(label).slice(0, -1)) : name;
+    return `${line.slice(0, start)}${replacement}${line.slice(cursor)}`;
 }
 
 /** One rendered suggestion line: the typed part lit, the rest quiet. */

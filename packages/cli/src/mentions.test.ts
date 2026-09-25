@@ -39,7 +39,7 @@ describe('routing complete chat messages', () => {
         expect(() => routeChatMessage('@all @missing please review', PARTICIPANTS)).toThrow('not sent');
         expect(() => routeChatMessage('@codex @claude', PARTICIPANTS)).toThrow('Add a message');
         expect(() => routeChatMessage('@all', PARTICIPANTS)).toThrow('Add a message');
-        expect(routeChatMessage('hello everyone', PARTICIPANTS)).toEqual({text: 'hello everyone', recipientId: null});
+        expect(routeChatMessage('hello everyone', PARTICIPANTS)).toEqual({text: 'hello everyone', recipientId: null, allRecipients: true});
     });
 });
 
@@ -48,6 +48,19 @@ function plain(text: string): string {
 }
 
 describe('detecting a mention', () => {
+    test('quoted names route and complete after a rename to a name containing spaces', () => {
+        const members = [{participantId: 'pt_human', displayName: 'New Name', left: false, revoked: false}];
+        expect(routeChatMessage('Hello @"New Name"', members).recipientId).toBe('pt_human');
+        expect(() => routeChatMessage('Hello @"New Name', members)).toThrow('Close the quoted');
+        expect(() => routeChatMessage('@"New Name"', members)).toThrow('Add a message');
+        expect(currentMention('Hello @"New N')).toBe('New N');
+        expect(currentMention('Hello @"New Name" ')).toBeNull();
+        expect(applyMention('Hello @New', 'New Name ')).toBe('Hello @"New Name" ');
+        expect(applyMention('Hello @"New N', 'New Name ')).toBe('Hello @"New Name" ');
+        const escaped = [{...members[0]!, displayName: 'New "Name"'}];
+        const completed = applyMention('Hello @New', 'New "Name" ');
+        expect(routeChatMessage(completed, escaped).recipientId).toBe('pt_human');
+    });
     test('test_an_at_sign_opens_the_completer', () => {
         expect(currentMention('@')).toBe('');
         expect(currentMention('@c')).toBe('c');

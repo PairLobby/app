@@ -77,5 +77,53 @@ export function runRejoinContract(label: string, makeStore: StoreFactory): void 
             clock.advance(1001);
             await expect(service.rejoin(room.roomId, owner)).rejects.toMatchObject({code: 'room_expired'});
         });
+
+        test('self rename preserves identity, controls and existing requests across rejoin', async () => {
+            const credential = newCredential('participant');
+            const sessionId = newId('session');
+            const agent = await service.redeemInvite({code: room.invite.code, displayName: 'agent', kind: 'agent', sessionId, participantCredential: credential, attemptId: newId('attempt')});
+            const request = await service.send(room.roomId, owner, {type: 'message', recipientId: agent.participantId, payload: {text: 'hello', priority: 'normal'}, idempotencyKey: newId('event')});
+            await service.control(room.roomId, controller, agent.participantId, true);
+            const before = (await store.loadRoom(room.roomId))!.participants.find((participant) => participant.participantId === agent.participantId)!;
+            const snapshot = await service.renameSelf(room.roomId, credential, {name: 'Review Agent', source: 'room'});
+            expect(snapshot.participants.find((participant) => participant.participantId === agent.participantId)).toMatchObject({displayName: 'Review Agent', nameSource: 'room', kind: 'agent', role: 'member', paused: true});
+            const after = (await store.loadRoom(room.roomId))!.participants.find((participant) => participant.participantId === agent.participantId)!;
+            expect(after).toEqual({...before, displayName: 'Review Agent', nameSource: 'room'});
+            expect((await service.request(room.roomId, owner, request.event.eventId)).to).toBe(agent.participantId);
+            const events = (await service.read(room.roomId, owner, 0, 100)).events;
+            expect(events.at(-1)).toMatchObject({type: 'participant.renamed', senderId: agent.participantId, payload: {previousName: 'agent', name: 'Review Agent'}});
+            await service.leave(room.roomId, credential);
+            expect((await service.rejoin(room.roomId, credential)).participants.find((participant) => participant.participantId === agent.participantId)).toMatchObject({displayName: 'Review Agent', nameSource: 'room'});
+        });
+
+        test('profile names follow the default until a room name is explicitly chosen', async () => {
+            await service.renameSelf(room.roomId, owner, {name: 'New default', source: 'profile'});
+            const renamed = await service.renameSelf(room.roomId, owner, {name: 'New default', source: 'room'});
+            const repeated = await service.renameSelf(room.roomId, owner, {name: 'New default', source: 'room'});
+            expect(repeated.latestSeq).toBe(renamed.latestSeq);
+            const later = await service.renameSelf(room.roomId, owner, {name: 'Later default', source: 'profile'});
+            expect(later.latestSeq).toBe(renamed.latestSeq);
+            expect(later.participants[0]).toMatchObject({displayName: 'New default', nameSource: 'room'});
+        });
+
+        test('self rename cannot bypass controller, guest, mute or revoked restrictions', async () => {
+            const input = {name: 'new', source: 'room' as const};
+            await expect(service.renameSelf(room.roomId, controller, input)).rejects.toMatchObject({code: 'unauthorized'});
+            const invite = await service.mintInvite(room.roomId, controller, 'guest');
+            const guestCredential = newCredential('participant');
+            const guest = await service.redeemInvite({code: invite.code, displayName: 'observer', kind: 'human', participantCredential: guestCredential, attemptId: newId('attempt')});
+            await expect(service.renameSelf(room.roomId, guestCredential, input)).rejects.toMatchObject({code: 'unauthorized'});
+            await service.revoke(room.roomId, controller, guest.participantId);
+            await expect(service.renameSelf(room.roomId, guestCredential, input)).rejects.toMatchObject({code: 'participant_revoked'});
+            await service.setMuted(room.roomId, controller, room.participantId, true);
+            await expect(service.renameSelf(room.roomId, owner, input)).rejects.toMatchObject({code: 'participant_muted'});
+        });
+
+        test('invalid names cannot enter the transcript or change a membership', async () => {
+            for (const name of ['', '   ', 'x'.repeat(65), 'All', 'hello\nworld', 'bad\u001b[2J']) {
+                await expect(service.renameSelf(room.roomId, owner, {name, source: 'room'})).rejects.toMatchObject({code: 'invalid_request'});
+            }
+            expect((await service.snapshot(room.roomId, owner)).participants[0]!.displayName).toBe('owner');
+        });
     });
 }

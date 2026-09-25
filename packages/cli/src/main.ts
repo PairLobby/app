@@ -12,12 +12,13 @@ import {userInfo} from 'node:os';
 import {parseArgs} from 'node:util';
 
 import {LocalStore, PairLobbyClient, openRequests, owedByMe, unreceipted} from '@pairlobby/client';
-import {ProtocolError, requestState, newId} from '@pairlobby/protocol';
+import {ParticipantName, ProtocolError, requestState, newId} from '@pairlobby/protocol';
 import type {AdapterCapabilities} from '@pairlobby/protocol';
 
 import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
 import {detectRuntime} from './runtime-detect.js';
 import {runChatRoom} from './chat.js';
+import {chooseHumanSession, selectHumanSession} from './human-session.js';
 import {WhenError, formatDuration, parseDuration, parseExpiry} from './when.js';
 import {pickExpiry} from './picker.js';
 import {UsageError, controllerCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
@@ -30,7 +31,7 @@ import {receiverRuntimeName} from './receiver-runtime.js';
 import {findRooms, formatFoundRooms} from './find.js';
 import {formatTurnQueue, runTurnCommand} from './turn-commands.js';
 
-type LocalIdentity = {displayName: string; kind: 'agent' | 'human'; sessionId: string; capabilities?: AdapterCapabilities};
+type LocalIdentity = {nameSource: 'room' | 'profile'; displayName: string; kind: 'agent' | 'human'; sessionId: string; capabilities?: AdapterCapabilities};
 
 type LocalRuntimeDetail = {runtime?: string; conversationId?: string; terminal?: string; pid?: number};
 
@@ -242,21 +243,24 @@ async function main(argv: string[]): Promise<number> {
             const action = positionals[1];
             const id = positionals[2];
             if (!id) {
-                throw new UsageError('turn requires claim|renew|pass and a request ID');
+                throw new UsageError('turn requires claim|working|renew|pass and a request ID');
             }
             if (action === 'claim') {
                 const claimId = str(values, 'claim-id') ?? newId('event');
                 json({claimId, ...await client.claimTurn(room.roomId, credential, id, claimId)});
-            } else if ((action === 'renew' || action === 'pass') && str(values, 'turn-token')) {
+            } else if ((action === 'renew' || action === 'pass' || action === 'working') && str(values, 'turn-token')) {
                 const token = str(values, 'turn-token')!;
-                if (action === 'renew') {
+                if (action === 'working') {
+                    await client.declareWorking(room.roomId, credential, id, token);
+                    json({working: id});
+                } else if (action === 'renew') {
                     json(await client.renewTurn(room.roomId, credential, id, token));
                 } else {
                     await client.passTurn(room.roomId, credential, id, token);
                     json({passed: id});
                 }
             } else {
-                throw new UsageError('Use turn claim <request>, or turn renew|pass <request> --turn-token <token>');
+                throw new UsageError('Use turn claim <request>, or turn working|renew|pass <request> --turn-token <token>');
             }
             return 0;
         }
@@ -576,7 +580,7 @@ async function deleteRoom(store: LocalStore, values: Values, reference: string |
 function identityFrom(store: LocalStore, values: Values, fallbackName: string): LocalIdentity {
     const detected = detectRuntime();
     const profile = store.profile();
-    const profileApplies = !((detected.runtime !== undefined || str(values, 'runtime')) && profile.kind === 'human');
+    const profileApplies = flag(values, 'human') || !((detected.runtime !== undefined || str(values, 'runtime')) && profile.kind === 'human');
 
     // Who is at the keyboard: an agent shelling out either declares a runtime or
     // has no terminal. A person on a TTY with neither is a person, and defaulting
@@ -586,7 +590,7 @@ function identityFrom(store: LocalStore, values: Values, fallbackName: string): 
     const displayName = str(values, 'as') ?? (profileApplies ? profile.displayName : undefined) ?? (kind === 'human' ? osUserName() : (str(values, 'runtime') ?? detected.runtime)?.replace('-cli', '') ?? fallbackName);
     const runtime = str(values, 'runtime') ?? (kind === 'human' ? undefined : (profile.runtime ?? detected.runtime));
     const capabilities: AdapterCapabilities | undefined = runtime ? {deliverUnsolicited: false, cancelTurn: false, cancelTool: false, runtime} : undefined;
-    return {displayName, kind, sessionId: newId('session'), ...(capabilities ? {capabilities} : {})};
+    return {displayName: validatedName(displayName), nameSource: str(values, 'as') !== undefined ? 'room' : 'profile', kind, sessionId: newId('session'), ...(capabilities ? {capabilities} : {})};
 }
 
 const SETTING_KEYS = {
@@ -688,6 +692,14 @@ function forgetRoom(store: LocalStore, values: Values, reference: string | undef
     return 0;
 }
 
+function validatedName(name: string): string {
+    const parsed = ParticipantName.safeParse(name);
+    if (!parsed.success) {
+        throw new UsageError('Use a name of 1–64 characters without control characters; all is reserved.');
+    }
+    return parsed.data;
+}
+
 /** Shows or sets this device's default identity. */
 function profileCommand(store: LocalStore, values: Values): number {
     if (flag(values, 'clear')) {
@@ -696,7 +708,7 @@ function profileCommand(store: LocalStore, values: Values): number {
         return 0;
     }
     const update = {
-        ...(str(values, 'as') !== undefined ? {displayName: str(values, 'as')!} : {}),
+        ...(str(values, 'as') !== undefined ? {displayName: validatedName(str(values, 'as')!)} : {}),
         ...(flag(values, 'human') ? {kind: 'human' as const} : flag(values, 'agent') ? {kind: 'agent' as const} : {}),
         ...(str(values, 'runtime') !== undefined ? {runtime: str(values, 'runtime')!} : {}),
         ...(str(values, 'server') !== undefined ? {server: str(values, 'server')!} : {})
@@ -847,7 +859,7 @@ async function joinRoom(store: LocalStore, values: Values, code?: string, online
     const token = new URL(serverUrl).origin === onlineOrigin() ? accountToken(store) : undefined;
     const client = new PairLobbyClient(serverUrl, token);
     // A room id and an invite code are not confusable, so one command takes either.
-    const joined = code.startsWith('rm_') ? await client.joinAsGuest(code, identity) : await client.redeemInvite(code, identity, undefined, str(values, 'as') === undefined);
+    const joined = code.startsWith('rm_') ? await client.joinAsGuest(code, identity) : await client.redeemInvite(code, identity, undefined, str(values, 'as') === undefined && !(identity.kind === 'human' && store.profile().displayName));
     identity.displayName = joined.room.participants.find((participant) => participant.participantId === joined.participantId)?.displayName ?? identity.displayName;
 
     store.upsertRoom({
@@ -1172,11 +1184,18 @@ function isInteractive(values: Values): boolean {
 
 /** Enters a room already joined on this device. */
 async function chatRoom(store: LocalStore, values: Values): Promise<number> {
-    const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
-    if (!isInteractive(values)) {
-        return watchRoom(store, values);
+    const interactive = isInteractive(values);
+    const explicitSession = str(values, 'session') ?? process.env['PAIRLOBBY_SESSION'];
+    const humanChat = flag(values, 'human') || (interactive && !flag(values, 'agent') && !str(values, 'runtime') && !detectRuntime().runtime);
+    const {room, session, credential, client} = humanChat && !explicitSession
+        ? await selectHumanSession(store, resolveRoom(store, str(values, 'room')), interactive ? chooseHumanSession : undefined)
+        : select(store, str(values, 'room'), explicitSession);
+    if (!interactive) {
+        return watchRoom(store, {...values, room: room.roomId, session: session.sessionId});
     }
     return runChatRoom({
+        requireHuman: humanChat && !explicitSession,
+        useHumanProfile: session.kind === 'human',
         store,
         client,
         roomId: room.roomId,

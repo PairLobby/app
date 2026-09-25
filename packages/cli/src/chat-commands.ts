@@ -1,4 +1,4 @@
-import {ProtocolError} from '@pairlobby/protocol';
+import {ParticipantName, ProtocolError} from '@pairlobby/protocol';
 import type {RoomSnapshot} from '@pairlobby/protocol';
 import type {PairLobbyClient} from '@pairlobby/client';
 import {formatTurnQueue, runTurnCommand} from './turn-commands.js';
@@ -12,7 +12,7 @@ export type RoomCommandContext = {
 };
 
 export function isRoomCommand(line: string): boolean {
-    return /^\/(invite|lock|unlock|kick|mute|unmute|turns)(?:\s|$)/.test(line);
+    return /^\/(name|invite|lock|unlock|kick|mute|unmute|turns)(?:\s|$)/.test(line);
 }
 
 function targetParticipant(snapshot: RoomSnapshot, reference: string): string {
@@ -33,6 +33,17 @@ export async function runRoomCommand(line: string, context: RoomCommandContext):
     }
     const [command] = line.split(/\s+/);
     const argument = line.slice(command!.length).trim();
+    if (command === '/name') {
+        const parsed = ParticipantName.safeParse(argument);
+        if (!parsed.success) {
+            throw new Error('Usage: /name <new name> (1–64 characters, no control characters; all is reserved)');
+        }
+        if (!snapshot.renameSelfSupported) {
+            throw new ProtocolError('unsupported_capability', 'Update this relay before using /name.');
+        }
+        await client.renameSelf(roomId, credential, parsed.data);
+        return `Your name in this room is ${parsed.data}. Your default profile is unchanged.`;
+    }
     if (command === '/turns') {
         return formatTurnQueue(await runTurnCommand(argument, context), true);
     }

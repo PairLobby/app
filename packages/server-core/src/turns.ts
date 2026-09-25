@@ -4,7 +4,7 @@ import {appendEvent, assertCanWrite, assertController, assertRoomWritable, authe
 import type {Actor, RoomView} from '@pairlobby/room-core';
 import type {RoomStore} from './store.js';
 
-type TurnChange = 'claimed' | 'passed' | 'skipped' | 'cancelled' | 'mode';
+type TurnChange = 'claimed' | 'working' | 'passed' | 'skipped' | 'cancelled' | 'mode';
 
 export function assertTurn(request: MessageRequest, token: string | undefined, now: number): void {
     if (!request.turnRequired) {
@@ -75,6 +75,8 @@ export class TurnCoordinator {
                     requestId: request.eventId, conversationId: request.conversationId ?? request.eventId,
                     participantId: request.to, name: participant?.displayName ?? request.to,
                     state: request.failureAt ? 'failed' : request.turnStatus === 'running' ? ((request.turnExpiresAt ?? 0) <= this.now() ? 'stalled' : 'answering') : unavailable ? 'unavailable' : paused ? 'paused' : overdue ? 'stalled' : 'waiting',
+                    ...(request.workingAt !== undefined && !unavailable && !paused ? {workingAt: request.workingAt} : {}),
+                    ...(participant?.capabilities?.runtime ? {runtime: participant.capabilities.runtime} : {}),
                     expiresAt: request.turnExpiresAt ?? null
                 };
             })
@@ -138,6 +140,40 @@ export class TurnCoordinator {
             text += '\n\nThis is a group conversation. Take your turn, consider earlier replies, and add your own useful answer. You may use the pass tool if you have nothing to add. Earlier replies (up to 4,000 characters each and 24,000 total; shortened entries are labelled):\n' + JSON.stringify(replies);
         }
         return {state: 'granted', token: request.turnToken!, expiresAt: request.turnExpiresAt!, request: {...request, text}};
+    }
+
+    async working(roomId: string, credential: string, requestId: string, token: string): Promise<void> {
+        for (let attempt = 0; attempt < 4; attempt++) {
+            try {
+                return await this.declareWorking(roomId, credential, requestId, token);
+            } catch (error) {
+                if (!(error instanceof ProtocolError) || error.code !== 'turn_conflict' || attempt === 3) {
+                    throw error;
+                }
+            }
+        }
+    }
+
+    private async declareWorking(roomId: string, credential: string, requestId: string, token: string): Promise<void> {
+        const view = await this.view(roomId);
+        const actor = authenticate(view, await hashCredential(credential), this.now());
+        const participant = assertCanWrite(actor);
+        assertRoomWritable(view, this.now());
+        const request = await this.resolve(roomId, requestId, participant.participantId);
+        if (!request || request.to !== participant.participantId || participant.kind !== 'agent') {
+            throw new ProtocolError('unauthorized', 'only the addressed agent can declare working');
+        }
+        if (!request.turnRequired || !request.requiresReply || request.responseEventId || request.failureAt || !this.eligible(view, request)) {
+            throw new ProtocolError('turn_required', 'working requires a live, unfinished speaking turn');
+        }
+        assertTurn(request, token, this.now());
+        if (request.receivedAt === null) {
+            throw new ProtocolError('invalid_request', 'acknowledge the request before declaring work');
+        }
+        if (request.workingAt !== undefined) {
+            return;
+        }
+        await this.change(view, actor, [{...request, workingAt: this.now()}], 'working');
     }
 
     async renew(roomId: string, credential: string, requestId: string, token: string): Promise<TurnGrant> {

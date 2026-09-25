@@ -8,6 +8,8 @@ import type {
     RequestPage,
     ExportResponse,
     ParticipantKind,
+    RenameSelfRequest,
+    NameSource,
     ParticipantRole,
     ReadEventsResponse,
     RoomEvent,
@@ -29,6 +31,7 @@ import {
     leaveRoom,
     rejoinRoom,
     renameRoom,
+    renameSelf,
     requestControl,
     revokeParticipant,
     sendEvent,
@@ -56,6 +59,7 @@ type GuestJoinInput = Identity & {participantCredential: string};
 
 export interface Identity {
     displayName: string;
+    nameSource?: NameSource | undefined;
     kind: ParticipantKind;
     sessionId?: string | undefined;
     capabilities?: AdapterCapabilities | undefined;
@@ -129,6 +133,7 @@ export class RoomService {
                 participantCredentialHash: await hashCredential(input.participantCredential),
                 displayName: input.displayName,
                 kind: input.kind,
+                nameSource: input.nameSource,
                 sessionId: input.sessionId ?? null,
                 capabilities: input.capabilities ?? null,
                 ...(input.expiresAt !== undefined ? {expiresAt: input.expiresAt} : {}),
@@ -265,6 +270,7 @@ export class RoomService {
                 credentialHash,
                 displayName: input.useInviteName !== false ? reserved.defaultName ?? input.displayName : input.displayName,
                 kind: input.kind,
+                nameSource: input.nameSource,
                 sessionId: input.sessionId ?? null,
                 capabilities: input.capabilities ?? null
             },
@@ -294,7 +300,7 @@ export class RoomService {
             request = {...request, payload: {eventId}, idempotencyKey: `receipt-${eventId}-${participant.participantId}`};
         }
         const requestDigest = stableStringify({type: request.type, payload: request.payload, recipientId: request.recipientId ?? null, replyTo: request.replyTo ?? null,
-            ...(request.recipientIds ? {recipientIds: request.recipientIds} : {}), ...(request.allRecipients ? {allRecipients: true} : {})});
+            ...(request.recipientIds ? {recipientIds: request.recipientIds} : {}), ...(request.allRecipients ? {allRecipients: true} : {}), ...(request.quoteOf ? {quoteOf: request.quoteOf} : {})});
         const previous = await this.store.idempotencyRecord(roomId, request.idempotencyKey);
         if (previous) {
             if (previous.requestDigest !== requestDigest) {
@@ -305,6 +311,19 @@ export class RoomService {
                 throw new ProtocolError('cursor_gap', 'the original event for this idempotency key is no longer retained');
             }
             return {event, deduplicated: true};
+        }
+        let quoteContext = '';
+        if (request.quoteOf) {
+            if (request.type !== 'message' || request.replyTo) {
+                throw new ProtocolError('invalid_request', 'quoteOf is only valid on a new message, without replyTo');
+            }
+            const original = await this.store.eventById(roomId, request.quoteOf);
+            if (original?.type !== 'message') {
+                throw new ProtocolError('invalid_request', 'the quoted message is no longer retained in this room');
+            }
+            const sender = view.participants.find((participant) => participant.participantId === original.senderId)?.displayName ?? original.senderId;
+            const excerpt = original.payload.text.slice(0, 4000);
+            quoteContext = `Quoted message from ${sender}:\n${excerpt}${excerpt.length < original.payload.text.length ? '\n[quote shortened]' : ''}\n\nFollow-up:\n`;
         }
         let recipients = request.recipientId ? [request.recipientId] : [];
         if (group) {
@@ -395,7 +414,7 @@ export class RoomService {
             for (const recipient of recipients) {
                 updates.push({
                     roomId, eventId: group ? newId('event') : mutation.appendEvent.eventId, seq: seq++,
-                    from: mutation.appendEvent.senderId!, to: recipient, text: request.payload.text, at: mutation.appendEvent.at,
+                    from: mutation.appendEvent.senderId!, to: recipient, text: quoteContext + request.payload.text, at: mutation.appendEvent.at,
                     requiresReply: !request.replyTo, receivedAt: null, responseEventId: null, respondedAt: null, progressAt: null,
                     ...(group ? {conversationId: mutation.appendEvent.eventId, turnRequired: true} : {})
                 });
@@ -503,6 +522,14 @@ export class RoomService {
         return this.snapshot(roomId, credential);
     }
 
+    async renameSelf(roomId: string, credential: string, input: RenameSelfRequest): Promise<RoomSnapshot> {
+        const mutation = renameSelf(await this.view(roomId), await hashCredential(credential), input, this.ctx());
+        if (mutation) {
+            await this.applyOne(mutation);
+        }
+        return this.snapshot(roomId, credential);
+    }
+
     async rename(roomId: string, credential: string, name: string): Promise<RoomEvent> {
         return this.applyOne(renameRoom(await this.view(roomId), await hashCredential(credential), name, this.ctx()));
     }
@@ -528,6 +555,7 @@ export class RoomService {
                 credentialHash,
                 displayName: input.displayName,
                 kind: input.kind,
+                nameSource: input.nameSource,
                 sessionId: input.sessionId ?? null,
                 capabilities: input.capabilities ?? null
             },

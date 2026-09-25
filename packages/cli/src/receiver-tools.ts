@@ -22,13 +22,17 @@ export async function runReceiverTools(store: LocalStore, roomRef: string, sessi
         description: 'Confirm receipt of the current PairLobby request before doing work. The final answer is sent automatically by the receiver.',
         inputSchema: {type: 'object', properties: {}, additionalProperties: false}
     }, {
+        name: 'working_message',
+        description: 'Declare that you have started working on the current answer, after acknowledging it. The receiver keeps this status alive while your turn runs.',
+        inputSchema: {type: 'object', properties: {}, additionalProperties: false}
+    }, {
         name: 'pass_message',
         description: 'Pass the current speaking turn when you have nothing to add. End your turn after this; no public answer is posted.',
         inputSchema: {type: 'object', properties: {}, additionalProperties: false}
     }]}));
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
         try {
-            if (!['acknowledge_message', 'pass_message'].includes(request.params.name) || Object.keys(request.params.arguments ?? {}).length) {
+            if (!['acknowledge_message', 'working_message', 'pass_message'].includes(request.params.name) || Object.keys(request.params.arguments ?? {}).length) {
                 throw new Error('Only the current request can be acknowledged');
             }
             const pid = Number(readFileSync(join(directory, 'owner.lock'), 'utf8'));
@@ -39,6 +43,14 @@ export async function runReceiverTools(store: LocalStore, roomRef: string, sessi
             const job = database.prepare('SELECT phase FROM jobs WHERE event_id=?').get(eventId);
             if (job?.['phase'] !== 'running') {
                 throw new Error('This request is no longer running');
+            }
+            if (request.params.name === 'working_message') {
+                const token = database.prepare('SELECT value FROM metadata WHERE key=?').get(`turn:${eventId}`)?.['value'];
+                if (typeof token !== 'string') {
+                    throw new Error('Claim the speaking turn before declaring work');
+                }
+                await client.declareWorking(room.roomId, credential, eventId, token);
+                return {content: [{type: 'text', text: 'Working declared. Continue your work and provide the final answer.'}]};
             }
             await client.acknowledgeMessage(room.roomId, credential, eventId);
             database.prepare('UPDATE jobs SET acknowledged=1 WHERE event_id=?').run(eventId);

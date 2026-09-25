@@ -52,6 +52,46 @@ export function runGroupContract(label: string, makeStore: StoreFactory): void {
             await service.send(roomId, agent.credential, {type: 'message', recipientId: ownerId, replyTo: request.eventId, turnToken: token, payload: {text, priority: 'normal'}, idempotencyKey: newId('event')});
         }
 
+        test('working is an explicit, scoped declaration separate from Seen and a turn claim', async () => {
+            const [request] = await question([codex.id]);
+            const grant = await service.turns.claim(roomId, codex.credential, request!.eventId, newId('event'));
+            expect((await service.turns.status(roomId, owner)).entries[0]!.workingAt).toBeUndefined();
+            await expect(service.turns.working(roomId, codex.credential, request!.eventId, grant.token!)).rejects.toMatchObject({code: 'invalid_request'});
+            await service.acknowledgeMessage(roomId, codex.credential, request!.eventId);
+            expect((await service.turns.status(roomId, owner)).entries[0]!.workingAt).toBeUndefined();
+            await expect(service.turns.working(roomId, claude.credential, request!.eventId, grant.token!)).rejects.toMatchObject({code: 'unauthorized'});
+            await expect(service.turns.working(roomId, owner, request!.eventId, grant.token!)).rejects.toMatchObject({code: 'unauthorized'});
+            await expect(service.turns.working(roomId, codex.credential, request!.eventId, 'wrong-token')).rejects.toMatchObject({code: 'turn_required'});
+            await Promise.all([service.turns.working(roomId, codex.credential, request!.eventId, grant.token!), service.turns.working(roomId, codex.credential, request!.eventId, grant.token!)]);
+            const declared = (await service.turns.status(roomId, owner)).entries[0]!;
+            expect(declared.workingAt).toBe(clock.now());
+            const seq = (await service.snapshot(roomId, owner)).latestSeq;
+            await service.turns.working(roomId, codex.credential, request!.eventId, grant.token!);
+            expect((await service.snapshot(roomId, owner)).latestSeq).toBe(seq);
+            clock.advance(10_000);
+            await service.turns.renew(roomId, codex.credential, request!.eventId, grant.token!);
+            expect((await new RoomService(store, clock.now).turns.status(roomId, owner)).entries[0]).toMatchObject({workingAt: declared.workingAt, expiresAt: clock.now() + TURN_LEASE_MS});
+            clock.advance(TURN_LEASE_MS + 1);
+            expect((await service.turns.status(roomId, owner)).entries[0]!.state).toBe('stalled');
+            await expect(service.turns.working(roomId, codex.credential, request!.eventId, grant.token!)).rejects.toMatchObject({code: 'turn_expired'});
+        });
+
+        test('mute, pause, cancellation and answers clear visible working activity', async () => {
+            const [request] = await question([codex.id]);
+            const grant = await service.turns.claim(roomId, codex.credential, request!.eventId, newId('event'));
+            await service.acknowledgeMessage(roomId, codex.credential, request!.eventId);
+            await service.turns.working(roomId, codex.credential, request!.eventId, grant.token!);
+            await service.setMuted(roomId, controller, codex.id, true);
+            expect((await service.turns.status(roomId, owner)).entries[0]!.workingAt).toBeUndefined();
+            await service.setMuted(roomId, controller, codex.id, false);
+            await service.control(roomId, controller, codex.id, true);
+            expect((await service.turns.status(roomId, owner)).entries[0]!.workingAt).toBeUndefined();
+            await service.control(roomId, controller, codex.id, false);
+            await answer(codex, request!, grant.token!, 'done');
+            expect((await service.turns.status(roomId, owner)).entries).toHaveLength(0);
+            await expect(service.turns.working(roomId, codex.credential, request!.eventId, grant.token!)).rejects.toMatchObject({code: 'turn_required'});
+        });
+
         test('one visible question fans out atomically, preserves order and deduplicates retries', async () => {
             const input = {type: 'message' as const, recipientIds: [claude.id, codex.id, claude.id], payload: {text: 'Both please', priority: 'normal' as const}, idempotencyKey: newId('event')};
             const sent = await service.send(roomId, owner, input);

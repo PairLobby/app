@@ -2,6 +2,7 @@
 //! a generic events endpoint must not become a way around control authorization.
 
 import {z} from 'zod';
+import {NameSource, ParticipantName} from './names.js';
 
 import {AdapterCapabilities, ParticipantKind, ParticipantRole, RoomEvent, SendEventRequest} from './events.js';
 import {AttemptId, EventId, ParticipantId, RoomId, SessionId} from './ids.js';
@@ -13,12 +14,14 @@ export const ROUTES = {
     redeemInvite: {method: 'POST', path: '/v1/invites/redeem'},
     createInvite: {method: 'POST', path: '/v1/rooms/:roomId/invites'},
     getRoom: {method: 'GET', path: '/v1/rooms/:roomId'},
+    renameSelf: {method: 'POST', path: '/v1/rooms/:roomId/self/name'},
     rejoinRoom: {method: 'POST', path: '/v1/rooms/:roomId/rejoin'},
     turnQueue: {method: 'GET', path: '/v1/rooms/:roomId/turns'},
     turnMode: {method: 'POST', path: '/v1/rooms/:roomId/turns/mode'},
     turnControl: {method: 'POST', path: '/v1/rooms/:roomId/turns'},
     claimTurn: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/claim'},
     renewTurn: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/renew'},
+    declareWorking: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/working'},
     passTurn: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/pass'},
     readEvents: {method: 'GET', path: '/v1/rooms/:roomId/events'},
     sendEvent: {method: 'POST', path: '/v1/rooms/:roomId/events'},
@@ -38,7 +41,8 @@ export const ROUTES = {
 } as const;
 
 const identity = z.object({
-    displayName: z.string().min(1).max(64),
+    displayName: ParticipantName,
+    nameSource: NameSource.optional(),
     kind: ParticipantKind,
     sessionId: SessionId.optional(),
     capabilities: AdapterCapabilities.optional()

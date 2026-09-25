@@ -15,6 +15,7 @@ import {isRoomCommand, runRoomCommand} from './chat-commands.js';
 import {applyMention, commonPrefix, currentMention, matchNames, renderSuggestions, routeChatMessage} from './mentions.js';
 import type {RoutedChatMessage} from './mentions.js';
 import {formatTurnQueue} from './turn-commands.js';
+import {sendChatReply} from './chat-reply.js';
 
 type ParticipantMatch = {id: string; name: string} | null;
 
@@ -25,6 +26,8 @@ const RESET = '\u001b[0m';
 export interface ChatOptions {
     /** Guests may watch and leave; the composer is disabled for them. */
     readOnly?: boolean;
+    requireHuman?: boolean;
+    useHumanProfile?: boolean;
     store: LocalStore;
     client: PairLobbyClient;
     roomId: string;
@@ -40,7 +43,7 @@ export interface ChatOptions {
     fromStart?: boolean;
 }
 
-const HELP = `  <message>          send to the room
+const HELP = `  <message>          address all eligible agents (same as @all)
   @name anywhere    send to that participant (e.g. Hey @codex, hello)
   @codex @claude    ask multiple agents; @all asks all eligible agents
   /turns            show the speaking queue
@@ -50,9 +53,12 @@ const HELP = `  <message>          send to the room
   /to <name>         address every later message to one participant
   /to                clear the default recipient
   /seen [message]    receipt details (latest sent message by default; F2 also works)
+  /working           show agents that explicitly started answering (F3)
   /requests          show every unanswered request
-  /reply <id> <text>  answer one exact request
+  /reply             ↑/↓ pick a message; Enter/Tab select; type your answer
+  /reply <id> <text>  reply to an exact message
   /who               who is registered in this room
+  /name <new name>   change your name in this room (default profile unchanged)
   /invite            create a read-only observer invite
   /invite as <name>  create a participant invite with a default name
   /lock              block joining, rejoining, and new invites (owner)
@@ -72,12 +78,27 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
 
     const showIds = options.showIds === true;
     let snapshot = await client.snapshot(roomId, credential);
-    if (snapshot.participants.some((participant) => participant.participantId === participantId && participant.left)) {
+    let member = snapshot.participants.find((participant) => participant.participantId === participantId);
+    if (!member || (options.requireHuman && member.kind !== 'human')) {
+        throw new ProtocolError('unauthorized', 'The saved session is not your human membership. Choose a human session explicitly.');
+    }
+    if (member.left) {
         if (!snapshot.rejoinSupported) {
             throw new ProtocolError('unsupported_capability', 'This relay needs an update to rejoin a saved session. Join again with an invite for this older relay.');
         }
         snapshot = await client.rejoin(roomId, credential);
+        member = snapshot.participants.find((participant) => participant.participantId === participantId)!;
     }
+    options.readOnly = member.role === 'guest';
+    if (options.useHumanProfile && member.kind === 'human') {
+        const profile = store.profile();
+        if (profile.kind !== 'agent' && profile.displayName && member.nameSource !== 'room' && member.role !== 'guest' && !member.muted && snapshot.renameSelfSupported && member.displayName !== profile.displayName) {
+            snapshot = await client.renameSelf(roomId, credential, profile.displayName, 'profile');
+            member = snapshot.participants.find((participant) => participant.participantId === participantId)!;
+        }
+        store.rememberHumanSession(roomId, sessionId);
+    }
+    store.updateSessionName(roomId, sessionId, member.displayName, member.nameSource);
     const names = new Map<string, string>();
     absorbNames(snapshot, names);
 
@@ -130,6 +151,9 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         }
 
         function setPrompt(): void {
+            if (recipient) {
+                recipient.name = names.get(recipient.id) ?? recipient.name;
+            }
             if (options.readOnly === true) {
                 view.setPrompt(`${DIM}watching${RESET} `);
                 return;
@@ -231,6 +255,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
 
         terminal.on('line', (raw) => {
             const line = raw.trim();
+            const reply = view.takeReply();
             clearHint();
             terminal.prompt(true);
             if (line.length === 0) {
@@ -246,6 +271,18 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 emit(`${DIM}  you are a read-only guest in this room${RESET}`);
                 return;
             }
+            if (reply) {
+                void sendChatReply(reply, {client, roomId, credential, participantId, quotedMessagesSupported: snapshot.quotedMessagesSupported === true})
+                    .then((result) => {
+                        seen.add(result.event.eventId);
+                        view.addEvent(result.event);
+                    })
+                    .catch((error) => {
+                        view.restoreReply(reply);
+                        emit(`Reply failed: ${error instanceof Error ? error.message : String(error)}`);
+                    });
+                return;
+            }
             if (isRoomCommand(line)) {
                 void runRoomCommand(line, options).then(emit).catch((error) => emit(error instanceof Error ? error.message : String(error)));
                 return;
@@ -256,6 +293,10 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             }
             if (line === '/seen' || line.startsWith('/seen ')) {
                 view.showLatestReceipt(line.slice(5).trim() || undefined);
+                return;
+            }
+            if (line === '/working') {
+                view.showWorking();
                 return;
             }
             if (line === '/requests') {
@@ -289,7 +330,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             if (line === '/to') {
                 recipient = null;
                 setPrompt();
-                emit(`${DIM}  addressing the room${RESET}`);
+                emit(`${DIM}  addressing all eligible agents${RESET}`);
                 terminal.prompt(true);
                 return;
             }
@@ -371,9 +412,16 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 const page = await client.readEvents(roomId, credential, cursor);
                 if (page.events.length > 0) {
                     const nextCursor = page.events.at(-1)!.seq;
-                    if (page.events.some((event) => event.type === 'participant.joined' || event.type === 'participant.left' || event.type === 'participant.revoked' || event.type === 'participant.mute_changed' || event.type === 'room.lock_changed')) {
+                    if (page.events.some((event) => event.type === 'participant.joined' || event.type === 'participant.renamed' || event.type === 'participant.left' || event.type === 'participant.revoked' || event.type === 'participant.mute_changed' || event.type === 'room.lock_changed')) {
                         snapshot = await client.snapshot(roomId, credential);
                         absorbNames(snapshot, names);
+                        for (const saved of store.room(roomId)?.sessions ?? []) {
+                            const current = snapshot.participants.find((participant) => participant.participantId === saved.participantId);
+                            if (current) {
+                                store.updateSessionName(roomId, saved.sessionId, current.displayName, current.nameSource);
+                            }
+                        }
+                        setPrompt();
                     }
                     for (const event of page.events) {
                         if (seen.has(event.eventId)) {
@@ -396,7 +444,9 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                     loadedRequests = true;
                 }
                 if (snapshot.groupTurnsSupported) {
-                    view.setTurnStatus(formatTurnQueue(await client.turnQueue(roomId, credential)));
+                    const queue = await client.turnQueue(roomId, credential);
+                    view.setWorking(queue);
+                    view.setTurnStatus(formatTurnQueue(queue));
                 }
                 for (const request of pendingRequests) {
                     view.updateRequest(request);
@@ -462,7 +512,8 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         // deliberately, once output is flushed.
         // Print after restoring the normal buffer and finishing leave, so the
         // command stays in shell scrollback and cannot race a pending departure.
-        await new Promise<void>((resolve) => process.stdout.write(`\nTo rejoin this room:\n  pairlobby chat --room ${roomId} --session ${sessionId}\n\n`, () => resolve()));
+        const sessionFlag = options.useHumanProfile && member.kind === 'human' ? '' : ` --session ${sessionId}`;
+        await new Promise<void>((resolve) => process.stdout.write(`\nTo rejoin this room:\n  pairlobby chat --room ${roomId}${sessionFlag}\n\n`, () => resolve()));
         process.exit(0);
     } finally {
         view.close();
@@ -532,6 +583,8 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
     switch (event.type) {
         case 'participant.joined':
             return `${event.payload.displayName} joined`;
+        case 'participant.renamed':
+            return `${event.payload.previousName} is now ${event.payload.name}`;
         case 'participant.left':
             return `${sender} left`;
         case 'participant.revoked':

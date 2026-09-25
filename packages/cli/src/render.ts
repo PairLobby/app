@@ -215,6 +215,8 @@ function describe(event: RoomEvent): string {
             return `declined handover ${event.payload.handoverId} revision ${event.payload.revision}${event.payload.reason ? `: ${event.payload.reason}` : ''}`;
         case 'participant.joined':
             return `${event.payload.displayName} joined as ${event.payload.role}`;
+        case 'participant.renamed':
+            return `${event.payload.previousName} is now ${event.payload.name}`;
         case 'participant.left':
             return 'left the room';
         case 'participant.revoked':

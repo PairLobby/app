@@ -42,6 +42,35 @@ export function runRequestContract(label: string, makeStore: StoreFactory) {
             const pending = await service.requests(roomId, bob, 0, 100, bobId);
             expect(pending.requests.map((r) => r.eventId)).toEqual([first.event.eventId, second.event.eventId]);
         });
+
+        test('quoted follow-ups create new obligations and preserve the earlier final answer', async () => {
+            const question = await ask('original question');
+            await service.acknowledgeMessage(roomId, bob, question.event.eventId);
+            const response = await answer(question.event.eventId, 'original answer');
+            const request = {type: 'message' as const, recipientId: bobId, quoteOf: response.event.eventId, payload: {text: 'explain further', priority: 'normal' as const}, idempotencyKey: newId('event')};
+            const followup = await service.send(roomId, alice, request);
+            expect(followup.event).toMatchObject({quoteOf: response.event.eventId, replyTo: null, payload: {text: 'explain further'}});
+            const obligation = await service.request(roomId, bob, followup.event.eventId);
+            expect(obligation.requiresReply).toBe(true);
+            expect(obligation.text).toContain('original answer');
+            expect(obligation.text).toContain('explain further');
+            expect((await service.request(roomId, alice, question.event.eventId)).responseEventId).toBe(response.event.eventId);
+            expect((await service.send(roomId, alice, request)).deduplicated).toBe(true);
+            await expect(service.send(roomId, alice, {...request, quoteOf: question.event.eventId})).rejects.toMatchObject({code: 'idempotency_conflict'});
+            expect((await new RoomService(store).read(roomId, alice, 0, 100)).events.at(-1)?.quoteOf).toBe(response.event.eventId);
+        });
+
+        test('quotes cannot point outside retained message history, bypass reply rules or complete somebody else’s request', async () => {
+            const question = await ask('unanswered question');
+            const quote = {type: 'message' as const, quoteOf: question.event.eventId, payload: {text: 'context', priority: 'normal' as const}, idempotencyKey: newId('event')};
+            await service.send(roomId, alice, quote);
+            expect((await service.request(roomId, bob, question.event.eventId)).responseEventId).toBeNull();
+            const system = (await service.read(roomId, alice, 0, 100)).events[0]!;
+            for (const quoteOf of [newId('event'), system.eventId]) {
+                await expect(service.send(roomId, alice, {...quote, quoteOf, idempotencyKey: newId('event')})).rejects.toMatchObject({code: 'invalid_request'});
+            }
+            await expect(service.send(roomId, alice, {...quote, replyTo: question.event.eventId, idempotencyKey: newId('event')})).rejects.toMatchObject({code: 'invalid_request'});
+        });
         test('senders cannot acknowledge themselves, and a final reply requires the recipients receipt', async () => {
             const {event} = await ask('work');
             await expect(service.acknowledgeMessage(roomId, alice, event.eventId)).rejects.toMatchObject({code: 'unauthorized'});

@@ -56,7 +56,7 @@ test('Codex, Claude and Qwen coordinate group turns, see prior replies, pass and
             agents.push({...await command(['join', invite.code, '--runtime', runtime, '--as', runtime, '--model', 'fixture-model', '--server', relay.url], runtime), runtime});
         }
         const scope = ['--room', owner.roomId, '--session', owner.sessionId];
-        const first = await command(['send', 'Review the implementation', '--to', 'codex,claude,qwen', ...scope]);
+        const first = await command(['send', 'declare-working Review the implementation', '--to', 'codex,claude,qwen', ...scope]);
         expect(first.recipientIds).toEqual(agents.map((agent) => agent.participantId));
         const deliveries = (await client.pendingRequests(owner.roomId, credential)).filter((request) => request.conversationId === first.eventId);
         expect(deliveries).toHaveLength(3);
@@ -69,6 +69,7 @@ test('Codex, Claude and Qwen coordinate group turns, see prior replies, pass and
             return finished.every((request) => Boolean(request.responseEventId));
         });
         expect(finished.every((request) => request.receivedAt !== null)).toBe(true);
+        expect(finished.every((request) => request.workingAt !== undefined)).toBe(true);
         expect(finished[1]!.responseText).toContain('Fixture answer:');
         expect(finished[2]!.responseText).toContain('Claude fixture answer:');
         expect((await client.turnQueue(owner.roomId, credential)).entries).toHaveLength(0);

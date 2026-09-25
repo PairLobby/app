@@ -16,6 +16,8 @@ import time
 cli = ['node', os.environ.get('PAIRLOBBY_TEST_CLI', 'packages/cli/dist/main.js')]
 with tempfile.TemporaryDirectory(prefix='pairlobby-rejoin-') as directory:
     environment = {**os.environ, 'PAIRLOBBY_DATA_DIR': directory + '/client', 'TERM': 'xterm-256color'}
+    for variable in ['CLAUDE_CODE_SESSION_ID', 'CODEX_SESSION_ID', 'CODEX_THREAD_ID', 'CODEX_CONVERSATION_ID', 'PAIRLOBBY_SESSION']:
+        environment.pop(variable, None)
     relay = subprocess.Popen(cli + ['serve', '--port', '0', '--data-dir', directory + '/relay'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=environment)
     terminal = None
     master = None
@@ -31,7 +33,7 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-rejoin-') as directory:
         room_id = created['roomId']
         session_id = created['sessionId']
         arguments = ['chat', '--room', room_id, '--session', session_id]
-        expected = 'pairlobby ' + ' '.join(arguments)
+        expected = 'pairlobby chat --room ' + room_id
 
         for exit_keys in [b'/quit\r', b'\x03', b'\x04']:
             master, slave = pty.openpty()
@@ -73,7 +75,7 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-rejoin-') as directory:
             assert expected in text, text
             restored = output.rfind(b'\x1b[?1049l')
             assert restored >= 0 and output.find(expected.encode()) > restored, 'command must remain after restoring the terminal buffer'
-            printed = re.search(r'pairlobby chat --room rm_[A-Z0-9]+ --session se_[A-Z0-9]+', text).group(0)
+            printed = re.search(r'pairlobby chat --room rm_[A-Z0-9]+', text).group(0)
             arguments = shlex.split(printed)[1:]
             snapshot = command('status', '--room', room_id, '--session', session_id)
             assert snapshot['participants'][0]['left'], snapshot

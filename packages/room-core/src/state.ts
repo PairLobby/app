@@ -62,6 +62,7 @@ export function toParticipantView(view: RoomView, participant: ParticipantRecord
     return {
         participantId: participant.participantId,
         displayName: participant.displayName,
+        ...(participant.nameSource ? {nameSource: participant.nameSource} : {}),
         kind: participant.kind,
         role: participant.role,
         capabilities: participant.capabilities,
@@ -80,7 +81,10 @@ export function toSnapshot(view: RoomView): RoomSnapshot {
         roomId: view.room.roomId,
         messageReceiptScope: 'members',
         rejoinSupported: true,
+        renameSelfSupported: true,
+        quotedMessagesSupported: true,
         groupTurnsSupported: true,
+        workingStatusSupported: true,
         turnMode: view.room.turnMode ?? 'sequential',
         name: view.room.name,
         lifecycle: view.room.lifecycle,
