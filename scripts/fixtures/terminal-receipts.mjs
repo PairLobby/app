@@ -28,6 +28,8 @@ view.input.on('line', (line) => {
                 view.addEvent({...event, eventId: `${id}_${reader}_receipt`, senderId: `pt_${reader}`, type: 'message.received', payload: {eventId: id}});
             }
         }
+    } else if (line === '/select') {
+        view.toggleSelection();
     } else if (line === '/seen') {
         view.showLatestReceipt();
     } else {

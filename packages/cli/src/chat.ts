@@ -54,6 +54,7 @@ const HELP = `  <message>          address all eligible agents (same as @all)
   /to                clear the default recipient
   /seen [message]    receipt details (latest sent message by default; F2 also works)
   /working           show agents that explicitly started answering (F3)
+  /select            select and copy text with your terminal (F4; Esc resumes)
   /requests          show every unanswered request
   /reply             ↑/↓ pick a message; Enter/Tab select; type your answer
   /reply <id> <text>  reply to an exact message
@@ -265,6 +266,10 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             if (line === '/quit' || line === '/exit') {
                 closed = true;
                 terminal.close();
+                return;
+            }
+            if (line === '/select') {
+                view.toggleSelection();
                 return;
             }
             if (options.readOnly === true) {
@@ -554,7 +559,7 @@ export function format(event: RoomEvent, names: Map<string, string>, meParticipa
 
     if (event.type === 'message') {
         const targets = event.recipientIds ?? (event.recipientId ? [event.recipientId] : []);
-        const to = targets.length ? `${DIM} → ${targets.map((id) => names.get(id) ?? id).join(', ')}${RESET}` : '';
+        const to = event.allRecipients || targets.length > 1 ? `${DIM} → all${RESET}` : targets.length ? `${DIM} → ${targets.map((id) => names.get(id) ?? id).join(', ')}${RESET}` : '';
         const who = mine ? `${DIM}${sender}${RESET}` : `${BOLD}${sender}${RESET}`;
         const id = showIds && event.senderId ? `${DIM} ${event.senderId}${RESET}` : '';
         const thread = !showIds ? '' : event.replyTo

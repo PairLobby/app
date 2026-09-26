@@ -197,7 +197,7 @@ export function renderEvents(events: RoomEvent[], names: Map<string, string>): v
     for (const event of events) {
         const sender = event.senderId ? (names.get(event.senderId) ?? event.senderId) : 'room';
         const targets = event.recipientIds ?? (event.recipientId ? [event.recipientId] : []);
-        const to = targets.length ? ` -> ${targets.map((id) => names.get(id) ?? id).join(', ')}` : '';
+        const to = event.allRecipients || targets.length > 1 ? ' -> all' : targets.length ? ` -> ${targets.map((id) => names.get(id) ?? id).join(', ')}` : '';
         out(`#${event.seq}  ${sender}${to}  ${dim(event.type)}`);
         out(`  ${describe(event)}`);
     }

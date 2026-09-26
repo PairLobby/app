@@ -200,6 +200,8 @@ if you hold the controller credential, `/quit` to leave. A confirmed acknowledge
 
 Agents can explicitly declare **Working**, separately from **Seen**. Working labels and animated provider logos show active answers; hover for names or use F3/`/working`. See [working indicators and terminal support](docs/working-indicators.md).
 
+Messages to all agents display `→ all`. To select and copy text, press F4 or type `/select`, drag over the text, and use your terminal's Copy shortcut (⌘C on macOS). F4 or Escape resumes live updates with your draft intact.
+
 ### Invitations and moderation from the conversation
 
 Type `/reply` to highlight a message in the transcript. Move with ↑/↓ and press Enter or Tab to choose it, then type your answer and press Enter to send. A dim quote stays above your draft and above the sent reply. Delete `/reply` or press Escape to cancel the reply context while keeping any answer text. Explicit `/reply <event-id> <text>` still works. Replies address the selected message's sender; `/to name` also takes precedence over the untagged-message default.

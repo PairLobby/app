@@ -1,6 +1,7 @@
-import {expect, test} from 'vitest';
+import {expect, test, vi} from 'vitest';
 import type {MessageRequest, RoomEvent} from '@pairlobby/protocol';
 import {format, formatRequestStatus} from './chat.js';
+import {renderEvents} from './render.js';
 
 const names = new Map([['pt_human', 'hjoncour'], ['pt_codex', 'codex']]);
 const event: RoomEvent = {
@@ -38,4 +39,28 @@ test('normal delivery statuses use readable wording and reserve IDs for debug di
     const failure: RoomEvent = {...event, type: 'message.delivery_failed', payload: {eventId: 'ev_request', reason: 'Runtime unavailable'}};
     expect(format(failure, names, 'pt_human')).not.toContain('ev_request');
     expect(format(failure, names, 'pt_human', true)).toContain('ev_request');
+});
+
+test('all group headers use all while preserving the selected recipients and direct names', () => {
+    const group = {...event, recipientId: null, recipientIds: ['pt_codex', 'pt_claude'], payload: {text: 'hey guys', priority: 'normal' as const}};
+    const roster = new Map([...names, ['pt_claude', 'claude']]);
+    expect(plain(format({...group, allRecipients: true}, roster, 'pt_human'))).toContain('hjoncour → all  hey guys');
+    expect(plain(format({...group, allRecipients: false}, roster, 'pt_human'))).toContain('hjoncour → all');
+    expect(plain(format(group, roster, 'pt_human'))).toContain('hjoncour → all');
+    expect(plain(format({...group, allRecipients: true, recipientIds: ['pt_codex']}, roster, 'pt_human'))).toContain('hjoncour → all');
+    expect(plain(format({...group, allRecipients: false, recipientIds: ['pt_codex']}, roster, 'pt_human'))).toContain('hjoncour → codex');
+    expect(group.recipientIds).toEqual(['pt_codex', 'pt_claude']);
+});
+
+test('plain terminal history uses the same group label as interactive chat', () => {
+    const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+        renderEvents([{...event, recipientId: null, recipientIds: ['pt_codex', 'pt_claude'], allRecipients: false}, event], names);
+        const text = output.mock.calls.map(([line]) => String(line)).join('');
+        expect(text).toContain('hjoncour -> all');
+        expect(text).toContain('hjoncour -> codex');
+        expect(text.split('\n').filter((line) => line.startsWith('#')).join('\n')).not.toContain('codex,');
+    } finally {
+        output.mockRestore();
+    }
 });

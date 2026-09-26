@@ -44,7 +44,8 @@ const destination = join(homedir(), '.local/share/pairlobby/prototypes', version
 mkdirSync(join(destination, 'scripts'), {recursive: true, mode: 0o700});
 writeFileSync(join(destination, 'scripts/async-local-relay.mjs'), relay);
 writeFileSync(join(destination, 'scripts/test-async-local.py'), harness);
-copyFileSync(join(root, 'docs/async-local-test.md'), join(destination, 'README.md'));
+const prototypeReadme = join(root, 'docs/async-local-test.md');
+copyFileSync(existsSync(prototypeReadme) ? prototypeReadme : join(root, 'README.md'), join(destination, 'README.md'));
 writeFileSync(join(destination, 'installation.json'), JSON.stringify({
     version,
     mode: 'synthetic-local-test',
