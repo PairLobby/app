@@ -126,6 +126,8 @@ const envelope = z.object({
     /** A routing hint, not a private-message boundary: every member reads the whole transcript. */
     recipientId: ParticipantId.nullable(),
     recipientIds: z.array(ParticipantId).min(1).max(32).optional(),
+    /** Preserves whether this group was addressed as all, including an untagged chat message. */
+    allRecipients: z.boolean().optional(),
     replyTo: EventId.nullable(),
     /** A conversational follow-up; unlike replyTo, this does not complete a request. */
     quoteOf: EventId.optional(),

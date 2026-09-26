@@ -393,6 +393,7 @@ export class RoomService {
         const mutation = sendEvent(view, await hashCredential(credential), outgoing, this.ctx());
         if (group) {
             mutation.appendEvent.recipientIds = recipients;
+            mutation.appendEvent.allRecipients = request.allRecipients === true;
             if (request.allRecipients) {
                 mutation.room.allStartIndex = (view.room.allStartIndex ?? 0) + 1;
             }
@@ -580,7 +581,26 @@ export class RoomService {
             throw new ProtocolError('cursor_gap', 'history before this cursor is no longer retained', {earliestAvailableSeq: view.earliestSeq});
         }
         const page = await this.store.readEvents(roomId, after, limit);
-        return {events: page.events, earliestSeq: view.earliestSeq, latestSeq: view.room.nextSeq - 1, hasMore: page.hasMore};
+        const events = await Promise.all(page.events.map((event) => this.restoreAudience(event)));
+        return {events, earliestSeq: view.earliestSeq, latestSeq: view.room.nextSeq - 1, hasMore: page.hasMore};
+    }
+
+    /** Older group events kept the all flag only in their canonical idempotency request. */
+    private async restoreAudience(event: RoomEvent): Promise<RoomEvent> {
+        if (!event.recipientIds || event.allRecipients !== undefined || !event.idempotencyKey) {
+            return event;
+        }
+        const record = await this.store.idempotencyRecord(event.roomId, event.idempotencyKey);
+        if (!record) {
+            return event;
+        }
+        try {
+            const request = JSON.parse(record.requestDigest) as Record<string, unknown>;
+            return {...event, allRecipients: request['allRecipients'] === true};
+        } catch {
+            // Unknown historical metadata must not be guessed from today's membership.
+            return event;
+        }
     }
 
     async snapshot(roomId: string, credential: string): Promise<RoomSnapshot> {

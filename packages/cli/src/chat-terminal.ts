@@ -57,11 +57,26 @@ export class ChatTerminal {
     private submittedReply: ReplySubmission | undefined;
     private hintText = '';
     private revealReply = false;
+    private selecting = false;
 
     constructor(private readonly options: ChatTerminalOptions) {
         this.input = createInterface({input: this.keyboard, output: this.output, terminal: true, completer: options.complete});
         this.screen.on('keypress', (character: string, key: ScreenKey) => {
             if (this.suspended || this.closed) {
+                return;
+            }
+            if (this.selecting) {
+                if (key.name === 'f4' || key.name === 'escape') {
+                    this.toggleSelection();
+                } else if (key.name === 'pageup' || key.name === 'pagedown') {
+                    this.body.scroll((key.name === 'pageup' ? -1 : 1) * Math.max(1, Number(this.body.height) - 2));
+                    this.follow = this.body.getScrollPerc() >= 99;
+                    this.renderInput(true);
+                }
+                return;
+            }
+            if (key.name === 'f4') {
+                this.toggleSelection();
                 return;
             }
             if (this.reply.active && key.name === 'escape') {
@@ -137,6 +152,11 @@ export class ChatTerminal {
         this.screen.on('resize', () => {
             this.working.clearGraphics();
             this.output.columns = Number(this.screen.width);
+            if (this.selecting) {
+                this.selecting = false;
+                this.working.resume();
+                this.screen.program.enableMouse();
+            }
             this.rebuild();
         });
         this.screen.program.enableMouse();
@@ -156,6 +176,26 @@ export class ChatTerminal {
     setHint(text: string): void {
         this.hintText = text;
         this.renderInput();
+    }
+
+    /** Native terminal selection can coexist with mouse controls through a frozen selection mode. */
+    toggleSelection(): void {
+        if (this.selecting) {
+            this.selecting = false;
+            this.working.resume();
+            this.screen.program.enableMouse();
+            this.rebuild();
+            return;
+        }
+        this.selecting = true;
+        this.pinned = false;
+        this.detailsId = undefined;
+        this.popup.hide();
+        this.working.hide();
+        this.working.suspend();
+        this.screen.program.disableMouse();
+        this.renderInput(true);
+        this.screen.program.flush();
     }
 
     takeReply(): ReplySubmission | undefined {
@@ -207,8 +247,16 @@ export class ChatTerminal {
     }
 
     log(text: string): void {
-        this.entries.push({text});
+        this.rememberEntry({text});
         this.rebuild();
+    }
+
+    private rememberEntry(entry: TranscriptEntry): void {
+        this.entries.push(entry);
+        // Keep buffering bounded even while native selection freezes redraws.
+        if (this.entries.length > 1000) {
+            this.entries.splice(0, this.entries.length - 1000);
+        }
     }
 
     addEvent(event: RoomEvent): void {
@@ -216,7 +264,7 @@ export class ChatTerminal {
         if (!this.events.has(event.eventId)) {
             this.events.add(event.eventId);
             if (event.type !== 'message.received' && !(event.type === 'conversation.turn_changed' && ['claimed', 'working'].includes(event.payload.action))) {
-                this.entries.push({text: this.options.format(event), event});
+                this.rememberEntry({text: this.options.format(event), event});
             }
         }
         this.rebuild();
@@ -274,7 +322,7 @@ export class ChatTerminal {
     }
 
     private rebuild(): void {
-        if (this.closed || this.suspended) {
+        if (this.closed || this.suspended || this.selecting) {
             return;
         }
         const scroll = this.body.getScroll();
@@ -282,10 +330,6 @@ export class ChatTerminal {
             child.destroy();
         }
         this.labels.clear();
-        // Keep terminal memory bounded; the durable transcript remains on the relay.
-        if (this.entries.length > 1000) {
-            this.entries.splice(0, this.entries.length - 1000);
-        }
         this.reply.sync(this.input.line ?? '', this.replyTargets());
         const workingHeight = this.working.rebuild(this.reply.active ? 3 : 2);
         this.body.bottom = (this.reply.active ? 4 : 3) + workingHeight;
@@ -384,8 +428,8 @@ export class ChatTerminal {
         this.renderInput();
     }
 
-    private renderInput(): void {
-        if (this.closed || this.suspended) {
+    private renderInput(force = false): void {
+        if (this.closed || this.suspended || (this.selecting && !force)) {
             return;
         }
         const line = this.input.line ?? '';
@@ -398,13 +442,17 @@ export class ChatTerminal {
         } else {
             this.quote.hide();
         }
-        this.hint.setContent(this.reply.active
+        this.hint.setContent(this.selecting ? 'Select text: drag · use terminal Copy (⌘C on macOS) · F4/Esc resume' : this.reply.active
             ? this.reply.picking ? '↑/↓ choose a message · Enter/Tab select · Esc cancel' : 'Enter sends your reply · Delete /reply or Esc to cancel'
-            : this.hintText || 'Hover/click Seen · F2 Seen · F3 Working · PgUp/PgDn scroll');
+            : this.hintText || 'Hover/click Seen · F2 Seen · F3 Working · F4 Select/copy · PgUp/PgDn scroll');
         this.composer.setContent(this.promptText + line.slice(start, start + width));
         this.working.paint();
         this.screen.render();
         this.working.drawGraphics();
+        if (this.selecting) {
+            this.screen.program.hideCursor();
+            return;
+        }
         const column = Number(this.composer.strWidth(this.promptText + line.slice(start, cursor)));
         this.screen.program.cup(Number(this.screen.height) - 2, Math.min(Number(this.screen.width) - 1, column));
         this.screen.program.showCursor();

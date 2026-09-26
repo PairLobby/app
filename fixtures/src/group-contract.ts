@@ -170,6 +170,7 @@ export function runGroupContract(label: string, makeStore: StoreFactory): void {
             const first = await sendAll();
             const second = await sendAll();
             expect(first.event.recipientIds).toEqual([codex.id, claude.id]);
+            expect(first.event.allRecipients).toBe(true);
             expect(second.event.recipientIds).toEqual([claude.id, codex.id]);
             await expect(service.turns.mode(roomId, codex.credential, 'parallel')).rejects.toMatchObject({code: 'unauthorized'});
             await expect(service.turns.control(roomId, claude.credential, {action: 'skip'})).rejects.toMatchObject({code: 'unauthorized'});
@@ -178,6 +179,32 @@ export function runGroupContract(label: string, makeStore: StoreFactory): void {
             expect((await sendAll()).event.recipientIds).toEqual([claude.id]);
             const own = (await store.groupRequests(roomId, first.event.eventId))[0]!;
             await expect(service.turns.claim(roomId, claude.credential, own.eventId, newId('event'))).rejects.toMatchObject({code: 'unauthorized'});
+        });
+
+        test('history recovers all intent from legacy request metadata without guessing explicit groups', async () => {
+            const all = await service.send(roomId, owner, {type: 'message', allRecipients: true, payload: {text: 'hello everyone', priority: 'normal'}, idempotencyKey: newId('event')});
+            const explicit = await service.send(roomId, owner, {type: 'message', recipientIds: [codex.id, claude.id], payload: {text: 'hello everyone', priority: 'normal'}, idempotencyKey: newId('event')});
+            expect(explicit.event.allRecipients).toBe(false);
+            const legacy = new Proxy(store, {
+                get(target, property) {
+                    if (property === 'readEvents') {
+                        return async (...args: Parameters<TestableRoomStore['readEvents']>) => {
+                            const page = await target.readEvents(...args);
+                            return {...page, events: page.events.map((event) => {
+                                const previous = {...event};
+                                delete previous.allRecipients;
+                                return previous;
+                            })};
+                        };
+                    }
+                    const value = Reflect.get(target, property);
+                    return typeof value === 'function' ? value.bind(target) : value;
+                }
+            });
+            const page = await new RoomService(legacy, clock.now).read(roomId, owner, 0, 100);
+            expect(page.events.find((event) => event.eventId === all.event.eventId)?.allRecipients).toBe(true);
+            expect(page.events.find((event) => event.eventId === explicit.event.eventId)?.allRecipients).toBe(false);
+            expect(page.events.find((event) => event.eventId === all.event.eventId)?.recipientIds).toEqual([codex.id, claude.id]);
         });
 
         test('delivery pagination advances and old clients skip guarded pages without getting stuck', async () => {

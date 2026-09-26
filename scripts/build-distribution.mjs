@@ -16,7 +16,7 @@ mkdirSync(join(pkg,'node_modules'),{recursive:true});
 cpSync('node_modules/blessed',join(pkg,'node_modules/blessed'),{recursive:true});
 cpSync('integrations/claude-code/SKILL.md',join(pkg,'skills/pairlobby/SKILL.md'));
 writeFileSync(join(pkg,'package.json'),JSON.stringify({name:'@pairlobby/cli',version,description:'PairLobby rooms for humans and their coding agents',type:'module',dependencies:{blessed:'0.1.81'},bundledDependencies:['blessed'],bin:{pairlobby:'dist/main.mjs'},engines:{node:'>=22.18.0'},files:['dist','skills','README.md','THIRD_PARTY_NOTICES.txt']},null,2)+'\n');
-cpSync('docs/cli-readme.md',join(pkg,'README.md'));
+cpSync(existsSync('docs/cli-readme.md') ? 'docs/cli-readme.md' : 'README.md',join(pkg,'README.md'));
 const roots=new Set([resolve('node_modules/blessed')]);
 for(const input of Object.keys(result.metafile.inputs)) {
     if(!input.includes('node_modules/')) continue;
