@@ -1,6 +1,6 @@
 <!--
 Codex reads this file automatically. It is generated from
-integrations/claude-code/SKILL.md so both runtimes get identical instructions —
+integrations/claude-code/SKILL.md so supported runtimes get identical instructions —
 a spike that finds a behavioural difference between them must be a difference in
 the runtime, not in what each was told.
 
@@ -71,6 +71,10 @@ Two agents in the same directory get separate identities, and the CLI refuses to
 
 ## Joining
 
+Humans can create a new managed agent from terminal chat with `/claude`, `/codex`, `/qwen`, or `/spawn <runtime>`, using `--name`, `--model`, `--workdir`, and supported `--effort` options. The CLI equivalent is `pairlobby spawn <runtime> --room <room-id> --session <human-session-id>`. This creates a separate managed conversation; it does not attach an existing agent session. Agent memberships cannot use these human spawn controls. Do not adopt a saved human session to bypass that restriction. Ordinary agent participation still uses the join flow below. Human-spawned agents wait without inference until addressed; sequential mode still locks the whole room, and only the owner can switch to `/turns parallel` for independent concurrent work. Codex and Claude accept supported effort settings; Qwen effort overrides are rejected.
+
+In terminal chat, `/agents` opens a table of every agent currently in the room, including externally joined agents. Its columns are Name, Provider, Status, Model, Conversation ID, Invite, Origin, and Last message date. Origin says This session, Other session, or Joined externally. Double-click/Enter copies the full cell; arrows/Tab navigate, R refreshes the snapshot, and Escape closes it. Configured models carry `*`; other model names are last reported values. Private runtime IDs/admission codes may be unavailable for remote or older sessions; never invent them. `/agent start|stop` remains restricted to agents spawned by that human membership. A stopped receiver remains joined and can accumulate requests; `/interrupt` is not implemented. Spawn errors with an operation ID can be recovered using `/spawn --resume <operation-id>` without creating another identity. These human commands do not authorize an agent to adopt a human session.
+
 ```sh
 pairlobby create --name my-project --as <your-name> --json     # start a room
 pairlobby join K7MP-4QWX --as <your-name> --json               # join with a code
@@ -96,8 +100,7 @@ participant leaves, so someone who closed their terminal can rejoin with the sam
 code. Mint one per person you expect to join; if the user asks for a room and does
 not say who else is coming, mint a spare and hand it over anyway.
 
-Neither rooms nor invite codes expire unless someone sets a deadline, so do not tell
-the user anything is about to lapse unless `pairlobby list` actually says so. If they want one set,
+Rooms and ordinary invites have no expiry by default; configured deadlines still apply. Internal spawn admission codes are an exception: they are single-use with a five-minute initial redemption deadline. Do not infer expiration from an old message or treat a spawned agent's admission code as a reusable rejoin command. If they want one set,
 `pairlobby expiry <room> in 10 hours` (or `never`) does it without a menu — do not
 run `pairlobby expire`, which opens an interactive picker meant for a person. Add `--local` if the user is running their own relay and you get a connection error.
 
@@ -148,7 +151,7 @@ If that list is not empty, answering it is the first thing you do.
 
 Codex, Claude and Qwen agent joins start an ordinary background receiver automatically. The join result includes `receiver.state`. An `available` receiver dispatches addressed requests to its own managed runtime conversation; it does not attach to the calling conversation. The calling agent can finish its turn after joining. Do not start a listening subagent or a background `read --wait` job.
 
-Inside managed Codex, use `pairlobby_acknowledge` first. Inside managed Claude or Qwen, call `mcp__pairlobby_receiver__acknowledge_message` first. Then give your final answer normally. The receiver forwards it to the exact request; do not send a duplicate CLI reply. When a request fails, the room shows an explicit failure rather than a fabricated acknowledgement.
+Inside managed Codex, use `pairlobby_acknowledge` first, then `pairlobby_working` when you start preparing an answer. Inside managed Claude or Qwen, call `mcp__pairlobby_receiver__acknowledge_message` first, then `mcp__pairlobby_receiver__working_message` when you start preparing an answer. Then give your final answer normally. The receiver forwards it to the exact request; do not send a duplicate CLI reply. When a request fails, the room shows an explicit failure rather than a fabricated acknowledgement.
 
 Use `pairlobby receiver status|start|stop --room <room> --session <session>` to inspect or control the receiver. Its managed conversation ID appears in status after the first request. `--manual-receive` opts out when joining. The native Claude channel is now optional: stop the managed receiver before activating that alternative. Managed Claude only has project-scoped file tools; explain if a request needs unavailable shell or protected-setting permissions. Managed Qwen uses default approvals and declines interactive approval requests; explain unavailable operations instead of bypassing them. Read manually only when the user asks you to check an unconfigured session.
 
@@ -177,7 +180,7 @@ Mention several agents (`@codex @claude Review this`) or use `@all` to address a
 
 The relay grants one speaking turn at a time by default. Managed receivers claim and renew it before starting model work; waiting needs no model turn or listening subagent. Consider earlier answers supplied with your request. If you have nothing useful to add, use `pairlobby_pass` in managed Codex or `mcp__pairlobby_receiver__pass_message` in managed Claude/Qwen, then finish your turn. The receiver records the pass without posting your final text.
 
-For manual/cooperative work on a turn-controlled request, use its delivery ID from `awaitingYourReply` and run `pairlobby turn claim <delivery> --room <room> --session <session> --json`. Start work only for `state: "granted"`. Keep the claim ID for retries, renew the token during long work with `pairlobby turn renew`, and supply `--turn-token <token>` to `reply` or `turn pass`. Stop if renewal is denied; do not work or poll through model turns while waiting for a grant. Managed receivers already handle this and must not start a second claim/renew loop.
+For manual/cooperative work on a turn-controlled request, use its delivery ID from `awaitingYourReply` and run `pairlobby turn claim <delivery> --room <room> --session <session> --json`. Start work only for `state: "granted"`. After acknowledging and receiving the turn token, explicitly declare work with `pairlobby turn working <delivery> --turn-token <token> --room <room> --session <session> --json`. This is separate from Seen. Renew the turn while working; its expiry removes the Working indicator. Keep the claim ID for retries, renew the token during long work with `pairlobby turn renew`, and supply `--turn-token <token>` to `reply` or `turn pass`. Stop if renewal is denied; do not work or poll through model turns while waiting for a grant. Managed receivers already handle this and must not start a second claim/renew loop.
 
 `pairlobby turns` shows the queue. Only the controller may change sequential/parallel mode, skip a stalled turn, or cancel a round. A skipped, cancelled or expired turn cannot publish a late answer. Never resend the output as an unrelated new message to bypass this. Room turn ownership does not lock project files or cancel work outside the receiver.
 

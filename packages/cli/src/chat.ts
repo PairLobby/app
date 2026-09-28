@@ -16,6 +16,9 @@ import {applyMention, commonPrefix, currentMention, matchNames, renderSuggestion
 import type {RoutedChatMessage} from './mentions.js';
 import {formatTurnQueue} from './turn-commands.js';
 import {sendChatReply} from './chat-reply.js';
+import {runAgentCommand} from './spawn-agent.js';
+import {completeAgentCommand, isAgentCommand} from './spawn-options.js';
+import {loadAgentRoster} from './agent-roster.js';
 
 type ParticipantMatch = {id: string; name: string} | null;
 
@@ -44,6 +47,12 @@ export interface ChatOptions {
 }
 
 const HELP = `  <message>          address all eligible agents (same as @all)
+  /claude [model]    spawn a Claude agent (--name, --effort, --workdir)
+  /codex [model]     spawn a Codex agent (--name, --effort, --workdir)
+  /qwen [model]      spawn a Qwen agent (--name, --workdir)
+  /spawn --help      spawn options and recovery commands
+  /agents           table of all room agents; double-click a cell to copy
+  /agent start|stop <name or id>  manage a spawned receiver
   @name anywhere    send to that participant (e.g. Hey @codex, hello)
   @codex @claude    ask multiple agents; @all asks all eligible agents
   /turns            show the speaking queue
@@ -115,6 +124,10 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         participantId,
         format: (event) => format(event, names, participantId, showIds),
         complete: (line) => {
+            const commands = completeAgentCommand(line);
+            if (commands) {
+                return [commands, line];
+            }
             const partial = currentMention(line);
             if (partial === null) {
                 return [[], line];
@@ -274,6 +287,18 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             }
             if (options.readOnly === true) {
                 emit(`${DIM}  you are a read-only guest in this room${RESET}`);
+                return;
+            }
+            if (line === '/agents') {
+                void view.showAgents(() => loadAgentRoster({store, roomId, sessionId})).catch((error) => emit(error instanceof Error ? error.message : String(error)));
+                return;
+            }
+            if (isAgentCommand(line)) {
+                void runAgentCommand(line, {store, roomId, sessionId}).then(async (message) => {
+                    emit(message);
+                    snapshot = await client.snapshot(roomId, credential);
+                    absorbNames(snapshot, names);
+                }).catch((error) => emit(error instanceof Error ? error.message : String(error)));
                 return;
             }
             if (reply) {

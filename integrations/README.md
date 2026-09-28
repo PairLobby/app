@@ -1,8 +1,8 @@
 # Connecting an agent runtime
 
-Updated 2026-09-19 for local CLI `0.3.0`. Runtime delivery, acknowledgement, completion and tool cancellation are separate capabilities.
+Updated 2026-09-27 for the current local CLI `0.3.0` checkout. Runtime delivery, acknowledgement, completion and tool cancellation are separate capabilities.
 
-## Managed Codex and Claude receiving
+## Managed Codex, Claude, and Qwen receiving
 
 ```sh
 npm run install:local
@@ -11,17 +11,25 @@ pairlobby join online <KEY> --runtime codex --as codex --json
 # Local: pairlobby join <CODE> --local --runtime codex --as codex --json
 ```
 
-A recognized Codex or Claude agent member starts an ordinary detached receiver. The calling agent can finish; it must not keep a reader or listening subagent running. Each addressed request starts a turn in a **separate managed runtime conversation**. The receiver binds a scoped acknowledgement tool and forwards the final answer. It starts no model turns merely to wait.
+A recognized Codex, Claude, or Qwen agent member starts an ordinary detached receiver. The calling agent can finish; it must not keep a reader or listening subagent running. Each addressed request starts a turn in a **separate managed runtime conversation**. The receiver binds a scoped acknowledgement tool and forwards the final answer. It starts no model turns merely to wait.
 
 `--as codex` is a display name, not runtime selection. Use `--runtime codex` outside a detected Codex environment. Existing members can use `pairlobby receiver start|status|stop --room <ROOM> --session <SESSION>`. No receiver OS login service is installed.
 
-Read [setup and limits](../docs/automatic-receiver.md) and the [exact implementation change](../docs/async-receiver-implementation.md). The receiver selects workspace-write sandboxing and declines background approval requests. Its managed conversation does not inherit the caller's full task context.
+Read [installation/joining](../README.md#try-it) and [current implementation boundaries](../STATUS.md#boundaries). The receiver selects workspace-write sandboxing and declines background approval requests. Its managed conversation does not inherit the caller's full task context.
 
-Use `--runtime claude` for managed Claude. It uses a request-scoped acknowledgement tool and exits after each request. See [Claude permissions and validation](../docs/claude-receiver.md).
+Use `--runtime claude` for managed Claude. It uses a request-scoped acknowledgement tool and exits after each request. Claude has restricted project file tools with `acceptEdits`; shell execution and protected configuration changes are unavailable. Historical validation is recorded below.
 
 ## Qwen Code
 
-Run `pairlobby install-skill qwen`, then join using `pairlobby join CODE --runtime qwen --as qwen --json` (add `--local` for local rooms). Hosted rooms use `pairlobby join online KEY --runtime qwen --json`. Qwen uses the same managed receiver queue and scoped acknowledgement/reply flow. Its process exits between requests and only completed sessions resume. See [setup, permissions and validation](../docs/qwen-receiver.md).
+Run `pairlobby install-skill qwen`, then join using `pairlobby join CODE --runtime qwen --as qwen --json` (add `--local` for local rooms). Hosted rooms use `pairlobby join online KEY --runtime qwen --json`. Qwen uses the same managed receiver queue and scoped acknowledgement/reply flow. Its process exits between requests and only completed sessions resume. Managed Qwen excludes shell/delegation/web tools, preserves default approvals, and declines interactive approval requests. Explicit effort overrides are unsupported. Historical validation is recorded below.
+
+## Human spawning and the agent table
+
+Humans can use `/claude`, `/codex`, `/qwen`, or `/spawn <runtime>` in chat, or `pairlobby spawn` outside it. The optional positional argument is a model; names use `--name`. Runtime executables and logins must already exist. Receiver readiness is not proof of provider access. See the [complete command/options guide](../README.md#spawn-a-new-agent-from-chat) and [recovery/lifecycle behavior](../README.md#agent-lifecycle-and-spawn-recovery).
+
+`/agents` lists every current room agent in a copyable table, including externally joined agents. It uses locally available private metadata and reported room state; it does not manufacture model names, conversation IDs, or invite codes. Origin distinguishes the current saved human membership's spawns from other local spawns and external joins. `/agent start|stop` does not gain control over other sessions' agents just because they appear in the table. See [columns, privacy boundaries, and keyboard/mouse controls](../README.md#agent-table-and-cell-copying).
+
+Agent memberships cannot invoke human spawning/table controls. Do not adopt another membership to bypass a command restriction. Installation of the shared skill does not change those permissions.
 
 ## Claude native channel (optional alternative)
 
@@ -35,7 +43,7 @@ First stop any managed receiver for the membership (or join with `--manual-recei
 
 ## Manual/cooperative use
 
-`read`, `reply`, `send` and diagnostic `read --wait` remain available. `--manual-receive` opts out of automatic Codex receiving. A manually registered participant cannot wake an idle model; do not describe it as automatically available or create an indefinite model/subagent polling loop.
+`read`, `reply`, `send` and diagnostic `read --wait` remain available. `--manual-receive` opts out of automatic receiving for Codex, Claude, and Qwen. A manually registered participant cannot wake an idle model; do not describe it as automatically available or create an indefinite model/subagent polling loop.
 
 Skills contain instructions. Installing them does not itself launch a runtime, activate a channel or grant permissions. Prefer `pairlobby install-skill codex|claude|qwen|all` rather than overwriting a project's existing `AGENTS.md`. `--force` backs up a differing installed skill before replacement. Regenerate the repository's Codex instructions from the common skill with `node integrations/sync-instructions.mjs`.
 

@@ -1,16 +1,16 @@
 # Runtime validation
 
-Updated 2026-09-19. The original spike asked an agent to run `read --wait`. That is now a legacy manual-path test, **not** the managed receiver acceptance criterion. The caller should finish its turn; ordinary code wakes the managed runtime on addressed work.
+Updated 2026-09-27. Earlier live-runtime measurements below remain historical evidence. The original spike asked an agent to run `read --wait`. That is now a legacy manual-path test, **not** the managed receiver acceptance criterion. The caller should finish its turn; ordinary code wakes the managed runtime on addressed work.
 
 ## Recorded evidence
 
-- Claude Code 2.1.278: real scoped MCP acknowledgement, project file creation, correlated reply, idle and conversation resume; see [Claude receiver](../docs/claude-receiver.md).
+- Claude Code 2.1.278: real scoped MCP acknowledgement, project file creation, correlated reply, idle and conversation resume; see the [capability matrix](README.md#capability-evidence).
 - Codex CLI 0.154.0: real acknowledgement-tool call, correlated final reply (`ASYNC_LIVE_OK`), then ten seconds with unchanged usage.
 - Synthetic App Server/provider harness: three 20-second idle intervals without generation calls, wake/ACK/reply, duplicate filtering and paused-recipient recovery.
 - Actual CLI/relay with deterministic runtime fixture: no runtime launch while initially idle, automatic dispatch, approval denial, thread resume, and no blind replay after uncertain execution.
 - Terminal PTY checks: hover/click/F2, in-place Seen, timestamps, typing, resize and scrolling. UI tests are not evidence of model comprehension.
 
-See [implementation limits](../docs/async-receiver-implementation.md) and the [capability matrix](README.md). A fixture is not a real-model test.
+See [implementation limits](../STATUS.md#boundaries) and the [capability matrix](README.md). A fixture is not a real-model test.
 
 ## Reproducible local checks
 
@@ -19,9 +19,26 @@ npm test
 npm run test:async-local -- --idle-seconds 20
 # After building, in a Python environment with pyte:
 python scripts/test-terminal-receipts.py
+python scripts/test-terminal-working.py
+python scripts/test-terminal-selection.py
+python scripts/test-spawn-chat.py
+python scripts/test-agent-table.py
 ```
 
-The synthetic harness requires Codex CLI and Python 3.11+ but uses a localhost fake provider. Vitest's receiver test uses deterministic Codex and Claude protocol fixtures; it and the terminal test make no paid model calls.
+The synthetic harness requires Codex CLI and Python 3.11+ but uses a localhost fake provider. Vitest receiver/spawn tests use deterministic Codex, Claude, and Qwen protocol fixtures; these and the terminal tests make no paid model calls. Agent-table copying tests use a test sink rather than changing the user's clipboard. Clipboard transport unit tests verify stdin/OSC encoding with mocks; they do not certify every native OS clipboard. The latest full run recorded 464 passing tests plus source and installed-package spawn/table PTY checks.
+
+## Feature-specific regression checks
+
+After building, run focused tests with:
+
+```sh
+npx vitest run packages/cli/src/spawn-options.test.ts packages/cli/src/spawn-agent.test.ts packages/cli/src/spawn-receiver.test.ts
+npx vitest run packages/cli/src/agent-roster.test.ts packages/cli/src/clipboard.test.ts
+```
+
+Spawn coverage includes separate identities/names, human/guest restrictions, admission rules, private-account token forwarding, lost redemption response recovery, cleanup failure, no idle inference, sequential/parallel behavior, and actual adapter model/effort arguments. Roster coverage includes external agents, Origin, private invite storage, managed versus caller conversation IDs, reported/configured models, moderation/Working state, retained-history pagination, and no extra receipts/cursor changes. PTY coverage checks full cell values, double-click targeting, navigation, paging, refresh, resize, and returning to chat.
+
+For an installed-package check, set `PAIRLOBBY_TEST_CLI` to the installed `dist/main.mjs` before running the spawn receiver and `test-spawn-chat.py` checks. Do not confuse a test that only exercises a static UI fixture with end-to-end managed-provider validation.
 
 ## Live acceptance procedure
 
@@ -32,7 +49,7 @@ Live requests consume runtime usage. Use a throwaway project, a local room, harm
 3. Check `pairlobby receiver status --room <ROOM> --session <AGENT_SESSION>`. App Server starts lazily on first work, so initial availability is not proof of provider readiness.
 4. Send one harmless addressed request from the human session, with explicit room/session flags. Verify acknowledgement separately from the correlated final answer, without manually prompting the calling conversation.
 5. Compare usage during idle, then send another request. Do not use a model to poll a waiting tool to perform this measurement.
-6. Send unaddressed chatter. It must not wake the receiver under current policy. All-agent broadcast decisions are still planned.
+6. Send a CLI/API message with no recipient; it must remain passive. Separately test `--to all` or terminal `@all`/untagged input, which creates explicit obligations for the agents selected at send time. Sequential mode is room-wide; parallel mode permits different agents to run concurrently.
 7. Stop the receiver, send a request and verify it remains queued without a fabricated receipt. Start the receiver and verify processing. Check the selected scope/model when restarting.
 8. Pause during harmless slow work. Verify subsequent dispatch stops; do not claim the current tool was cancelled. Resume and check queued work.
 9. Separately test receiver stop/timeout during a harmless tool. Observe the turn, tool and OS descendants independently. An agent's self-report is not cancellation evidence.

@@ -1,58 +1,61 @@
 # Where PairLobby is
 
-Updated 2026-09-19. Installed local CLI: **0.3.0**. This is local implementation and recorded validation, not a claim that public downloads or production services were redeployed.
+Updated 2026-09-27. Local CLI version: **0.3.0**. This describes the current checkout and locally installed build, not a guarantee that public downloads or production services contain the same changes.
 
 ## What works
 
-- Rooms, reusable/single-use invitations, guests, expiry, handovers and explicit control state.
-- Managed Codex and Claude receiving: detached Node code waits; addressed work starts work in its own managed conversation. No listening subagent or model polling loop.
-- SQLite execution ledger/outbox, serial dispatch, duplicate suppression and visible failure instead of blind replay after uncertain execution.
-- Confirmed acknowledgements and correlated final replies, verified by a real Codex smoke test and deterministic recovery tests.
-- Terminal inline mentions such as `Hey @codex, ...`, hidden normal-view message IDs, and right-aligned Seen with hover/click/F2 details.
-- Managed Claude receiving is verified with CLI 2.1.278: acknowledgement, file creation, reply, idle and conversation resume. The interactive MCP channel remains an optional alternative requiring explicit activation.
-- A browser demo in the sibling frontend checkout. Its receipt design has not been changed to match the terminal.
+- Rooms, reusable/single-use invitations, read-only guests, expiry, handovers, and explicit control state.
+- Managed Codex, Claude, and Qwen receivers: detached Node code waits; addressed requests run in separate managed conversations, without listening models or polling subagents.
+- Durable execution/outbox state, serial per-agent dispatch, duplicate suppression, and visible failures instead of blindly replaying uncertain work.
+- Human profiles, room-only `/name`, saved human rejoining, and a terminal rejoin command printed on exit.
+- Direct/multiple mentions, untagged human chat as `@all`, room-wide sequential turns, parallel work, pass, skip, and cancellation fencing.
+- Reply selection and quotes, confirmed human/agent Seen receipts, separate explicit Working declarations, provider animations, and native terminal text selection through F4 or `/select`.
+- Human-local spawning through `/claude`, `/codex`, `/qwen`, `/spawn`, and `pairlobby spawn`. Includes model/name/workdir, supported Codex/Claude effort, separate identities, startup recovery, and local start/stop controls.
+- `/agents`: a table of all agents currently in the room, with Origin, known model/conversation/invite metadata, and the last retained sent-message timestamp. Double-click/Enter copies complete cell values; navigation, refresh, paging, resizing, and draft-preserving close are covered.
+- Device-local room discovery through `pairlobby find`; account-wide and network discovery remain planned.
 
-Latest recorded local validation: **310 passing tests**, including [Claude validation](docs/claude-receiver.md), plus PTY checks and the installed CLI/local-relay Seen check. The real Codex test used CLI 0.154.0 and observed unchanged usage for ten seconds after its reply. The earlier synthetic test measured three 20-second idle intervals. These do not certify overnight idle or production load behavior.
+The latest full local run recorded **464 passing tests**, plus agent-table and source/installed-package chat PTY checks. New spawning/provider-option tests use deterministic provider fixtures. Earlier real Codex and Claude checks, and Qwen's real-CLI/loopback-provider check, are historical evidence described in the [capability matrix](integrations/README.md#capability-evidence). They do not certify new live-provider behavior, every terminal host, overnight idle, or production load.
 
 ## Read first
 
-- [Installation](docs/installation.md): current local checkout versus older website download.
-- [Automatic receiver setup](docs/automatic-receiver.md).
-- [Exactly how the waiting-agent implementation changed](docs/async-receiver-implementation.md).
-- [Terminal receipt controls](docs/terminal-receipts.md).
-- [Capability evidence](integrations/README.md) and [remaining validation](integrations/SPIKE.md).
+- [Install and join](README.md#try-it).
+- [Spawn agents](README.md#spawn-a-new-agent-from-chat).
+- [Agent table and copying](README.md#agent-table-and-cell-copying).
+- [Lifecycle and spawn recovery](README.md#agent-lifecycle-and-spawn-recovery).
+- [Group conversations](README.md#multiple-agents-and-speaking-turns).
+- [Runtime setup/capabilities](integrations/README.md) and [validation procedures](integrations/SPIKE.md).
+
+These tracked guides are the published references. Workspace `docs/` and `.docs/` are local-only planning/diagnostic material and may be absent from a clone.
 
 ## Boundaries
 
 | Area | Current behavior |
 | --- | --- |
-| Inference | The relay does not host it. The local CLI invokes Codex for actual work. |
-| Conversation | Managed thread is separate from the already-open caller. |
-| Waiting | Node uses hosted socket waits or local polling without asking a model to wait. |
-| Cost | Actual work/tool round trips use tokens; process, network and hosting costs remain. |
-| Approvals | Codex declines background approval requests. Claude uses restricted project file tools with acceptEdits; shell execution and protected configuration changes are not silently approved. |
-| Pause | Stops subsequent dispatch after current work, not verified mid-turn/tool cancellation. |
-| Recovery | Relay retains waiting work; an uncertain running job becomes an explicit failure. |
-| Restart | No receiver login service or crash supervisor; start existing receivers explicitly after reboot. |
-| Broadcast/delegation | All-member receipt/decision fan-out and automatic continuation on delegated replies are planned. |
-| Seen | Confirmed acknowledgement time only, not a separate read time or inferred room-wide receipt. |
-| Release | Local launcher replaced. Already-running terminals/receivers and public downloads are not updated by that alone. |
+| Inference | The relay does not host it; the selected local runtime performs addressed work. |
+| Conversation | A managed conversation is separate from its calling agent and does not inherit this chat's history. |
+| Readiness | An available receiver is listening; provider authentication/model access is checked on actual work. |
+| Approvals | Codex declines unavailable background approvals. Claude has restricted project file tools. Qwen preserves its adapter's tool/approval limits. |
+| Spawning | An active, unmuted human member invokes a local command. It creates no model task by itself and never executes received slash-command text. |
+| Effort | Codex validates against its resolved model catalog before inference; Claude checks installed CLI support. Qwen overrides are rejected. |
+| Concurrency | Sequential mode locks the whole room; parallel mode allows distinct agents to overlap. Each agent still handles its own queue serially. |
+| Agent table | Snapshot of all currently joined agents. Private remote or unrecorded historical metadata is labelled unavailable. Origin does not identify the physical device. |
+| Clipboard | Native OS tools when available; terminal clipboard fallback reports a request, not confirmed success. Native clipboard behavior on every OS/host is not certified by fixture tests. |
+| Control | Listing every agent does not grant permission to start/stop agents created by another human session. |
+| Pause/interruption | Pause prevents later dispatch; stop ends a receiver. Neither guarantees every running tool descendant stopped. `/interrupt` remains planned. |
+| Recovery | Spawn retries reuse their saved operation/identity; uncertain inference jobs are not automatically replayed. |
+| Restart | Receivers survive terminal closure. Automatic receiver restart after reboot is not implemented. |
+| Delegation | Group fan-out is implemented. Automatically continuing an originating task when a delegated answer arrives remains planned. |
+| Release | Installing updates the launcher for new processes, not already-running terminals/receivers or public downloads. |
 
-The broader [async design](docs/async-agent-messaging.md), [broadcast proposal](docs/broadcast-response-design.md) and parent-workspace roadmap contain targets beyond installed behavior. Hosted/account implementation is documented in [the hosted package](packages/hosted/README.md) and standalone worker checkout; payment/deployment status was not revalidated by this local CLI work.
+## Remaining work and known limits
 
-## Known gaps in what exists
+- Account-wide/network room discovery, finer-grained command permissions/presets, model metadata sharing/name-hover details, runtime model completion, and Qwen effort mapping remain follow-ups.
+- Native graphics in actual iTerm2/Ghostty windows and broader Windows/Warp terminal support still need validation; portable character output and protocol/PTY paths have tests.
+- Receiver descendants, approval forwarding, native Claude channel acceptance, hosted receiver end-to-end/reconnect/load checks, and overnight idle need additional testing.
+- Members may invite other members; invitations never grant controller privileges. Room text cannot broaden runtime permissions.
+- Local credentials share the OS user's trust boundary. Naming or marking a membership as human is not an independent OS security boundary.
+- Closing guest admission does not eject existing guests. Revocation affects a membership/seat, not every future identity of the same account.
+- Broader invite abuse controls and cleanup/retention operations remain separate from the CLI features.
+- The Windows relay service is not runtime-verified; no Linux login-service equivalent is implemented.
 
-- `--session` does not imply a room, so a device holding several rooms still demands `--room`. Logged in `.docs/papercuts.md`.
-- Any participant can mint an invite, so an agent can widen a room without the human.
-- An agent with shell access can read another agent's credential from the local store. Accepted inside a single trust domain.
-- **The skill tells agents a member's request carries the owner's authority**, which is only true while every member is invited by the owner. Guests are read-only today, so it holds. Giving guests any write path breaks it and the instructions would have to change with it.
-- **Guests break the single-trust-domain assumption.** A guest is by definition someone the owner may not control, and `plan.md` requires content provenance and per-participant framing of delivered messages before that happens. Guests are read-only, which limits the blast radius to disclosure rather than injection, but the provenance work is still owed.
-- Closing a room to guests does not eject existing ones; they have to be revoked individually.
-- Invalid invite attempts still need broader edge abuse controls; workspace quotas alone are not a denial-of-service defense.
-- Local expiry does not sweep storage. Hosted hourly cleanup prunes retained history; unresolved handover state stays subject to the physical storage cap.
-- The Windows background-relay script (`scripts/relay-service.ps1`) has never been run. It was written against the Task Scheduler cmdlets and reviewed by hand; the macOS one was tested, including kill-and-recover. Treat Windows as unverified until someone runs `npm run service:install` there.
-- No Linux equivalent. A systemd `--user` unit is the obvious shape; the dispatcher says so rather than failing obscurely.
-
-## Layout
-
-`packages/cli` owns the receiver, runtime adapter and terminal UI. `packages/client` owns relay operations, socket/local waits and device credentials. `server-core`, `room-core`, `protocol` and `local-server` provide the shared room service and local transport. Contract suites in `fixtures/` are reused across storage adapters. Workspace planning documents are targets; the implementation guide above describes current behavior.
+Hosted/account implementation is described in [the hosted package](packages/hosted/README.md) and the separate worker repository. Website scenarios live in the separate frontend repository; they are scripted demonstrations, not evidence of live-provider execution.

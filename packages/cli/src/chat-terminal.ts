@@ -8,6 +8,8 @@ import {ReceiptView} from './receipt-view.js';
 import {WorkingStrip} from './working-strip.js';
 import {ReplyComposer, messageTarget, quotePreview} from './reply-composer.js';
 import type {ReplySubmission, ReplyTarget} from './reply-composer.js';
+import {AgentTable} from './agent-table.js';
+import type {AgentRoster} from './agent-roster.js';
 
 type ChatTerminalOptions = {names: Map<string, string>; participantId: string; format: (event: RoomEvent) => string; complete: (line: string) => [string[], string]};
 type TranscriptEntry = {text: string; event?: RoomEvent};
@@ -58,11 +60,17 @@ export class ChatTerminal {
     private hintText = '';
     private revealReply = false;
     private selecting = false;
+    private loadAgents: (() => Promise<AgentRoster>) | undefined;
+    private agentTable = new AgentTable({screen: this.screen, close: () => { this.working.resume(); this.rebuild(); }, refresh: () => this.loadAgents ? this.loadAgents() : Promise.reject(new Error('No agent loader'))});
 
     constructor(private readonly options: ChatTerminalOptions) {
         this.input = createInterface({input: this.keyboard, output: this.output, terminal: true, completer: options.complete});
         this.screen.on('keypress', (character: string, key: ScreenKey) => {
             if (this.suspended || this.closed) {
+                return;
+            }
+            if (this.agentTable.visible) {
+                this.agentTable.key(key);
                 return;
             }
             if (this.selecting) {
@@ -158,6 +166,7 @@ export class ChatTerminal {
                 this.screen.program.enableMouse();
             }
             this.rebuild();
+            this.agentTable.render();
         });
         this.screen.program.enableMouse();
         this.renderInput();
@@ -167,6 +176,21 @@ export class ChatTerminal {
         this.promptText = stripVTControlCharacters(text);
         this.input.setPrompt(this.promptText);
         this.renderInput();
+    }
+
+    async showAgents(load: () => Promise<AgentRoster>): Promise<void> {
+        const roster = await load();
+        if (this.closed || this.suspended) {
+            return;
+        }
+        if (this.selecting) {
+            this.toggleSelection();
+        }
+        this.hideDetails();
+        this.working.hide();
+        this.working.suspend();
+        this.loadAgents = load;
+        this.agentTable.show(roster);
     }
 
     onInput(callback: () => void): void {
@@ -292,6 +316,7 @@ export class ChatTerminal {
     }
 
     suspend(): void {
+        this.agentTable.hide();
         this.working.suspend();
         this.suspended = true;
         this.screen.program.disableMouse();
@@ -314,6 +339,7 @@ export class ChatTerminal {
             return;
         }
         this.working.close();
+        this.agentTable.hide();
         this.closed = true;
         this.input.close();
         this.keyboard.destroy();
@@ -322,7 +348,7 @@ export class ChatTerminal {
     }
 
     private rebuild(): void {
-        if (this.closed || this.suspended || this.selecting) {
+        if (this.closed || this.suspended || this.selecting || this.agentTable.visible) {
             return;
         }
         const scroll = this.body.getScroll();
@@ -429,7 +455,7 @@ export class ChatTerminal {
     }
 
     private renderInput(force = false): void {
-        if (this.closed || this.suspended || (this.selecting && !force)) {
+        if (this.closed || this.suspended || this.agentTable.visible || (this.selecting && !force)) {
             return;
         }
         const line = this.input.line ?? '';

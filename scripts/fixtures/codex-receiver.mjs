@@ -16,11 +16,16 @@ for await (const line of createInterface({input: process.stdin})) {
             throw new Error('Missing receiver room/session scope');
         }
         appendFileSync(process.env.PAIRLOBBY_TEST_RECORD, message.method + '\n');
-        send({id: message.id, result: {thread: {id: 'test-thread'}}});
+        send({id: message.id, result: {thread: {id: 'test-thread'}, model: message.params.model ?? 'fixture-model'}});
+    } else if (message.method === 'model/list') {
+        send({id: message.id, result: {data: [{id: 'fixture-model', model: 'fixture-model', supportedReasoningEfforts: [{reasoningEffort: 'medium'}, {reasoningEffort: 'high'}]}], nextCursor: null}});
     } else if (message.method === 'turn/start') {
         turn = `turn-${message.id}`;
         text = message.params.input[0].text;
         appendFileSync(process.env.PAIRLOBBY_TEST_RECORD, 'turn/start\n');
+        if (message.params.effort) {
+            appendFileSync(process.env.PAIRLOBBY_TEST_RECORD, `effort:${message.params.effort}\n`);
+        }
         send({id: message.id, result: {turn: {id: turn}}});
         if (!text.includes('hang-until-crash')) {
             send({id: 'approval', method: 'item/commandExecution/requestApproval', params: {threadId: 'test-thread', turnId: turn}});

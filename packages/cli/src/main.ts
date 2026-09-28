@@ -30,6 +30,8 @@ import type {ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
 import {findRooms, formatFoundRooms} from './find.js';
 import {formatTurnQueue, runTurnCommand} from './turn-commands.js';
+import {spawnAgent, formatSpawnResult} from './spawn-agent.js';
+import {parseSpawnOptions, SPAWN_HELP} from './spawn-options.js';
 
 type LocalIdentity = {nameSource: 'room' | 'profile'; displayName: string; kind: 'agent' | 'human'; sessionId: string; capabilities?: AdapterCapabilities};
 
@@ -43,6 +45,8 @@ const OPTIONS = {
     workdir: {type: 'string'},
     version: {type: 'boolean'},
     model: {type: 'string'},
+    effort: {type: 'string'},
+    resume: {type: 'string'},
     'manual-receive': {type: 'boolean'},
     private: {type: 'boolean'},
     allow: {type: 'string'},
@@ -108,6 +112,8 @@ const HELP = `pairlobby
                                     join as a managed agent; receive automatically
   pairlobby receiver status|start|stop
                                     manage automatic receiving for the selected agent
+  pairlobby spawn <claude|codex|qwen> [model] [--name name] [--effort level]
+                                    create a new background agent in a saved room
   pairlobby login                    save an account token from the website
   pairlobby logout                   remove saved account login
   pairlobby create online --name X [--private] [--allow email,email]
@@ -155,7 +161,21 @@ should pass --session (or set PAIRLOBBY_SESSION) on every later command.
 `;
 
 async function main(argv: string[]): Promise<number> {
-    const {values, positionals} = parseArgs({args: argv, options: OPTIONS, allowPositionals: true, strict: true});
+    const {values, positionals, tokens} = parseArgs({args: argv, options: OPTIONS, allowPositionals: true, strict: true, tokens: true});
+    if (positionals[0] === 'spawn') {
+        const commandIndex = tokens.find((token) => token.kind === 'positional')!.index;
+        const options = parseSpawnOptions(argv.filter((_, index) => index !== commandIndex), true);
+        if (options.help) {
+            out(SPAWN_HELP);
+            return 0;
+        }
+        const store = new LocalStore();
+        const room = resolveRoom(store, options.room);
+        const actor = options.session || process.env['PAIRLOBBY_SESSION'] ? select(store, room.roomId, options.session) : await selectHumanSession(store, room);
+        const result = await spawnAgent({store, roomId: room.roomId, sessionId: actor.session.sessionId}, options);
+        options.json ? json(result) : out(formatSpawnResult(result));
+        return 0;
+    }
     if (values.version) {
         out(`PairLobby ${release.version} (automatic Codex, Claude and Qwen receivers)`);
         return 0;
@@ -176,7 +196,7 @@ async function main(argv: string[]): Promise<number> {
             const {room, session} = select(store, str(values, 'room'), str(values, 'session'));
             const action = positionals[1] ?? 'status';
             if (action === 'start') {
-                json(await startReceiver(store, room.roomId, session.sessionId, str(values, 'model'), str(values, 'workdir')));
+                json(await startReceiver(store, room.roomId, session.sessionId, str(values, 'model'), str(values, 'workdir'), str(values, 'effort')));
             } else if (action === 'stop') {
                 await stopReceiver(store, session.sessionId);
                 json({state: 'stopped'});
@@ -771,7 +791,7 @@ async function enableReceiver(store: LocalStore, values: Values, roomId: string,
     if (flag(values, 'manual-receive') || session.kind !== 'agent' || session.role === 'guest' || !receiverRuntimeName(session.runtime)) {
         return null;
     }
-    const receiver = await startReceiver(store, roomId, sessionId, str(values, 'model'), str(values, 'workdir'));
+    const receiver = await startReceiver(store, roomId, sessionId, str(values, 'model'), str(values, 'workdir'), str(values, 'effort'));
     if (!flag(values, 'json')) {
         const name = receiver.runtime === 'claude' ? 'Claude' : receiver.runtime === 'qwen' ? 'Qwen' : 'Codex';
         note(`Automatic receiver available. Room requests run in a managed ${name} session; no reader or listening agent is needed.`);
@@ -872,6 +892,9 @@ async function joinRoom(store: LocalStore, values: Values, code?: string, online
         sessions: store.room(joined.roomId)?.sessions ?? []
     });
     store.putCredential(joined.roomId, identity.sessionId, joined.participantCredential);
+    if (!code.startsWith('rm_')) {
+        store.putSessionInvite(joined.roomId, identity.sessionId, code);
+    }
     store.addSession(joined.roomId, {
         participantId: joined.participantId,
         sessionId: identity.sessionId,

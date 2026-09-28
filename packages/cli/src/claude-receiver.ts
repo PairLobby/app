@@ -59,7 +59,8 @@ export class ClaudeReceiver implements ReceiverRuntime {
             '--allowedTools', 'mcp__pairlobby_receiver__acknowledge_message,mcp__pairlobby_receiver__working_message,mcp__pairlobby_receiver__pass_message',
             '--append-system-prompt', INSTRUCTIONS,
             ...(this.resumable ? ['--resume', this.threadId] : ['--session-id', this.threadId]),
-            ...(this.options.model ? ['--model', this.options.model] : [])
+            ...(this.options.model ? ['--model', this.options.model] : []),
+            ...(this.options.effort ? ['--effort', this.options.effort] : [])
         ];
         // This is an independent managed session, not a nested turn of the caller's Claude session.
         const environment = {...process.env};

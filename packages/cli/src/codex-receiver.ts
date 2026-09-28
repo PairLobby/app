@@ -7,7 +7,9 @@ export type {RuntimeOptions, RuntimeHooks} from './receiver-runtime.js';
 
 type RpcMessage = {id?: number | string; method?: string; params?: Record<string, any>; result?: any; error?: {code?: number; message: string}};
 type PendingCall = {resolve: (value: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout};
-type ThreadResult = {thread: {id: string}};
+type ThreadResult = {thread: {id: string}; model?: string};
+type ModelDescription = {model: string; id: string; supportedReasoningEfforts: {reasoningEffort: string}[]};
+type ModelPage = {data: ModelDescription[]; nextCursor?: string | null};
 type TurnResult = {turn: {id: string}};
 type ActiveTurn = {hooks: RuntimeHooks; resolve: (answer: string) => void; reject: (error: Error) => void; answer: string; timer: NodeJS.Timeout};
 
@@ -21,6 +23,7 @@ export class CodexReceiver {
     private active: ActiveTurn | undefined;
     private closed = false;
     threadId = '';
+    model: string | undefined;
 
     constructor(private readonly options: RuntimeOptions) {}
 
@@ -61,7 +64,33 @@ export class CodexReceiver {
             ...(this.options.threadId ? {threadId: this.options.threadId} : {})
         }) as ThreadResult;
         this.threadId = result.thread.id;
+        this.model = result.model;
+        if (this.options.effort) {
+            await this.validateModelEffort(result.model ?? this.options.model);
+        }
         return this.threadId;
+    }
+
+    private async validateModelEffort(model: string | undefined): Promise<void> {
+        if (!model) {
+            throw new Error('Codex did not report its resolved model. Specify --model or omit --effort.');
+        }
+        let cursor: string | undefined;
+        for (let page = 0; page < 20; page++) {
+            const catalog = await this.call('model/list', {limit: 100, includeHidden: true, ...(cursor ? {cursor} : {})}) as ModelPage;
+            const selected = catalog.data.find((entry) => entry.model === model || entry.id === model);
+            if (selected) {
+                if (!selected.supportedReasoningEfforts.some((entry) => entry.reasoningEffort === this.options.effort)) {
+                    throw new Error(`Codex model ${model} does not support effort ${this.options.effort}; supported: ${selected.supportedReasoningEfforts.map((entry) => entry.reasoningEffort).join(', ')}`);
+                }
+                return;
+            }
+            if (!catalog.nextCursor) {
+                break;
+            }
+            cursor = catalog.nextCursor;
+        }
+        throw new Error(`Cannot verify effort for Codex model ${model}; omit --effort or select a catalog model.`);
     }
 
     async execute(request: MessageRequest, hooks: RuntimeHooks): Promise<string> {
@@ -76,6 +105,7 @@ export class CodexReceiver {
             this.active = {hooks, resolve, reject, answer: '', timer};
             void this.call('turn/start', {
                 threadId: this.threadId,
+                ...(this.options.effort ? {effort: this.options.effort} : {}),
                 input: [{type: 'text', text: `PairLobby request ${request.eventId}, sender ${request.from}:\n${request.text}`}]
             }).then((result: TurnResult) => hooks.started(result.turn.id)).catch((error: Error) => this.fail(error));
         });

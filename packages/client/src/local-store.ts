@@ -18,6 +18,11 @@ export interface SessionEntry {
     kind: 'agent' | 'human';
     /** The runtime that created this session, when it identified itself. A claim, never a verified fact. */
     runtime?: string;
+    /** Human session which created this managed agent locally. */
+    spawnedBy?: string;
+    /** Configured values; not a claim about the model actually used by the provider. */
+    model?: string;
+    effort?: string;
     /**
      * The runtime's own conversation id, so a human can leave the room and go
      * instruct this agent directly. Read from the environment or passed in; the
@@ -257,6 +262,15 @@ export class LocalStore {
         const credentials = this.credentials();
         credentials[`${roomId}:${scope}`] = credential;
         writeJsonPrivate(this.credentialsFile, credentials);
+    }
+
+    /** Admission codes are private local data, not public registry metadata. */
+    putSessionInvite(roomId: string, sessionId: string, code: string): void {
+        this.putCredential(roomId, `invite:${sessionId}`, code);
+    }
+
+    sessionInvite(roomId: string, sessionId: string): string | undefined {
+        return this.credential(roomId, `invite:${sessionId}`);
     }
 
     credential(roomId: string, scope: string): string | undefined {

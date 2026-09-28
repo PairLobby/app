@@ -12,10 +12,11 @@ import {ClaudeReceiver} from './claude-receiver.js';
 import {QwenReceiver} from './qwen-receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
 import type {ReceiverRuntime, ReceiverRuntimeName} from './receiver-runtime.js';
+import {validateEffort} from './spawn-options.js';
 
-export type ReceiverStatus = {pid: number; state: string; runtime: string; threadId?: string; eventId?: string; detail?: string; usage?: unknown};
+export type ReceiverStatus = {pid: number; state: string; runtime: string; threadId?: string; model?: string; eventId?: string; detail?: string; usage?: unknown};
 type Job = {event_id: string; phase: string; acknowledged: number; answer: string | null; failure: string | null};
-type ReceiverConfiguration = {runtime: ReceiverRuntimeName; cwd: string; model?: string};
+type ReceiverConfiguration = {runtime: ReceiverRuntimeName; cwd: string; model?: string; effort?: string; executable?: string};
 type ReceiverPaths = {directory: string; status: string; lock: string; stop: string; log: string; config: string; database: string};
 
 function paths(store: LocalStore, sessionId: string): ReceiverPaths {
@@ -45,12 +46,23 @@ function writePrivate(file: string, value: unknown): void {
     renameSync(temporary, file);
 }
 
+export function receiverConfiguration(store: LocalStore, sessionId: string): ReceiverConfiguration | null {
+    if (!/^se_[A-Z0-9]+$/.test(sessionId)) {
+        return null;
+    }
+    try {
+        return JSON.parse(readFileSync(join(store.directory, 'receivers', sessionId, 'config.json'), 'utf8')) as ReceiverConfiguration;
+    } catch {
+        return null;
+    }
+}
+
 export function receiverStatus(store: LocalStore, sessionId: string): ReceiverStatus | null {
     const location = paths(store, sessionId);
     try {
         const status = JSON.parse(readFileSync(location.status, 'utf8')) as ReceiverStatus;
         if (!alive(status.pid) || !existsSync(location.lock) || Number(readFileSync(location.lock, 'utf8')) !== status.pid) {
-            return {...status, state: 'offline'};
+            return {...status, state: status.state === 'stopped' ? 'stopped' : 'offline'};
         }
         return status;
     } catch {
@@ -58,7 +70,7 @@ export function receiverStatus(store: LocalStore, sessionId: string): ReceiverSt
     }
 }
 
-export async function startReceiver(store: LocalStore, roomRef: string, sessionRef: string, model?: string, workdir?: string): Promise<ReceiverStatus> {
+export async function startReceiver(store: LocalStore, roomRef: string, sessionRef: string, model?: string, workdir?: string, effort?: string, executable?: string): Promise<ReceiverStatus> {
     const {room, session} = select(store, roomRef, sessionRef);
     const runtimeName = receiverRuntimeName(session.runtime);
     if (session.kind !== 'agent' || session.role === 'guest' || !runtimeName) {
@@ -91,7 +103,12 @@ export async function startReceiver(store: LocalStore, roomRef: string, sessionR
         throw new UsageError('An existing receiver cannot change project scope; use a separate membership.');
     }
     const selectedModel = model ?? previous?.model;
-    const config: ReceiverConfiguration = {runtime: runtimeName, cwd, ...(selectedModel ? {model: selectedModel} : {})};
+    const selectedEffort = effort ?? previous?.effort;
+    if (selectedEffort) {
+        validateEffort(runtimeName, selectedEffort);
+    }
+    const selectedExecutable = executable ?? previous?.executable;
+    const config: ReceiverConfiguration = {runtime: runtimeName, cwd, ...(selectedModel ? {model: selectedModel} : {}), ...(selectedEffort ? {effort: selectedEffort} : {}), ...(selectedExecutable ? {executable: selectedExecutable} : {})};
     writePrivate(location.config, config);
     if (existsSync(location.stop)) {
         unlinkSync(location.stop);
@@ -158,7 +175,9 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         CREATE TABLE IF NOT EXISTS jobs(event_id TEXT PRIMARY KEY, phase TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0, answer TEXT, failure TEXT, turn_id TEXT);
         CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
     database.exec("UPDATE jobs SET phase='failed', failure='Receiver restarted during execution. Outcome is uncertain; not automatically rerun.' WHERE phase='running'");
-    let state: ReceiverStatus = {pid: process.pid, state: 'starting', runtime: config.runtime};
+    const savedThread = database.prepare("SELECT value FROM metadata WHERE key='thread'").get() as {value: string} | undefined;
+    const savedModel = database.prepare("SELECT value FROM metadata WHERE key='model'").get() as {value: string} | undefined;
+    let state: ReceiverStatus = {pid: process.pid, state: 'starting', runtime: config.runtime, ...(savedThread ? {threadId: savedThread.value} : {}), ...(savedModel ? {model: savedModel.value} : {})};
     const status = (update: Partial<ReceiverStatus>) => {
         const next = {...state, ...update};
         if (JSON.stringify(next) !== JSON.stringify(state) || !existsSync(location.status)) {
@@ -271,7 +290,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         try {
             if (!runtime) {
                 const saved = database.prepare("SELECT value FROM metadata WHERE key='thread'").get() as {value: string} | undefined;
-                const runtimeOptions = {cwd: config.cwd, roomId: room.roomId, sessionId: session.sessionId, ...(saved ? {threadId: saved.value} : {}), ...(config.model ? {model: config.model} : {})};
+                const runtimeOptions = {cwd: config.cwd, roomId: room.roomId, sessionId: session.sessionId, ...(saved ? {threadId: saved.value} : {}), ...(config.model ? {model: config.model} : {}), ...(config.effort ? {effort: config.effort} : {}), ...(config.executable ? {executable: config.executable} : {})};
                 const mcpOptions = {...runtimeOptions, stateDirectory: location.directory, cliPath: resolve(process.argv[1]!), dataDirectory: store.directory, roomId: room.roomId, sessionId: session.sessionId};
                 if (config.runtime === 'qwen') {
                     runtime = new QwenReceiver(mcpOptions);
@@ -283,6 +302,10 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                 const threadId = await runtime.connect();
                 database.prepare("INSERT OR REPLACE INTO metadata(key, value) VALUES ('thread', ?)").run(threadId);
                 status({threadId});
+                if (runtime.model) {
+                    database.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('model',?)").run(runtime.model);
+                    status({model: runtime.model});
+                }
             }
             const answer = await runtime.execute(current, {
                 acknowledge: async () => {
@@ -304,7 +327,17 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                     saveValue(`pass:${request.eventId}`, '1');
                 },
                 started: (turnId) => { database.prepare('UPDATE jobs SET turn_id=? WHERE event_id=?').run(turnId, request.eventId); },
-                usage: (usage) => status({usage})
+                usage: (usage) => {
+                    status({usage});
+                    if (usage && typeof usage === 'object' && 'modelUsage' in usage && usage.modelUsage && typeof usage.modelUsage === 'object') {
+                        const models = Object.keys(usage.modelUsage);
+                        if (models.length) {
+                            const reported = models.join(', ');
+                            database.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('model',?)").run(reported);
+                            status({model: reported});
+                        }
+                    }
+                }
             });
             if (config.runtime === 'qwen' && !database.prepare('SELECT acknowledged FROM jobs WHERE event_id=?').get(request.eventId)?.['acknowledged']) {
                 if (runtime instanceof QwenReceiver) {
