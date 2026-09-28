@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 //! Regenerates the Codex instructions from the Claude Code skill.
 //!
-//! Both runtimes must receive identical instructions. If the spike finds a
+//! All supported runtimes must receive identical instructions. If the spike finds a
 //! behavioural difference between them, that difference has to come from the
 //! runtime rather than from one having been told something the other was not.
 
@@ -15,7 +15,7 @@ const body = skill.split(/^---$/m).slice(2).join('---').trimStart();
 
 const header = `<!--
 Codex reads this file automatically. It is generated from
-integrations/claude-code/SKILL.md so both runtimes get identical instructions —
+integrations/claude-code/SKILL.md so supported runtimes get identical instructions —
 a spike that finds a behavioural difference between them must be a difference in
 the runtime, not in what each was told.
 

@@ -67,6 +67,10 @@ Two agents in the same directory get separate identities, and the CLI refuses to
 
 ## Joining
 
+Humans can create a new managed agent from terminal chat with `/claude`, `/codex`, `/qwen`, or `/spawn <runtime>`, using `--name`, `--model`, `--workdir`, and supported `--effort` options. The CLI equivalent is `pairlobby spawn <runtime> --room <room-id> --session <human-session-id>`. This creates a separate managed conversation; it does not attach an existing agent session. Agent memberships cannot use these human spawn controls. Do not adopt a saved human session to bypass that restriction. Ordinary agent participation still uses the join flow below. Human-spawned agents wait without inference until addressed; sequential mode still locks the whole room, and only the owner can switch to `/turns parallel` for independent concurrent work. Codex and Claude accept supported effort settings; Qwen effort overrides are rejected.
+
+In terminal chat, `/agents` opens a table of every agent currently in the room, including externally joined agents. Its columns are Name, Provider, Status, Model, Conversation ID, Invite, Origin, and Last message date. Origin says This session, Other session, or Joined externally. Double-click/Enter copies the full cell; arrows/Tab navigate, R refreshes the snapshot, and Escape closes it. Configured models carry `*`; other model names are last reported values. Private runtime IDs/admission codes may be unavailable for remote or older sessions; never invent them. `/agent start|stop` remains restricted to agents spawned by that human membership. A stopped receiver remains joined and can accumulate requests; `/interrupt` is not implemented. Spawn errors with an operation ID can be recovered using `/spawn --resume <operation-id>` without creating another identity. These human commands do not authorize an agent to adopt a human session.
+
 ```sh
 pairlobby create --name my-project --as <your-name> --json     # start a room
 pairlobby join K7MP-4QWX --as <your-name> --json               # join with a code
@@ -92,8 +96,7 @@ participant leaves, so someone who closed their terminal can rejoin with the sam
 code. Mint one per person you expect to join; if the user asks for a room and does
 not say who else is coming, mint a spare and hand it over anyway.
 
-Neither rooms nor invite codes expire unless someone sets a deadline, so do not tell
-the user anything is about to lapse unless `pairlobby list` actually says so. If they want one set,
+Rooms and ordinary invites have no expiry by default; configured deadlines still apply. Internal spawn admission codes are an exception: they are single-use with a five-minute initial redemption deadline. Do not infer expiration from an old message or treat a spawned agent's admission code as a reusable rejoin command. If they want one set,
 `pairlobby expiry <room> in 10 hours` (or `never`) does it without a menu — do not
 run `pairlobby expire`, which opens an interactive picker meant for a person. Add `--local` if the user is running their own relay and you get a connection error.
 

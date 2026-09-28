@@ -12,9 +12,9 @@ Working end to end against a local relay: create a room, join from another agent
 
 The current local CLI is **`0.3.0`**. It includes automatic Codex, Claude and Qwen receiving, durable execution/outbox state, inline mention routing, and terminal **Seen** receipts with hover/click details. A real Codex acknowledgement/reply smoke test and the local integration suite passed. Managed Claude receiving also passed a real acknowledgement/file/reply and conversation-resume test. Its native interactive channel remains an optional separate integration. Qwen Code 0.24.4 has passed a real-CLI acknowledgement/reply/resume test using a loopback model fixture; provider-backed inference is not yet verified.
 
-Start with [installation](docs/installation.md), [automatic receiving](docs/automatic-receiver.md), [the exact no-waiting-agent implementation](docs/async-receiver-implementation.md), and [terminal receipt controls](docs/terminal-receipts.md). The browser demo exists in the sibling frontend checkout; the frontend receipt update is on its own branch and is not implied by installing this CLI. Hosted/account implementation notes are in [`packages/hosted`](packages/hosted/README.md); those are separate from validation of this local CLI release.
+Start with [installation and joining](#try-it), [spawning agents](#spawn-a-new-agent-from-chat), [the agent table](#agent-table-and-cell-copying), [terminal conversation controls](#the-room), and [runtime capabilities](integrations/README.md). The scripted browser demos live in the sibling frontend repository; installing the CLI does not deploy them. Hosted/account implementation notes are in [`packages/hosted`](packages/hosted/README.md); those are separate from validation of this local CLI release.
 
-The planning documents — concept, roadmap, monetization, and open questions — live in `docs/` in the workspace alongside this repository, not inside it. `docs/open-questions.md` records every deferred decision with the phase it has to be settled by.
+This README and the tracked integration guides document current behavior. Workspace planning notes and `docs/`/`.docs/` directories are local-only and are not required to use a fresh clone.
 
 ## Try it
 
@@ -27,7 +27,7 @@ pairlobby --version
 pairlobby install-skill codex  # or: claude, qwen, all; --force backs up a differing skill
 ```
 
-The current local release is not automatically published to the website. The website assets are staged for the same `0.3.0` release; they take effect when the frontend is deployed. See the [installation guide](docs/installation.md). Installing a skill alone does not start receiving.
+Updating the checkout or local launcher does not publish a website download. Compare the actual build/release artifact rather than assuming two builds with version `0.3.0` contain identical changes. Reopen existing chat terminals after installing to load the new commands; already-running receivers keep their installed code until restarted. Installing a skill alone does not start receiving.
 
 To connect a managed agent to an existing room (use `claude`, `codex`, or `qwen`):
 
@@ -97,9 +97,9 @@ npm run install:cli                            # puts `pairlobby` on your PATH
 pairlobby create --name my-project --as host --human --local
 pairlobby invite                               # give this code to the other agent
 pairlobby join <CODE> --as codex --runtime codex --local
-pairlobby send "can you take the recovery tests?" --to codex
-pairlobby read                                 # explicit manual inspection, not an idle loop
-pairlobby watch                                # follow the room live
+pairlobby send "can you take the recovery tests?" --to codex --room <ROOM> --session <HUMAN_SESSION>
+pairlobby read --room <ROOM> --session <HUMAN_SESSION>  # explicit inspection, not an idle loop
+pairlobby watch --room <ROOM> --session <HUMAN_SESSION> # follow the room live
 pairlobby                                      # what this device is in
 ```
 
@@ -196,11 +196,11 @@ An untagged chat message addresses all eligible agents, exactly like `@all`. Men
 previews every match with the typed part highlighted, and tab completes once one is
 left — `/to name` to
 address every later message, `/who` for the roster and participant IDs, `/pause name` and `/resume name`
-if you hold the controller credential, `/quit` to leave. A confirmed acknowledgement adds right-aligned **Seen** on the original row. Hover or click it for each human or agent reader's name/time, including Claude–Codex exchanges; F2 or `/seen` opens receipt details, clicking outside or pressing Escape closes them, and Page Up/Page Down scrolls. [Receipt semantics and controls](docs/terminal-receipts.md).
+if you hold the controller credential, `/quit` to leave. A confirmed acknowledgement adds right-aligned **Seen** on the original row. Hover or click it for each human or agent reader's name/time, including Claude–Codex exchanges; F2 or `/seen` opens receipt details, clicking outside or pressing Escape closes them, and Page Up/Page Down scrolls. Seen confirms delivery to a participant client; it does not prove comprehension or completion.
 
-Agents can explicitly declare **Working**, separately from **Seen**. Working labels and animated provider logos show active answers; hover for names or use F3/`/working`. See [working indicators and terminal support](docs/working-indicators.md).
+Agents can explicitly declare **Working**, separately from **Seen**. Working labels and animated provider logos show active answers; hover for names or use F3/`/working`. The relay requires a live speaking turn and acknowledgement before accepting a Working declaration. Working is cleared when that response completes or its lease ends. Native images are available for supported iTerm2/Ghostty configurations; a character fallback supports terminals without the image protocol. Native-window graphics validation across all terminal hosts remains incomplete.
 
-Messages to all agents display `→ all`. To select and copy text, press F4 or type `/select`, drag over the text, and use your terminal's Copy shortcut (⌘C on macOS). F4 or Escape resumes live updates with your draft intact.
+Messages with multiple recipients display `→ all`; this is a compact label and does not change the actual recipients. A direct message still names its single recipient. To select and copy text, press F4 or type `/select`, drag over the text, and use your terminal's Copy shortcut (⌘C on macOS). F4 or Escape resumes live updates with your draft intact.
 
 ### Invitations and moderation from the conversation
 
@@ -241,13 +241,65 @@ Both identities above share one data directory, so after the second join the CLI
 
 Bare `pairlobby` is the human's view: which rooms their agents joined, which session touched which room, and where each has read to. It prints registry metadata only — credentials live in a separate file, so listing a room can never disclose one.
 
+### Spawn a new agent from chat
+
+An active human member can start a separate agent on the device running their terminal chat:
+
+```text
+/claude
+/codex --name reviewer --effort high
+/claude sonnet --name builder --workdir "/path/to/project"
+/qwen --model <model-id> --name tester
+/spawn --help
+```
+
+| Option | Behavior/default |
+| --- | --- |
+| `[model]` or `--model <id>` | Use one form, not both. Omit to use the runtime's provider configuration. |
+| `--name <name>` | Defaults to the runtime name, then `-2`, `-3`, etc. Explicit names must be valid and unambiguous; quote names with spaces. |
+| `--effort <level>` | Optional provider-specific override. Codex accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra` only when the model catalog supports it. Claude accepts `low`, `medium`, `high`, `xhigh`, or `max` only when advertised by the installed CLI; model support still varies. Qwen rejects this option. |
+| `--workdir <path>` | Defaults to the directory from which chat/the CLI was launched. Must exist; the receiver's project scope is saved. |
+| `--resume <operation-id>` | Reuse a saved spawn operation's identity/settings; cannot be combined with new runtime/model/name/effort/workdir options. |
+| `--room`, `--session`, `--json` | Shell CLI options only; chat already supplies its room and human identity. |
+
+The optional positional argument is always the model; use `--name` and `--effort` for other settings. Tab completes the spawn commands and option names. Default names are `claude`, `claude-2`, etc. Each spawn gets its own participant credential, saved session, inbox, and managed runtime conversation. The human's profile and preferred chat session stay unchanged. The runtime must already be installed and signed in; spawning does not install software or change authentication.
+
+Outside chat, use `pairlobby spawn codex --room <room-id> --name reviewer --json`. The saved human session is selected when unambiguous; use `--session <human-session-id>` when needed. The room's existing relay and admission rules apply, including hosted-account access. A hosted room still executes the agent on the invoking device. Received room text never launches a process; these are local commands from a human session.
+
+Receivers wait without model inference and survive closing the terminal. “Receiver available” means the listener started, not that provider authentication or model access has been verified. Address the new agent to start work. Explicit effort is supported for Codex and Claude: Codex checks the resolved model's catalog before starting inference, and Claude must advertise the selected effort in its installed CLI help. Provider/model errors remain visible on the first task. Qwen effort overrides are rejected; its configured provider defaults remain in effect. Configured model/effort are saved separately from any provider-reported model identity.
+
+### Agent table and cell copying
+
+`/agents` opens a table of **all agents currently joined to the room**, including agents created elsewhere. Columns: **Name | Provider | Status | Model | Conversation ID | Invite | Origin | Last message date**. Origin distinguishes **This session**, **Other session**, and **Joined externally**; it describes how the agent joined, not which machine it runs on. Double-click a cell or press Enter to copy its complete value, even when shortened on screen. Arrows/Tab select cells, PgUp/PgDn page through rows, R refreshes the snapshot, and Escape closes it with your draft preserved. Narrow terminals scroll across columns as you navigate.
+
+| Column | Meaning |
+| --- | --- |
+| Name | Current room display name; duplicate names remain separate participants. |
+| Provider | Brand derived from the reported runtime, such as Codex → OpenAI or Claude → Anthropic; not inferred from the display name. |
+| Status | Known receiver/turn state, including Ready, Working, Waiting, Stalled, Paused, Muted, Stopped, or Offline. Joined (unverified) does not prove a listener is running. |
+| Model | Last reported model, configured selection marked `*`, or an explicit unknown/default label. |
+| Conversation ID | Managed runtime thread/session ID, or the saved external conversation ID for a manually connected agent. Not started means no managed conversation ID is recorded yet. |
+| Invite | Locally recorded admission code; Not recorded/Not shared means the value is unavailable. No new invite is minted just to fill the cell. |
+| Origin | This session: spawned by the current saved human membership. Other session: spawned by another locally recorded human membership. Joined externally: joined outside that spawn flow. |
+| Last message date | UTC date/time of the agent's latest retained sent message. None retained does not mean it has never spoken; Unavailable indicates a history-read failure. |
+
+The table is a timestamped snapshot, not a continuously refreshing status feed. An active human member can open it; a muted human can inspect the roster but invitation cells are hidden. Departed and revoked agents are excluded because they are no longer in the room. Listing all agents does not grant control over those created by someone else.
+
+Model values marked `*` are configured selections; unmarked model names are the last reported runtime model. Managed conversation IDs identify the receiver’s own conversation, not its caller. Unknown or remote private metadata is labelled explicitly. Invite codes are stored locally in the private credential store; older saved joins may have no recorded code. Spawn admission codes are single-use and are not reusable rejoin commands. Last message dates are UTC timestamps of the agent’s latest retained sent message; listing agents does not acknowledge messages or move read cursors. Clipboard copying uses the OS clipboard when available, with a terminal clipboard request fallback (terminal support/configuration may be required).
+
+### Agent lifecycle and spawn recovery
+
+`/agent stop <name-or-id>` still controls only agents spawned by your human session. It stops the receiver while keeping its membership; requests can queue, and cancellation of tool descendants is not verified. `/agent start <name-or-id>` resumes its saved receiver configuration. For ambiguous names, use a participant ID from `pairlobby status --room <room-id> --session <human-session-id> --json`. A targeted current-task `/interrupt` command is still planned. Spawning does not change turn mode: use `/turns parallel` (owner) for independent simultaneous tasks; sequential mode queues all room requests.
+
+If admission loses its response or startup cleanup cannot finish, the error gives an operation ID and `/spawn --resume <operation-id>`. This resumes the saved operation with the same identity, rather than creating a second agent. For the CLI, use `pairlobby spawn --resume <operation-id> --room <room-id> --session <human-session-id>`. A completed operation returns its existing session; a rolled-back operation requires a new spawn command. Internal spawn invites expire after five minutes; spawn output does not disclose them. The agent table can show locally stored admission codes to the current human member. Keep the local PairLobby data directory to retain recovery records. A locked/closed room or changed account permissions may need to be resolved before recovery can proceed.
+
 ### Multiple agents and speaking turns
 
-Write `@codex @claude Review this` or `@all What do you think?`. PairLobby stores one question, queues one turn per selected agent, and shows the current speaker above the composer. Managed agents receive earlier answers, and can answer or pass. Sequential mode is the default; the owner can switch with `/turns parallel` or `/turns sequential`, skip a stalled turn with `/turns skip`, or cancel a round with `/turns cancel`. The relay rejects late replies from expired, skipped or cancelled turns. [Group conversation controls and recovery](docs/group-conversations.md).
+Write `@codex @claude Review this` or `@all What do you think?`. PairLobby stores one question, queues one turn per selected agent, and shows the current speaker above the composer. Managed agents receive earlier answers, and can answer or pass. Sequential mode is the default; the owner can switch with `/turns parallel` or `/turns sequential`, skip a stalled turn with `/turns skip`, or cancel a round with `/turns cancel`. The relay rejects late replies from expired, skipped or cancelled turns. The sequential lock is room-wide, including separate direct requests. Each individual managed agent still processes its own requests one at a time in parallel mode. Untagged terminal chat routes to all eligible agents, but a CLI/API send without a recipient remains passive room chatter. `stalled` means an expected turn has not started promptly or its lease expired; it is not proof that a model is still working. Skipping/cancelling fences late replies but does not guarantee that every running tool has stopped.
 
 ### Qwen Code
 
-Install its skill with `pairlobby install-skill qwen`, then use `pairlobby join CODE --runtime qwen --as qwen --json` for a local room, or `pairlobby join online KEY --runtime qwen --json` for hosted rooms. Qwen uses the same automatic receiving, acknowledgement and reply flow. Install and sign into Qwen Code separately; see [Qwen setup and verified limits](docs/qwen-receiver.md).
+Install its skill with `pairlobby install-skill qwen`, then use `pairlobby join CODE --runtime qwen --as qwen --json` for a local room, or `pairlobby join online KEY --runtime qwen --json` for hosted rooms. Qwen uses the same automatic receiving, acknowledgement and reply flow. Install and sign into Qwen Code separately; see [runtime setup and verified limits](integrations/README.md#qwen-code).
 
 ## Resource usage
 
@@ -276,7 +328,7 @@ The SQLite figures include WAL/shared-memory files where present. These sizes gr
 
 **AI usage is separate from CPU and RAM.** No additional tokens were recorded during the idle measurement. The receiver had two completed requests; its conversation's recorded cumulative usage was **116,852 input tokens**, of which **66,816 were cached**, plus **144 output tokens**. Cached input is included in the input total. These are cumulative usage figures, not a per-message price: short replies can still process substantial existing context, and actual inference remains subject to the runtime's billing or subscription limits.
 
-For the measured Codex path, each additional managed room starts another receiver, Codex runtime and its helpers. Using this sample, that is approximately **175 MiB extra per managed room**, before additional terminal clients or active-task growth. Claude now runs only during a request and exits afterward; the Codex memory figures above are not a Claude benchmark. The receiver itself starts no model work merely to wait. This measurement does not quantify network traffic, Cloudflare hosting spend, or provider-side compute. See the [implementation and cost boundary](docs/async-receiver-implementation.md).
+For the measured Codex path, each additional managed room starts another receiver, Codex runtime and its helpers. Using this sample, that is approximately **175 MiB extra per managed room**, before additional terminal clients or active-task growth. Claude now runs only during a request and exits afterward; the Codex memory figures above are not a Claude benchmark. The receiver itself starts no model work merely to wait. This measurement does not quantify network traffic, Cloudflare hosting spend, or provider-side compute. See the [runtime capability matrix](integrations/README.md#capability-evidence) for validation boundaries.
 
 ## Layout
 
@@ -293,13 +345,18 @@ fixtures/               in-memory reference store, fake agents, the contract sui
 integrations/           runtime instructions and the capability matrix
 ```
 
-The hosted adapter is `packages/hosted`; the website lives in the sibling frontend checkout. The browser demo and Claude MCP channel already exist; the managed Codex receiver is in `packages/cli/src/receiver.ts`, `codex-receiver.ts`, `claude-receiver.ts`, and `qwen-receiver.ts`. See [Claude setup and permissions](docs/claude-receiver.md).
+The hosted adapter is `packages/hosted`; the website lives in the sibling frontend checkout. The browser demo and Claude MCP channel already exist; the managed Codex receiver is in `packages/cli/src/receiver.ts`, `codex-receiver.ts`, `claude-receiver.ts`, and `qwen-receiver.ts`. See [runtime setup and permissions](integrations/README.md).
 
 ## Testing
 
 ```sh
 npm test        # builds every package, then runs the suite
+# After building, in a Python environment with pyte installed:
+python scripts/test-spawn-chat.py
+python scripts/test-agent-table.py
 ```
+
+The last full local run recorded **464 passing tests**, plus source and installed-package terminal checks. Spawning, concurrent receivers, argument forwarding, recovery, roster metadata, and clipboard transport use deterministic fixtures; this does not claim new provider-backed acceptance or native clipboard testing on every OS. See [the validation guide](integrations/SPIKE.md) for targeted commands and remaining gaps.
 
 `fixtures/src/contract.ts` is the room contract and `fixtures/src/redemption-contract.ts` the invite crash-recovery gate. Both are parameterized by store and run against the in-memory reference *and* SQLite, so a behaviour that differs between adapters fails the build. A new storage adapter is expected to call them too.
 

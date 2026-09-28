@@ -6,8 +6,15 @@ import {createInterface} from 'node:readline';
 import {appendFileSync, readFileSync} from 'node:fs';
 
 const args = process.argv.slice(2);
+if (args.includes('--help')) {
+    console.log('--model <model>\n--effort <level> (low, medium, high, xhigh, max)');
+    process.exit(0);
+}
 const value = (flag) => args[args.indexOf(flag) + 1];
 const record = (line) => appendFileSync(process.env.PAIRLOBBY_TEST_RECORD, line + '\n');
+if (args.includes('--effort')) {
+    record(`effort:${value('--effort')}`);
+}
 const send = (message) => process.stdout.write(JSON.stringify(message) + '\n');
 const session = args.includes('--resume') ? value('--resume') : value('--session-id');
 if (value('--model') !== 'fixture-model') {
