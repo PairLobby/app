@@ -190,6 +190,13 @@ test('online keys resolve globally and private rooms reject unauthorized account
     const path=relay+'/v1/rooms/'+created.data.room.roomId;
     assert.equal((await call(path+'/allowed-accounts',{method:'PUT',body:{private:true,accounts:[member.email]},headers:{authorization:'Bearer '+input.participantCredential}})).response.status,403);
     assert.equal((await call(path+'/allowed-accounts',{method:'PUT',body:{private:true,accounts:[member.email]},headers:{authorization:'Bearer '+input.controllerCredential}})).response.status,200);
+    const privacyHeaders={authorization:'Bearer '+input.controllerCredential};
+    const beforeToggle=(await call(path+'/allowed-accounts',{headers:privacyHeaders})).data;
+    assert.equal(beforeToggle.preserveAllowlistSupported,true);
+    assert.equal((await call(path+'/allowed-accounts',{method:'PUT',body:{private:false},headers:privacyHeaders})).response.status,200);
+    assert.equal((await call(path+'/allowed-accounts',{headers:privacyHeaders})).data.private,false);
+    assert.equal((await call(path+'/allowed-accounts',{method:'PUT',body:{private:true},headers:privacyHeaders})).response.status,200);
+    assert.deepEqual((await call(path+'/allowed-accounts',{headers:privacyHeaders})).data.accounts.sort(),beforeToggle.accounts.sort());
     const joined=await call(relay+'/v1/invites/redeem',{body:join,headers:{'x-pairlobby-account-token':memberToken}});assert.equal(joined.response.status,200,JSON.stringify(joined.data));
     assert.equal((await call(path,{headers:{authorization:'Bearer '+join.participantCredential}})).response.status,200);
     assert.equal((await call(path+'/leave',{body:{},headers:{authorization:'Bearer '+join.participantCredential}})).response.status,200);

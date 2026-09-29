@@ -7,18 +7,19 @@ import {FaultyStore} from './faulty-store.js';
 
 export function runRequestContract(label: string, makeStore: StoreFactory) {
     describe(`${label} / durable message obligations`, () => {
-        let store: TestableRoomStore, service: RoomService, roomId: string, alice: string, bob: string, aliceId: string, bobId: string;
+        let store: TestableRoomStore, service: RoomService, roomId: string, alice: string, bob: string, aliceId: string, bobId: string, controller: string;
         beforeEach(async () => {
             store = makeStore();
             service = new RoomService(store);
             alice = newCredential('participant');
             bob = newCredential('participant');
+            controller = newCredential('controller');
             const room = await service.createRoom({
                 name: 'delivery',
                 displayName: 'alice',
                 kind: 'agent',
                 participantCredential: alice,
-                controllerCredential: newCredential('controller')
+                controllerCredential: controller
             });
             roomId = room.roomId;
             aliceId = room.participantId;
@@ -114,6 +115,17 @@ export function runRequestContract(label: string, makeStore: StoreFactory) {
             store.dropHistoryBefore(roomId, receipts[0]!.seq + 1);
             await new RoomService(store).acknowledgeMessage(roomId, bob, event.eventId);
             expect((await service.read(roomId, bob, 0, 100)).events).toHaveLength(0);
+        });
+        test('muted agents can confirm receipt but cannot send or reply, and revocation blocks receipts', async () => {
+            const {event} = await ask('read while muted');
+            await service.setMuted(roomId, controller, bobId, true);
+            await service.acknowledgeMessage(roomId, bob, event.eventId);
+            expect((await service.request(roomId, alice, event.eventId)).receivedAt).not.toBeNull();
+            await expect(answer(event.eventId)).rejects.toMatchObject({code: 'participant_muted'});
+            await expect(service.send(roomId, bob, {type: 'message', payload: {text: 'blocked', priority: 'normal'}, idempotencyKey: newId('event')})).rejects.toMatchObject({code: 'participant_muted'});
+            await expect(service.acknowledgeMessage(roomId, alice, event.eventId)).rejects.toMatchObject({code: 'unauthorized'});
+            await service.revoke(roomId, controller, bobId);
+            await expect(service.acknowledgeMessage(roomId, bob, event.eventId)).rejects.toMatchObject({code: 'participant_revoked'});
         });
         test('receipts reject system events, missing messages and guest writers', async () => {
             const joined = (await service.read(roomId, alice, 0, 100)).events[0]!;

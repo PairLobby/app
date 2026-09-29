@@ -69,10 +69,11 @@ export function drawWorkingGraphics(mode: GraphicsMode, placements: LogoPlacemen
         if (mode === 'iterm2') {
             sequence += `\u001b]1337;File=inline=1;width=6;height=3;preserveAspectRatio=1:${image.png}\u0007`;
         } else {
-            sequence += `\u001b_Ga=d,d=I,i=${IMAGE_IDS[placement.provider]},q=2;\u001b\\`;
+            // Reuse a named placement rather than deleting the visible frame or
+            // accumulating anonymous placements on every animation tick.
             for (let offset = 0; offset < image.png.length; offset += 4096) {
                 const more = offset + 4096 < image.png.length ? 1 : 0;
-                const control = offset === 0 ? `a=T,f=100,t=d,i=${IMAGE_IDS[placement.provider]},c=6,r=3,C=1,q=2,m=${more}` : `m=${more},q=2`;
+                const control = offset === 0 ? `a=T,f=100,t=d,i=${IMAGE_IDS[placement.provider]},p=1,c=6,r=3,C=1,q=2,m=${more}` : `m=${more},q=2`;
                 sequence += `\u001b_G${control};${image.png.slice(offset, offset + 4096)}\u001b\\`;
             }
         }

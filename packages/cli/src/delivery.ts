@@ -23,6 +23,7 @@ export class DeliverySupervisor {
                 continue;
             }
             let attempt = this.attempts.get(request.eventId);
+            const firstDelivery = !attempt;
             if (attempt?.failed) {
                 continue;
             }
@@ -46,7 +47,9 @@ export class DeliverySupervisor {
             if (progress > attempt.progress) {
                 attempt.progress = progress;
                 attempt.count = 0;
-                attempt.next = progress + REPLY_TIMEOUT_MS;
+                // A transport receipt can arrive before the model has ever
+                // been notified. Only later receipts/progress defer reminders.
+                attempt.next = firstDelivery ? now : progress + REPLY_TIMEOUT_MS;
             }
             if (now < attempt.next) {
                 next = Math.min(next, attempt.next);

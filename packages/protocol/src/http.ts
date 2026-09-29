@@ -33,6 +33,7 @@ export const ROUTES = {
     setExpiry: {method: 'POST', path: '/v1/rooms/:roomId/expiry'},
     setLocked: {method: 'POST', path: '/v1/rooms/:roomId/lock'},
     setMuted: {method: 'POST', path: '/v1/rooms/:roomId/participants/:participantId/mute'},
+    setRole: {method: 'POST', path: '/v1/rooms/:roomId/participants/:participantId/role'},
     setAccess: {method: 'POST', path: '/v1/rooms/:roomId/access'},
     joinAsGuest: {method: 'POST', path: '/v1/rooms/:roomId/guests'},
     closeRoom: {method: 'POST', path: '/v1/rooms/:roomId/close'},
@@ -91,6 +92,7 @@ export type RedeemInviteResponse = z.infer<typeof RedeemInviteResponse>;
 
 export const SetLockedRequest = z.object({locked: z.boolean()});
 export const SetMutedRequest = z.object({muted: z.boolean()});
+export const SetRoleRequest = z.object({role: z.enum(['member', 'controller'])});
 export const TurnClaimRequest = z.object({claimId: z.string().min(16).max(128)});
 export const TurnTokenRequest = z.object({token: z.string().min(16).max(128)});
 export const TurnModeRequest = z.object({mode: z.enum(['sequential', 'parallel'])});

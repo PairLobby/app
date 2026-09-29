@@ -39,3 +39,7 @@ export function detectRuntime(): RuntimeIdentity {
         pid: process.ppid
     };
 }
+
+export function sameRuntime(left: string | undefined, right: string | undefined): boolean {
+    return Boolean(left && right && left.replace(/-(cli|code)$/, '') === right.replace(/-(cli|code)$/, ''));
+}

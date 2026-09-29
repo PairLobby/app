@@ -10,11 +10,18 @@ import {ReplyComposer, messageTarget, quotePreview} from './reply-composer.js';
 import type {ReplySubmission, ReplyTarget} from './reply-composer.js';
 import {AgentTable} from './agent-table.js';
 import type {AgentRoster} from './agent-roster.js';
+import {RoomPanel} from './room-panel.js';
+import type {RoomPanelPage} from './room-panel.js';
+import {fitPopup, visibleMessageRow} from './terminal-layout.js';
+import {agentActivities, activitySummary} from './agent-activity.js';
+import type {AgentActivity, AgentActivityContext} from './agent-activity.js';
 
-type ChatTerminalOptions = {names: Map<string, string>; participantId: string; format: (event: RoomEvent) => string; complete: (line: string) => [string[], string]};
+type ChatTerminalOptions = {names: Map<string, string>; participantId: string; format: (event: RoomEvent, highlightNames?: boolean) => string; complete: (line: string) => [string[], string]};
 type TranscriptEntry = {text: string; event?: RoomEvent};
 type ScreenKey = Key & {full?: string};
 type TerminalProgramOptions = {extended: boolean; debug: boolean};
+type MessageLayout = {event: RoomEvent; content: blessed.Widgets.TextElement; normalText: string; highlighted: boolean; top: number; height: number; selected: boolean; receipt?: blessed.Widgets.BoxElement; working?: blessed.Widgets.BoxElement};
+type ScrollBody = blessed.Widgets.BoxElement & {childBase: number};
 
 function createTerminalProgram(): blessed.BlessedProgram {
     // Blessed's legacy compiler cannot parse some modern extended capabilities
@@ -38,9 +45,9 @@ export class ChatTerminal {
     private body = blessed.box({parent: this.screen, top: 0, bottom: 3, left: 0, right: 0, scrollable: true, alwaysScroll: true, mouse: true, tags: false, scrollbar: {ch: '│', style: {fg: 'gray'}}});
     private composer = blessed.box({parent: this.screen, bottom: 1, left: 0, right: 0, height: 1, tags: false});
     private hint = blessed.box({parent: this.screen, bottom: 0, left: 0, right: 0, height: 1, tags: false, style: {fg: 'gray'}});
-    private turns = blessed.box({parent: this.screen, bottom: 2, left: 0, right: 0, height: 1, tags: false, style: {fg: 'cyan'}});
+    private turns = blessed.box({parent: this.screen, bottom: 2, left: 0, right: 0, height: 1, tags: false, mouse: true, wrap: false, style: {fg: 'cyan'}});
     private quote = blessed.box({parent: this.screen, bottom: 2, left: 0, right: 0, height: 1, tags: false, wrap: false, hidden: true, style: {fg: 'gray'}});
-    private popup = blessed.box({parent: this.screen, right: 1, top: 0, width: 58, height: 8, border: 'line', padding: {left: 1, right: 1}, tags: false, hidden: true, mouse: true, style: {fg: 'white', bg: 'black', border: {fg: 'gray'}}});
+    private popup = blessed.box({parent: this.screen, right: 1, top: 0, width: 1, height: 1, border: 'line', padding: {left: 1, right: 1}, tags: false, hidden: true, mouse: true, scrollable: true, alwaysScroll: true, wrap: false, style: {fg: 'white', bg: 'black', border: {fg: 'gray'}}});
     private working = new WorkingStrip({screen: this.screen, render: () => this.renderInput(), rebuild: () => this.rebuild(), obscured: () => this.popup.visible});
     private entries: TranscriptEntry[] = [];
     private events = new Set<string>();
@@ -55,22 +62,38 @@ export class ChatTerminal {
     private follow = true;
     private inputChanged: (() => void) | undefined;
     private labels = new Map<string, blessed.Widgets.BoxElement>();
+    private messageLayouts: MessageLayout[] = [];
+    private latestMessage: RoomEvent | undefined;
+    private activityContext: AgentActivityContext | undefined;
+    private activityOpen = false;
+    private turnText = '';
     private reply = new ReplyComposer();
     private submittedReply: ReplySubmission | undefined;
     private hintText = '';
     private revealReply = false;
     private selecting = false;
+    private frameDepth = 0;
     private loadAgents: (() => Promise<AgentRoster>) | undefined;
     private agentTable = new AgentTable({screen: this.screen, close: () => { this.working.resume(); this.rebuild(); }, refresh: () => this.loadAgents ? this.loadAgents() : Promise.reject(new Error('No agent loader'))});
+    private roomPanel = new RoomPanel({screen: this.screen, close: () => { this.working.resume(); this.rebuild(); }});
 
     constructor(private readonly options: ChatTerminalOptions) {
         this.input = createInterface({input: this.keyboard, output: this.output, terminal: true, completer: options.complete});
         this.screen.on('keypress', (character: string, key: ScreenKey) => {
+            // Blessed synthesizes "enter" before forwarding the same CR as
+            // "return". Handle that physical key once, including modal editors.
+            if (key.name === 'return' && key.sequence === '\r') {
+                return;
+            }
             if (this.suspended || this.closed) {
                 return;
             }
             if (this.agentTable.visible) {
                 this.agentTable.key(key);
+                return;
+            }
+            if (this.roomPanel.visible) {
+                this.roomPanel.key(character, key);
                 return;
             }
             if (this.selecting) {
@@ -145,19 +168,39 @@ export class ChatTerminal {
         this.input.once('close', () => this.close());
         this.body.on('wheeldown', () => { this.follow = this.body.getScrollPerc() >= 99; this.hideDetails(); });
         this.body.on('wheelup', () => { this.follow = false; this.hideDetails(); });
+        this.body.on('scroll', () => this.positionMessageLabels());
+        this.turns.on('mouseover', () => { if (!this.pinned) { this.showActivity(); } });
+        this.turns.on('mouseout', () => { if (!this.pinned) { this.hideDetails(); } });
+        this.turns.on('click', () => { this.showActivity(); this.pinned = true; });
         this.screen.on('mouse', (event: blessed.Widgets.Events.IMouseEventArg) => {
-            if (event.action !== 'mousedown' || !this.detailsId || this.closed || this.suspended) {
+            if (this.closed || this.suspended || this.selecting || this.agentTable.visible || this.roomPanel.visible) {
                 return;
             }
             const contains = (element: blessed.Widgets.BoxElement | undefined): boolean => {
                 const bounds = element?.lpos;
                 return Boolean(element?.visible && bounds && event.x >= bounds.xi && event.x < bounds.xl && event.y >= bounds.yi && event.y < bounds.yl);
             };
-            if (!contains(this.popup) && !contains(this.labels.get(this.detailsId))) {
+            if (event.action === 'mousemove' && !this.pinned) {
+                // Scrolling moves an existing Seen element. Blessed may still
+                // consider it hovered, so mouseover alone is insufficient.
+                const target = [...this.labels].find(([, label]) => contains(label));
+                if (target && this.detailsId !== target[0]) {
+                    this.showDetails(target[0]);
+                } else if (!target && contains(this.turns) && !this.activityOpen) {
+                    this.showActivity();
+                } else if (!target && !contains(this.turns) && !contains(this.popup) && (this.detailsId || this.activityOpen)) {
+                    this.hideDetails();
+                }
+                return;
+            }
+            if (event.action !== 'mousedown' || (!this.detailsId && !this.activityOpen)) {
+                return;
+            }
+            if (!contains(this.popup) && !contains(this.detailsId ? this.labels.get(this.detailsId) : this.turns)) {
                 this.hideDetails();
             }
         });
-        this.screen.on('resize', () => {
+        this.screen.on('resize', () => this.drawFrame(() => {
             this.working.clearGraphics();
             this.output.columns = Number(this.screen.width);
             if (this.selecting) {
@@ -167,7 +210,8 @@ export class ChatTerminal {
             }
             this.rebuild();
             this.agentTable.render();
-        });
+            this.roomPanel.render();
+        }));
         this.screen.program.enableMouse();
         this.renderInput();
     }
@@ -189,8 +233,24 @@ export class ChatTerminal {
         this.hideDetails();
         this.working.hide();
         this.working.suspend();
+        this.roomPanel.hide();
         this.loadAgents = load;
         this.agentTable.show(roster);
+    }
+
+    async showRoomPanel(load: () => Promise<RoomPanelPage>): Promise<void> {
+        const page = await load();
+        if (this.closed || this.suspended) {
+            return;
+        }
+        if (this.selecting) {
+            this.toggleSelection();
+        }
+        this.hideDetails();
+        this.working.hide();
+        this.working.suspend();
+        this.agentTable.hide();
+        this.roomPanel.show(page);
     }
 
     onInput(callback: () => void): void {
@@ -266,8 +326,20 @@ export class ChatTerminal {
     }
 
     setTurnStatus(text: string): void {
-        this.turns.setContent(stripVTControlCharacters(text));
+        this.turnText = stripVTControlCharacters(text);
         this.renderInput();
+    }
+
+    setAgentActivity(context: AgentActivityContext): void {
+        this.activityContext = context;
+        this.renderInput();
+    }
+
+    activityUnavailable(): void {
+        if (this.activityContext) {
+            this.activityContext = {...this.activityContext, available: false};
+            this.renderInput();
+        }
     }
 
     log(text: string): void {
@@ -285,6 +357,9 @@ export class ChatTerminal {
 
     addEvent(event: RoomEvent): void {
         this.receipts.observe(event);
+        if (event.type === 'message' && (!this.latestMessage || event.seq > this.latestMessage.seq)) {
+            this.latestMessage = event;
+        }
         if (!this.events.has(event.eventId)) {
             this.events.add(event.eventId);
             if (event.type !== 'message.received' && !(event.type === 'conversation.turn_changed' && ['claimed', 'working'].includes(event.payload.action))) {
@@ -317,6 +392,7 @@ export class ChatTerminal {
 
     suspend(): void {
         this.agentTable.hide();
+        this.roomPanel.hide();
         this.working.suspend();
         this.suspended = true;
         this.screen.program.disableMouse();
@@ -340,6 +416,7 @@ export class ChatTerminal {
         }
         this.working.close();
         this.agentTable.hide();
+        this.roomPanel.hide();
         this.closed = true;
         this.input.close();
         this.keyboard.destroy();
@@ -348,14 +425,19 @@ export class ChatTerminal {
     }
 
     private rebuild(): void {
-        if (this.closed || this.suspended || this.selecting || this.agentTable.visible) {
+        if (this.closed || this.suspended || this.selecting || this.agentTable.visible || this.roomPanel.visible) {
             return;
         }
+        this.drawFrame(() => this.rebuildContents());
+    }
+
+    private rebuildContents(): void {
         const scroll = this.body.getScroll();
         for (const child of [...this.body.children]) {
             child.destroy();
         }
         this.labels.clear();
+        this.messageLayouts = [];
         this.reply.sync(this.input.line ?? '', this.replyTargets());
         const workingHeight = this.working.rebuild(this.reply.active ? 3 : 2);
         this.body.bottom = (this.reply.active ? 4 : 3) + workingHeight;
@@ -377,16 +459,23 @@ export class ChatTerminal {
                 selectedTop = top;
             }
             const receipt = message && this.receipts.forMessage(message.eventId).length > 0;
-            const content = blessed.text({parent: this.body, top, left: 0, right: isWorking ? 19 : message ? 9 : 1, height: 'shrink', content: selected ? stripVTControlCharacters(entry.text) : entry.text, tags: false, wrap: true, style: selected ? {bg: 'blue', fg: 'white'} : {}});
+            const text = message ? this.options.format(message) : entry.text;
+            const content = blessed.text({parent: this.body, top, left: 0, right: isWorking ? 19 : message ? 9 : 1, height: 'shrink', content: selected && this.detailsId !== message?.eventId ? stripVTControlCharacters(text) : text, tags: false, wrap: true, style: selected ? {bg: 'blue', fg: 'white'} : {}});
             const lines = Math.max(1, content.getScreenLines().length);
             content.height = lines;
+            const layout: MessageLayout | undefined = message ? {event: message, content, normalText: text, highlighted: false, top, height: lines, selected: Boolean(selected)} : undefined;
+            if (layout) {
+                this.messageLayouts.push(layout);
+            }
             if (isWorking && message) {
                 const label = blessed.box({parent: this.body, top, right: 8, width: 7, height: 1, content: 'Working', mouse: true, style: {fg: 'cyan', hover: {underline: true}}});
                 this.working.bind(label, message.eventId);
+                layout!.working = label;
             }
             if (receipt && message) {
                 const label = blessed.box({parent: this.body, top, right: 2, width: 4, height: 1, content: 'Seen', mouse: true, style: {fg: 'gray', hover: {fg: 'white', underline: true}}});
                 this.labels.set(message.eventId, label);
+                layout!.receipt = label;
                 label.on('mouseover', () => { if (!this.pinned) { this.showDetails(message.eventId); } });
                 label.on('mouseout', () => { if (!this.pinned) { this.hideDetails(); } });
                 label.on('mousedown', () => { this.pinned = true; this.showDetails(message.eventId); });
@@ -409,55 +498,131 @@ export class ChatTerminal {
             this.body.setScroll(scroll);
         }
         this.revealReply = false;
-        if (this.detailsId) {
-            this.showDetails(this.detailsId);
-        }
         this.renderInput();
     }
 
     private showDetails(eventId: string): void {
+        if (this.detailsId !== eventId || this.activityOpen) {
+            this.popup.setScroll(0);
+        }
+        this.activityOpen = false;
         this.detailsId = eventId;
+        this.renderInput();
+    }
+
+    private showActivity(): void {
+        if (!this.activityContext) {
+            return;
+        }
+        if (!this.activityOpen) {
+            this.popup.setScroll(0);
+        }
+        this.detailsId = undefined;
+        this.activityOpen = true;
+        this.renderInput();
+    }
+
+    private currentActivities(): AgentActivity[] {
+        const acknowledged = new Set(this.latestMessage ? this.receipts.forMessage(this.latestMessage.eventId).map((receipt) => receipt.participantId) : []);
+        return this.activityContext ? agentActivities(this.activityContext, {latestMessage: this.latestMessage, acknowledged}) : [];
+    }
+
+    private paintDetails(): void {
+        if (this.activityOpen) {
+            const descriptions = {idle: 'Idle · caught up', unread: 'Awaiting latest acknowledgement', working: 'Working', preparing: 'Preparing an answer', waiting: 'Waiting · pending request', stalled: 'Stalled request', paused: 'Paused', muted: 'Muted', unknown: 'Status unavailable'};
+            fitPopup(this.popup, ['Agent activity', ...this.currentActivities().map((agent) => `${agent.name} — ${descriptions[agent.state]}`)], this.screen);
+            this.popup.top = Math.max(0, Number(this.turns.atop) - Number(this.popup.height));
+            this.popup.show();
+            this.popup.setFront();
+            return;
+        }
+        const eventId = this.detailsId;
+        if (!eventId) {
+            return;
+        }
         const receipts = this.receipts.forMessage(eventId);
-        this.popup.width = Math.max(10, Math.min(58, Number(this.screen.width) - 2));
-        const contentWidth = Number(this.popup.width) - 4;
-        const width = (text: string) => Number(this.popup.strWidth(text));
         const lines = receipts.map((receipt) => {
             const acknowledgement = `Acknowledged ${new Date(receipt.acknowledgedAt).toLocaleString()}`;
             const name = stripVTControlCharacters(this.options.names.get(receipt.participantId) ?? receipt.participantId);
-            const nameWidth = Math.max(1, contentWidth - width(acknowledgement) - 2);
-            let displayedName = name;
-            if (width(name) > nameWidth) {
-                displayedName = '';
-                for (const {segment} of new Intl.Segmenter().segment(name)) {
-                    if (width(displayedName + segment + '…') > nameWidth) {
-                        break;
-                    }
-                    displayedName += segment;
-                }
-                displayedName += '…';
-            }
-            return displayedName + ' '.repeat(Math.max(1, contentWidth - width(displayedName) - width(acknowledgement))) + acknowledgement;
+            return `${name}  ${acknowledgement}`;
         });
-        this.popup.height = Math.max(3, Math.min(Number(this.screen.height) - 4, Math.max(4, receipts.length + 3)));
+        fitPopup(this.popup, ['Confirmed receipts', ...(lines.length ? lines : ['No acknowledgement yet.'])], this.screen);
         const anchor = this.labels.get(eventId);
-        this.popup.top = Math.max(0, Math.min(anchor ? Number(anchor.atop) + 1 : Number(this.screen.height) - 3, Number(this.screen.height) - Number(this.popup.height) - 3));
-        this.popup.setContent(`Confirmed receipts\n${lines.length ? lines.join('\n') : 'No acknowledgement yet.'}`);
+        this.popup.top = Math.max(0, Math.min(anchor?.visible ? Number(anchor.atop) + 1 : Number(this.screen.height) - 3, Number(this.screen.height) - Number(this.popup.height) - 3));
         this.popup.show();
         this.popup.setFront();
-        this.renderInput();
     }
 
     private hideDetails(): void {
         this.pinned = false;
         this.detailsId = undefined;
+        this.activityOpen = false;
         this.popup.hide();
         this.renderInput();
     }
 
+    private positionMessageLabels(): void {
+        const scroll = (this.body as ScrollBody).childBase ?? 0;
+        for (const layout of this.messageLayouts) {
+            const row = visibleMessageRow(layout.top, layout.height, scroll, Number(this.body.height));
+            for (const label of [layout.receipt, layout.working]) {
+                if (!label) {
+                    continue;
+                }
+                if (row === null) {
+                    label.hide();
+                } else {
+                    label.top = row;
+                    label.show();
+                }
+            }
+        }
+    }
+
+    private paintMessageHighlights(): void {
+        for (const layout of this.messageLayouts) {
+            const highlighted = layout.event.eventId === this.detailsId;
+            if (highlighted === layout.highlighted) {
+                continue;
+            }
+            layout.highlighted = highlighted;
+            layout.content.style.bg = layout.selected ? 'blue' : highlighted ? '#252a30' : 'default';
+            const text = highlighted ? this.options.format(layout.event, true) : layout.normalText;
+            const rendered = layout.selected && !highlighted ? stripVTControlCharacters(text) : text;
+            if (layout.content.content !== rendered) {
+                layout.content.setContent(rendered);
+            }
+        }
+    }
+
     private renderInput(force = false): void {
-        if (this.closed || this.suspended || this.agentTable.visible || (this.selecting && !force)) {
+        if (this.closed || this.suspended || this.agentTable.visible || this.roomPanel.visible || (this.selecting && !force)) {
             return;
         }
+        this.drawFrame(() => this.renderInputContents());
+    }
+
+    /** Text, native images and the final cursor position form one terminal frame. */
+    private drawFrame(draw: () => void): void {
+        const outer = this.frameDepth === 0;
+        this.frameDepth += 1;
+        if (outer) {
+            this.screen.program.flush();
+            process.stdout.write('\u001b[?2026h');
+            this.screen.program.hideCursor();
+        }
+        try {
+            draw();
+        } finally {
+            this.frameDepth -= 1;
+            if (outer) {
+                this.screen.program.flush();
+                process.stdout.write('\u001b[?2026l');
+            }
+        }
+    }
+
+    private renderInputContents(): void {
         const line = this.input.line ?? '';
         const cursor = this.input.cursor ?? line.length;
         const width = Math.max(1, Number(this.screen.width) - this.promptText.length - 2);
@@ -472,6 +637,12 @@ export class ChatTerminal {
             ? this.reply.picking ? '↑/↓ choose a message · Enter/Tab select · Esc cancel' : 'Enter sends your reply · Delete /reply or Esc to cancel'
             : this.hintText || 'Hover/click Seen · F2 Seen · F3 Working · F4 Select/copy · PgUp/PgDn scroll');
         this.composer.setContent(this.promptText + line.slice(start, start + width));
+        const summary = this.activityContext ? activitySummary(this.currentActivities()) : '';
+        const mode = this.activityContext?.queue?.mode;
+        this.turns.setContent(summary ? `${mode ? `Turns: ${mode} | ` : ''}${summary}` : this.turnText);
+        this.paintMessageHighlights();
+        this.positionMessageLabels();
+        this.paintDetails();
         this.working.paint();
         this.screen.render();
         this.working.drawGraphics();

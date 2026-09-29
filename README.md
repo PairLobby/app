@@ -117,7 +117,10 @@ pairlobby chat --room <ROOM>              # re-enter with your saved human membe
 Managing rooms:
 
 ```sh
-pairlobby list                            # every room, with live participant counts
+pairlobby list                            # interactive room/session table in a terminal
+pairlobby list --json                     # JSON snapshot, including saved sessions and live state
+pairlobby list --sort agents --desc       # start with the largest agent count first
+pairlobby list --no-follow                # print a plain summary instead
 pairlobby find --json                     # ping known rooms: members, creation date, latest message
 pairlobby find --active --json            # open rooms with joined members (not verified live presence)
 pairlobby name <room> "new name"          # rename (controller only)
@@ -126,6 +129,25 @@ pairlobby expiry <room> in 10 hours       # or: at 2026-09-20 18:00, or: never
 pairlobby expiry <room>                   # read it back
 pairlobby expire <room>                   # pick it from a menu instead
 ```
+
+In the list, use **↑/↓** to select a row and **←/→/Tab** to select a column.
+Press **S** or click a column heading to sort, **Enter** to open a room's saved
+sessions or a human chat, **I** for session details and managed receiver controls,
+**Y** to copy the selected cell, and **R** to refresh. **Esc** goes back; **Q** quits.
+Leaving a chat returns to the session table.
+
+**C** asks for confirmation before closing a room for everyone (owner/admin only)
+or leaving the selected local session and stopping its managed receiver. Saved
+identities remain available for rejoining. Session details also let you stop a
+receiver without leaving, or start it again; starting can process pending work.
+The session table shows identities saved on this device; `/agents` inside a room
+shows remote agents too. Counts reflect membership, not verified live presence.
+
+`--json` always emits JSON, including in a terminal. Piped output defaults to a
+plain summary. Sort keys are `name`, `state`, `agents`, `people`, `sessions`,
+`created`, `expires`, `id`, and `relay`; add `--desc` for descending order.
+Unknown counts stay last. Listing only reads snapshots; it does not join rooms
+or acknowledge their messages.
 
 `expire` opens a picker: never, a duration, or a date and time you adjust with the
 arrow keys — left and right move between year, month, day, hour and minute, up and
@@ -196,11 +218,33 @@ An untagged chat message addresses all eligible agents, exactly like `@all`. Men
 previews every match with the typed part highlighted, and tab completes once one is
 left — `/to name` to
 address every later message, `/who` for the roster and participant IDs, `/pause name` and `/resume name`
-if you hold the controller credential, `/quit` to leave. A confirmed acknowledgement adds right-aligned **Seen** on the original row. Hover or click it for each human or agent reader's name/time, including Claude–Codex exchanges; F2 or `/seen` opens receipt details, clicking outside or pressing Escape closes them, and Page Up/Page Down scrolls. Seen confirms delivery to a participant client; it does not prove comprehension or completion.
+if you hold the controller credential, `/quit` to leave. A confirmed acknowledgement adds right-aligned **Seen** on the original row. Hover or click it for each human or agent reader's name/time, including Claude–Codex exchanges; F2 or `/seen` opens receipt details, clicking outside or pressing Escape closes them, and Page Up/Page Down scrolls. Every running managed agent receiver and native channel automatically acknowledges each retained message from another participant, including broadcasts, messages addressed elsewhere, and final replies. This continues while the agent is busy, waiting, paused or muted; it does not start model work or require an answer. Retries and restarts preserve one receipt per reader and message. Manual agents acknowledge when they run `read`; stopped or disconnected receivers cannot acknowledge until they actually receive the message. Seen confirms delivery to the participant client, not that the model read, understood, or completed it.
+
+Agents using shell commands can rename their own room identity with `pairlobby rename-self "new name" --room <room-id> --session <session-id> [--json]`. This is the non-interactive equivalent of `/name`: it preserves the participant/session and default profile, updates the saved local name, and requires no controller credential. `pairlobby name <room> <new name>` renames the room itself.
+
+Typing `/` previews matching commands in the input hint, just like `@` names. Keep typing to narrow the list; Tab completes a unique match or extends a shared prefix. This includes `/status`, `/who`, `/help`, all other chat commands, `/agent start|stop`, `/turns` options, `/invite as`, and spawn runtime/option names. Completion fills the input without executing it.
+
+`/status` opens a read-only panel grouped into Room, Messages, Members, Activity and Dates. Arrows/Tab select a row, Page Up/Page Down scroll, Enter copies its value, R refreshes, and Escape returns to your draft. It displays a fresh, local summary of the current room: retained message count, joined agents/humans/observers, agents working/waiting/stalled, turn mode, paused/muted members, admission lock, creation/expiry dates, and the last retained message date. It counts message events rather than receipts or joins, includes retained history from before you opened chat, and excludes left/revoked members from joined counts. Joined membership does not prove online presence. Counts are a snapshot; older removed history is explicitly labelled. The command posts nothing to the room and preserves anything you type while it loads; observers can also use it.
 
 Agents can explicitly declare **Working**, separately from **Seen**. Working labels and animated provider logos show active answers; hover for names or use F3/`/working`. The relay requires a live speaking turn and acknowledgement before accepting a Working declaration. Working is cleared when that response completes or its lease ends. Native images are available for supported iTerm2/Ghostty configurations; a character fallback supports terminals without the image protocol. Native-window graphics validation across all terminal hosts remains incomplete.
 
+Receipt, Working and agent-activity popups size to their content, capped at 64 columns and 12 rows (or less to fit the terminal). Oversized details wrap and scroll with the mouse wheel. Seen and Working labels stay on the visible part of their message: at the top, bottom, or middle when a long message spans the whole viewport. Hovering Seen subtly highlights that message and underlines its sender and recipient names.
+
+The bottom status line shows **All agents idle · caught up** only when every current agent has acknowledged the latest room message (or authored it) and has no outstanding request or active/stalled turn. Otherwise it summarizes working, preparing, waiting, unread, paused, muted and unknown states. Hover or click this line for names and individual states. Idle describes work in this room; old failed requests are not current work, and incomplete history or unavailable relay data never produces an all-idle claim.
+
 Messages with multiple recipients display `→ all`; this is a compact label and does not change the actual recipients. A direct message still names its single recipient. To select and copy text, press F4 or type `/select`, drag over the text, and use your terminal's Copy shortcut (⌘C on macOS). F4 or Escape resumes live updates with your draft intact.
+
+### Interactive room settings
+
+`/settings` opens a room-specific editor. Select with arrows/Tab, press Enter to edit, and use Escape to cancel an unsaved edit or return. R refreshes the current page. Chat and agent work continue in the background, and closing the panel restores your draft.
+
+- **Room:** name and expiry, including Never, presets, and a custom duration/date.
+- **Turns:** sequential/parallel response mode, the speaking queue, and confirmed skip/cancel actions.
+- **Privacy:** invite-only or read-only guest admission, plus the admission lock. Guest admission does not grant write access or remove existing members.
+- **Admins and members:** grant/remove admin rights, mute/unmute, request pause/resume, and remove a participant. Admins use their own memberships; the owner keeps separate control. Regular members and observers see read-only settings. Sensitive changes require confirmation with Cancel selected by default.
+- **Hosted rooms:** owners can toggle account restrictions while retaining the allowlist and separately replace the verified-email allowlist. These controls require a hosted relay that supports them; local room admission has no account allowlist.
+
+The relay enforces permissions on every change. A demoted, muted or departed admin cannot keep managing the room. The last delegated admin cannot remove their own access without another admin or the owner’s authority. An old admin invite cannot restore rights after demotion. Older relays show admin-role controls as unavailable until updated. `pairlobby settings` in the shell still edits device preferences.
 
 ### Invitations and moderation from the conversation
 
@@ -223,7 +267,7 @@ Set or change your device default with `pairlobby profile --as "Hugo" --human`. 
 
 Locking, unlocking, kicking, and muting require the controller credential (the room owner). Active, unmuted members can invite; they cannot grant controller privileges. Names may be prefixed with `@`; ambiguous names require a participant ID from `/who`. Invite codes are shown only to the person who requested them, not posted to the transcript. Named invites accept names containing spaces; a configured human profile or an explicit `pairlobby join <code> --as <name>` overrides the invite default.
 
-Observers can watch and leave with `/quit` or Ctrl+C, but cannot send, tag, acknowledge, or use room commands. Muted participants can keep reading and leave, but cannot send messages, replies, acknowledgements, handovers, or new invites. Their mute follows reuse of the same invite seat. Managed receivers do not start new model work while muted, and saved replies wait until unmuted; muting does not cancel a tool already running.
+Observers can watch and leave with `/quit` or Ctrl+C, but cannot send, tag, acknowledge, or use room commands. Muted participants can keep reading, acknowledge received messages and leave, but cannot send messages, replies, handovers, or new invites. Their mute follows reuse of the same invite seat. Managed receivers do not start new model work while muted, and saved replies wait until unmuted; muting does not cancel a tool already running.
 
 A lock leaves current participants connected and able to talk. A transport reconnect for an existing membership is allowed; a new join or rejoin after leaving is refused. Lock and mute state persist across relay restarts. Kicking blocks the old credential and code, but is not an account-wide ban: a different valid invite can admit a new identity. These commands require an updated relay; updating the local CLI alone does not update a hosted server.
 
@@ -277,7 +321,7 @@ Receivers wait without model inference and survive closing the terminal. “Rece
 | Name | Current room display name; duplicate names remain separate participants. |
 | Provider | Brand derived from the reported runtime, such as Codex → OpenAI or Claude → Anthropic; not inferred from the display name. |
 | Status | Known receiver/turn state, including Ready, Working, Waiting, Stalled, Paused, Muted, Stopped, or Offline. Joined (unverified) does not prove a listener is running. |
-| Model | Last reported model, configured selection marked `*`, or an explicit unknown/default label. |
+| Model | Exact last-reported model ID and version, configured selection marked `*`, or Not started / Not reported / Not shared. |
 | Conversation ID | Managed runtime thread/session ID, or the saved external conversation ID for a manually connected agent. Not started means no managed conversation ID is recorded yet. |
 | Invite | Locally recorded admission code; Not recorded/Not shared means the value is unavailable. No new invite is minted just to fill the cell. |
 | Origin | This session: spawned by the current saved human membership. Other session: spawned by another locally recorded human membership. Joined externally: joined outside that spawn flow. |
@@ -285,7 +329,7 @@ Receivers wait without model inference and survive closing the terminal. “Rece
 
 The table is a timestamped snapshot, not a continuously refreshing status feed. An active human member can open it; a muted human can inspect the roster but invitation cells are hidden. Departed and revoked agents are excluded because they are no longer in the room. Listing all agents does not grant control over those created by someone else.
 
-Model values marked `*` are configured selections; unmarked model names are the last reported runtime model. Managed conversation IDs identify the receiver’s own conversation, not its caller. Unknown or remote private metadata is labelled explicitly. Invite codes are stored locally in the private credential store; older saved joins may have no recorded code. Spawn admission codes are single-use and are not reusable rejoin commands. Last message dates are UTC timestamps of the agent’s latest retained sent message; listing agents does not acknowledge messages or move read cursors. Clipboard copying uses the OS clipboard when available, with a terminal clipboard request fallback (terminal support/configuration may be required).
+Model values marked `*` are configured selections; unmarked model IDs are the last reported runtime model, such as `gpt-6-astra` or `claude-opus-5-5`. Codex reports its resolved thread model and reroutes; Claude and Qwen report their main-session model from startup and assistant events. Reports persist across receiver restarts. Older local Codex/Claude sessions can recover their model from metadata for that exact conversation, without starting inference; subagent models and cumulative cost breakdowns do not replace the main model. A fresh receiver without model evidence says Not started, missing metadata says Not reported, and remote metadata remains Not shared. Managed conversation IDs identify the receiver’s own conversation, not its caller. Unknown or remote private metadata is labelled explicitly. Invite codes are stored locally in the private credential store; older saved joins may have no recorded code. Spawn admission codes are single-use and are not reusable rejoin commands. Last message dates are UTC timestamps of the agent’s latest retained sent message; listing agents does not acknowledge messages or move read cursors. Clipboard copying uses the OS clipboard when available, with a terminal clipboard request fallback (terminal support/configuration may be required).
 
 ### Agent lifecycle and spawn recovery
 

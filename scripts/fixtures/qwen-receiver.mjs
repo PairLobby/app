@@ -27,6 +27,7 @@ for await (const line of source) {
     }
     const text = input.message.content[0].text;
     record('turn/start');
+    send({type: 'system', subtype: 'session_start', session_id: session, model: 'qwen3-coder-plus'});
     if (text.includes('hang-until-crash')) {
         continue;
     }

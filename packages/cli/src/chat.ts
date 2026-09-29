@@ -7,7 +7,7 @@ import type {Interface} from 'node:readline';
 import {ChatTerminal} from './chat-terminal.js';
 
 import {ProtocolError, requestState, newId} from '@pairlobby/protocol';
-import type {MessageRequest, RoomEvent, RoomSnapshot} from '@pairlobby/protocol';
+import type {MessageRequest, RoomEvent, RoomSnapshot, TurnQueue} from '@pairlobby/protocol';
 import {LocalStore, PairLobbyClient} from '@pairlobby/client';
 
 import {pickExpiry} from './picker.js';
@@ -17,7 +17,9 @@ import type {RoutedChatMessage} from './mentions.js';
 import {formatTurnQueue} from './turn-commands.js';
 import {sendChatReply} from './chat-reply.js';
 import {runAgentCommand} from './spawn-agent.js';
-import {completeAgentCommand, isAgentCommand} from './spawn-options.js';
+import {isAgentCommand} from './spawn-options.js';
+import {commandHint, completeChatCommand} from './chat-completion.js';
+import {settingsPage, statusPage} from './room-settings.js';
 import {loadAgentRoster} from './agent-roster.js';
 
 type ParticipantMatch = {id: string; name: string} | null;
@@ -52,6 +54,8 @@ const HELP = `  <message>          address all eligible agents (same as @all)
   /qwen [model]      spawn a Qwen agent (--name, --workdir)
   /spawn --help      spawn options and recovery commands
   /agents           table of all room agents; double-click a cell to copy
+  /status           room message count, members, activity and dates
+  /settings         interactively edit room settings and manage members
   /agent start|stop <name or id>  manage a spawned receiver
   @name anywhere    send to that participant (e.g. Hey @codex, hello)
   @codex @claude    ask multiple agents; @all asks all eligible agents
@@ -122,11 +126,11 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
     const view = new ChatTerminal({
         names,
         participantId,
-        format: (event) => format(event, names, participantId, showIds),
+        format: (event, highlightNames) => format(event, names, participantId, showIds, highlightNames),
         complete: (line) => {
-            const commands = completeAgentCommand(line);
+            const commands = completeChatCommand(line);
             if (commands) {
-                return [commands, line];
+                return commands;
             }
             const partial = currentMention(line);
             if (partial === null) {
@@ -146,6 +150,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         let recipient: ParticipantMatch = null;
         let closed = false;
         let suspended = false;
+        let statusLoading = false;
 
         function clearHint(): void {
             view.setHint('');
@@ -155,8 +160,12 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             if (suspended || options.readOnly === true) {
                 return;
             }
-            const partial = currentMention(terminal.line ?? '', terminal.cursor ?? undefined);
-            view.setHint(partial === null ? '' : renderSuggestions(partial, matchNames(partial, mentionable()), (process.stdout.columns ?? 80) - 2));
+            const line = terminal.line ?? '';
+            const cursor = terminal.cursor ?? line.length;
+            const width = (process.stdout.columns ?? 80) - 2;
+            const commands = commandHint(line, cursor, width);
+            const partial = currentMention(line, cursor);
+            view.setHint(commands ?? (partial === null ? '' : renderSuggestions(partial, matchNames(partial, mentionable()), width)));
         }
 
         function emit(line: string): void {
@@ -283,6 +292,22 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             }
             if (line === '/select') {
                 view.toggleSelection();
+                return;
+            }
+            if (/^\/(status|settings)(?:\s|$)/.test(line)) {
+                const command = line.split(/\s+/)[0]!;
+                if (line !== command) {
+                    emit(`Usage: ${command}`);
+                } else if (statusLoading) {
+                    emit('Room status is already loading.');
+                } else {
+                    statusLoading = true;
+                    emit('Loading room status…');
+                    const context = {client, roomId, credential, participantId, store, controllerCredential: options.controllerCredential};
+                    void view.showRoomPanel(() => command === '/settings' ? settingsPage(context) : statusPage(context))
+                        .catch((error) => { if (!closed) { emit(`Status unavailable: ${error instanceof Error ? error.message : String(error)}`); } })
+                        .finally(() => { statusLoading = false; });
+                }
                 return;
             }
             if (options.readOnly === true) {
@@ -442,7 +467,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 const page = await client.readEvents(roomId, credential, cursor);
                 if (page.events.length > 0) {
                     const nextCursor = page.events.at(-1)!.seq;
-                    if (page.events.some((event) => event.type === 'participant.joined' || event.type === 'participant.renamed' || event.type === 'participant.left' || event.type === 'participant.revoked' || event.type === 'participant.mute_changed' || event.type === 'room.lock_changed')) {
+                    if (page.events.some((event) => event.type === 'participant.joined' || event.type === 'participant.renamed' || event.type === 'participant.left' || event.type === 'participant.revoked' || event.type === 'participant.mute_changed' || event.type === 'participant.role_changed' || event.type === 'room.renamed' || event.type === 'room.expiry_changed' || event.type === 'room.access_changed' || event.type === 'room.lock_changed' || event.type === 'control.pause' || event.type === 'control.resume' || event.type === 'control.ack')) {
                         snapshot = await client.snapshot(roomId, credential);
                         absorbNames(snapshot, names);
                         for (const saved of store.room(roomId)?.sessions ?? []) {
@@ -460,7 +485,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                         seen.add(event.eventId);
                         view.addEvent(event);
                     }
-                    if (!options.readOnly && snapshot.participants.some((participant) => participant.participantId === participantId && participant.kind === 'human' && !participant.muted)) {
+                    if (!options.readOnly && snapshot.participants.some((participant) => participant.participantId === participantId && participant.kind === 'human')) {
                         for (const event of page.events)
                             if (event.type === 'message' && event.senderId !== participantId && (snapshot.messageReceiptScope === 'members' || event.recipientId === participantId)) {
                                 await client.acknowledgeMessage(roomId, credential, event.eventId);
@@ -470,11 +495,12 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                     store.updateCursor(roomId, sessionId, cursor);
                 }
                 if (!loadedRequests || page.events.length || snapshot.groupTurnsSupported) {
-                    pendingRequests = (await client.requests(roomId, credential)).requests;
+                    pendingRequests = await client.pendingRequests(roomId, credential);
                     loadedRequests = true;
                 }
+                let queue: TurnQueue | null = null;
                 if (snapshot.groupTurnsSupported) {
-                    const queue = await client.turnQueue(roomId, credential);
+                    queue = await client.turnQueue(roomId, credential);
                     view.setWorking(queue);
                     view.setTurnStatus(formatTurnQueue(queue));
                 }
@@ -488,6 +514,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                         }
                     }
                 }
+                view.setAgentActivity({participants: snapshot.participants, requests: pendingRequests, queue, complete: !page.hasMore, available: true});
                 if (outageSince !== null) {
                     emit(`${DIM}  relay is back${RESET}`);
                     outageSince = null;
@@ -497,6 +524,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                     continue;
                 }
             } catch (error) {
+                view.activityUnavailable();
                 if (error instanceof ProtocolError && (error.code === 'room_expired' || error.code === 'room_closed' || error.code === 'participant_revoked')) {
                     emit(`${DIM}  ${error.message}${RESET}`);
                     break;
@@ -577,15 +605,16 @@ function who(snapshot: RoomSnapshot, showIds = false): string {
         .join('\n');
 }
 
-export function format(event: RoomEvent, names: Map<string, string>, meParticipantId: string, showIds = false): string {
+export function format(event: RoomEvent, names: Map<string, string>, meParticipantId: string, showIds = false, highlightNames = false): string {
     const time = `${DIM}${new Date(event.at).toTimeString().slice(0, 5)}${RESET}`;
     const sender = event.senderId ? (names.get(event.senderId) ?? event.senderId) : 'room';
     const mine = event.senderId === meParticipantId;
 
     if (event.type === 'message') {
         const targets = event.recipientIds ?? (event.recipientId ? [event.recipientId] : []);
-        const to = event.allRecipients || targets.length > 1 ? `${DIM} → all${RESET}` : targets.length ? `${DIM} → ${targets.map((id) => names.get(id) ?? id).join(', ')}${RESET}` : '';
-        const who = mine ? `${DIM}${sender}${RESET}` : `${BOLD}${sender}${RESET}`;
+        const underline = highlightNames ? '\u001b[4m' : '';
+        const to = event.allRecipients || targets.length > 1 ? `${DIM} → ${underline}all${RESET}` : targets.length ? `${DIM} → ${underline}${targets.map((id) => names.get(id) ?? id).join(', ')}${RESET}` : '';
+        const who = mine ? `${DIM}${underline}${sender}${RESET}` : `${BOLD}${underline}${sender}${RESET}`;
         const id = showIds && event.senderId ? `${DIM} ${event.senderId}${RESET}` : '';
         const thread = !showIds ? '' : event.replyTo
             ? `${event.payload.responseStage === 'progress' ? 'progress' : 'reply'} to ${event.replyTo}`
@@ -635,6 +664,8 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
             return event.payload.locked ? 'the room was locked' : 'the room was unlocked';
         case 'participant.mute_changed':
             return `${names.get(event.payload.participantId) ?? event.payload.participantId} was ${event.payload.muted ? 'muted' : 'unmuted'}`;
+        case 'participant.role_changed':
+            return `${names.get(event.payload.participantId) ?? event.payload.participantId} is now ${event.payload.role === 'controller' ? 'an admin' : 'a member'}`;
         case 'room.closed':
             return 'the room was closed';
         case 'conversation.turn_changed': {

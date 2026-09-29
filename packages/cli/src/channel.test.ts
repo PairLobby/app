@@ -9,7 +9,7 @@ import {PairLobbyClient, LocalStore} from '@pairlobby/client';
 import {startServer} from '@pairlobby/local-server';
 import {newId} from '@pairlobby/protocol';
 
-test('channel requires explicit agent ACK and exact final replies over real MCP and HTTP', async () => {
+test('channel automatically acknowledges delivery and keeps exact final replies over real MCP and HTTP', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'pairlobby-channel-'));
     const relay = await startServer({port: 0, dataFile: join(directory, 'room.sqlite')});
     const api = new PairLobbyClient(relay.url);
@@ -54,17 +54,22 @@ test('channel requires explicit agent ACK and exact final replies over real MCP 
         await mcp.connect(transport);
         await vi.waitFor(() => expect(notices.length).toBe(2), {timeout: 7000});
         const id = asks[0]!.event.eventId;
-        expect((await api.request(owner.roomId, owner.participantCredential, id)).receivedAt).toBeNull();
-        const premature = await mcp.callTool({name: 'reply_to_message', arguments: {eventId: id, text: 'not yet acknowledged'}});
-        expect(premature.isError).toBe(true);
+        await vi.waitFor(async () => expect((await api.request(owner.roomId, owner.participantCredential, id)).receivedAt).not.toBeNull());
+        const receivedAt = (await api.request(owner.roomId, owner.participantCredential, id)).receivedAt;
         const ack = await mcp.callTool({name: 'acknowledge_message', arguments: {eventId: id}});
         expect(ack.isError).not.toBe(true);
-        expect((await api.request(owner.roomId, owner.participantCredential, id)).receivedAt).not.toBeNull();
+        expect((await api.request(owner.roomId, owner.participantCredential, id)).receivedAt).toBe(receivedAt);
         await mcp.callTool({name: 'progress_message', arguments: {eventId: id, text: 'working'}});
         expect((await api.requests(owner.roomId, owner.participantCredential)).requests).toHaveLength(2);
         const reply = await mcp.callTool({name: 'reply_to_message', arguments: {eventId: id, text: 'I do not know the answer'}});
         expect(reply.isError).not.toBe(true);
         expect((await api.requests(owner.roomId, owner.participantCredential)).requests.map((r) => r.eventId)).toEqual([asks[1]!.event.eventId]);
+        const passive = await api.send(owner.roomId, owner.participantCredential, {type: 'message', payload: {text: 'For the room, no answer needed', priority: 'normal'}, idempotencyKey: newId('event')});
+        await vi.waitFor(async () => {
+            const events = (await api.readEvents(owner.roomId, owner.participantCredential, 0)).events;
+            expect(events.some((event) => event.type === 'message.received' && event.senderId === recipient.participantId && event.payload.eventId === passive.event.eventId)).toBe(true);
+        }, {timeout: 5000});
+        expect(notices.length).toBe(2);
     } finally {
         await mcp.close();
         await relay.close();

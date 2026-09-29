@@ -2,7 +2,7 @@
 import {ChatTerminal} from '../../packages/cli/dist/chat-terminal.js';
 import {format} from '../../packages/cli/dist/chat.js';
 const names = new Map([['pt_human', 'hjoncour'], ['pt_codex', 'codex'], ['pt_claude', 'claude']]);
-const view = new ChatTerminal({names, participantId: 'pt_human', format: (event) => format(event, names, 'pt_human'), complete: (line) => [[], line]});
+const view = new ChatTerminal({names, participantId: 'pt_human', format: (event, highlightNames) => format(event, names, 'pt_human', false, highlightNames), complete: (line) => [[], line]});
 view.setPrompt('> ');
 view.setHint('Hover Seen or press F2. Escape dismisses details.');
 view.log('PairLobby receipt layout test');

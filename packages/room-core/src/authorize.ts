@@ -51,22 +51,29 @@ export function assertController(actor: Actor): void {
         return;
     }
     if (actor.participant.role === 'controller') {
+        assertCanWrite(actor);
         return;
     }
     throw new ProtocolError('unauthorized', 'this action requires the room controller credential');
 }
 
 /**
- * A guest may read and leave. Every other participant action goes through here,
- * so adding a write path without thinking about guests fails closed.
+ * A guest may read and leave. Participant writes go through here; receipt-only
+ * acknowledgements use assertCanAcknowledge so muting does not block reading.
  */
 export function assertCanWrite(actor: Actor): ParticipantRecord {
+    const participant = assertCanAcknowledge(actor);
+    if (participant.muted) {
+        throw new ProtocolError('participant_muted', 'you are muted in this room');
+    }
+    return participant;
+}
+
+/** Muting blocks speech, not confirmation that a member received a message. */
+export function assertCanAcknowledge(actor: Actor): ParticipantRecord {
     const participant = assertActiveMember(actor);
     if (participant.role === 'guest') {
         throw new ProtocolError('unauthorized', 'guests can read this room but cannot take part in it');
-    }
-    if (participant.muted) {
-        throw new ProtocolError('participant_muted', 'you are muted in this room');
     }
     return participant;
 }

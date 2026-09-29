@@ -112,16 +112,20 @@ export function runGroupContract(label: string, makeStore: StoreFactory): void {
         test('competing claims grant only the next agent; next turn includes the previous answer', async () => {
             const requests = await question();
             const claimId = newId('event');
+            const competingClaimId = newId('event');
             const competing = new RoomService(store, clock.now);
             const claims = await Promise.all([
                 service.turns.claim(roomId, codex.credential, requests[0]!.eventId, claimId),
                 competing.turns.claim(roomId, claude.credential, requests[1]!.eventId, newId('event')),
-                competing.turns.claim(roomId, codex.credential, requests[0]!.eventId, newId('event'))
+                competing.turns.claim(roomId, codex.credential, requests[0]!.eventId, competingClaimId)
             ]);
-            expect(claims.map((claim) => claim.state)).toEqual(['granted', 'waiting', 'waiting']);
-            expect((await service.turns.claim(roomId, codex.credential, requests[0]!.eventId, claimId)).token).toBe(claims[0]!.token);
+            expect(claims[1]!.state).toBe('waiting');
+            expect(claims.filter((claim) => claim.state === 'granted')).toHaveLength(1);
+            const winner = claims[0]!.state === 'granted' ? claims[0]! : claims[2]!;
+            const winnerId = claims[0]!.state === 'granted' ? claimId : competingClaimId;
+            expect((await service.turns.claim(roomId, codex.credential, requests[0]!.eventId, winnerId)).token).toBe(winner.token);
             expect((await service.request(roomId, owner, requests[0]!.eventId)).turnToken).toBeUndefined();
-            await answer(codex, requests[0]!, claims[0]!.token!, 'First answer');
+            await answer(codex, requests[0]!, winner.token!, 'First answer');
             const next = await service.turns.claim(roomId, claude.credential, requests[1]!.eventId, newId('event'));
             expect(next.state).toBe('granted');
             expect(next.request!.text).toContain('First answer');

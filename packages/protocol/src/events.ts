@@ -110,6 +110,7 @@ export const EventBody = z.discriminatedUnion('type', [
     z.object({type: z.literal('room.access_changed'), payload: roomAccessChangedPayload}),
     z.object({type: z.literal('room.lock_changed'), payload: z.object({locked: z.boolean()})}),
     z.object({type: z.literal('participant.mute_changed'), payload: z.object({participantId: ParticipantId, muted: z.boolean()})}),
+    z.object({type: z.literal('participant.role_changed'), payload: z.object({participantId: ParticipantId, role: ParticipantRole, previousRole: ParticipantRole})}),
     z.object({type: z.literal('conversation.turn_changed'), payload: z.object({action: z.enum(['claimed', 'working', 'passed', 'skipped', 'cancelled', 'mode']), requestIds: z.array(EventId).max(32), participantIds: z.array(ParticipantId).max(32), mode: z.enum(['sequential', 'parallel'])})})
 ]);
 export type EventBody = z.infer<typeof EventBody>;

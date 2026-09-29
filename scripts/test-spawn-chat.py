@@ -67,6 +67,29 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-spawn-chat-') as directory:
         os.write(master, b'\x01\x0b')
         send('@reviewer declare-working Hello')
         wait_for('Fixture answer:')
+        os.write(master, b'/sta')
+        wait_for('/status')
+        wait_for('tab to complete')
+        os.write(master, b'\t')
+        wait_for('> /status ')
+        os.write(master, b'\r')
+        wait_for('Room status')
+        wait_for('Messages (retained)')
+        assert any('Messages (retained)' in line and '2' in line for line in screen.display)
+        wait_for('Agents')
+        assert any('Agents' in line and '1' in line for line in screen.display), '\n'.join(screen.display)
+        os.write(master, b'\x1b')
+        deadline = time.monotonic() + 10
+        while 'Room status —' in '\n'.join(screen.display) and time.monotonic() < deadline:
+            pump()
+        assert 'Room status —' not in '\n'.join(screen.display), 'Escape must close status'
+        os.write(master, b'my status draft')
+        wait_for('my status draft')
+        os.write(master, b'\x01\x0b/turns par')
+        wait_for('/turns parallel')
+        os.write(master, b'\t')
+        wait_for('> /turns parallel ')
+        os.write(master, b'\x01\x0b')
         send('/agents')
         wait_for('Agents (1)')
         os.write(master, b'\x1b')
@@ -75,12 +98,12 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-spawn-chat-') as directory:
             pump()
         assert 'Agents (1)' not in '\n'.join(screen.display), 'Escape must close the agent table'
         send('/agent stop reviewer')
-        wait_for('receiver stopped')
+        wait_for('reviewer: receiver stopped')
         send('/agent start reviewer')
-        wait_for('receiver available')
+        wait_for('reviewer: receiver available')
         events = command('read', '--after', '0', *scope)['events']
         messages = [event['payload']['text'] for event in events if event['type'] == 'message']
-        assert not any(text.startswith(('/codex', '/agent', '/spawn')) for text in messages), messages
+        assert not any(text.startswith(('/codex', '/agent', '/spawn', '/status')) for text in messages), messages
         send('/quit')
         deadline = time.monotonic() + 10
         while terminal.poll() is None and time.monotonic() < deadline:
@@ -88,8 +111,9 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-spawn-chat-') as directory:
         assert terminal.wait(timeout=3) == 0
         sessions = json.load(open(directory + '/device/rooms.json'))[0]['sessions']
         spawned = next(entry for entry in sessions if entry.get('spawnedBy') == owner['sessionId'])
-        assert command('receiver', 'status', '--room', room_id, '--session', spawned['sessionId'])['state'] == 'available'
-        print('PASS slash spawning, completion, draft preservation, addressed reply, local lifecycle controls, no command broadcast, and receiver surviving chat exit.')
+        receiver_status = command('receiver', 'status', '--room', room_id, '--session', spawned['sessionId'])
+        assert receiver_status['state'] == 'available', receiver_status
+        print('PASS slash suggestions, Tab completion, room status counts, draft preservation, spawning, local lifecycle controls, no command broadcast, and receiver surviving chat exit.')
     finally:
         if terminal is not None and terminal.poll() is None:
             terminal.kill()

@@ -5,9 +5,11 @@ import {WorkingView, PROVIDER_LABELS} from './working-view.js';
 import type {WorkingGroup} from './working-view.js';
 import {LOGO_FRAME_MS, clearWorkingGraphics, drawWorkingGraphics, graphicsMode, logoColor, logoFrame} from './working-graphics.js';
 import type {LogoPlacement} from './working-graphics.js';
+import {fitPopup} from './terminal-layout.js';
 
 type WorkingStripOptions = {screen: blessed.Widgets.Screen; render: () => void; rebuild: () => void; obscured: () => boolean};
 type Badge = {group: WorkingGroup; box: blessed.Widgets.BoxElement; icon: blessed.Widgets.BoxElement; label: blessed.Widgets.BoxElement; compact: boolean};
+type CursorProgram = blessed.BlessedProgram & {cursorHidden?: boolean};
 
 export class WorkingStrip {
     readonly state = new WorkingView();
@@ -20,13 +22,14 @@ export class WorkingStrip {
     private pinned = false;
     private frame = 0;
     private signature = '';
+    private layout = '';
     private graphics = graphicsMode();
     private placements: LogoPlacement[] = [];
     private suspended = false;
 
     constructor(private readonly options: WorkingStripOptions) {
         this.bar = blessed.box({parent: options.screen, bottom: 2, left: 0, right: 0, height: 3, hidden: true});
-        this.popup = blessed.box({parent: options.screen, top: 0, right: 1, width: 56, height: 5, border: 'line', padding: {left: 1, right: 1}, mouse: true, hidden: true, tags: false, style: {fg: 'white', bg: 'black', border: {fg: 'cyan'}}});
+        this.popup = blessed.box({parent: options.screen, top: 0, right: 1, width: 1, height: 1, border: 'line', padding: {left: 1, right: 1}, mouse: true, scrollable: true, alwaysScroll: true, wrap: false, hidden: true, tags: false, style: {fg: 'white', bg: 'black', border: {fg: 'cyan'}}});
         options.screen.on('mouse', (event: blessed.Widgets.Events.IMouseEventArg) => {
             if (event.action !== 'mousedown' || !this.selection) {
                 return;
@@ -49,12 +52,18 @@ export class WorkingStrip {
         this.targets.add(box);
         box.on('mouseover', () => {
             if (!this.pinned) {
+                if (this.selection !== selection) {
+                    this.popup.setScroll(0);
+                }
                 this.selection = selection;
                 this.options.render();
             }
         });
         box.on('mouseout', () => { if (!this.pinned) { this.hide(); } });
         box.on('click', () => {
+            if (this.selection !== selection) {
+                this.popup.setScroll(0);
+            }
             this.selection = selection;
             this.pinned = true;
             this.options.render();
@@ -62,6 +71,7 @@ export class WorkingStrip {
     }
 
     showAll(): void {
+        this.popup.setScroll(0);
         this.selection = 'all';
         this.pinned = true;
         this.options.render();
@@ -76,9 +86,15 @@ export class WorkingStrip {
 
     clearGraphics(): void {
         if (this.placements.length) {
-            this.options.screen.program.flush();
+            const program = this.options.screen.program as CursorProgram;
+            const hidden = program.cursorHidden;
+            program.hideCursor();
+            program.flush();
             process.stdout.write(clearWorkingGraphics(this.graphics, this.placements));
             this.placements = [];
+            if (!hidden) {
+                program.showCursor();
+            }
         }
     }
 
@@ -103,14 +119,25 @@ export class WorkingStrip {
     }
 
     rebuild(bottom: number): number {
-        this.clearGraphics();
         this.targets.clear();
+        const groups = this.state.groups();
+        this.signature = this.activeSignature();
+        const width = Math.max(1, Math.floor(Number(this.options.screen.width) / Math.max(1, groups.length)));
+        const compact = width < 10 || Number(this.options.screen.height) < 14;
+        const layout = JSON.stringify([groups.map((group) => group.provider), this.options.screen.width, this.options.screen.height, bottom, compact]);
+        if (layout === this.layout) {
+            this.badges.forEach((badge, index) => {
+                badge.group = groups[index]!;
+                this.targets.add(badge.box);
+            });
+            return groups.length ? compact ? 1 : 3 : 0;
+        }
+        this.layout = layout;
+        this.clearGraphics();
         for (const child of [...this.bar.children]) {
             child.destroy();
         }
         this.badges = [];
-        const groups = this.state.groups();
-        this.signature = this.activeSignature();
         if (!groups.length) {
             this.bar.hide();
             if (this.timer) {
@@ -119,8 +146,6 @@ export class WorkingStrip {
             }
             return 0;
         }
-        const width = Math.max(1, Math.floor(Number(this.options.screen.width) / groups.length));
-        const compact = width < 10 || Number(this.options.screen.height) < 14;
         this.bar.bottom = bottom;
         this.bar.height = compact ? 1 : 3;
         this.bar.show();
@@ -169,10 +194,8 @@ export class WorkingStrip {
                 const seconds = Math.max(0, Math.floor((Date.now() - Math.min(...requests.map((entry) => entry.workingAt!))) / 1000));
                 return `${stripVTControlCharacters(name)}${duplicate ? ` (${id.slice(-6)})` : ''} — ${seconds}s${requests.length > 1 ? ` · ${requests.length} requests` : ''}`;
             });
-            this.popup.width = Math.max(12, Math.min(56, Number(this.options.screen.width) - 2));
-            this.popup.height = Math.max(4, Math.min(Number(this.options.screen.height) - 5, lines.length + 3));
+            fitPopup(this.popup, ['Working on an answer', ...(lines.length ? lines : ['No agents are currently declaring work.'])], this.options.screen);
             this.popup.top = Math.max(0, Number(this.options.screen.height) - Number(this.bar.bottom) - Number(this.bar.height) - Number(this.popup.height) - 1);
-            this.popup.setContent(`Working on an answer\n${lines.length ? lines.join('\n') : 'No agents are currently declaring work.'}`);
             this.popup.show();
             this.popup.setFront();
         }
@@ -185,6 +208,7 @@ export class WorkingStrip {
         }
         const placements = this.badges.filter((badge) => !badge.compact && badge.group.provider !== 'other').map((badge) => ({provider: badge.group.provider, row: Number(badge.icon.atop), column: Number(badge.icon.aleft)}));
         if (this.graphics !== 'cells' && placements.length) {
+            this.options.screen.program.hideCursor();
             this.options.screen.program.flush();
             process.stdout.write((this.graphics === 'iterm2' ? clearWorkingGraphics(this.graphics, this.placements) : '') + drawWorkingGraphics(this.graphics, placements, this.frame));
             this.placements = placements;

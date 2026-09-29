@@ -46,7 +46,10 @@ test('logos are animated, bounded and framed with cursor preservation and scoped
     expect(iterm).toContain('inline=1;width=6;height=3');
     expect(iterm.startsWith('\u001b7')).toBe(true);
     expect(iterm.endsWith('\u001b8')).toBe(true);
-    expect(drawWorkingGraphics('kitty', placements, 0)).toContain('C=1,q=2');
+    const kitty = drawWorkingGraphics('kitty', placements, 0);
+    expect(kitty).toContain('i=5262337,p=1,c=6,r=3,C=1,q=2');
+    expect(kitty).not.toContain('a=d');
+    expect(drawWorkingGraphics('kitty', placements, 1)).toContain('i=5262337,p=1,');
     expect(clearWorkingGraphics('kitty', placements)).toContain('d=I,i=5262337');
     expect(clearWorkingGraphics('kitty', placements)).not.toContain('d=A');
 });

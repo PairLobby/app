@@ -68,7 +68,9 @@ test('humans, Claude and Codex record independent receipts for agent messages, r
         await client.setMuted(host.roomId, host.controllerCredential, claude.participantId, true);
         const mutedMessage = await client.send(host.roomId, human.participantCredential, {type: 'message', payload: {text: 'While muted', priority: 'normal'}, idempotencyKey: newId('event')});
         await read(claude);
-        expect(await readers(mutedMessage.event.eventId)).toEqual([]);
+        expect(await readers(mutedMessage.event.eventId)).toEqual([claude.participantId]);
+        await expect(client.send(host.roomId, claude.participantCredential, {type: 'message', payload: {text: 'not allowed', priority: 'normal'}, idempotencyKey: newId('event')})).rejects.toMatchObject({code: 'participant_muted'});
+        await expect(client.acknowledgeMessage(host.roomId, guest.participantCredential, mutedMessage.event.eventId)).rejects.toMatchObject({code: 'unauthorized'});
     } finally {
         await relay.close();
         rmSync(directory, {recursive: true, force: true});

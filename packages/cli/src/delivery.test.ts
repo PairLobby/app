@@ -16,6 +16,17 @@ const request = (id: string): MessageRequest => ({
     progressAt: null
 });
 describe('runtime delivery supervision', () => {
+    test('an automatic receipt never delays the first model notification', async () => {
+        const notifications: boolean[] = [];
+        const supervisor = new DeliverySupervisor({notify: async (_request, reminder) => { notifications.push(reminder); }, fail: async () => {}}, new Set(['alice']));
+        const received = {...request('received-before-notification'), receivedAt: 1000};
+        await supervisor.tick([received], 1000);
+        expect(notifications).toEqual([false]);
+        await supervisor.tick([received], 2000);
+        expect(notifications).toEqual([false]);
+        await supervisor.tick([received], 301000);
+        expect(notifications).toEqual([false, true]);
+    });
     test('transport writes are never treated as acknowledgement, and attempts fail visibly', async () => {
         const notifications: string[] = [];
         const failures: string[] = [];

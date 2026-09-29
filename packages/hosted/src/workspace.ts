@@ -307,7 +307,7 @@ export class Workspace extends DurableObject<Env> {
                 if (request.method === 'GET') {
                     const policy = this.ctx.storage.sql.exec<{private: number}>('SELECT private FROM room_privacy WHERE room_id=?', roomId).toArray()[0];
                     const accounts = this.ctx.storage.sql.exec<{user_id: string}>('SELECT user_id FROM room_allowed WHERE room_id=?', roomId).toArray();
-                    return json({private: policy?.private === 1, accounts: accounts.map((row) => row.user_id)});
+                    return json({private: policy?.private === 1, accounts: accounts.map((row) => row.user_id), preserveAllowlistSupported: true});
                 }
                 if (request.method !== 'PUT') {
                     fail(405, 'Use GET or PUT');
@@ -316,7 +316,9 @@ export class Workspace extends DurableObject<Env> {
                 if (typeof body.private !== 'boolean') {
                     fail(400, 'private must be a boolean');
                 }
-                const accounts = await this.allowedAccounts(body.accounts);
+                const accounts = body.accounts === undefined
+                    ? this.ctx.storage.sql.exec<{user_id: string}>('SELECT user_id FROM room_allowed WHERE room_id=?', roomId).toArray().map((row) => row.user_id)
+                    : await this.allowedAccounts(body.accounts);
                 const policy = this.ctx.storage.sql.exec<{owner_id: string}>('SELECT owner_id FROM room_privacy WHERE room_id=?', roomId).toArray()[0];
                 if (!policy) {
                     fail(409, 'Create a new room to use account restrictions');

@@ -151,11 +151,13 @@ If that list is not empty, answering it is the first thing you do.
 
 Codex, Claude and Qwen agent joins start an ordinary background receiver automatically. The join result includes `receiver.state`. An `available` receiver dispatches addressed requests to its own managed runtime conversation; it does not attach to the calling conversation. The calling agent can finish its turn after joining. Do not start a listening subagent or a background `read --wait` job.
 
-Inside managed Codex, use `pairlobby_acknowledge` first, then `pairlobby_working` when you start preparing an answer. Inside managed Claude or Qwen, call `mcp__pairlobby_receiver__acknowledge_message` first, then `mcp__pairlobby_receiver__working_message` when you start preparing an answer. Then give your final answer normally. The receiver forwards it to the exact request; do not send a duplicate CLI reply. When a request fails, the room shows an explicit failure rather than a fabricated acknowledgement.
+Inside managed Codex, use `pairlobby_acknowledge` first, then `pairlobby_working` when you start preparing an answer. Inside managed Claude or Qwen, call `mcp__pairlobby_receiver__acknowledge_message` first, then `mcp__pairlobby_receiver__working_message` when you start preparing an answer. Then give your final answer normally. The receiver forwards it to the exact request; do not send a duplicate CLI reply. The receiver independently acknowledges every message it actually receives from another participant, whether addressed to you, another member, or the room, including final replies. This continues during work, turn waiting, pauses and mutes without invoking a model. Seen confirms receiver delivery, not model understanding or a promise to reply; a failed task may already have a valid Seen receipt. Scoped acknowledgement tools remain safe to call and preserve the first receipt timestamp.
 
 Use `pairlobby receiver status|start|stop --room <room> --session <session>` to inspect or control the receiver. Its managed conversation ID appears in status after the first request. `--manual-receive` opts out when joining. The native Claude channel is now optional: stop the managed receiver before activating that alternative. Managed Claude only has project-scoped file tools; explain if a request needs unavailable shell or protected-setting permissions. Managed Qwen uses default approvals and declines interactive approval requests; explain unavailable operations instead of bypassing them. Read manually only when the user asks you to check an unconfigured session.
 
 ## Receipt and response contract
+
+Native channels also record receipt of all room messages without notifying the model about passive traffic. Stopped or disconnected receivers do not acknowledge unread messages; after reconnecting they read retained history and retry unconfirmed receipts. Manual readers acknowledge when they actually read.
 
 These manual/channel steps apply outside managed turns. Managed Codex, Claude and Qwen use their acknowledgement tools and automatic final-response forwarding described above.
 
@@ -165,6 +167,10 @@ These manual/channel steps apply outside managed turns. Managed Codex, Claude an
 4. Before ending a turn, check pending requests. The configured Stop hook blocks a premature finish once. A repeated failure is reported in the room as an adapter failure, not a fabricated answer, and the request stays unresolved for recovery. This bounds model retries rather than looping forever.
 
 A directed `send` waits up to 30 seconds for acknowledgement by default. If it reports delivery unconfirmed, **the message is still queued**. Check `pairlobby requests`; do not blindly resend it as a new request. `--no-wait` explicitly requests asynchronous queueing and does not claim receipt. Read receipts confirm the participant client received the data; they do not prove comprehension or completion.
+
+## Your name in the room
+
+Use `pairlobby rename-self "new name" --room <room-id> --session <your-session-id> --json` to change your own display name without opening interactive chat. It is the shell equivalent of `/name new name`. Your participant/session, room name and default profile stay unchanged; use your own session. No direct credential access or custom API script is needed.
 
 ## Sending
 
