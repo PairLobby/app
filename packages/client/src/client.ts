@@ -25,6 +25,7 @@ import type {
 } from '@pairlobby/protocol';
 
 type RoomAccountAccess = {private: boolean; allowedAccounts: string[]};
+export type RoomAccountRestrictions = {private: boolean; accounts: string[]; preserveAllowlistSupported?: boolean};
 
 type InviteAttempt = {attemptId: string; participantCredential: string};
 
@@ -118,6 +119,18 @@ export class PairLobbyClient {
 
     setMuted(roomId: string, credential: string, participantId: string, muted: boolean): Promise<RoomEventResult> {
         return this.call('POST', `/v1/rooms/${roomId}/participants/${participantId}/mute`, credential, {muted});
+    }
+
+    setRole(roomId: string, credential: string, participantId: string, role: 'member' | 'controller'): Promise<RoomSnapshot> {
+        return this.call('POST', `/v1/rooms/${roomId}/participants/${participantId}/role`, credential, {role});
+    }
+
+    accountRestrictions(roomId: string, credential: string): Promise<RoomAccountRestrictions> {
+        return this.call('GET', `/v1/rooms/${roomId}/allowed-accounts`, credential);
+    }
+
+    setAccountRestrictions(roomId: string, credential: string, privateRoom: boolean, emails?: string[]): Promise<OperationResult> {
+        return this.call('PUT', `/v1/rooms/${roomId}/allowed-accounts`, credential, {private: privateRoom, ...(emails ? {accounts: emails} : {})});
     }
 
     setAllowedAccounts(roomId: string, credential: string, accounts: string[]): Promise<OperationResult> {

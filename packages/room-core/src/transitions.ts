@@ -16,7 +16,7 @@ import type {
 } from '@pairlobby/protocol';
 
 import {appendEvent} from './append.js';
-import {assertActiveMember, assertCanWrite, assertRoomJoinable, assertController, assertRecipientExists, assertRoomWritable, authenticate, type Actor} from './authorize.js';
+import {assertActiveMember, assertCanAcknowledge, assertCanWrite, assertRoomJoinable, assertController, assertRecipientExists, assertRoomWritable, authenticate, type Actor} from './authorize.js';
 import {applyHandoverAccepted, applyHandoverDeclined, applyHandoverOffered} from './handover.js';
 import {activeParticipants, controlFor, emptyMutation, findParticipant, isActive, type CoreContext, type Mutation, type RoomView} from './state.js';
 
@@ -115,7 +115,7 @@ export function joinRoom(view: RoomView, input: JoinRoomInput, ctx: CoreContext)
 export function sendEvent(view: RoomView, credentialHash: string, request: SendEventRequest, ctx: CoreContext): Mutation {
     const actor = authenticate(view, credentialHash, ctx.now);
     assertRoomWritable(view, ctx.now);
-    const sender = assertCanWrite(actor);
+    const sender = request.type === 'message.received' ? assertCanAcknowledge(actor) : assertCanWrite(actor);
     const recipientId = request.recipientId ?? null;
     if (recipientId !== null) {
         assertRecipientExists(view, recipientId);
@@ -289,6 +289,29 @@ export function renameRoom(view: RoomView, credentialHash: string, name: string,
         ctx
     );
     return emptyMutation(room, event);
+}
+
+/** Delegated admins use their own membership; no controller secret is shared. */
+export function setParticipantRole(view: RoomView, credentialHash: string, participantId: string, role: 'member' | 'controller', ctx: CoreContext): Mutation | null {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    const target = assertRecipientExists(view, participantId);
+    if (target.role === 'guest') {
+        throw new ProtocolError('invalid_request', 'Invite this observer as a member before granting admin access.');
+    }
+    if (target.role === role) {
+        return null;
+    }
+    if (role === 'member' && actor.kind === 'participant' && actor.participant.participantId === participantId && !view.participants.some((person) => person.participantId !== participantId && person.role === 'controller' && isActive(person) && !person.muted)) {
+        throw new ProtocolError('invalid_request', 'Grant another member admin access before removing your own, or use the room owner credential.');
+    }
+    const {room, event} = appendEvent(view.room, {
+        senderId: actor.kind === 'participant' ? actor.participant.participantId : null,
+        idempotencyKey: null, recipientId: null, replyTo: null,
+        body: {type: 'participant.role_changed', payload: {participantId, role, previousRole: target.role}}
+    }, ctx);
+    return {...emptyMutation(room, event), upsertParticipants: [{...target, role}]};
 }
 
 /** Sets or clears when a room expires. Null stops it expiring at all. */

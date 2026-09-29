@@ -7,6 +7,7 @@
 //! listing a room can never disclose one.
 
 import {readFileSync} from 'node:fs';
+import {spawn} from 'node:child_process';
 import release from './release.json' with {type: 'json'};
 import {userInfo} from 'node:os';
 import {parseArgs} from 'node:util';
@@ -16,7 +17,7 @@ import {ParticipantName, ProtocolError, requestState, newId} from '@pairlobby/pr
 import type {AdapterCapabilities} from '@pairlobby/protocol';
 
 import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
-import {detectRuntime} from './runtime-detect.js';
+import {detectRuntime, sameRuntime} from './runtime-detect.js';
 import {runChatRoom} from './chat.js';
 import {chooseHumanSession, selectHumanSession} from './human-session.js';
 import {WhenError, formatDuration, parseDuration, parseExpiry} from './when.js';
@@ -32,12 +33,16 @@ import {findRooms, formatFoundRooms} from './find.js';
 import {formatTurnQueue, runTurnCommand} from './turn-commands.js';
 import {spawnAgent, formatSpawnResult} from './spawn-agent.js';
 import {parseSpawnOptions, SPAWN_HELP} from './spawn-options.js';
+import {RoomBrowser} from './room-browser.js';
+import {ROOM_COLUMNS, loadRoomList, roomListJson, roomRows, sortListRows} from './room-list.js';
 
 type LocalIdentity = {nameSource: 'room' | 'profile'; displayName: string; kind: 'agent' | 'human'; sessionId: string; capabilities?: AdapterCapabilities};
 
 type LocalRuntimeDetail = {runtime?: string; conversationId?: string; terminal?: string; pid?: number};
 
 const OPTIONS = {
+    sort: {type: 'string'},
+    desc: {type: 'boolean'},
     'turn-token': {type: 'string'},
     'claim-id': {type: 'string'},
     active: {type: 'boolean'},
@@ -95,9 +100,12 @@ const OPTIONS = {
 
 const HELP = `pairlobby
 
-  pairlobby, pairlobby list          rooms on this device, with live participant counts
+  pairlobby, pairlobby list          interactive room/session table in a terminal
+  pairlobby list --json              JSON snapshot (no interactive UI)
+  pairlobby list --sort name --desc  sort rooms; S or click a header in the table
   pairlobby find [--active] --json   ping known rooms; members, dates and latest message
   pairlobby name <room> <new name>   rename a room (controller only)
+  pairlobby rename-self <new name>  rename your selected participant in a room
   pairlobby expiry [room] <when>     never | in 10 hours | at 2026-09-20 18:00
   pairlobby expire [room]            pick expiry from a menu
   pairlobby open <room>              let anyone with the room id join as a guest
@@ -214,6 +222,8 @@ async function main(argv: string[]): Promise<number> {
             return findCommand(store, values);
         case 'name':
             return renameRoom(store, values, positionals[1], positionals.slice(2).join(' '));
+        case 'rename-self':
+            return renameSelf(store, values, positionals.slice(1).join(' '));
         case 'expiry':
             return expiryCommand(store, values, positionals.slice(1));
         case 'expire':
@@ -367,26 +377,45 @@ function flag(values: Values, key: keyof typeof OPTIONS): boolean {
  * with stale local numbers.
  */
 async function listRooms(store: LocalStore, values: Values): Promise<number> {
-    const rooms = store.rooms();
-    const detailed = await Promise.all(
-        rooms.map(async (room) => {
-            const credential = store.credential(room.roomId, 'controller') ?? room.sessions.map((session) => store.credential(room.roomId, session.sessionId)).find(Boolean);
-            if (!credential) {
-                return {room, reachable: false as const};
-            }
-            try {
-                return {room, reachable: true as const, snapshot: await new PairLobbyClient(room.serverUrl).snapshot(room.roomId, credential)};
-            } catch (error) {
-                return {room, reachable: false as const, why: error instanceof ProtocolError ? error.code : 'unreachable'};
-            }
-        })
-    );
-
-    if (flag(values, 'json')) {
-        json({count: rooms.length, rooms: detailed.map((entry) => ({...entry.room, live: 'snapshot' in entry ? entry.snapshot : null}))});
-        return 0;
+    const key = str(values, 'sort') ?? 'name';
+    if (!ROOM_COLUMNS.some((column) => column.key === key)) {
+        throw new UsageError(`Unknown sort column. Choose: ${ROOM_COLUMNS.map((column) => column.key).join(', ')}`);
     }
-    renderRoomList(detailed);
+    const sort = {key, descending: flag(values, 'desc')};
+    if (isInteractive(values)) {
+        let roomId: string | undefined;
+        let sessionId: string | undefined;
+        let notice = '';
+        while (true) {
+            const selection = await new RoomBrowser(store, {sort, roomId, sessionId, notice}).run();
+            if (!selection) {
+                return 0;
+            }
+            roomId = selection.roomId;
+            sessionId = selection.sessionId;
+            notice = '';
+            try {
+                // Chat deliberately exits its process on /quit. Give it the
+                // terminal in a child so quitting returns to this navigator.
+                notice = await new Promise<string>((resolve, reject) => {
+                    const child = spawn(process.execPath, [process.argv[1]!, 'chat', '--human', '--room', roomId!, '--session', sessionId!], {stdio: ['inherit', 'inherit', 'pipe']});
+                    let error = '';
+                    child.stderr.on('data', (chunk: Buffer) => { error = (error + chunk.toString()).slice(-4000); });
+                    child.once('error', reject);
+                    child.once('close', (code) => resolve(code === 0 ? '' : error.trim() || `Chat ended with status ${code ?? 'signal'}.`));
+                });
+            } catch (error) {
+                notice = error instanceof Error ? error.message : 'Could not open this session.';
+            }
+        }
+    }
+    const entries = await loadRoomList(store);
+    if (flag(values, 'json')) {
+        json(roomListJson(store, entries, sort));
+    } else {
+        const byId = new Map(entries.map((entry) => [entry.room.roomId, entry]));
+        renderRoomList(sortListRows(roomRows(entries), sort).map((row) => byId.get(row.id)!));
+    }
     return 0;
 }
 
@@ -516,6 +545,26 @@ async function expiryCommand(store: LocalStore, values: Values, args: string[]):
         return 0;
     }
     out(expiresAt === null ? `${room.name} will not expire` : `${room.name} expires ${new Date(expiresAt).toLocaleString()}`);
+    return 0;
+}
+
+async function renameSelf(store: LocalStore, values: Values, name: string): Promise<number> {
+    if (!name.trim()) {
+        throw new UsageError('Usage: pairlobby rename-self <new name> --room <room> --session <session>');
+    }
+    const displayName = validatedName(name);
+    const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    const current = await client.snapshot(room.roomId, credential);
+    if (!current.renameSelfSupported) {
+        throw new UsageError('Update this relay before using rename-self.');
+    }
+    const snapshot = await client.renameSelf(room.roomId, credential, displayName, 'room');
+    store.updateSessionName(room.roomId, session.sessionId, displayName, 'room');
+    if (flag(values, 'json')) {
+        json({roomId: room.roomId, sessionId: session.sessionId, participantId: session.participantId, displayName, nameSource: 'room'});
+    } else {
+        out(`Your name in ${snapshot.name} is now ${displayName}.`);
+    }
     return 0;
 }
 
@@ -780,7 +829,7 @@ function localDetail(values: Values): LocalRuntimeDetail {
     // be labelled with whichever session happened to spawn the shell — exactly the
     // confusion the field exists to remove.
     const declared = str(values, 'runtime');
-    const detectionApplies = !flag(values, 'human') && (declared === undefined || declared === detected.runtime);
+    const detectionApplies = !flag(values, 'human') && (declared === undefined || sameRuntime(declared, detected.runtime));
     const conversationId = str(values, 'conversation') ?? (detectionApplies ? detected.conversationId : undefined);
     const runtime = declared ?? (flag(values, 'human') ? undefined : detected.runtime);
     return {...(runtime ? {runtime} : {}), ...(conversationId ? {conversationId} : {}), ...(detected.terminal ? {terminal: detected.terminal} : {}), pid: detected.pid};
@@ -1155,7 +1204,7 @@ async function readEvents(store: LocalStore, values: Values): Promise<number> {
     // Persist receipts before advancing the cursor. A failed receipt is retried
     // by the next read; it must never be swallowed as a courtesy failure.
     const member = snapshot.participants.find((participant) => participant.participantId === session.participantId);
-    const ids = new Set(member && member.role !== 'guest' && !member.muted ? [
+    const ids = new Set(member && member.role !== 'guest' ? [
         ...unreceipted(page.events, session.participantId, snapshot.messageReceiptScope === 'members').map((event) => event.eventId),
         ...owed.filter((request) => request.receivedAt === null).map((request) => request.eventId)
     ] : []);

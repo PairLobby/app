@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {createInterface} from 'node:readline';
 import type {MessageRequest} from '@pairlobby/protocol';
 import type {ReceiverRuntime, RuntimeHooks, RuntimeOptions} from './receiver-runtime.js';
+import {streamModel} from './model-metadata.js';
 
 export type QwenRuntimeOptions = RuntimeOptions & {stateDirectory: string; cliPath: string; dataDirectory: string; roomId: string; sessionId: string};
 type QwenSessionState = {threadId: string; completed: boolean};
@@ -21,6 +22,7 @@ export class QwenReceiver implements ReceiverRuntime {
     private resumable = false;
     private readonly sessionFile: string;
     threadId = '';
+    model: string | undefined;
 
     constructor(private readonly options: QwenRuntimeOptions) {
         this.sessionFile = join(options.stateDirectory, 'qwen-session.json');
@@ -90,6 +92,11 @@ export class QwenReceiver implements ReceiverRuntime {
                 reader.on('line', (line) => {
                     try {
                         const message = JSON.parse(line) as QwenMessage;
+                        const model = streamModel(message, this.threadId);
+                        if (model) {
+                            this.model = model;
+                            hooks.model?.(model);
+                        }
                         if (message.type === 'control_request' && message.request_id) {
                             const response = message.request?.subtype === 'can_use_tool'
                                 ? {subtype: 'success', request_id: message.request_id, response: {subtype: 'can_use_tool', behavior: 'deny', message: 'Interactive approval is unavailable in a background PairLobby request.'}}

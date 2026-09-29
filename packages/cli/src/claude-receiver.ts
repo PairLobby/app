@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {createInterface} from 'node:readline';
 import type {MessageRequest} from '@pairlobby/protocol';
 import type {ReceiverRuntime, RuntimeHooks, RuntimeOptions} from './receiver-runtime.js';
+import {streamModel} from './model-metadata.js';
 
 export type ClaudeRuntimeOptions = RuntimeOptions & {stateDirectory: string; cliPath: string; dataDirectory: string; roomId: string; sessionId: string};
 type ClaudeSessionState = {threadId: string; completed: boolean};
@@ -20,6 +21,7 @@ export class ClaudeReceiver implements ReceiverRuntime {
     private resumable = false;
     private sessionFile: string;
     threadId = '';
+    model: string | undefined;
 
     constructor(private readonly options: ClaudeRuntimeOptions) {
         this.sessionFile = join(options.stateDirectory, 'claude-session.json');
@@ -93,6 +95,11 @@ export class ClaudeReceiver implements ReceiverRuntime {
                 reader.on('line', (line) => {
                     try {
                         const message = JSON.parse(line) as ClaudeResult;
+                        const model = streamModel(message, this.threadId);
+                        if (model) {
+                            this.model = model;
+                            hooks.model?.(model);
+                        }
                         if (message.type !== 'result') {
                             return;
                         }

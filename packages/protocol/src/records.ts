@@ -145,6 +145,7 @@ export const RoomSnapshot = z.object({
     messageReceiptScope: z.enum(['recipient', 'members']).optional(),
     rejoinSupported: z.boolean().optional(),
     renameSelfSupported: z.boolean().optional(),
+    adminRolesSupported: z.boolean().optional(),
     quotedMessagesSupported: z.boolean().optional(),
     groupTurnsSupported: z.boolean().optional(),
     workingStatusSupported: z.boolean().optional(),

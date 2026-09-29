@@ -62,12 +62,15 @@ test.each(['codex', 'claude', 'qwen'])('%s CLI joins receive asynchronously and 
         const sent = await client.send(host.roomId, host.participantCredential, request);
         await sleep(1200);
         expect(calls()).toEqual([]);
-        expect((await client.request(host.roomId, host.participantCredential, sent.event.eventId)).receivedAt).toBeNull();
+        await waitFor(async () => (await client.request(host.roomId, host.participantCredential, sent.event.eventId)).receivedAt !== null);
         await client.setMuted(host.roomId, host.controllerCredential, joined.participantId, false);
         await waitFor(async () => Boolean((await client.request(host.roomId, host.participantCredential, sent.event.eventId)).responseEventId));
         expect((await client.request(host.roomId, host.participantCredential, sent.event.eventId)).receivedAt).not.toBeNull();
+        const reportedModel = runtime === 'claude' ? 'claude-opus-5-5' : runtime === 'qwen' ? 'qwen3-coder-plus' : 'fixture-model';
+        expect((await command(['receiver', 'status', ...scope])).model).toBe(reportedModel);
         await client.send(host.roomId, host.participantCredential, request);
-        await client.send(host.roomId, host.participantCredential, {type: 'message', payload: {text: 'Broadcast', priority: 'normal'}, idempotencyKey: 'broadcast'});
+        const broadcast = await client.send(host.roomId, host.participantCredential, {type: 'message', payload: {text: 'Broadcast', priority: 'normal'}, idempotencyKey: 'broadcast'});
+        await waitFor(async () => (await client.readEvents(host.roomId, host.participantCredential, 0)).events.some((event) => event.type === 'message.received' && event.senderId === joined!.participantId && event.payload.eventId === broadcast.event.eventId));
         await sleep(1200);
         expect(calls().filter((line) => line === 'turn/start')).toHaveLength(1);
         expect(calls()).toContain(runtime === 'codex' ? 'approval:decline' : 'ack:confirmed');
@@ -80,12 +83,16 @@ test.each(['codex', 'claude', 'qwen'])('%s CLI joins receive asynchronously and 
         await sleep(200);
         expect((await client.request(host.roomId, host.participantCredential, second.event.eventId)).receivedAt).toBeNull();
         await command(['receiver', 'start', ...scope]);
+        expect((await command(['receiver', 'status', ...scope])).model).toBe(reportedModel);
         await waitFor(async () => Boolean((await client.request(host.roomId, host.participantCredential, second.event.eventId)).responseEventId));
         expect(calls()).toContain('thread/resume');
         expect(calls().filter((line) => line === 'turn/start')).toHaveLength(2);
 
         const uncertain = await client.send(host.roomId, host.participantCredential, {...request, payload: {text: 'hang-until-crash', priority: 'normal'}, idempotencyKey: 'uncertain'});
         await waitFor(async () => calls().filter((line) => line === 'turn/start').length === 3);
+        // A long-running provider turn must not block receipt of other traffic.
+        const duringWork = await client.send(host.roomId, host.participantCredential, {type: 'message', payload: {text: 'Notice during work', priority: 'normal'}, idempotencyKey: 'during-work'});
+        await waitFor(async () => (await client.readEvents(host.roomId, host.participantCredential, 0)).events.some((event) => event.type === 'message.received' && event.senderId === joined!.participantId && event.payload.eventId === duringWork.event.eventId));
         const status = await command(['receiver', 'status', ...scope]);
         process.kill(status.pid, 'SIGKILL');
         await sleep(300);
@@ -93,7 +100,7 @@ test.each(['codex', 'claude', 'qwen'])('%s CLI joins receive asynchronously and 
         await waitFor(async () => Boolean((await client.request(host.roomId, host.participantCredential, uncertain.event.eventId)).failureAt));
         expect(calls().filter((line) => line === 'turn/start')).toHaveLength(3);
         const failure = await client.request(host.roomId, host.participantCredential, uncertain.event.eventId);
-        expect(failure.receivedAt).toBeNull();
+        expect(failure.receivedAt).not.toBeNull();
         expect(failure.failureReason).toContain('uncertain');
         if (runtime !== 'codex') {
             const next = await client.send(host.roomId, host.participantCredential, {...request, idempotencyKey: 'after-crash'});
@@ -101,7 +108,7 @@ test.each(['codex', 'claude', 'qwen'])('%s CLI joins receive asynchronously and 
             expect(calls().filter((line) => line === 'thread/start')).toHaveLength(2);
             const invalid = await client.send(host.roomId, host.participantCredential, {...request, idempotencyKey: 'invalid-ack', payload: {text: 'invalid-ack', priority: 'normal'}});
             await waitFor(async () => Boolean((await client.request(host.roomId, host.participantCredential, invalid.event.eventId)).failureAt));
-            expect((await client.request(host.roomId, host.participantCredential, invalid.event.eventId)).receivedAt).toBeNull();
+            await waitFor(async () => (await client.request(host.roomId, host.participantCredential, invalid.event.eventId)).receivedAt !== null);
             expect(calls()).toContain('ack:rejected');
         }
         if (runtime === 'qwen') {
@@ -109,7 +116,7 @@ test.each(['codex', 'claude', 'qwen'])('%s CLI joins receive asynchronously and 
             const missing = await client.send(host.roomId, host.participantCredential, {...request, idempotencyKey: 'no-ack', payload: {text: 'no-ack', priority: 'normal'}});
             await waitFor(async () => Boolean((await client.request(host.roomId, host.participantCredential, missing.event.eventId)).failureAt));
             const outcome = await client.request(host.roomId, host.participantCredential, missing.event.eventId);
-            expect(outcome.receivedAt).toBeNull();
+            await waitFor(async () => (await client.request(host.roomId, host.participantCredential, missing.event.eventId)).receivedAt !== null);
             expect(outcome.responseEventId).toBeNull();
             const state = JSON.parse(readFileSync(join(environment.PAIRLOBBY_DATA_DIR, 'receivers', joined.sessionId, 'qwen-session.json'), 'utf8'));
             expect(state.completed).toBe(false);

@@ -53,7 +53,7 @@ test('lists all current agents by identity, including external agents, and disti
     expect(roster.rows).toHaveLength(4);
     expect(roster.rows.find((row) => row.participantId === external.participantId)).toMatchObject({origin: 'Joined externally', provider: 'Qwen', status: 'Joined (unverified)', model: 'Not shared', conversationId: 'Not shared', invite: 'Not shared'});
     const localRow = roster.rows.find((row) => row.participantId === local.participantId)!;
-    expect(localRow).toMatchObject({origin: 'Joined externally', conversationId: 'external-conversation', model: 'Unknown'});
+    expect(localRow).toMatchObject({origin: 'Joined externally', conversationId: 'external-conversation', model: 'Not reported'});
     expect(localRow.invite).toMatch(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/);
     expect(readFileSync(join(context.store.directory, 'rooms.json'), 'utf8')).not.toContain(localRow.invite);
     expect(roster.rows.find((row) => row.participantId === other.participantId)?.origin).toBe('Other session');

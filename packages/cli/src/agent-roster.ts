@@ -5,6 +5,7 @@ import {select, UsageError} from './context.js';
 import {receiverConfiguration, receiverStatus} from './receiver.js';
 import type {ReceiverStatus} from './receiver.js';
 import {readSpawnMetadata} from './spawn-agent.js';
+import {modelId, savedSessionModel} from './model-metadata.js';
 
 export type AgentColumn = 'name' | 'provider' | 'status' | 'model' | 'conversationId' | 'invite' | 'origin' | 'lastMessage';
 export type AgentRow = {participantId: string; name: string; provider: string; status: string; model: string; configuredModel: boolean; conversationId: string; invite: string; origin: string; lastMessage: string};
@@ -108,7 +109,7 @@ export async function loadAgentRoster(context: AgentRosterContext): Promise<Agen
             throw new UsageError('The agent table requires an active human member.');
         }
         const participants = snapshot.participants.filter((participant) => participant.kind === 'agent' && !participant.left && !participant.revoked);
-        const notes = ['Model = last reported; * = configured only. Joined does not prove a listener is running.', 'Dates: latest retained sent message, UTC. Invites: saved admission codes; spawned codes are single-use. Remote metadata is not shared.'];
+        const notes = ['Model = exact runtime ID (last reported or recovered from its saved session); * = configured only.', 'Joined is not verified presence. Dates: latest retained message, UTC. Remote metadata is not shared.'];
         let queue: TurnQueue | undefined;
         let dates = new Map<string, number>();
         let historyAvailable = true;
@@ -128,14 +129,16 @@ export async function loadAgentRoster(context: AgentRosterContext): Promise<Agen
             const receiver = local ? receiverStatus(store, local.sessionId) : null;
             const config = local ? receiverConfiguration(store, local.sessionId) : null;
             const creator = local?.spawnedBy ?? spawn?.actorSessionId;
-            const reported = receiver?.model;
-            const configured = config?.model ?? local?.model ?? spawn?.model;
             const managed = Boolean(config || spawn || local?.spawnedBy);
-            const conversationId = receiver?.threadId || (managed ? 'Not started' : local?.conversationId || (local ? 'Unknown' : 'Not shared'));
+            const runtime = config?.runtime ?? local?.runtime ?? participant.capabilities?.runtime;
+            const threadId = receiver?.threadId || (!managed || receiver?.state === 'stopped' ? local?.conversationId : undefined);
+            const reported = modelId(receiver?.model) ?? (local && runtime && threadId ? savedSessionModel({runtime, threadId, cwd: config?.cwd ?? local.cwd}) : undefined);
+            const configured = config?.model ?? local?.model ?? spawn?.model;
+            const conversationId = threadId || (managed ? 'Not started' : local ? 'Unknown' : 'Not shared');
             const invite = actor.muted ? 'Hidden' : local ? store.sessionInvite(roomId, local.sessionId) ?? spawn?.invite ?? 'Not recorded' : 'Not shared';
             return {
                 participantId: participant.participantId, name: plainCell(participant.displayName), provider: plainCell(agentProvider(participant.capabilities?.runtime ?? local?.runtime)),
-                status: plainCell(statusFor(participant, receiver, queue)), model: plainCell(reported || configured || (managed ? 'Provider default' : local ? 'Unknown' : 'Not shared')),
+                status: plainCell(statusFor(participant, receiver, queue)), model: plainCell(reported || configured || (managed && !threadId ? 'Not started' : local ? 'Not reported' : 'Not shared')),
                 configuredModel: !reported && Boolean(configured), conversationId: plainCell(conversationId), invite: plainCell(invite),
                 origin: creator === sessionId ? 'This session' : creator ? 'Other session' : 'Joined externally',
                 lastMessage: dates.has(participant.participantId) ? new Date(dates.get(participant.participantId)!).toISOString() : historyAvailable ? 'None retained' : 'Unavailable'

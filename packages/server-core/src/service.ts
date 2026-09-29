@@ -21,6 +21,7 @@ import {
     assertRoomWritable,
     assertRoomJoinable,
     assertCanWrite,
+    assertCanAcknowledge,
     assertActiveMember,
     assertController,
     authenticate,
@@ -39,6 +40,7 @@ import {
     setJoinPolicy,
     setLocked,
     setMuted,
+    setParticipantRole,
     toSnapshot
 } from '@pairlobby/room-core';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
@@ -228,7 +230,7 @@ export class RoomService {
                     throw new ProtocolError('unauthorized', 'this join attempt belongs to another participant');
                 }
                 assertActiveMember(actor);
-                return {roomId: invite.roomId, participantId: invite.redeemedParticipantId!, role: invite.role, replayed: true, snapshot: toSnapshot(view)};
+                return {roomId: invite.roomId, participantId: invite.redeemedParticipantId!, role: actor.participant.role, replayed: true, snapshot: toSnapshot(view)};
             }
             if (!invite.reusable) {
                 throw new ProtocolError('invite_already_redeemed', 'that invite code was already used');
@@ -263,10 +265,13 @@ export class RoomService {
             return {roomId: invite.roomId, participantId: existing.participantId, role: existing.role, replayed: true, snapshot: toSnapshot(await this.view(invite.roomId))};
         }
 
+        const previousOccupant = view.participants.find((participant) => participant.participantId === invite.redeemedParticipantId);
+        // A demoted admin must not regain privileges through the old invite seat.
+        const admissionRole = reserved.role === 'controller' && previousOccupant && previousOccupant.role !== 'controller' ? 'member' : reserved.role;
         const joined = joinRoom(
             view,
             {
-                role: reserved.role,
+                role: admissionRole,
                 credentialHash,
                 displayName: input.useInviteName !== false ? reserved.defaultName ?? input.displayName : input.displayName,
                 kind: input.kind,
@@ -276,13 +281,12 @@ export class RoomService {
             },
             this.ctx()
         );
-        const previousOccupant = view.participants.find((participant) => participant.participantId === invite.redeemedParticipantId);
         if (previousOccupant?.muted) {
             joined.participant.muted = true;
         }
         await this.store.apply(joined.mutation, null);
         await this.store.completeInvite(digest, joined.participant.participantId);
-        return {roomId: invite.roomId, participantId: joined.participant.participantId, role: reserved.role, replayed: false, snapshot: toSnapshot(await this.view(invite.roomId))};
+        return {roomId: invite.roomId, participantId: joined.participant.participantId, role: admissionRole, replayed: false, snapshot: toSnapshot(await this.view(invite.roomId))};
     }
 
     async send(roomId: string, credential: string, request: SendEventRequest): Promise<SentEventResult> {
@@ -294,7 +298,7 @@ export class RoomService {
             throw new ProtocolError('invalid_request', 'group recipients are only valid for a new message; choose names or all');
         }
         if (request.type === 'message.received') {
-            const participant = assertCanWrite(actor);
+            const participant = assertCanAcknowledge(actor);
             const target = await this.turns.resolve(roomId, request.payload.eventId, participant.participantId);
             const eventId = target?.conversationId ?? request.payload.eventId;
             request = {...request, payload: {eventId}, idempotencyKey: `receipt-${eventId}-${participant.participantId}`};
@@ -340,7 +344,7 @@ export class RoomService {
         const updates: MessageRequest[] = [];
         let replyTarget: MessageRequest | null = null;
         if (request.type === 'message.received') {
-            const participant = assertCanWrite(actor);
+            const participant = assertCanAcknowledge(actor);
             const target = await this.turns.resolve(roomId, request.payload.eventId, participant.participantId);
             const original = target ? null : await this.store.eventById(roomId, request.payload.eventId);
             if (!target && original?.type !== 'message') {
@@ -429,7 +433,7 @@ export class RoomService {
 
     async acknowledgeMessage(roomId: string, credential: string, eventId: string): Promise<MessageRequest | null> {
         const actor = authenticate(await this.view(roomId), await hashCredential(credential), this.now());
-        const participant = assertCanWrite(actor);
+        const participant = assertCanAcknowledge(actor);
         const target = await this.turns.resolve(roomId, eventId, participant.participantId);
         if (target?.to === participant.participantId && target.receivedAt !== null) {
             return this.publicRequest(target);
@@ -495,6 +499,14 @@ export class RoomService {
 
     async setMuted(roomId: string, credential: string, participantId: string, muted: boolean): Promise<RoomEvent> {
         return this.applyOne(setMuted(await this.view(roomId), await hashCredential(credential), participantId, muted, this.ctx()));
+    }
+
+    async setRole(roomId: string, credential: string, participantId: string, role: 'member' | 'controller'): Promise<RoomSnapshot> {
+        const mutation = setParticipantRole(await this.view(roomId), await hashCredential(credential), participantId, role, this.ctx());
+        if (mutation) {
+            await this.applyOne(mutation);
+        }
+        return toSnapshot(await this.view(roomId));
     }
 
     async control(roomId: string, credential: string, targetParticipantId: string, paused: boolean): Promise<RoomEvent> {

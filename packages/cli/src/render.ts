@@ -231,6 +231,8 @@ function describe(event: RoomEvent): string {
             return event.payload.locked ? 'the room was locked' : 'the room was unlocked';
         case 'participant.mute_changed':
             return `${event.payload.participantId} was ${event.payload.muted ? 'muted' : 'unmuted'}`;
+        case 'participant.role_changed':
+            return `${event.payload.participantId} is now ${event.payload.role === 'controller' ? 'an admin' : 'a member'}`;
         case 'room.closed':
             return 'the room was closed';
         case 'room.renamed':

@@ -46,6 +46,10 @@ for await (const line of createInterface({input: process.stdin})) {
             continue;
         }
         await sleep(Number(process.env.PAIRLOBBY_TEST_DELAY_MS ?? 0));
+        if (text.includes('reroute-fixture')) {
+            send({method: 'model/rerouted', params: {threadId: 'another-thread', turnId: turn, fromModel: 'fixture-model', toModel: 'wrong-thread-model'}});
+            send({method: 'model/rerouted', params: {threadId: 'test-thread', turnId: turn, fromModel: 'fixture-model', toModel: 'gpt-6-sol'}});
+        }
         send({method: 'item/completed', params: {threadId: 'test-thread', turnId: turn, item: {type: 'agentMessage', phase: 'final_answer', text: 'Fixture answer: ' + text}}});
         send({method: 'turn/completed', params: {threadId: 'test-thread', turn: {id: turn, status: 'completed'}}});
     }

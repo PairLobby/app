@@ -6,7 +6,7 @@ const people = [
     ['codex', 'Codex builder', 'codex'], ['qwen', 'Qwen checker', 'qwen'], ['deepseek', 'DeepSeek helper', 'deepseek']
 ];
 const names = new Map([['human', 'You'], ...people.map(([id, name]) => [id, name])]);
-const view = new ChatTerminal({names, participantId: 'human', format: (event) => format(event, names, 'human'), complete: (line) => [[], line]});
+const view = new ChatTerminal({names, participantId: 'human', format: (event, highlightNames) => format(event, names, 'human', false, highlightNames), complete: (line) => [[], line]});
 view.log('PairLobby working indicators — offline visual test');
 const event = {protocolVersion: 1, roomId: 'room', eventId: 'question', seq: 1, senderId: 'human', recipientId: null, recipientIds: people.map(([id]) => id), replyTo: null, idempotencyKey: null, at: Date.now(), type: 'message', payload: {text: 'Review this change together and explain your findings.', priority: 'normal'}};
 view.addEvent(event);
@@ -31,6 +31,8 @@ view.input.on('line', (line) => {
     }
     if (line === '/expire') {
         entries = entries.map((entry) => ({...entry, expiresAt: Date.now() + 350}));
+        view.setWorking({mode: 'parallel', entries});
+    } else if (line === '/refresh') {
         view.setWorking({mode: 'parallel', entries});
     } else if (line === '/complete') {
         entries = [];

@@ -29,6 +29,7 @@ for await (const line of source) {
     const input = JSON.parse(line);
     const text = input.message.content[0].text;
     record('turn/start');
+    send({type: 'system', subtype: 'init', session_id: session, model: 'claude-opus-5-5'});
     if (text.includes('hang-until-crash')) {
         continue;
     }

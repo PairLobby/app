@@ -3,6 +3,7 @@ import type {ChildProcessWithoutNullStreams} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import type {MessageRequest} from '@pairlobby/protocol';
 import type {RuntimeOptions, RuntimeHooks} from './receiver-runtime.js';
+import {modelId} from './model-metadata.js';
 export type {RuntimeOptions, RuntimeHooks} from './receiver-runtime.js';
 
 type RpcMessage = {id?: number | string; method?: string; params?: Record<string, any>; result?: any; error?: {code?: number; message: string}};
@@ -24,6 +25,7 @@ export class CodexReceiver {
     private closed = false;
     threadId = '';
     model: string | undefined;
+    private threadModel: string | undefined;
 
     constructor(private readonly options: RuntimeOptions) {}
 
@@ -64,7 +66,8 @@ export class CodexReceiver {
             ...(this.options.threadId ? {threadId: this.options.threadId} : {})
         }) as ThreadResult;
         this.threadId = result.thread.id;
-        this.model = result.model;
+        this.model = modelId(result.model);
+        this.threadModel = this.model;
         if (this.options.effort) {
             await this.validateModelEffort(result.model ?? this.options.model);
         }
@@ -96,6 +99,10 @@ export class CodexReceiver {
     async execute(request: MessageRequest, hooks: RuntimeHooks): Promise<string> {
         if (this.active || this.closed) {
             throw new Error('The runtime is busy or unavailable');
+        }
+        if (this.threadModel) {
+            this.model = this.threadModel;
+            hooks.model?.(this.threadModel);
         }
         return new Promise<string>((resolve, reject) => {
             const timer = setTimeout(() => {
@@ -167,6 +174,13 @@ export class CodexReceiver {
         }
         if (!this.active || params.threadId !== this.threadId) {
             return;
+        }
+        if (message.method === 'model/rerouted') {
+            const model = modelId(params.toModel);
+            if (model) {
+                this.model = model;
+                this.active.hooks.model?.(model);
+            }
         }
         if (message.method === 'thread/tokenUsage/updated') {
             this.active.hooks.usage(params.tokenUsage);

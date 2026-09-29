@@ -149,10 +149,20 @@ export function completeAgentCommand(line: string): string[] | null {
     if (!isAgentCommand(line)) {
         return null;
     }
+    if (!/^\/(?:claude|codex|qwen|spawn)\s/.test(line)) {
+        return [];
+    }
+    try {
+        splitCommand(line);
+    } catch {
+        // A flag-looking word inside an unfinished quoted value is still data.
+        return [];
+    }
     if (line.startsWith('/spawn ') && line.trim().split(/\s+/).length <= 2 && !line.slice(7).includes(' ')) {
         return ['claude', 'codex', 'qwen', '--resume', '--help'].filter((word) => word.startsWith(line.slice(7))).map((word) => '/spawn ' + word + ' ');
     }
     const start = line.lastIndexOf(' ') + 1;
     const prefix = line.slice(start);
-    return prefix.startsWith('-') ? ['--model', '--name', '--effort', '--workdir', '--help'].filter((flag) => flag.startsWith(prefix)).map((flag) => line.slice(0, start) + flag + ' ') : [];
+    const flags = /^\/(?:qwen|spawn qwen)\s/.test(line) ? ['--model', '--name', '--workdir', '--help'] : ['--model', '--name', '--effort', '--workdir', '--help'];
+    return prefix.startsWith('-') ? flags.filter((flag) => flag.startsWith(prefix)).map((flag) => line.slice(0, start) + flag + ' ') : [];
 }

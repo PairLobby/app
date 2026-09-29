@@ -16,6 +16,7 @@ import {
     SetAccessRequest,
     SetLockedRequest,
     SetMutedRequest,
+    SetRoleRequest,
     TurnClaimRequest,
     TurnTokenRequest,
     TurnModeRequest,
@@ -178,6 +179,10 @@ async function route(request: Request, service: RoomService): Promise<Response> 
             return json({event: await service.setLocked(roomId, credential, locked)});
         }
         case 'POST participants': {
+            if (segments.length === 6 && segments[5] === 'role') {
+                const {role} = SetRoleRequest.parse(await request.json());
+                return json(await service.setRole(roomId, credential, segments[4]!, role));
+            }
             if (segments.length !== 6 || segments[5] !== 'mute') {
                 return errorResponse('invalid_request', 'unknown participant operation', 404);
             }

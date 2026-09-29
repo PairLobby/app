@@ -13,8 +13,11 @@ import {QwenReceiver} from './qwen-receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
 import type {ReceiverRuntime, ReceiverRuntimeName} from './receiver-runtime.js';
 import {validateEffort} from './spawn-options.js';
+import {startReceiptMonitor} from './receipt-monitor.js';
+import type {ReceiptMonitor} from './receipt-monitor.js';
+import {modelId, savedSessionModel} from './model-metadata.js';
 
-export type ReceiverStatus = {pid: number; state: string; runtime: string; threadId?: string; model?: string; eventId?: string; detail?: string; usage?: unknown};
+export type ReceiverStatus = {pid: number; state: string; runtime: string; threadId?: string; model?: string; eventId?: string; detail?: string; receiptError?: string; usage?: unknown};
 type Job = {event_id: string; phase: string; acknowledged: number; answer: string | null; failure: string | null};
 type ReceiverConfiguration = {runtime: ReceiverRuntimeName; cwd: string; model?: string; effort?: string; executable?: string};
 type ReceiverPaths = {directory: string; status: string; lock: string; stop: string; log: string; config: string; database: string};
@@ -177,7 +180,11 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
     database.exec("UPDATE jobs SET phase='failed', failure='Receiver restarted during execution. Outcome is uncertain; not automatically rerun.' WHERE phase='running'");
     const savedThread = database.prepare("SELECT value FROM metadata WHERE key='thread'").get() as {value: string} | undefined;
     const savedModel = database.prepare("SELECT value FROM metadata WHERE key='model'").get() as {value: string} | undefined;
-    let state: ReceiverStatus = {pid: process.pid, state: 'starting', runtime: config.runtime, ...(savedThread ? {threadId: savedThread.value} : {}), ...(savedModel ? {model: savedModel.value} : {})};
+    const recoveredModel = modelId(savedModel?.value) ?? (savedThread ? savedSessionModel({runtime: config.runtime, threadId: savedThread.value, cwd: config.cwd}) : undefined);
+    if (recoveredModel && savedModel?.value !== recoveredModel) {
+        database.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('model',?)").run(recoveredModel);
+    }
+    let state: ReceiverStatus = {pid: process.pid, state: 'starting', runtime: config.runtime, ...(savedThread ? {threadId: savedThread.value} : {}), ...(recoveredModel ? {model: recoveredModel} : {})};
     const status = (update: Partial<ReceiverStatus>) => {
         const next = {...state, ...update};
         if (JSON.stringify(next) !== JSON.stringify(state) || !existsSync(location.status)) {
@@ -186,11 +193,13 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         state = next;
     };
     let stopped = false;
+    let receipts: ReceiptMonitor | undefined;
     let runtime: ReceiverRuntime | undefined;
     const stop = () => {
         stopped = true;
         runtime?.close();
         client.closeLive();
+        void receipts?.stop();
     };
     const timer = setInterval(() => {
         if (existsSync(location.stop)) {
@@ -329,13 +338,12 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                 started: (turnId) => { database.prepare('UPDATE jobs SET turn_id=? WHERE event_id=?').run(turnId, request.eventId); },
                 usage: (usage) => {
                     status({usage});
-                    if (usage && typeof usage === 'object' && 'modelUsage' in usage && usage.modelUsage && typeof usage.modelUsage === 'object') {
-                        const models = Object.keys(usage.modelUsage);
-                        if (models.length) {
-                            const reported = models.join(', ');
-                            database.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('model',?)").run(reported);
-                            status({model: reported});
-                        }
+                },
+                model: (model) => {
+                    const reported = modelId(model);
+                    if (reported && reported !== state.model) {
+                        saveValue('model', reported);
+                        status({model: reported});
                     }
                 }
             });
@@ -343,7 +351,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                 if (runtime instanceof QwenReceiver) {
                     runtime.discardSession();
                 }
-                throw new Error('Qwen completed without explicitly acknowledging the request; no receipt or reply was fabricated.');
+                throw new Error('Qwen completed without confirming the request through its scoped tool; no final reply was published.');
             }
             if (leaseFailure) {
                 throw leaseFailure;
@@ -366,6 +374,12 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
 
     try {
         await client.snapshot(room.roomId, credential);
+        receipts = startReceiptMonitor({serverUrl: room.serverUrl, roomId: room.roomId, participantId: session.participantId, credential, cursorPath: join(location.directory, 'receipt-cursor.json'), onError: (message) => {
+            status({receiptError: message});
+            if (message) {
+                process.stderr.write(`PairLobby receipt retry: ${message}\n`);
+            }
+        }});
         status({state: 'available'});
         let failures = 0;
         while (!stopped) {
@@ -415,6 +429,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         return 1;
     } finally {
         stop();
+        await receipts?.stop();
         clearInterval(timer);
         process.removeListener('SIGTERM', stop);
         process.removeListener('SIGINT', stop);
