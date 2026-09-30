@@ -60,6 +60,11 @@ export interface JoinedRoom {
     room: RoomSnapshot;
 }
 
+export type ServerShareInfo = {
+    /** Addresses other devices can join through; empty when the server only listens on the device running it. */
+    shareUrls: string[];
+};
+
 export class PairLobbyClient {
     readonly serverUrl: string;
 
@@ -97,6 +102,32 @@ export class PairLobbyClient {
         const body = await this.call<{roomId: string; participantId: string; role: ParticipantRole; room: RoomSnapshot}>('POST', '/v1/invites/redeem', null, {
             code,
             useInviteName,
+            attemptId,
+            attemptSecret: newCredential('attempt'),
+            participantCredential,
+            ...identity
+        });
+        return {roomId: body.roomId, participantId: body.participantId, participantCredential, role: body.role, room: body.room};
+    }
+
+    /** Older servers and hosted relays do not answer this, which means they have nothing extra to share. */
+    async serverInfo(): Promise<ServerShareInfo> {
+        try {
+            const info = await this.call<Partial<ServerShareInfo>>('GET', '/v1/server', null);
+            return {shareUrls: Array.isArray(info.shareUrls) ? info.shareUrls.filter((url) => typeof url === 'string') : []};
+        } catch (error) {
+            if (error instanceof ProtocolError && error.code === 'invalid_request') {
+                return {shareUrls: []};
+            }
+            throw error;
+        }
+    }
+
+    /** Joins a room this client's account is allowed into; needs the account token and a server with account login. */
+    async joinWithAccount(roomId: string, identity: ClientIdentity, attempt?: InviteAttempt): Promise<JoinedRoom> {
+        const attemptId = attempt?.attemptId ?? newId('attempt');
+        const participantCredential = attempt?.participantCredential ?? newCredential('participant');
+        const body = await this.call<{roomId: string; participantId: string; role: ParticipantRole; room: RoomSnapshot}>('POST', `/v1/rooms/${roomId}/account-join`, null, {
             attemptId,
             attemptSecret: newCredential('attempt'),
             participantCredential,
@@ -365,7 +396,7 @@ export class PairLobbyClient {
         if (credential) {
             headers.set('authorization', `Bearer ${credential}`);
         }
-        if (this.accountToken && method === 'POST' && (path === '/v1/rooms' || path === '/v1/invites/redeem')) {
+        if (this.accountToken && method === 'POST' && (path === '/v1/rooms' || path === '/v1/invites/redeem' || path.endsWith('/account-join'))) {
             headers.set('x-pairlobby-account-token', this.accountToken);
         }
         if (body !== undefined) {

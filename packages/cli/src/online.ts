@@ -31,6 +31,52 @@ export async function onlineAccount(store: LocalStore) {
     validateRelay(result.server);
     return result;
 }
+export type OnlineRoom = {
+    roomId: string;
+    name: string;
+    createdAt: number;
+    expiresAt: number | null;
+    lifecycle: string;
+    private: boolean;
+    owner: boolean;
+    participants: OnlineRoomParticipant[];
+    latestSeq: number;
+};
+
+type OnlineRoomParticipant = {displayName: string; kind: string};
+
+export type OnlineRooms = {server: string; rooms: OnlineRoom[]};
+
+/** Rooms this account owns or is allowed into, from whichever device asks. */
+export async function onlineRooms(store: LocalStore): Promise<OnlineRooms> {
+    const token = accountToken(store);
+    if (!token) {
+        throw new UsageError('Run pairlobby login first to see your account rooms');
+    }
+    const result = await request<OnlineRooms>('/api/online/rooms', token);
+    return {server: validateRelay(result.server), rooms: result.rooms};
+}
+
+/** An online key is dash-grouped, like ABCD-EFGH-JKMN; anything else names a room. */
+export function isOnlineKey(value: string): boolean {
+    return /^[0-9A-Za-z]{4}(-[0-9A-Za-z]{4}){1,2}$/.test(value) && normalizeInviteCode(value) !== null;
+}
+
+export function matchOnlineRoom(rooms: OnlineRoom[], reference: string): OnlineRoom {
+    const byId = rooms.find((room) => room.roomId === reference);
+    if (byId) {
+        return byId;
+    }
+    const byName = rooms.filter((room) => room.name.toLowerCase() === reference.toLowerCase());
+    if (byName.length === 1) {
+        return byName[0]!;
+    }
+    if (byName.length > 1) {
+        throw new UsageError(`"${reference}" matches several of your rooms: ${byName.map((room) => room.roomId).join(', ')}; pass the room id`);
+    }
+    throw new UsageError(`None of your account's rooms is called "${reference}"; run pairlobby find online to list them`);
+}
+
 export async function resolveOnlineKey(store: LocalStore, code: string): Promise<string> {
     const normalized = normalizeInviteCode(code);
     if (!normalized) {

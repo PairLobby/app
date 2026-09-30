@@ -3,6 +3,7 @@
 
 import {createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse} from 'node:http';
 import {mkdirSync} from 'node:fs';
+import {hostname, networkInterfaces} from 'node:os';
 import {dirname} from 'node:path';
 
 import {RoomService, createRouter} from '@pairlobby/server-core';
@@ -21,6 +22,8 @@ export interface ServeOptions {
 
 export interface RunningServer {
     url: string;
+    /** Addresses other devices can join through; empty when the server only listens on this device. */
+    shareUrls: string[];
     host: string;
     port: number;
     dataFile: string;
@@ -36,11 +39,17 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
 
     // Loopback is not authentication: a page in the user's browser can reach it too.
     // Host is pinned to defeat DNS rebinding, and an unexpected Origin is refused.
+    // A server listening on every interface also answers to this machine's own
+    // addresses and names; a rebinding attack needs a name the attacker controls.
     const allowedHosts: string[] = [];
     if (options.publicUrl) {
         allowedHosts.push(new URL(options.publicUrl).host);
     }
-    const route = createRouter({service, allowedOrigins: options.allowedOrigins ?? [], allowedHosts});
+    const wildcard = isWildcard(host);
+    let boundPort = port;
+    const acceptHost = (value: string) => allowedHosts.includes(value) || (wildcard && isOwnHost(value, boundPort));
+    const serverInfo = () => ({shareUrls: shareUrls(host, boundPort, options.publicUrl)});
+    const route = createRouter({service, allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo});
 
     // One local relay owns this store. Serialize mutating requests so two
     // async service calls cannot both choose the same next event sequence.
@@ -63,10 +72,11 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
             server.removeListener('error', reject);
             // Port 0 asks the OS to choose, so the bound port is the only truthful one to report.
             const address = server.address();
-            const boundPort = typeof address === 'object' && address !== null ? address.port : port;
+            boundPort = typeof address === 'object' && address !== null ? address.port : port;
             allowedHosts.push(`${host}:${boundPort}`, `localhost:${boundPort}`, `127.0.0.1:${boundPort}`);
             resolve({
-                url: options.publicUrl ?? `http://${host}:${boundPort}`,
+                url: options.publicUrl ?? `http://${wildcard ? '127.0.0.1' : host}:${boundPort}`,
+                shareUrls: shareUrls(host, boundPort, options.publicUrl),
                 host,
                 port: boundPort,
                 dataFile: options.dataFile,
@@ -74,6 +84,60 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
             });
         });
     });
+}
+
+function isWildcard(host: string): boolean {
+    return host === '0.0.0.0' || host === '::';
+}
+
+function isLoopback(host: string): boolean {
+    return ['127.0.0.1', 'localhost', '::1'].includes(host);
+}
+
+/** Names and addresses that belong to this machine right now; interfaces come and go with Wi-Fi and DHCP. */
+function ownHostnames(): Set<string> {
+    const names = new Set<string>();
+    for (const addresses of Object.values(networkInterfaces())) {
+        for (const address of addresses ?? []) {
+            names.add(address.family === 'IPv6' ? `[${address.address.toLowerCase()}]` : address.address);
+        }
+    }
+    const machine = hostname().toLowerCase();
+    names.add(machine);
+    names.add(machine.endsWith('.local') ? machine.slice(0, -'.local'.length) : `${machine}.local`);
+    return names;
+}
+
+function isOwnHost(value: string, port: number): boolean {
+    let parsed: URL;
+    try {
+        parsed = new URL(`http://${value}`);
+    } catch {
+        return false;
+    }
+    return (parsed.port === '' ? 80 : Number(parsed.port)) === port && ownHostnames().has(parsed.hostname.toLowerCase());
+}
+
+function shareUrls(host: string, port: number, publicUrl?: string): string[] {
+    if (publicUrl) {
+        return [publicUrl.replace(/\/+$/, '')];
+    }
+    if (isLoopback(host)) {
+        return [];
+    }
+    if (!isWildcard(host)) {
+        return [`http://${host.includes(':') ? `[${host}]` : host}:${port}`];
+    }
+    // IPv4 only: link-local IPv6 needs a zone id that another device cannot use as written.
+    const urls: string[] = [];
+    for (const addresses of Object.values(networkInterfaces())) {
+        for (const address of addresses ?? []) {
+            if (address.family === 'IPv4' && !address.internal) {
+                urls.push(`http://${address.address}:${port}`);
+            }
+        }
+    }
+    return urls;
 }
 
 async function respond(handle: (request: Request) => Promise<Response>, incoming: IncomingMessage, outgoing: ServerResponse, origin: string): Promise<void> {

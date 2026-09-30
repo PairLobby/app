@@ -25,10 +25,11 @@ import {pickExpiry} from './picker.js';
 import {UsageError, controllerCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
 import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
-import {accountToken, loginOnline, onlineAccount, onlineOrigin, resolveOnlineKey} from './online.js';
+import {accountToken, isOnlineKey, loginOnline, matchOnlineRoom, onlineAccount, onlineOrigin, onlineRooms, resolveOnlineKey} from './online.js';
 import {receiverStatus, runReceiver, startReceiver, stopReceiver} from './receiver.js';
 import type {ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
+import {joinCommand, localOnlyNote, parseJoinLink} from './share.js';
 import {findRooms, formatFoundRooms} from './find.js';
 import {formatTurnQueue, runTurnCommand} from './turn-commands.js';
 import {spawnAgent, formatSpawnResult} from './spawn-agent.js';
@@ -93,6 +94,8 @@ const OPTIONS = {
     human: {type: 'boolean'},
     template: {type: 'boolean'},
     host: {type: 'string'},
+    lan: {type: 'boolean'},
+    'public-url': {type: 'string'},
     port: {type: 'string'},
     'data-dir': {type: 'string'},
     help: {type: 'boolean'}
@@ -115,7 +118,11 @@ const HELP = `pairlobby
   pairlobby settings                 show or change preferences
   pairlobby create --name <name>     start a room and print an invite
   pairlobby join <code>              join a local room and enter it
+  pairlobby join <code> --server http://10.0.0.5:8790
+                                    join a room served by another device on your network
   pairlobby join online <key>       join a hosted room without a URL or room ID
+  pairlobby join online <room>      join one of your account's rooms from any logged-in device
+  pairlobby find online [--json]    list the rooms your account owns or is allowed into
   pairlobby join <code> --runtime codex|claude|qwen
                                     join as a managed agent; receive automatically
   pairlobby receiver status|start|stop
@@ -154,6 +161,8 @@ const HELP = `pairlobby
   pairlobby pause <who>              controller only
   pairlobby resume <who>             controller only
   pairlobby serve                    run a local room server
+  pairlobby serve --lan              also accept devices on your network (unencrypted HTTP)
+  pairlobby serve --public-url <url> advertise this address in invites (Tailscale, proxy)
 
 Common options
   --room <name|id>      required when this device holds more than one room
@@ -219,7 +228,7 @@ async function main(argv: string[]): Promise<number> {
         case 'list':
             return listRooms(store, values);
         case 'find':
-            return findCommand(store, values);
+            return positionals[1] === 'online' ? findOnline(store, values) : findCommand(store, values);
         case 'name':
             return renameRoom(store, values, positionals[1], positionals.slice(2).join(' '));
         case 'rename-self':
@@ -446,6 +455,27 @@ async function findCommand(store: LocalStore, values: Values): Promise<number> {
     } else {
         out(formatFoundRooms(result));
     }
+    return 0;
+}
+
+async function findOnline(store: LocalStore, values: Values): Promise<number> {
+    const {server, rooms} = await onlineRooms(store);
+    if (flag(values, 'json')) {
+        json({server, count: rooms.length, rooms});
+        return 0;
+    }
+    if (rooms.length === 0) {
+        out('Your account has no rooms yet. Create one with: pairlobby create online --name <name>');
+        return 0;
+    }
+    for (const room of rooms) {
+        const people = room.participants.map((participant) => `${participant.displayName}${participant.kind === 'agent' ? ' (agent)' : ''}`).join(', ') || 'nobody joined';
+        const state = room.lifecycle === 'open' ? '' : ` · ${room.lifecycle}`;
+        out(`${room.name}  ${room.roomId}${room.owner ? ' · yours' : ''}${room.private ? ' · private' : ''}${state}`);
+        out(`  ${people}`);
+    }
+    out('');
+    out('Join from this device: pairlobby join online <room name or id> [--runtime codex|claude|qwen]');
     return 0;
 }
 
@@ -899,8 +929,9 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
     });
 
     const receiver = await enableReceiver(store, values, created.roomId, identity.sessionId);
+    const share = await joinCommand(serverUrl, created.invite.code);
     if (flag(values, 'json')) {
-        json({roomId: created.roomId, name, serverUrl, participantId: created.participantId, sessionId: identity.sessionId, invite: created.invite, ...localDetail(values), receiver});
+        json({roomId: created.roomId, name, serverUrl, shareServerUrl: share.target.localOnly ? null : share.target.serverUrl, joinCommand: share.command, participantId: created.participantId, sessionId: identity.sessionId, invite: created.invite, ...localDetail(values), receiver});
         return 0;
     }
     const detail = localDetail(values);
@@ -911,7 +942,10 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
         out(`Conversation: ${detail.conversationId}`);
     }
     out('');
-    out(online ? `  pairlobby join online ${created.invite.code}` : `  pairlobby join ${created.invite.code} --server ${serverUrl}`);
+    out(`  ${share.command}`);
+    if (share.target.localOnly) {
+        note(localOnlyNote(serverUrl));
+    }
     note('The controller credential for this room was stored on this device and is not printed.');
     return 0;
 }
@@ -923,12 +957,26 @@ async function joinRoom(store: LocalStore, values: Values, code?: string, online
     if (online && (str(values, 'server') || flag(values, 'local'))) {
         throw new UsageError('online cannot be combined with --server or --local');
     }
-    const serverUrl = online ? await resolveOnlineKey(store, code) : resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')});
+    const link = online ? null : parseJoinLink(code);
+    if (link && (str(values, 'server') || flag(values, 'local'))) {
+        throw new UsageError('a join link already names its server; drop --server or --local');
+    }
+    if (link) {
+        code = link.code;
+    }
+    // Online, a dash-grouped key is an invite; anything else names one of the account's own rooms.
+    const accountRoom = online && !isOnlineKey(code) ? await onlineRooms(store).then(({server, rooms}) => ({server, room: matchOnlineRoom(rooms, code)})) : null;
+    const serverUrl = accountRoom ? accountRoom.server : online ? await resolveOnlineKey(store, code) : (link?.serverUrl ?? resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')}));
     const identity = identityFrom(store, values, 'agent');
     const token = new URL(serverUrl).origin === onlineOrigin() ? accountToken(store) : undefined;
     const client = new PairLobbyClient(serverUrl, token);
+    const useInviteName = str(values, 'as') === undefined && !(identity.kind === 'human' && store.profile().displayName);
     // A room id and an invite code are not confusable, so one command takes either.
-    const joined = code.startsWith('rm_') ? await client.joinAsGuest(code, identity) : await client.redeemInvite(code, identity, undefined, str(values, 'as') === undefined && !(identity.kind === 'human' && store.profile().displayName));
+    const joined = accountRoom
+        ? await client.joinWithAccount(accountRoom.room.roomId, identity)
+        : code.startsWith('rm_')
+          ? await client.joinAsGuest(code, identity)
+          : await client.redeemInvite(code, identity, undefined, useInviteName);
     identity.displayName = joined.room.participants.find((participant) => participant.participantId === joined.participantId)?.displayName ?? identity.displayName;
 
     store.upsertRoom({
@@ -941,7 +989,7 @@ async function joinRoom(store: LocalStore, values: Values, code?: string, online
         sessions: store.room(joined.roomId)?.sessions ?? []
     });
     store.putCredential(joined.roomId, identity.sessionId, joined.participantCredential);
-    if (!code.startsWith('rm_')) {
+    if (!accountRoom && !code.startsWith('rm_')) {
         store.putSessionInvite(joined.roomId, identity.sessionId, code);
     }
     store.addSession(joined.roomId, {
@@ -1458,14 +1506,19 @@ async function invite(store: LocalStore, values: Values): Promise<number> {
     const lifetime = str(values, 'expires-in') !== undefined ? parseLifetime(str(values, 'expires-in')!) : store.settings().defaultInviteLifetimeMs;
     const expiresAt = lifetime === null ? null : Date.now() + lifetime;
     const minted = await client.mintInvite(room.roomId, credential, 'member', !flag(values, 'once'), expiresAt);
+    const share = await joinCommand(room.serverUrl, minted.code);
 
     if (flag(values, 'json')) {
-        json(minted);
+        json({...minted, shareServerUrl: share.target.localOnly ? null : share.target.serverUrl, joinCommand: share.command});
         return 0;
     }
     out(minted.code);
     const deadline = minted.expiresAt === null ? 'does not expire' : `must be used before ${new Date(minted.expiresAt).toLocaleString()}`;
     note(minted.reusable ? `one seat, reusable whenever nobody holds it — ${deadline}` : `single use — ${deadline}`);
+    note(`join with: ${share.command}`);
+    if (share.target.localOnly) {
+        note(localOnlyNote(room.serverUrl));
+    }
     return 0;
 }
 
@@ -1598,16 +1651,30 @@ async function closeRoom(store: LocalStore, values: Values): Promise<number> {
     return 0;
 }
 
+function parsePublicUrl(value: string): string {
+    let url: URL;
+    try {
+        url = new URL(value);
+    } catch {
+        throw new UsageError(`--public-url must be a full address such as https://laptop.tailnet.ts.net, not "${value}"`);
+    }
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
+        throw new UsageError('--public-url must be an http(s) origin with no path, credentials, query or fragment');
+    }
+    return url.origin;
+}
+
 async function serve(values: Values): Promise<number> {
     const {startServer} = await import('@pairlobby/local-server');
     const {dataDirectory} = await import('@pairlobby/client');
     const {join} = await import('node:path');
     const dataDir = str(values, 'data-dir') ?? dataDirectory();
-    const host = str(values, 'host') ?? '127.0.0.1';
+    const host = str(values, 'host') ?? (flag(values, 'lan') ? '0.0.0.0' : '127.0.0.1');
     const port = str(values, 'port') !== undefined ? Number(str(values, 'port')) : 8790;
+    const publicUrl = str(values, 'public-url') !== undefined ? parsePublicUrl(str(values, 'public-url')!) : undefined;
     let running;
     try {
-        running = await startServer({host, port, dataFile: join(dataDir, 'rooms.sqlite')});
+        running = await startServer({host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {})});
     } catch (error) {
         // Say what is wrong and what to do, rather than surfacing a raw errno. The
         // occupant is never probed: something else owning the port is not ours to poke.
@@ -1622,6 +1689,15 @@ async function serve(values: Values): Promise<number> {
         throw error;
     }
     out(`PairLobby server on ${running.url}`);
+    for (const url of running.shareUrls) {
+        out(`Other devices: pairlobby join <code> --server ${url}`);
+    }
+    if (flag(values, 'lan') && running.shareUrls.length === 0) {
+        note('no network address found; other devices cannot reach this server until this machine joins a network');
+    }
+    if (running.shareUrls.some((url) => url.startsWith('http:'))) {
+        note('Room traffic, including credentials, crosses the network unencrypted. Use --lan only on networks you trust, or reach this server through Tailscale.');
+    }
     out(`Data: ${running.dataFile}`);
     out('Press Ctrl+C to stop.');
     // Runs in the foreground: an auto-starting daemon is lifecycle complexity nobody has asked for yet.

@@ -82,6 +82,22 @@ export const RedeemInviteRequest = z.intersection(
 );
 export type RedeemInviteRequest = z.infer<typeof RedeemInviteRequest>;
 
+/**
+ * Joining a room the caller's account is already allowed into, from any of its
+ * devices, without an invite. Only servers with account login offer this; the
+ * account itself is proven outside this body.
+ */
+export const AccountJoinRequest = z.intersection(
+    identity,
+    z.object({
+        /** Stable across retries of the same join, so a lost response returns the same membership. */
+        attemptId: AttemptId,
+        attemptSecret: z.string().min(32).max(256),
+        participantCredential: z.string().min(32).max(256)
+    })
+);
+export type AccountJoinRequest = z.infer<typeof AccountJoinRequest>;
+
 export const RedeemInviteResponse = z.object({
     roomId: RoomId,
     participantId: ParticipantId,

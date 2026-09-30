@@ -23,6 +23,8 @@ $LogDir   = Join-Path $env:LOCALAPPDATA 'PairLobby\logs'
 $LogFile  = Join-Path $LogDir 'relay.log'
 $Launcher = Join-Path $Support 'relay-launch.vbs'
 $RelayHost = if ($env:PAIRLOBBY_HOST) {$env:PAIRLOBBY_HOST} else {'127.0.0.1'}
+# A relay on every interface (for other devices on the network) still answers on loopback.
+$ProbeHost = if ($RelayHost -in @('0.0.0.0', '::')) {'127.0.0.1'} else {$RelayHost}
 $Port      = if ($env:PAIRLOBBY_PORT) {$env:PAIRLOBBY_PORT} else {'8790'}
 
 function Test-Relay {
@@ -31,7 +33,7 @@ function Test-Relay {
     # not have bound the port yet.
     foreach ($attempt in 1..3) {
         try {
-            Invoke-WebRequest -Uri "http://${RelayHost}:$Port/v1/rooms" -TimeoutSec 2 -UseBasicParsing | Out-Null
+            Invoke-WebRequest -Uri "http://${ProbeHost}:$Port/v1/rooms" -TimeoutSec 2 -UseBasicParsing | Out-Null
             return $true
         } catch [System.Net.WebException] {
             if ($_.Exception.Response) {return $true}
