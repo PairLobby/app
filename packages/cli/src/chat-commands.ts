@@ -1,6 +1,7 @@
 import {ParticipantName, ProtocolError} from '@pairlobby/protocol';
 import type {RoomSnapshot} from '@pairlobby/protocol';
 import type {PairLobbyClient} from '@pairlobby/client';
+import {joinCommand} from './share.js';
 import {formatTurnQueue, runTurnCommand} from './turn-commands.js';
 
 export type RoomCommandContext = {
@@ -53,7 +54,9 @@ export async function runRoomCommand(line: string, context: RoomCommandContext):
         }
         const defaultName = argument ? argument.slice(3).trim() : undefined;
         const invite = await client.mintInvite(roomId, credential, defaultName ? 'member' : 'guest', true, undefined, defaultName);
-        return `Invite: ${invite.code} — ${defaultName ? `participant, default name: ${defaultName}` : 'read-only observer'}`;
+        const share = await joinCommand(client.serverUrl, invite.code);
+        const reach = share.target.localOnly ? ' (this device only; restart the server with pairlobby serve --lan to share it)' : '';
+        return `Invite: ${invite.code} — ${defaultName ? `participant, default name: ${defaultName}` : 'read-only observer'} · ${share.command}${reach}`;
     }
     const owner = controllerCredential ?? (member.role === 'controller' ? credential : undefined);
     if (!owner) {

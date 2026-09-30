@@ -36,8 +36,15 @@ export interface RouterOptions {
      * page reaching for loopback.
      */
     allowedOrigins?: string[];
-    /** Exact `Host` values to accept, defeating DNS rebinding against a local server. */
-    allowedHosts?: string[];
+    /** `Host` values to accept, defeating DNS rebinding against a local server. */
+    allowedHosts?: string[] | ((host: string) => boolean);
+    /** Answers `GET /v1/server`; absent means the path is unknown. */
+    serverInfo?: () => ServerInfo;
+}
+
+export interface ServerInfo {
+    /** Addresses other devices can use to reach this server; empty when it only listens on this device. */
+    shareUrls: string[];
 }
 
 const JSON_HEADERS = {'content-type': 'application/json; charset=utf-8', [PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)};
@@ -50,6 +57,9 @@ export function createRouter(options: RouterOptions): (request: Request) => Prom
             const guard = checkHeaders(request, options);
             if (guard) {
                 return guard;
+            }
+            if (options.serverInfo && request.method.toUpperCase() === 'GET' && new URL(request.url).pathname === '/v1/server') {
+                return json(options.serverInfo());
             }
             return await route(request, service);
         } catch (error) {
@@ -225,7 +235,8 @@ function checkHeaders(request: Request, options: RouterOptions): Response | null
         return errorResponse('unauthorized', 'this origin may not call this server', 401);
     }
     const host = request.headers.get('host');
-    if (options.allowedHosts && host !== null && !options.allowedHosts.includes(host)) {
+    const allowedHosts = options.allowedHosts;
+    if (allowedHosts && host !== null && !(typeof allowedHosts === 'function' ? allowedHosts(host) : allowedHosts.includes(host))) {
         return errorResponse('unauthorized', 'unexpected host header', 401);
     }
     return null;

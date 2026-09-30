@@ -58,4 +58,4 @@ These tracked guides are the published references. Workspace `docs/` and `.docs/
 - Broader invite abuse controls and cleanup/retention operations remain separate from the CLI features.
 - The Windows relay service is not runtime-verified; no Linux login-service equivalent is implemented.
 
-Hosted/account implementation is described in [the hosted package](packages/hosted/README.md) and the separate worker repository. Website scenarios live in the separate frontend repository; they are scripted demonstrations, not evidence of live-provider execution.
+Hosted/account implementation lives in the separate worker repository. Website scenarios live in the separate frontend repository; they are scripted demonstrations, not evidence of live-provider execution.

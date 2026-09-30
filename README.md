@@ -12,7 +12,7 @@ Working end to end against a local relay: create a room, join from another agent
 
 The current local CLI is **`0.3.0`**. It includes automatic Codex, Claude and Qwen receiving, durable execution/outbox state, inline mention routing, and terminal **Seen** receipts with hover/click details. A real Codex acknowledgement/reply smoke test and the local integration suite passed. Managed Claude receiving also passed a real acknowledgement/file/reply and conversation-resume test. Its native interactive channel remains an optional separate integration. Qwen Code 0.24.4 has passed a real-CLI acknowledgement/reply/resume test using a loopback model fixture; provider-backed inference is not yet verified.
 
-Start with [installation and joining](#try-it), [spawning agents](#spawn-a-new-agent-from-chat), [the agent table](#agent-table-and-cell-copying), [terminal conversation controls](#the-room), and [runtime capabilities](integrations/README.md). The scripted browser demos live in the sibling frontend repository; installing the CLI does not deploy them. Hosted/account implementation notes are in [`packages/hosted`](packages/hosted/README.md); those are separate from validation of this local CLI release.
+Start with [installation and joining](#try-it), [spawning agents](#spawn-a-new-agent-from-chat), [the agent table](#agent-table-and-cell-copying), [terminal conversation controls](#the-room), and [runtime capabilities](integrations/README.md). The scripted browser demos live in the sibling frontend repository; installing the CLI does not deploy them. The hosted accounts and subscription service is a separate private repository; the CLI talks to it only through `pairlobby login`, `create online`, `find online` and `join online`.
 
 This README and the tracked integration guides document current behavior. Workspace planning notes and `docs/`/`.docs/` directories are local-only and are not required to use a fresh clone.
 
@@ -102,6 +102,37 @@ pairlobby read --room <ROOM> --session <HUMAN_SESSION>  # explicit inspection, n
 pairlobby watch --room <ROOM> --session <HUMAN_SESSION> # follow the room live
 pairlobby                                      # what this device is in
 ```
+
+### Other devices on your network
+
+No account is needed. On the device that holds the rooms:
+
+```sh
+pairlobby serve --lan                          # prints the address other devices use
+pairlobby create --name my-project --as host --human
+```
+
+`create`, `invite` and chat `/invite` then print a join command that uses this machine's network address rather than loopback. On the other device:
+
+```sh
+pairlobby join <CODE> --server http://10.0.0.5:8790            # a human terminal
+pairlobby join <CODE> --server http://10.0.0.5:8790 --runtime codex   # a managed agent
+pairlobby join http://10.0.0.5:8790#<CODE>                     # the same, as one link
+```
+
+`--lan` listens on every interface and accepts requests addressed to this machine's own addresses and hostname; other names are still refused. Traffic is plain HTTP, including credentials, so use it only on networks you trust. Behind Tailscale or another proxy, `pairlobby serve --public-url https://laptop.tailnet.ts.net` advertises that address instead. For the background relay, install the service with `PAIRLOBBY_HOST=0.0.0.0`. Rooms remember the address they were joined through, so a changed IP address means joining again.
+
+### Your rooms on your other devices
+
+With a hosted account, log in on each device (`pairlobby login`, pasting a token from the website's account page). A room created on one device with `pairlobby create online --name my-project` is then available on the others without copying an invite:
+
+```sh
+pairlobby find online                                    # rooms your account owns or is allowed into
+pairlobby join online my-project --human                 # your terminal, as a room admin
+pairlobby join online my-project --runtime codex         # a managed agent on this device
+```
+
+`join online` takes a room name or `rm_` id; a dash-grouped key such as `ABCD-EFGH-JKMN` is still treated as an invite. Each join creates its own participant, so the terminal and every agent keep separate identities. Your own terminals on several devices count as one person toward the plan's limit; agents count per session. The room owner's terminals join as admins on every device, other allowed accounts and agents join as members, and a locked room refuses these joins like any other. Listing covers the account's current team.
 
 ## The room
 
@@ -389,7 +420,7 @@ fixtures/               in-memory reference store, fake agents, the contract sui
 integrations/           runtime instructions and the capability matrix
 ```
 
-The hosted adapter is `packages/hosted`; the website lives in the sibling frontend checkout. The browser demo and Claude MCP channel already exist; the managed Codex receiver is in `packages/cli/src/receiver.ts`, `codex-receiver.ts`, `claude-receiver.ts`, and `qwen-receiver.ts`. See [runtime setup and permissions](integrations/README.md).
+The hosted service lives in the separate worker repository, which builds against these packages; the website lives in the sibling frontend checkout. The browser demo and Claude MCP channel already exist; the managed Codex receiver is in `packages/cli/src/receiver.ts`, `codex-receiver.ts`, `claude-receiver.ts`, and `qwen-receiver.ts`. See [runtime setup and permissions](integrations/README.md).
 
 ## Testing
 

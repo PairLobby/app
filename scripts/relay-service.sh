@@ -16,6 +16,8 @@ LOGS="$HOME/Library/Logs/PairLobby"
 LAUNCHER="$SUPPORT/relay-launch.sh"
 PORT="${PAIRLOBBY_PORT:-8790}"
 HOST="${PAIRLOBBY_HOST:-127.0.0.1}"
+# A relay on every interface (PAIRLOBBY_HOST=0.0.0.0, for other devices on the network) still answers on loopback.
+case "$HOST" in 0.0.0.0|::) PROBE_HOST=127.0.0.1 ;; *) PROBE_HOST="$HOST" ;; esac
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLI="$REPO/packages/cli/dist/main.js"
@@ -34,7 +36,7 @@ relay_responds() {
     local attempt code
     for attempt in 1 2 3; do
         code=0
-        curl -fsS -o /dev/null -m 2 "http://$HOST:$PORT/v1/rooms" 2>/dev/null || code=$?
+        curl -fsS -o /dev/null -m 2 "http://$PROBE_HOST:$PORT/v1/rooms" 2>/dev/null || code=$?
         # 7 is "connection refused". Any HTTP reply, including the 404 this path
         # returns, means something is listening and speaking the protocol.
         [ "$code" -ne 7 ] && return 0

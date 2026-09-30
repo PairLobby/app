@@ -4,7 +4,7 @@
 
 import {request as httpRequest} from 'node:http';
 import {mkdtempSync, rmSync} from 'node:fs';
-import {tmpdir} from 'node:os';
+import {hostname, networkInterfaces, tmpdir} from 'node:os';
 import {join} from 'node:path';
 
 import {PROTOCOL_VERSION_HEADER, newCredential, newId} from '@pairlobby/protocol';
@@ -50,9 +50,9 @@ async function createRoom(baseUrl = server.url) {
     return {roomId: body.room.roomId, participantId: body.participantId, invite: body.invite, controllerCredential, participantCredential};
 }
 
-function rawGet(path: string, headers: Record<string, string>): Promise<HttpStatusResult> {
+function rawGet(path: string, headers: Record<string, string>, port = server.port): Promise<HttpStatusResult> {
     return new Promise((resolve, reject) => {
-        const outgoing = httpRequest({host: '127.0.0.1', port: server.port, path, method: 'GET', headers}, (incoming) => {
+        const outgoing = httpRequest({host: '127.0.0.1', port, path, method: 'GET', headers}, (incoming) => {
             incoming.resume();
             incoming.on('end', () => resolve({status: incoming.statusCode ?? 0}));
         });
@@ -187,5 +187,56 @@ describe('local server over http', () => {
         };
         expect(page.events.some((event) => event.type === 'message')).toBe(true);
         await second.close();
+    });
+});
+
+function networkAddresses(): string[] {
+    return Object.values(networkInterfaces()).flatMap((addresses) => (addresses ?? []).filter((address) => address.family === 'IPv4' && !address.internal).map((address) => address.address));
+}
+
+describe('local server shared with other devices', () => {
+    test('test_a_loopback_server_has_nothing_to_share', async () => {
+        const response = await call('/v1/server');
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({shareUrls: []});
+        expect(server.shareUrls).toEqual([]);
+    });
+
+    test('test_a_server_on_every_interface_answers_to_its_own_addresses_only', async () => {
+        const lan = await startServer({host: '0.0.0.0', port: 0, dataFile: join(directory, 'lan.sqlite')});
+        try {
+            expect(lan.url).toBe(`http://127.0.0.1:${lan.port}`);
+            const room = await createRoom(lan.url);
+            const authorization = `Bearer ${room.controllerCredential}`;
+            for (const name of [hostname(), ...networkAddresses()]) {
+                expect((await rawGet(`/v1/rooms/${room.roomId}`, {authorization, host: `${name}:${lan.port}`}, lan.port)).status).toBe(200);
+            }
+            expect((await rawGet(`/v1/rooms/${room.roomId}`, {authorization, host: `rebound.example:${lan.port}`}, lan.port)).status).toBe(401);
+            expect((await rawGet(`/v1/rooms/${room.roomId}`, {authorization, host: `${hostname()}:${lan.port + 1}`}, lan.port)).status).toBe(401);
+        } finally {
+            await lan.close();
+        }
+    });
+
+    test('test_a_server_on_every_interface_shares_its_network_addresses', async () => {
+        const lan = await startServer({host: '0.0.0.0', port: 0, dataFile: join(directory, 'lan-share.sqlite')});
+        try {
+            const expected = networkAddresses().map((address) => `http://${address}:${lan.port}`);
+            expect(lan.shareUrls).toEqual(expected);
+            expect(await (await fetch(`${lan.url}/v1/server`)).json()).toEqual({shareUrls: expected});
+        } finally {
+            await lan.close();
+        }
+    });
+
+    test('test_a_public_url_is_shared_and_accepted_as_host', async () => {
+        const proxied = await startServer({port: 0, dataFile: join(directory, 'proxied.sqlite'), publicUrl: 'https://laptop.tailnet.example/'});
+        try {
+            expect(proxied.shareUrls).toEqual(['https://laptop.tailnet.example']);
+            const room = await createRoom(`http://127.0.0.1:${proxied.port}`);
+            expect((await rawGet(`/v1/rooms/${room.roomId}`, {authorization: `Bearer ${room.controllerCredential}`, host: 'laptop.tailnet.example'}, proxied.port)).status).toBe(200);
+        } finally {
+            await proxied.close();
+        }
     });
 });

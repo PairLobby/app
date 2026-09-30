@@ -97,10 +97,15 @@ export function select(store: LocalStore, roomRef?: string, sessionRef?: string)
 
 export function controllerCredential(store: LocalStore, room: RoomEntry): string {
     const credential = store.credential(room.roomId, 'controller');
-    if (!credential) {
+    if (credential) {
+        return credential;
+    }
+    // The owner joining from another device holds an admin membership instead; the relay decides what it may do.
+    const admin = room.sessions.find((session) => session.role === 'controller' && store.credential(room.roomId, session.sessionId));
+    if (!admin) {
         throw new UsageError(`this device does not hold the controller credential for ${room.name}`);
     }
-    return credential;
+    return store.credential(room.roomId, admin.sessionId)!;
 }
 
 /** Resolves a recipient by participant id or unambiguous display name. */
