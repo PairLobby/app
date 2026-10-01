@@ -80,6 +80,7 @@ export function toSnapshot(view: RoomView): RoomSnapshot {
     return {
         roomId: view.room.roomId,
         messageReceiptScope: 'members',
+        messageStagesSupported: true,
         rejoinSupported: true,
         renameSelfSupported: true,
         adminRolesSupported: true,

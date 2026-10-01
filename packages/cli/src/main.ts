@@ -7,13 +7,14 @@
 //! listing a room can never disclose one.
 
 import {readFileSync} from 'node:fs';
+import {join} from 'node:path';
 import {spawn} from 'node:child_process';
 import release from './release.json' with {type: 'json'};
 import {userInfo} from 'node:os';
 import {parseArgs} from 'node:util';
 
 import {LocalStore, PairLobbyClient, openRequests, owedByMe, unreceipted} from '@pairlobby/client';
-import {ParticipantName, ProtocolError, requestState, newId} from '@pairlobby/protocol';
+import {ParticipantName, ProtocolError, requestState, newId, MessageAction} from '@pairlobby/protocol';
 import type {AdapterCapabilities} from '@pairlobby/protocol';
 
 import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
@@ -36,6 +37,8 @@ import {spawnAgent, formatSpawnResult} from './spawn-agent.js';
 import {parseSpawnOptions, SPAWN_HELP} from './spawn-options.js';
 import {RoomBrowser} from './room-browser.js';
 import {ROOM_COLUMNS, loadRoomList, roomListJson, roomRows, sortListRows} from './room-list.js';
+import {waitForReply} from './reply-wait.js';
+import {suspendedReplyParents} from './reply-watches.js';
 
 type LocalIdentity = {nameSource: 'room' | 'profile'; displayName: string; kind: 'agent' | 'human'; sessionId: string; capabilities?: AdapterCapabilities};
 
@@ -147,6 +150,11 @@ const HELP = `pairlobby
   pairlobby read                     read new events for this session
   pairlobby read --wait 300          block until something is addressed to you
   pairlobby watch                    follow the room live as events arrive
+  pairlobby wait-reply <delivery-id>  wait for an exact outgoing reply; --wait seconds (default 30)
+  pairlobby message-status <id> <read|working|waiting|no-action|declined>
+                                    explicitly report your stage; --reason for waiting/decisions
+  pairlobby link-answer <request-id> <answer-id>
+                                    attach your existing unthreaded answer to its request
   pairlobby session                  this session's id and runtime conversation
   pairlobby profile --as <name> --human
                                      set defaults so plain "join <code>" works
@@ -331,6 +339,12 @@ async function main(argv: string[]): Promise<number> {
             return readEvents(store, values);
         case 'watch':
             return watchRoom(store, values);
+        case 'wait-reply':
+            return waitReplyCommand(store, values, positionals[1]);
+        case 'message-status':
+            return messageStatusCommand(store, values, positionals[1], positionals[2]);
+        case 'link-answer':
+            return messageStatusCommand(store, values, positionals[1], 'done', positionals[2]);
         case 'chat':
             return chatRoom(store, values);
         case 'session':
@@ -1145,6 +1159,27 @@ async function sendMessage(store: LocalStore, values: Values, text: string): Pro
     return timedOut ? 1 : 0;
 }
 
+async function messageStatusCommand(store: LocalStore, values: Values, eventId?: string, status?: string, responseEventId?: string): Promise<number> {
+    const action = status?.replaceAll('-', '_');
+    if (!eventId || !/^ev_[0-9A-Z]{26}$/.test(eventId) || !action || (action !== 'read' && !MessageAction.safeParse(action).success) || (action === 'done' && (!responseEventId || !/^ev_[0-9A-Z]{26}$/.test(responseEventId)))) {
+        throw new UsageError('Use message-status <delivery-id> read|working|waiting|no-action|declined, or link-answer <request-id> <answer-id>.');
+    }
+    const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    const reason = str(values, 'reason');
+    const turnToken = str(values, 'turn-token');
+    try {
+        await client.reportMessageStatus(room.roomId, credential, eventId, action as MessageAction | 'read', {...(reason ? {reason} : {}), ...(turnToken ? {turnToken} : {}), ...(responseEventId ? {responseEventId} : {})});
+        if (flag(values, 'json')) {
+            json({eventId, state: action, ...(responseEventId ? {responseEventId} : {}), furtherActionExpected: action === 'read' ? null : !['done', 'no_action', 'declined'].includes(action)});
+        } else {
+            out(`${action.replaceAll('_', ' ')} recorded for ${eventId}${responseEventId ? `; answer ${responseEventId} linked` : ''}`);
+        }
+        return 0;
+    } finally {
+        client.closeLive();
+    }
+}
+
 async function receiptMessage(store: LocalStore, values: Values, eventId?: string): Promise<number> {
     if (!eventId) {
         throw new UsageError('receipt requires an event id');
@@ -1200,7 +1235,8 @@ async function guardStop(store: LocalStore, values: Values): Promise<number> {
     }
     try {
         const {room, credential, client, session} = select(store, str(values, 'room'), str(values, 'session'));
-        const pending = (await client.pendingRequests(room.roomId, credential, session.participantId)).filter((request) => !request.turnRequired);
+        const suspended = suspendedReplyParents(join(store.directory, 'receivers', session.sessionId));
+        const pending = (await client.pendingRequests(room.roomId, credential, session.participantId)).filter((request) => !request.turnRequired && !suspended.has(request.eventId));
         if (pending.length && repeated) {
             for (const request of pending)
                 await client.deliveryFailed(
@@ -1330,11 +1366,46 @@ async function chatRoom(store: LocalStore, values: Values): Promise<number> {
     });
 }
 
-/**
- * Follows a room live. This polls, because there is no push channel yet: the
- * relay knows about a new event long before this loop asks for it. Hosted relays use WebSocket
- * notifications; local relays keep this polling interval.
- */
+/** A bounded exact-reply check; the timeout does not fail the room request. */
+async function waitReplyCommand(store: LocalStore, values: Values, requestId?: string): Promise<number> {
+    if (!requestId || !/^ev_[A-Z0-9]+$/.test(requestId)) {
+        throw new UsageError('wait-reply requires an outgoing recipient delivery ID');
+    }
+    const seconds = Number(str(values, 'wait') ?? 30);
+    if (!Number.isFinite(seconds) || seconds < 0 || seconds > 1800) {
+        throw new UsageError('--wait must be between 0 and 1800 seconds');
+    }
+    const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    client.closeLive();
+    const abort = new AbortController();
+    const stop = () => abort.abort();
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+    try {
+        const outcome = await waitForReply({serverUrl: room.serverUrl, roomId: room.roomId, participantId: session.participantId, credential, requestId, seconds, signal: abort.signal});
+        if (flag(values, 'json')) {
+            json({...outcome, retryable: outcome.state === 'pending'});
+        } else if (outcome.state === 'pending') {
+            out('Still waiting. The wait window ended normally; the request remains pending.');
+        } else {
+            out(`${outcome.state}: ${outcome.text ?? outcome.reason ?? outcome.requestId}`);
+        }
+        return outcome.state === 'unavailable' || outcome.state === 'failed' ? 1 : 0;
+    } catch (error) {
+        if (!abort.signal.aborted) {
+            throw error;
+        }
+        if (flag(values, 'json')) {
+            json({requestId, state: 'stopped', reason: 'Local wait cancelled; the room request is unchanged.'});
+        }
+        return 0;
+    } finally {
+        process.removeListener('SIGINT', stop);
+        process.removeListener('SIGTERM', stop);
+    }
+}
+
+/** Follow the full transcript. Hosted relays use socket notifications; local relays poll. */
 async function watchRoom(store: LocalStore, values: Values): Promise<number> {
     const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     const intervalMs = str(values, 'interval') !== undefined ? Number(str(values, 'interval')) : 1000;
@@ -1374,6 +1445,20 @@ async function watchRoom(store: LocalStore, values: Values): Promise<number> {
             throw error;
         }
         if (page.events.length > 0) {
+            const member = snapshot.participants.find((person) => person.participantId === session.participantId);
+            if (member?.kind === 'agent' && member.role !== 'guest' && !member.left && !member.revoked && snapshot.lifecycle === 'open') {
+                try {
+                    for (const event of unreceipted(page.events, session.participantId, snapshot.messageReceiptScope === 'members')) {
+                        await client.acknowledgeMessage(room.roomId, credential, event.eventId);
+                    }
+                } catch (error) {
+                    if (error instanceof ProtocolError && error.code === 'server_unavailable') {
+                        await sleep(Math.max(intervalMs, 1000));
+                        continue;
+                    }
+                    throw error;
+                }
+            }
             cursor = page.events.at(-1)!.seq;
             store.updateCursor(room.roomId, session.sessionId, cursor);
             for (const event of page.events) {

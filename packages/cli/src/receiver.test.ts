@@ -63,9 +63,11 @@ test.each(['codex', 'claude', 'qwen'])('%s CLI joins receive asynchronously and 
         await sleep(1200);
         expect(calls()).toEqual([]);
         await waitFor(async () => (await client.request(host.roomId, host.participantCredential, sent.event.eventId)).receivedAt !== null);
+        expect((await client.request(host.roomId, host.participantCredential, sent.event.eventId)).readAt).toBeUndefined();
         await client.setMuted(host.roomId, host.controllerCredential, joined.participantId, false);
         await waitFor(async () => Boolean((await client.request(host.roomId, host.participantCredential, sent.event.eventId)).responseEventId));
         expect((await client.request(host.roomId, host.participantCredential, sent.event.eventId)).receivedAt).not.toBeNull();
+        expect((await client.request(host.roomId, host.participantCredential, sent.event.eventId)).readAt).toBeTypeOf('number');
         const reportedModel = runtime === 'claude' ? 'claude-opus-5-5' : runtime === 'qwen' ? 'qwen3-coder-plus' : 'fixture-model';
         expect((await command(['receiver', 'status', ...scope])).model).toBe(reportedModel);
         await client.send(host.roomId, host.participantCredential, request);
@@ -121,6 +123,9 @@ test.each(['codex', 'claude', 'qwen'])('%s CLI joins receive asynchronously and 
             const state = JSON.parse(readFileSync(join(environment.PAIRLOBBY_DATA_DIR, 'receivers', joined.sessionId, 'qwen-session.json'), 'utf8'));
             expect(state.completed).toBe(false);
         }
+        const decision = await client.send(host.roomId, host.participantCredential, {...request, idempotencyKey: 'decision', payload: {text: 'no-action-fixture', priority: 'normal'}});
+        await waitFor(async () => (await client.request(host.roomId, host.participantCredential, decision.event.eventId)).action === 'no_action');
+        expect(await client.request(host.roomId, host.participantCredential, decision.event.eventId)).toMatchObject({requiresReply: false, responseEventId: null, readAt: expect.any(Number), actionReason: 'No further work needed'});
     } finally {
         if (joined) {
             await command(['receiver', 'stop', '--room', joined.roomId, '--session', joined.sessionId]);

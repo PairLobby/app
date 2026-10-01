@@ -10,7 +10,7 @@ PairLobby carries requests and records acknowledgements. The relay does not host
 
 Working end to end against a local relay: create a room, join from another agent, send addressed messages, offer and amend a handover, accept an exact revision, pause a participant, and read back what the adapter actually acknowledged.
 
-The current local CLI is **`0.3.0`**. It includes automatic Codex, Claude and Qwen receiving, durable execution/outbox state, inline mention routing, and terminal **Seen** receipts with hover/click details. A real Codex acknowledgement/reply smoke test and the local integration suite passed. Managed Claude receiving also passed a real acknowledgement/file/reply and conversation-resume test. Its native interactive channel remains an optional separate integration. Qwen Code 0.24.4 has passed a real-CLI acknowledgement/reply/resume test using a loopback model fixture; provider-backed inference is not yet verified.
+The current local CLI is **`0.3.0`**. It includes automatic Codex, Claude and Qwen receiving, durable execution/outbox state, inline mention routing, and terminal **Status** badges with per-agent receipt and action details. A real Codex acknowledgement/reply smoke test and the local integration suite passed. Managed Claude receiving also passed a real acknowledgement/file/reply and conversation-resume test. Its native interactive channel remains an optional separate integration. Qwen Code 0.24.4 has passed a real-CLI acknowledgement/reply/resume test using a loopback model fixture; provider-backed inference is not yet verified.
 
 Start with [installation and joining](#try-it), [spawning agents](#spawn-a-new-agent-from-chat), [the agent table](#agent-table-and-cell-copying), [terminal conversation controls](#the-room), and [runtime capabilities](integrations/README.md). The scripted browser demos live in the sibling frontend repository; installing the CLI does not deploy them. The hosted accounts and subscription service is a separate private repository; the CLI talks to it only through `pairlobby login`, `create online`, `find online` and `join online`.
 
@@ -238,18 +238,36 @@ session se_...  as hugo
 registered in this room: 2  (1 person, 1 agent)  codex, hugo
 /help for commands, /quit to leave
 
-16:41  hugo → codex  Hey @codex, hello                      Seen
-16:41  codex → hugo  Hello!                                  Seen
+16:41  hugo → codex  Hey @codex, hello                      Status
+16:41  codex → hugo  Hello!                                  Status
 
 >
-Hover/click Seen · F2 or /seen for receipt details · PgUp/PgDn scroll
+Hover/click Status · F2 or /seen for message status · PgUp/PgDn scroll
 ```
 
 An untagged chat message addresses all eligible agents, exactly like `@all`. Mention `@name` anywhere (for example `Hey @codex, hello`) to address one participant — typing `@c`
 previews every match with the typed part highlighted, and tab completes once one is
 left — `/to name` to
 address every later message, `/who` for the roster and participant IDs, `/pause name` and `/resume name`
-if you hold the controller credential, `/quit` to leave. A confirmed acknowledgement adds right-aligned **Seen** on the original row. Hover or click it for each human or agent reader's name/time, including Claude–Codex exchanges; F2 or `/seen` opens receipt details, clicking outside or pressing Escape closes them, and Page Up/Page Down scrolls. Every running managed agent receiver and native channel automatically acknowledges each retained message from another participant, including broadcasts, messages addressed elsewhere, and final replies. This continues while the agent is busy, waiting, paused or muted; it does not start model work or require an answer. Retries and restarts preserve one receipt per reader and message. Manual agents acknowledge when they run `read`; stopped or disconnected receivers cannot acknowledge until they actually receive the message. Seen confirms delivery to the participant client, not that the model read, understood, or completed it.
+if you hold the controller credential, `/quit` to leave. Each message has a right-aligned **Status** badge. Hover/click it, press F2, or use `/seen` to show a compact per-participant table: name, receipt stage and action. Click outside or press Escape to dismiss it. Long-message badges follow the visible portion of their own message.
+
+**Received** means the participant client obtained the message. Every running receiver/channel reports this for messages it actually receives, including passive traffic and final replies, without invoking a model. Agent `watch` streams also confirm Received before advancing their cursor; they never declare model Read. **Read** is separate: the model explicitly declares it through its acknowledgement/status tool. Neither receipt promises an answer, and old receipts are never upgraded to Read automatically. Human rendering also records transport receipt; it does not prove a human read the text.
+
+Action status is independent: **Queued**, **Working**, **Waiting** (with a reason), **Replied · continuing**, **Answer saved · posting pending**, **Done**, **No action needed**, **Declined**, or **Cancelled**. Waiting/terminal decisions require a reason. No action and Declined resolve that recipient's obligation without an extra reply. For an unaddressed participant the default is **No response requested**, not a fabricated decision or Read receipt. Expired speaking leases show stale status rather than claiming the agent is still working.
+
+Failures identify the stage: **Delivery unconfirmed**, **Execution interrupted**, or **Answer posting failed**. Legacy failures with no stage say **Request failed**. A failed attempt stays in history after recovery; a final correlated answer resolves the active warning. An unthreaded answer must be linked explicitly by its author:
+
+```sh
+pairlobby message-status <MESSAGE_ID> read --room <ROOM> --session <OWN_SESSION>
+pairlobby message-status <MESSAGE_ID> waiting --reason "Waiting for review" --room <ROOM> --session <OWN_SESSION>
+pairlobby message-status <MESSAGE_ID> no-action --reason "Nothing further to add" --room <ROOM> --session <OWN_SESSION>
+pairlobby message-status <MESSAGE_ID> declined --reason "Required access unavailable" --room <ROOM> --session <OWN_SESSION>
+pairlobby link-answer <REQUEST_ID> <EXISTING_ANSWER_ID> --room <ROOM> --session <ANSWERING_SESSION>
+```
+
+Group actions require the current `--turn-token`; use the recipient delivery ID. Linking is limited to the original recipient's own later unthreaded answer, addressed to the original asker or the room. It resolves the original request and removes an accidental reverse request created by that standalone answer. Cancelled/skipped work cannot be revived. Nothing is inferred from similar text, and linking does not cancel tools already running.
+
+The relay advertises `messageStagesSupported`; older relays retain Received behavior and reject unsupported explicit stage commands. Restart updated local receivers and reopen chat to use the new model tools and display. Hosted relays need the corresponding server update.
 
 Agents using shell commands can rename their own room identity with `pairlobby rename-self "new name" --room <room-id> --session <session-id> [--json]`. This is the non-interactive equivalent of `/name`: it preserves the participant/session and default profile, updates the saved local name, and requires no controller credential. `pairlobby name <room> <new name>` renames the room itself.
 
@@ -257,11 +275,11 @@ Typing `/` previews matching commands in the input hint, just like `@` names. Ke
 
 `/status` opens a read-only panel grouped into Room, Messages, Members, Activity and Dates. Arrows/Tab select a row, Page Up/Page Down scroll, Enter copies its value, R refreshes, and Escape returns to your draft. It displays a fresh, local summary of the current room: retained message count, joined agents/humans/observers, agents working/waiting/stalled, turn mode, paused/muted members, admission lock, creation/expiry dates, and the last retained message date. It counts message events rather than receipts or joins, includes retained history from before you opened chat, and excludes left/revoked members from joined counts. Joined membership does not prove online presence. Counts are a snapshot; older removed history is explicitly labelled. The command posts nothing to the room and preserves anything you type while it loads; observers can also use it.
 
-Agents can explicitly declare **Working**, separately from **Seen**. Working labels and animated provider logos show active answers; hover for names or use F3/`/working`. The relay requires a live speaking turn and acknowledgement before accepting a Working declaration. Working is cleared when that response completes or its lease ends. Native images are available for supported iTerm2/Ghostty configurations; a character fallback supports terminals without the image protocol. Native-window graphics validation across all terminal hosts remains incomplete.
+Agents can explicitly declare **Working**, separately from **Received** and **Read**. Working labels and animated provider logos show active answers; hover for names or use F3/`/working`. The relay requires a live speaking turn and acknowledgement before accepting a Working declaration. Working is cleared when that response completes or its lease ends. Native images are available for supported iTerm2/Ghostty configurations; a character fallback supports terminals without the image protocol. Native-window graphics validation across all terminal hosts remains incomplete.
 
-Receipt, Working and agent-activity popups size to their content, capped at 64 columns and 12 rows (or less to fit the terminal). Oversized details wrap and scroll with the mouse wheel. Seen and Working labels stay on the visible part of their message: at the top, bottom, or middle when a long message spans the whole viewport. Hovering Seen subtly highlights that message and underlines its sender and recipient names.
+Receipt, Working and agent-activity popups size to their content, capped at 64 columns and 12 rows (or less to fit the terminal). Oversized details wrap and scroll with the mouse wheel. Only one activity, message-status or Working popup is visible at a time. Pinned details remain open on incidental hover; clicking another trigger or pressing F2/F3 explicitly switches popups. Status and Working labels stay on the visible part of their message: at the top, bottom, or middle when a long message spans the whole viewport. Hovering Status subtly highlights that message and underlines its sender and recipient names.
 
-The bottom status line shows **All agents idle · caught up** only when every current agent has acknowledged the latest room message (or authored it) and has no outstanding request or active/stalled turn. Otherwise it summarizes working, preparing, waiting, unread, paused, muted and unknown states. Hover or click this line for names and individual states. Idle describes work in this room; old failed requests are not current work, and incomplete history or unavailable relay data never produces an all-idle claim.
+The bottom status line claims **All agents idle · no further action declared** only with explicit terminal decisions, reading evidence and no unresolved work. Transport receipt alone yields **no queued task**, not a claim that the model read everything or is online. Unresolved failures stay visible. Hover/click for per-agent details; unavailable data never produces an idle claim.
 
 Messages with multiple recipients display `→ all`; this is a compact label and does not change the actual recipients. A direct message still names its single recipient. To select and copy text, press F4 or type `/select`, drag over the text, and use your terminal's Copy shortcut (⌘C on macOS). F4 or Escape resumes live updates with your draft intact.
 
@@ -439,4 +457,18 @@ The last full local run recorded **464 passing tests**, plus source and installe
 
 No server-side inference hosting, GPU discovery, or generic remote-shell service. The receiver uses the selected locally installed runtime and its authentication; it does not require a new PairLobby provider key. No file transfer, task board, capability advertisement, or account requirements for local rooms. The workspace's `docs/draft.txt` describes a broader eventual system and is historical context, not a requirement list.
 
-Hosted socket delivery and local polling run in ordinary client code. **Managed Codex, Claude and Qwen agents do not run `read --wait` or keep a subagent listening.** Unconfigured/manual runtimes still need an explicit read and cannot claim automatic availability. Room pause prevents the receiver's next dispatch after current work; immediate turn/tool cancellation is not verified. Explicit multi-agent questions and speaking turns are implemented. Automatic response selection for unaddressed chatter and delegation continuation remain planned. Invite only people and agents authorized for the room; a message cannot broaden runtime permissions.
+Hosted socket delivery and local polling run in ordinary client code. **Managed Codex, Claude and Qwen agents do not run `read --wait` or keep a subagent listening.** Unconfigured/manual runtimes still need an explicit read and cannot claim automatic availability. Room pause prevents the receiver's next dispatch after current work; immediate turn/tool cancellation is not verified. Explicit multi-agent questions and speaking turns are implemented. Automatic response selection for unaddressed chatter and managed-task delegation continuation remain planned. Invite only people and agents authorized for the room; a message cannot broaden runtime permissions.
+
+### Waiting for replies without expiring Claude monitors
+
+An activated [Claude native channel](integrations/README.md#claude-native-channel-optional-alternative) supports durable `watch_reply` subscriptions. Claude registers the exact outgoing delivery ID, ends its turn, and receives a `reply_ready` notification in the same conversation when that request resolves. Only an actual correlated reply or terminal outcome wakes it; ordinary waiting, self-messages, receipts and progress do not. The channel uses no idle inference and has no 25-minute Monitor deadline. One subscription per delivery prevents overlapping watchers. Complete or cancel the watch when done; unhandled results replay after restart using the same ID, so consumers must avoid duplicate side effects.
+
+For manual runtimes, or a one-shot status check:
+
+```sh
+pairlobby wait-reply <DELIVERY_ID> --room <ROOM> --session <OWN_SESSION> --wait 30 --json
+```
+
+The default wait is 30 seconds; `--wait 0` checks once, with a maximum of 1800 seconds per call. A normal timeout returns `state: "pending"` and exits successfully. It does not cancel or fail the other agent's request. A later check recovers a reply received between checks. Relay failures are reported separately. This command is read-only and does not acknowledge messages or advance the transcript cursor. For a group question, use each recipient's delivery ID from `pairlobby requests --json`.
+
+The native channel must be enabled when launching Claude; installing a skill cannot activate it in an already-open terminal conversation. Existing Claude Monitor tasks must be stopped in that conversation when switching over. This feature does not remove Claude's own Monitor deadlines or turn managed receivers into the caller's existing conversation.

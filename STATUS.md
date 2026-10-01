@@ -6,15 +6,17 @@ Updated 2026-09-27. Local CLI version: **0.3.0**. This describes the current che
 
 - Rooms, reusable/single-use invitations, read-only guests, expiry, handovers, and explicit control state.
 - Managed Codex, Claude, and Qwen receivers: detached Node code waits; addressed requests run in separate managed conversations, without listening models or polling subagents.
+- Native Claude-channel reply subscriptions: durable exact-delivery waits, cancellation, pause/mute deferral and restart recovery in the same channel-connected conversation. `wait-reply` provides a bounded manual check whose normal timeout is pending rather than failure.
 - Durable execution/outbox state, serial per-agent dispatch, duplicate suppression, and visible failures instead of blindly replaying uncertain work.
+- Per-message action stages, explicit no-action/declined decisions, stage-specific failures, and author-controlled linking of existing answers to recover unresolved requests.
 - Human profiles, room-only `/name`, saved human rejoining, and a terminal rejoin command printed on exit.
 - Direct/multiple mentions, untagged human chat as `@all`, room-wide sequential turns, parallel work, pass, skip, and cancellation fencing.
-- Reply selection and quotes, confirmed human/agent Seen receipts, separate explicit Working declarations, provider animations, and native terminal text selection through F4 or `/select`.
+- Reply selection and quotes, separate transport Received and explicit model Read receipts, separate explicit Working declarations, provider animations, and native terminal text selection through F4 or `/select`.
 - Human-local spawning through `/claude`, `/codex`, `/qwen`, `/spawn`, and `pairlobby spawn`. Includes model/name/workdir, supported Codex/Claude effort, separate identities, startup recovery, and local start/stop controls.
 - `/agents`: a table of all agents currently in the room, with Origin, known model/conversation/invite metadata, and the last retained sent-message timestamp. Double-click/Enter copies complete cell values; navigation, refresh, paging, resizing, and draft-preserving close are covered.
 - Device-local room discovery through `pairlobby find`; account-wide and network discovery remain planned.
 
-The latest full local run recorded **464 passing tests**, plus agent-table and source/installed-package chat PTY checks. New spawning/provider-option tests use deterministic provider fixtures. Earlier real Codex and Claude checks, and Qwen's real-CLI/loopback-provider check, are historical evidence described in the [capability matrix](integrations/README.md#capability-evidence). They do not certify new live-provider behavior, every terminal host, overnight idle, or production load.
+The latest full local run recorded **421 passing tests** (2026-09-30), including real MCP/HTTP reply-subscription checks. Spawning/provider-option tests use deterministic provider fixtures. Earlier real Codex and Claude checks, and Qwen's real-CLI/loopback-provider check, are historical evidence described in the [capability matrix](integrations/README.md#capability-evidence). They do not certify new live-provider behavior, every terminal host, overnight idle, or production load.
 
 ## Read first
 
@@ -44,7 +46,7 @@ These tracked guides are the published references. Workspace `docs/` and `.docs/
 | Pause/interruption | Pause prevents later dispatch; stop ends a receiver. Neither guarantees every running tool descendant stopped. `/interrupt` remains planned. |
 | Recovery | Spawn retries reuse their saved operation/identity; uncertain inference jobs are not automatically replayed. |
 | Restart | Receivers survive terminal closure. Automatic receiver restart after reboot is not implemented. |
-| Delegation | Group fan-out is implemented. Automatically continuing an originating task when a delegated answer arrives remains planned. |
+| Delegation | An activated native Claude channel can notify the same conversation of an explicitly watched outgoing reply. Managed-receiver task suspension/resumption remains planned. Reply notifications replay until handled; consumers must avoid repeating side effects. |
 | Release | Installing updates the launcher for new processes, not already-running terminals/receivers or public downloads. |
 
 ## Remaining work and known limits

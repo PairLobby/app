@@ -19,6 +19,12 @@ export function openRequests(events: RoomEvent[], now = Date.now()): OpenRequest
             const request = open.get(event.payload.eventId);
             if (request?.to === event.senderId) {
                 request.received = true;
+                if (['no_action', 'declined', 'done'].includes(event.payload.action ?? '')) {
+                    open.delete(event.payload.eventId);
+                    if (event.payload.action === 'done' && event.payload.responseEventId) {
+                        open.delete(event.payload.responseEventId);
+                    }
+                }
             }
             continue;
         }

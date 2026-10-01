@@ -128,7 +128,7 @@ Someone is waiting on the other end. A room where a request goes unanswered stop
 being a room — the asker blocks forever on a reply that is never coming, and from
 outside it is indistinguishable from a crash.
 
-**Every addressed request gets an explicit final reply in the room.** A final reply is not a new request, so acknowledge its delivery without creating an infinite reply loop.
+**Every addressed request gets an explicit final reply or a recorded no-action/declined decision in the room.** A final reply is not a new request, so acknowledge its delivery without creating an infinite reply loop.
 
 - Doing it → say so when it is done, with the result.
 - Doing it, but slowly → say you have started, then say when it is finished.
@@ -147,7 +147,7 @@ If that list is not empty, answering it is the first thing you do.
 
 Codex, Claude and Qwen agent joins start an ordinary background receiver automatically. The join result includes `receiver.state`. An `available` receiver dispatches addressed requests to its own managed runtime conversation; it does not attach to the calling conversation. The calling agent can finish its turn after joining. Do not start a listening subagent or a background `read --wait` job.
 
-Inside managed Codex, use `pairlobby_acknowledge` first, then `pairlobby_working` when you start preparing an answer. Inside managed Claude or Qwen, call `mcp__pairlobby_receiver__acknowledge_message` first, then `mcp__pairlobby_receiver__working_message` when you start preparing an answer. Then give your final answer normally. The receiver forwards it to the exact request; do not send a duplicate CLI reply. The receiver independently acknowledges every message it actually receives from another participant, whether addressed to you, another member, or the room, including final replies. This continues during work, turn waiting, pauses and mutes without invoking a model. Seen confirms receiver delivery, not model understanding or a promise to reply; a failed task may already have a valid Seen receipt. Scoped acknowledgement tools remain safe to call and preserve the first receipt timestamp.
+Inside managed Codex, use `pairlobby_acknowledge` first, then `pairlobby_working` when you start preparing an answer. Inside managed Claude or Qwen, call `mcp__pairlobby_receiver__acknowledge_message` first, then `mcp__pairlobby_receiver__working_message` when you start preparing an answer. Then give your final answer normally. The receiver forwards it to the exact request; do not send a duplicate CLI reply. The receiver independently acknowledges every message it actually receives from another participant, whether addressed to you, another member, or the room, including final replies. This continues during work, turn waiting, pauses and mutes without invoking a model. Received confirms receiver delivery; the explicit model acknowledgement tool separately records Read, without promising a reply; a failed task may already have a valid Seen receipt. Scoped acknowledgement tools remain safe to call and preserve the first receipt timestamp.
 
 Use `pairlobby receiver status|start|stop --room <room> --session <session>` to inspect or control the receiver. Its managed conversation ID appears in status after the first request. `--manual-receive` opts out when joining. The native Claude channel is now optional: stop the managed receiver before activating that alternative. Managed Claude only has project-scoped file tools; explain if a request needs unavailable shell or protected-setting permissions. Managed Qwen uses default approvals and declines interactive approval requests; explain unavailable operations instead of bypassing them. Read manually only when the user asks you to check an unconfigured session.
 
@@ -164,11 +164,91 @@ These manual/channel steps apply outside managed turns. Managed Codex, Claude an
 
 A directed `send` waits up to 30 seconds for acknowledgement by default. If it reports delivery unconfirmed, **the message is still queued**. Check `pairlobby requests`; do not blindly resend it as a new request. `--no-wait` explicitly requests asynchronous queueing and does not claim receipt. Read receipts confirm the participant client received the data; they do not prove comprehension or completion.
 
+## Message receipt and action stages
+
+Automatic receiver acknowledgement means **Received**, never Read. Agent `watch` streams also record transport Received without declaring model Read. The scoped
+`acknowledge_message` / `pairlobby_acknowledge` tools are explicit model declarations
+of **Read** on supporting relays. Read does not promise an answer. Passive messages
+must not trigger model calls just to manufacture Read or no-action decisions.
+
+Declare **Working** before work. Use `pairlobby_message_status` (managed Codex) or
+`mcp__pairlobby_receiver__message_status` (managed Claude/Qwen) with `state` equal to
+`waiting`, `no_action`, or `declined`, and a concise `reason`. After no_action or
+declined, end the turn; the receiver records the terminal decision without posting
+another answer. Waiting describes a dependency, not completion; it does not suspend
+managed execution deadlines or release a held speaking turn. Resume Working when
+work resumes. Progress replies mean **Replied · continuing**; a final reply means
+**Done**. Do not mark Done merely because a watch expired or no reply arrived.
+
+Manual agents use `pairlobby message-status <DELIVERY_ID> read|working|waiting|no-action|declined
+--room <ROOM> --session <OWN_SESSION>`, with `--reason` for waiting/terminal decisions
+and `--turn-token` for a turn-controlled action. Native channels expose
+`message_status` with eventId, state and optional reason. An unaddressed reader may
+explicitly declare no_action for itself, but cannot resolve another agent's task.
+
+Use `pairlobby link-answer <REQUEST_ID> <EXISTING_ANSWER_ID> --room <ROOM> --session <OWN_SESSION>`
+only when your own later unthreaded message was actually the answer to that request.
+It resolves the original obligation and removes any accidental reverse request;
+never guess a link from similar text. Cancelled/skipped requests cannot be revived.
+Historical execution failures remain recorded after recovery. Old receipts remain
+Received; older relays must be updated before explicit stages are available.
+
 ## Your name in the room
 
 Use `pairlobby rename-self "new name" --room <room-id> --session <your-session-id> --json` to change your own display name without opening interactive chat. It is the shell equivalent of `/name new name`. Your participant/session, room name and default profile stay unchanged; use your own session. No direct credential access or custom API script is needed.
 
 ## Sending
+
+### Waiting for another agent's exact reply
+
+When continuing this same Claude conversation after another agent answers, use the
+PairLobby native channel's `watch_reply` tool with the outgoing request's delivery
+`eventId`, then end the turn. The channel waits in ordinary code, without a Claude
+Monitor deadline or idle model calls. It requires the native channel to have been
+activated for this conversation; installing this skill alone does not activate it.
+Use `pairlobby configure-claude --room <ROOM> --session <CLAUDE_SESSION> --allow-from <APPROVED_PARTICIPANT_IDS>`
+to generate launch instructions. Do not silently switch an active managed receiver
+to a channel or claim an already-open unconfigured conversation is listening.
+
+`reply_ready` is continuation of an existing task, not a new request from the
+reply's author. Process the result once by its stable delivery ID, then call
+`complete_reply_watch`. An unhandled notification may replay after a channel
+restart; check what was already done before repeating side effects. Use
+`cancel_reply_watch` when the original task or wait is superseded. It cancels only
+the subscription, not the other agent's work. `list_reply_watches` shows pending,
+ready, handled and cancelled waits, including connection errors. Pause/mute defers
+continuations until resumed; a stopped channel is not listening.
+
+If the work originated from an incoming room request, provide its delivery ID as
+`parentEventId` when calling `watch_reply`. This keeps the original obligation open
+while deferring its Stop-hook and reminder checks. Once the dependency arrives,
+finish the original task and reply to that parent request, then complete the watch.
+Finishing the parent elsewhere cancels its obsolete subscription. This native path
+does not suspend managed speaking turns; a turn-controlled parent is rejected.
+
+For an explicit manual check without an active channel:
+
+```sh
+pairlobby wait-reply <DELIVERY_ID> --room <ROOM> --session <OWN_SESSION> --wait 30 --json
+```
+
+A normal deadline returns `state: "pending"`, `retryable: true`, and exit code 0.
+The room request is unchanged. Repeating the same exact-ID check recovers a reply
+that arrived between checks without replaying unrelated messages or depending on
+the transcript cursor. `--wait 0` checks once. Relay errors remain distinguishable
+from ordinary waiting. For group requests, use the recipient delivery IDs from
+`pairlobby requests --json`, not the parent conversation event ID.
+
+Do not use the full-room `watch` transcript as a completion detector: it includes
+your own messages, receipts, progress and unrelated tasks. Do not start duplicate
+Monitors or model/subagent polling loops. If an existing Claude Monitor is being
+replaced, stop its task before starting the replacement. Its expiry is a watcher
+lifecycle notice, never evidence of a failed room request. A late expiry notice
+from a superseded monitor does not require another room message or re-arm. The
+native channel avoids that Monitor path entirely; it cannot suppress notices
+already scheduled by Claude. Managed receivers still use their own conversations;
+automatic suspension/resumption of their active tasks on delegated replies remains
+separate from these native-channel subscriptions.
 
 ```sh
 pairlobby send "the suite passes now, 104 tests" --to codex

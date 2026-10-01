@@ -218,7 +218,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
     }
 
     async function flush(): Promise<void> {
-        const jobs = database.prepare("SELECT * FROM jobs WHERE phase IN ('reply', 'failed', 'pass')").all() as Job[];
+        const jobs = database.prepare("SELECT * FROM jobs WHERE phase IN ('reply', 'failed', 'pass', 'decision')").all() as Job[];
         if (jobs.length === 0) {
             return;
         }
@@ -230,12 +230,27 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         for (const job of jobs) {
             const token = savedValue(`turn:${job.event_id}`);
             try {
+                const current = await client.request(room.roomId, credential, job.event_id);
+                if (current.responseEventId || !current.requiresReply) {
+                    database.prepare("UPDATE jobs SET phase='done' WHERE event_id=?").run(job.event_id);
+                    continue;
+                }
                 if (job.phase === 'reply') {
+                    if (snapshot.messageStagesSupported && current.action !== 'reply_pending') {
+                        await client.reportMessageStatus(room.roomId, credential, job.event_id, 'reply_pending', token ? {turnToken: token} : {});
+                    }
                     await client.reply(room.roomId, credential, job.event_id, job.answer!, false, token);
+                } else if (job.phase === 'decision') {
+                    const decision = JSON.parse(savedValue(`decision:${job.event_id}`)!) as {state: 'no_action' | 'declined'; reason: string};
+                    await client.reportMessageStatus(room.roomId, credential, job.event_id, decision.state, {reason: decision.reason, ...(token ? {turnToken: token} : {})});
                 } else if (job.phase === 'pass' && token) {
-                    await client.passTurn(room.roomId, credential, job.event_id, token);
+                    if (snapshot.messageStagesSupported) {
+                        await client.reportMessageStatus(room.roomId, credential, job.event_id, 'no_action', {reason: 'Agent explicitly passed: nothing further to add.', turnToken: token});
+                    } else {
+                        await client.passTurn(room.roomId, credential, job.event_id, token);
+                    }
                 } else {
-                    await client.deliveryFailed(room.roomId, credential, job.event_id, job.failure ?? 'Execution failed', token);
+                    await client.deliveryFailed(room.roomId, credential, job.event_id, job.failure ?? 'Execution failed', token, 'execution');
                 }
                 database.prepare("UPDATE jobs SET phase='done' WHERE event_id=?").run(job.event_id);
             } catch (error) {
@@ -319,6 +334,9 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
             const answer = await runtime.execute(current, {
                 acknowledge: async () => {
                     await client.acknowledgeMessage(room.roomId, credential, request.eventId);
+                    if (snapshot.messageStagesSupported) {
+                        await client.reportMessageStatus(room.roomId, credential, request.eventId, 'read');
+                    }
                     database.prepare('UPDATE jobs SET acknowledged=1 WHERE event_id=?').run(request.eventId);
                 },
                 working: async () => {
@@ -326,6 +344,21 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                         throw new Error('Update this relay to declare working status');
                     }
                     await client.declareWorking(room.roomId, credential, request.eventId, token);
+                    if (snapshot.messageStagesSupported) {
+                        await client.reportMessageStatus(room.roomId, credential, request.eventId, 'working', {turnToken: token});
+                    }
+                },
+                messageStatus: async (state, reason) => {
+                    if (!reason.trim() || !snapshot.messageStagesSupported) {
+                        throw new Error('A reason and a relay supporting message stages are required.');
+                    }
+                    await client.reportMessageStatus(room.roomId, credential, request.eventId, 'read');
+                    database.prepare('UPDATE jobs SET acknowledged=1 WHERE event_id=?').run(request.eventId);
+                    if (state === 'waiting') {
+                        await client.reportMessageStatus(room.roomId, credential, request.eventId, state, {reason, ...(token ? {turnToken: token} : {})});
+                    } else {
+                        saveValue(`decision:${request.eventId}`, JSON.stringify({state, reason}));
+                    }
                 },
                 pass: async () => {
                     if (!token) {
@@ -357,7 +390,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                 throw leaseFailure;
             }
             // Persist before transmission; retries reuse the server's reply idempotency key.
-            database.prepare('UPDATE jobs SET phase=?, answer=? WHERE event_id=?').run(savedValue(`pass:${request.eventId}`) === '1' ? 'pass' : 'reply', answer, request.eventId);
+            database.prepare('UPDATE jobs SET phase=?, answer=? WHERE event_id=?').run(savedValue(`decision:${request.eventId}`) ? 'decision' : savedValue(`pass:${request.eventId}`) === '1' ? 'pass' : 'reply', answer, request.eventId);
         } catch (error) {
             const reason = error instanceof Error ? error.message : 'Runtime failed';
             database.prepare("UPDATE jobs SET phase='failed', failure=? WHERE event_id=?").run(reason, request.eventId);

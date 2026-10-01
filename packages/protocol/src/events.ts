@@ -50,8 +50,11 @@ const messagePayload = z.object({
 });
 
 /** A participant confirms receipt of a message; only the target satisfies an addressed request. */
-const messageReceivedPayload = z.object({eventId: EventId});
-const deliveryFailedPayload = z.object({eventId: EventId, reason: z.string().min(1).max(1024)});
+export const MessageAction = z.enum(['working', 'waiting', 'no_action', 'declined', 'reply_pending', 'done']);
+export type MessageAction = z.infer<typeof MessageAction>;
+/** Optional status fields extend the receipt envelope so older clients can still parse it. */
+const messageReceivedPayload = z.object({eventId: EventId, stage: z.literal('read').optional(), action: MessageAction.optional(), reason: z.string().max(1024).optional(), responseEventId: EventId.optional()});
+const deliveryFailedPayload = z.object({eventId: EventId, reason: z.string().min(1).max(1024), stage: z.enum(['delivery', 'execution', 'publishing']).optional()});
 
 const handoverOfferedPayload = z.object({handoverId: HandoverId, revision: z.number().int().min(1), document: HandoverDocument});
 const handoverAcceptedPayload = z.object({handoverId: HandoverId, revision: z.number().int().min(1), note: z.string().max(2048).optional()});

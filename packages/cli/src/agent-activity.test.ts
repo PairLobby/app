@@ -9,12 +9,13 @@ const message: RoomEvent = {protocolVersion: 1, roomId: 'room', eventId: 'latest
 const request: MessageRequest = {roomId: 'room', eventId: 'request', seq: 9, from: 'human', to: 'agent', text: 'Please work', at: 99, requiresReply: true, receivedAt: 100, responseEventId: null, respondedAt: null, progressAt: null};
 const caughtUp = {latestMessage: message, acknowledged: new Set(['agent']), now: 1000};
 
-test('idle requires reading the latest message and no unresolved room work', () => {
+test('idle requires an explicit terminal decision; transport receipts and failures cannot imply idle', () => {
     expect(agentActivities(context, {...caughtUp, acknowledged: new Set()})[0]!.state).toBe('unread');
-    expect(activitySummary(agentActivities(context, caughtUp))).toContain('All agents idle (1)');
+    expect(agentActivities(context, caughtUp)[0]!.state).toBe('clear');
+    expect(activitySummary(agentActivities(context, {...caughtUp, settled: new Set(['agent'])}))).toContain('All agents idle (1)');
     expect(agentActivities({...context, requests: [request]}, caughtUp)[0]!.state).toBe('waiting');
-    expect(agentActivities({...context, requests: [{...request, failureAt: 999, turnStatus: 'failed'}]}, caughtUp)[0]!.state).toBe('idle');
-    expect(agentActivities({...context, requests: [{...request, turnStatus: 'passed'}]}, caughtUp)[0]!.state).toBe('idle');
+    expect(agentActivities({...context, requests: [{...request, failureAt: 999, turnStatus: 'failed'}]}, caughtUp)[0]!.state).toBe('failed');
+    expect(agentActivities({...context, requests: [{...request, turnStatus: 'passed'}]}, {...caughtUp, settled: new Set(['agent'])})[0]!.state).toBe('idle');
     expect(agentActivities(context, {...caughtUp, latestMessage: {...message, eventId: 'new'}, acknowledged: new Set()})[0]!.state).toBe('unread');
 });
 
@@ -31,5 +32,5 @@ test('partial history, unavailable data and paused members cannot produce all-id
     expect(agentActivities({...context, participants: [{...participant, paused: true}]}, caughtUp)[0]!.state).toBe('paused');
     expect(agentActivities({...context, participants: [{...participant, left: true}]}, caughtUp)).toEqual([]);
     expect(activitySummary([])).toBe('No agents in the room');
-    expect(agentActivities(context, {...caughtUp, latestMessage: {...message, senderId: 'agent'}, acknowledged: new Set()})[0]!.state).toBe('idle');
+    expect(agentActivities(context, {...caughtUp, latestMessage: {...message, senderId: 'agent'}, acknowledged: new Set()})[0]!.state).toBe('clear');
 });

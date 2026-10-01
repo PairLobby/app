@@ -17,7 +17,8 @@ import {agentActivities, activitySummary} from './agent-activity.js';
 import type {AgentActivity, AgentActivityContext} from './agent-activity.js';
 
 type ChatTerminalOptions = {names: Map<string, string>; participantId: string; format: (event: RoomEvent, highlightNames?: boolean) => string; complete: (line: string) => [string[], string]};
-type TranscriptEntry = {text: string; event?: RoomEvent};
+type TranscriptEntry = {text: string; event?: RoomEvent; alertId?: string};
+export type RequestAlert = {requestId: string; text: string};
 type ScreenKey = Key & {full?: string};
 type TerminalProgramOptions = {extended: boolean; debug: boolean};
 type MessageLayout = {event: RoomEvent; content: blessed.Widgets.TextElement; normalText: string; highlighted: boolean; top: number; height: number; selected: boolean; receipt?: blessed.Widgets.BoxElement; working?: blessed.Widgets.BoxElement};
@@ -48,7 +49,13 @@ export class ChatTerminal {
     private turns = blessed.box({parent: this.screen, bottom: 2, left: 0, right: 0, height: 1, tags: false, mouse: true, wrap: false, style: {fg: 'cyan'}});
     private quote = blessed.box({parent: this.screen, bottom: 2, left: 0, right: 0, height: 1, tags: false, wrap: false, hidden: true, style: {fg: 'gray'}});
     private popup = blessed.box({parent: this.screen, right: 1, top: 0, width: 1, height: 1, border: 'line', padding: {left: 1, right: 1}, tags: false, hidden: true, mouse: true, scrollable: true, alwaysScroll: true, wrap: false, style: {fg: 'white', bg: 'black', border: {fg: 'gray'}}});
-    private working = new WorkingStrip({screen: this.screen, render: () => this.renderInput(), rebuild: () => this.rebuild(), obscured: () => this.popup.visible});
+    private working = new WorkingStrip({screen: this.screen, render: () => this.renderInput(), rebuild: () => this.rebuild(), obscured: () => this.popup.visible, beforeOpen: (pinned) => {
+        if (this.pinned && !pinned) {
+            return false;
+        }
+        this.hideDetails(false);
+        return true;
+    }});
     private entries: TranscriptEntry[] = [];
     private events = new Set<string>();
     private receipts = new ReceiptView();
@@ -171,7 +178,7 @@ export class ChatTerminal {
         this.body.on('scroll', () => this.positionMessageLabels());
         this.turns.on('mouseover', () => { if (!this.pinned) { this.showActivity(); } });
         this.turns.on('mouseout', () => { if (!this.pinned) { this.hideDetails(); } });
-        this.turns.on('click', () => { this.showActivity(); this.pinned = true; });
+        this.turns.on('click', () => this.showActivity(true));
         this.screen.on('mouse', (event: blessed.Widgets.Events.IMouseEventArg) => {
             if (this.closed || this.suspended || this.selecting || this.agentTable.visible || this.roomPanel.visible) {
                 return;
@@ -347,6 +354,18 @@ export class ChatTerminal {
         this.rebuild();
     }
 
+    setRequestAlerts(alerts: RequestAlert[]): void {
+        const previous = this.entries.filter((entry) => entry.alertId).map((entry) => ({requestId: entry.alertId, text: entry.text}));
+        if (JSON.stringify(previous) === JSON.stringify(alerts)) {
+            return;
+        }
+        this.entries = this.entries.filter((entry) => !entry.alertId);
+        for (const alert of alerts) {
+            this.rememberEntry({text: alert.text, alertId: alert.requestId});
+        }
+        this.rebuild();
+    }
+
     private rememberEntry(entry: TranscriptEntry): void {
         this.entries.push(entry);
         // Keep buffering bounded even while native selection freezes redraws.
@@ -370,9 +389,10 @@ export class ChatTerminal {
     }
 
     updateRequest(request: MessageRequest): void {
-        const before = this.receipts.forMessage(request.eventId).length;
+        const root = request.conversationId ?? request.eventId;
+        const before = JSON.stringify([this.receipts.forMessage(root), this.receipts.forParticipant(root, request.to)]);
         this.receipts.observeRequest(request);
-        if (this.receipts.forMessage(request.eventId).length !== before) {
+        if (JSON.stringify([this.receipts.forMessage(root), this.receipts.forParticipant(root, request.to)]) !== before) {
             this.rebuild();
         }
     }
@@ -386,8 +406,7 @@ export class ChatTerminal {
             this.log('No matching message in the loaded transcript.');
             return;
         }
-        this.pinned = true;
-        this.showDetails(selected.event.eventId);
+        this.showDetails(selected.event.eventId, true);
     }
 
     suspend(): void {
@@ -458,7 +477,7 @@ export class ChatTerminal {
             if (selected) {
                 selectedTop = top;
             }
-            const receipt = message && this.receipts.forMessage(message.eventId).length > 0;
+            const receipt = Boolean(message);
             const text = message ? this.options.format(message) : entry.text;
             const content = blessed.text({parent: this.body, top, left: 0, right: isWorking ? 19 : message ? 9 : 1, height: 'shrink', content: selected && this.detailsId !== message?.eventId ? stripVTControlCharacters(text) : text, tags: false, wrap: true, style: selected ? {bg: 'blue', fg: 'white'} : {}});
             const lines = Math.max(1, content.getScreenLines().length);
@@ -468,18 +487,18 @@ export class ChatTerminal {
                 this.messageLayouts.push(layout);
             }
             if (isWorking && message) {
-                const label = blessed.box({parent: this.body, top, right: 8, width: 7, height: 1, content: 'Working', mouse: true, style: {fg: 'cyan', hover: {underline: true}}});
+                const label = blessed.box({parent: this.body, top, right: 10, width: 7, height: 1, content: 'Working', mouse: true, style: {fg: 'cyan', hover: {underline: true}}});
                 this.working.bind(label, message.eventId);
                 layout!.working = label;
             }
             if (receipt && message) {
-                const label = blessed.box({parent: this.body, top, right: 2, width: 4, height: 1, content: 'Seen', mouse: true, style: {fg: 'gray', hover: {fg: 'white', underline: true}}});
+                const label = blessed.box({parent: this.body, top, right: 2, width: 6, height: 1, content: 'Status', mouse: true, style: {fg: 'gray', hover: {fg: 'white', underline: true}}});
                 this.labels.set(message.eventId, label);
                 layout!.receipt = label;
                 label.on('mouseover', () => { if (!this.pinned) { this.showDetails(message.eventId); } });
                 label.on('mouseout', () => { if (!this.pinned) { this.hideDetails(); } });
-                label.on('mousedown', () => { this.pinned = true; this.showDetails(message.eventId); });
-                label.on('click', () => { this.pinned = true; this.showDetails(message.eventId); });
+                label.on('mousedown', () => this.showDetails(message.eventId, true));
+                label.on('click', () => this.showDetails(message.eventId, true));
             }
             top += lines;
         }
@@ -501,17 +520,24 @@ export class ChatTerminal {
         this.renderInput();
     }
 
-    private showDetails(eventId: string): void {
+    private showDetails(eventId: string, pinned = false): void {
+        if (!this.working.dismissForDetails(pinned)) {
+            return;
+        }
         if (this.detailsId !== eventId || this.activityOpen) {
             this.popup.setScroll(0);
         }
         this.activityOpen = false;
         this.detailsId = eventId;
+        this.pinned = pinned;
         this.renderInput();
     }
 
-    private showActivity(): void {
+    private showActivity(pinned = false): void {
         if (!this.activityContext) {
+            return;
+        }
+        if (!this.working.dismissForDetails(pinned)) {
             return;
         }
         if (!this.activityOpen) {
@@ -519,17 +545,22 @@ export class ChatTerminal {
         }
         this.detailsId = undefined;
         this.activityOpen = true;
+        this.pinned = pinned;
         this.renderInput();
     }
 
     private currentActivities(): AgentActivity[] {
         const acknowledged = new Set(this.latestMessage ? this.receipts.forMessage(this.latestMessage.eventId).map((receipt) => receipt.participantId) : []);
-        return this.activityContext ? agentActivities(this.activityContext, {latestMessage: this.latestMessage, acknowledged}) : [];
+        const settled = new Set(this.latestMessage ? this.receipts.participants(this.latestMessage.eventId).filter((id) => {
+            const state = this.receipts.forParticipant(this.latestMessage!.eventId, id);
+            return state.readAt !== undefined && ['No action needed', 'Declined', 'Done', 'Done · recovered', 'Done · answer linked'].includes(state.action ?? '');
+        }) : []);
+        return this.activityContext ? agentActivities(this.activityContext, {latestMessage: this.latestMessage, acknowledged, settled}) : [];
     }
 
     private paintDetails(): void {
         if (this.activityOpen) {
-            const descriptions = {idle: 'Idle · caught up', unread: 'Awaiting latest acknowledgement', working: 'Working', preparing: 'Preparing an answer', waiting: 'Waiting · pending request', stalled: 'Stalled request', paused: 'Paused', muted: 'Muted', unknown: 'Status unavailable'};
+            const descriptions = {idle: 'Idle · explicitly no further action', clear: 'No queued room task · reading not implied', failed: 'Failed task needs attention', unread: 'Latest transport receipt unconfirmed', working: 'Working', preparing: 'Preparing an answer', waiting: 'Waiting · pending request', stalled: 'Stalled request', paused: 'Paused', muted: 'Muted', unknown: 'Status unavailable'};
             fitPopup(this.popup, ['Agent activity', ...this.currentActivities().map((agent) => `${agent.name} — ${descriptions[agent.state]}`)], this.screen);
             this.popup.top = Math.max(0, Number(this.turns.atop) - Number(this.popup.height));
             this.popup.show();
@@ -540,25 +571,36 @@ export class ChatTerminal {
         if (!eventId) {
             return;
         }
+        const message = this.entries.find((entry) => entry.event?.eventId === eventId)?.event;
         const receipts = this.receipts.forMessage(eventId);
-        const lines = receipts.map((receipt) => {
-            const acknowledgement = `Acknowledged ${new Date(receipt.acknowledgedAt).toLocaleString()}`;
-            const name = stripVTControlCharacters(this.options.names.get(receipt.participantId) ?? receipt.participantId);
-            return `${name}  ${acknowledgement}`;
+        const participants = new Set([...this.receipts.participants(eventId), ...(this.activityContext?.participants.filter((person) => !person.left && !person.revoked && person.role !== 'guest' && person.participantId !== message?.senderId && person.joinedAt <= (message?.at ?? Infinity)).map((person) => person.participantId) ?? [])]);
+        const nameWidth = Math.max(5, ...[...participants].map((id) => Number(this.popup.strWidth(stripVTControlCharacters(this.options.names.get(id) ?? id)))));
+        const rows = [...participants].map((id) => {
+            const receipt = receipts.find((item) => item.participantId === id);
+            const stage = this.receipts.forParticipant(eventId, id);
+            const name = stripVTControlCharacters(this.options.names.get(id) ?? id);
+            const received = stage.readAt !== undefined ? `Read ${new Date(stage.readAt).toLocaleString()}` : receipt ? `Received ${new Date(receipt.acknowledgedAt).toLocaleString()}` : 'Sent · unconfirmed';
+            const addressed = message?.type === 'message' && !message.replyTo && (message.recipientId === id || message.recipientIds?.includes(id));
+            const action = stage.action ?? (addressed ? 'Queued' : 'No response requested');
+            return [name, received, `${action}${stage.reason ? ` — ${stripVTControlCharacters(stage.reason)}` : ''}`] as const;
         });
-        fitPopup(this.popup, ['Confirmed receipts', ...(lines.length ? lines : ['No acknowledgement yet.'])], this.screen);
+        const receiptWidth = Math.max(7, ...rows.map((row) => Number(this.popup.strWidth(row[1]))));
+        const lines = rows.map(([name, receipt, action]) => `${name}${' '.repeat(Math.max(0, nameWidth - Number(this.popup.strWidth(name))))} | ${receipt}${' '.repeat(Math.max(0, receiptWidth - Number(this.popup.strWidth(receipt))))} | ${action}`);
+        fitPopup(this.popup, ['Message status — Participant | Receipt | Action', ...(lines.length ? lines : ['Sent · no participant receipt yet.'])], this.screen);
         const anchor = this.labels.get(eventId);
         this.popup.top = Math.max(0, Math.min(anchor?.visible ? Number(anchor.atop) + 1 : Number(this.screen.height) - 3, Number(this.screen.height) - Number(this.popup.height) - 3));
         this.popup.show();
         this.popup.setFront();
     }
 
-    private hideDetails(): void {
+    private hideDetails(render = true): void {
         this.pinned = false;
         this.detailsId = undefined;
         this.activityOpen = false;
         this.popup.hide();
-        this.renderInput();
+        if (render) {
+            this.renderInput();
+        }
     }
 
     private positionMessageLabels(): void {
@@ -635,7 +677,7 @@ export class ChatTerminal {
         }
         this.hint.setContent(this.selecting ? 'Select text: drag · use terminal Copy (⌘C on macOS) · F4/Esc resume' : this.reply.active
             ? this.reply.picking ? '↑/↓ choose a message · Enter/Tab select · Esc cancel' : 'Enter sends your reply · Delete /reply or Esc to cancel'
-            : this.hintText || 'Hover/click Seen · F2 Seen · F3 Working · F4 Select/copy · PgUp/PgDn scroll');
+            : this.hintText || 'Hover/click Status · F2 Status · F3 Working · F4 Select/copy · PgUp/PgDn scroll');
         this.composer.setContent(this.promptText + line.slice(start, start + width));
         const summary = this.activityContext ? activitySummary(this.currentActivities()) : '';
         const mode = this.activityContext?.queue?.mode;

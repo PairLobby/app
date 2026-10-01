@@ -33,9 +33,13 @@ for await (const line of createInterface({input: process.stdin})) {
     } else if (message.id === 'approval') {
         appendFileSync(process.env.PAIRLOBBY_TEST_RECORD, `approval:${message.result.decision}\n`);
         send({id: 'ack', method: 'item/tool/call', params: {threadId: 'test-thread', turnId: turn, tool: 'pairlobby_acknowledge', arguments: {}}});
-    } else if (message.id === 'ack' || message.id === 'pass' || message.id === 'working') {
+    } else if (message.id === 'ack' || message.id === 'pass' || message.id === 'working' || message.id === 'decision') {
         if (!message.result.success) {
             throw new Error('Acknowledgement failed');
+        }
+        if (message.id === 'ack' && text.includes('no-action-fixture')) {
+            send({id: 'decision', method: 'item/tool/call', params: {threadId: 'test-thread', turnId: turn, tool: 'pairlobby_message_status', arguments: {state: 'no_action', reason: 'No further work needed'}}});
+            continue;
         }
         if (message.id === 'ack' && text.includes('codex-pass')) {
             send({id: 'pass', method: 'item/tool/call', params: {threadId: 'test-thread', turnId: turn, tool: 'pairlobby_pass', arguments: {}}});

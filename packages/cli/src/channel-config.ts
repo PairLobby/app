@@ -2,11 +2,12 @@ import {mkdirSync, writeFileSync, chmodSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import type {LocalStore} from '@pairlobby/client';
 import {resolveRoom, resolveSession, UsageError} from './context.js';
+import {receiverRuntimeName} from './receiver-runtime.js';
 const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 export function configureClaude(store: LocalStore, roomRef: string | undefined, sessionRef: string | undefined, senders: string | undefined) {
     const room = resolveRoom(store, roomRef),
         session = resolveSession(room, sessionRef);
-    if (session.kind !== 'agent' || (session.runtime && session.runtime !== 'claude-code')) {
+    if (session.kind !== 'agent' || (session.runtime && receiverRuntimeName(session.runtime) !== 'claude')) {
         throw new UsageError('choose the Claude agent session to configure');
     }
     if (!senders || senders.split(',').some((id) => !/^pt_[0-9A-Z]{26}$/.test(id.trim()))) {
@@ -22,7 +23,7 @@ export function configureClaude(store: LocalStore, roomRef: string | undefined, 
     const mcp = {mcpServers: {pairlobby: {command: process.execPath, args: [cli, 'channel', ...roomArgs, '--allow-from', senders], env: {PAIRLOBBY_DATA_DIR: store.directory}}}};
     const settings = {
         permissions: {
-            allow: ['mcp__pairlobby__acknowledge_message', 'mcp__pairlobby__reply_to_message', 'mcp__pairlobby__progress_message', 'mcp__pairlobby__list_pending_requests']
+            allow: ['mcp__pairlobby__acknowledge_message', 'mcp__pairlobby__message_status', 'mcp__pairlobby__reply_to_message', 'mcp__pairlobby__progress_message', 'mcp__pairlobby__list_pending_requests', 'mcp__pairlobby__watch_reply', 'mcp__pairlobby__complete_reply_watch', 'mcp__pairlobby__cancel_reply_watch', 'mcp__pairlobby__list_reply_watches']
         },
         hooks: {Stop: [{hooks: [{type: 'command', command: [process.execPath, cli, 'guard-stop', ...roomArgs].map(quote).join(' '), timeout: 20}]}]}
     };

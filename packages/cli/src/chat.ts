@@ -6,7 +6,7 @@
 import type {Interface} from 'node:readline';
 import {ChatTerminal} from './chat-terminal.js';
 
-import {ProtocolError, requestState, newId} from '@pairlobby/protocol';
+import {ProtocolError, requestState, newId, messageActionLabel, failureLabel} from '@pairlobby/protocol';
 import type {MessageRequest, RoomEvent, RoomSnapshot, TurnQueue} from '@pairlobby/protocol';
 import {LocalStore, PairLobbyClient} from '@pairlobby/client';
 
@@ -458,7 +458,6 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         // widening gaps. The old behaviour filled the screen and buried the room.
         let pendingRequests: MessageRequest[] = [];
         let loadedRequests = false;
-        const shownRequestStates = new Map<string, string>();
         let outageSince: number | null = null;
         let backoffMs = intervalMs;
 
@@ -506,14 +505,12 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 }
                 for (const request of pendingRequests) {
                     view.updateRequest(request);
-                    const state = requestState(request);
-                    if (shownRequestStates.get(request.eventId) !== state) {
-                        shownRequestStates.set(request.eventId, state);
-                        if (showIds || state.includes('overdue') || state === 'failed' || state === 'stalled') {
-                            emit(formatRequestStatus(request, names, showIds));
-                        }
-                    }
                 }
+                view.setRequestAlerts(pendingRequests.flatMap((request) => {
+                    const state = requestState(request);
+                    const attention = state === 'failed' || state === 'stalled' || (state.includes('overdue') && request.action !== 'waiting' && request.action !== 'reply_pending');
+                    return showIds || attention ? [{requestId: request.eventId, text: formatRequestStatus(request, names, showIds)}] : [];
+                }));
                 view.setAgentActivity({participants: snapshot.participants, requests: pendingRequests, queue, complete: !page.hasMore, available: true});
                 if (outageSince !== null) {
                     emit(`${DIM}  relay is back${RESET}`);
@@ -627,15 +624,19 @@ export function format(event: RoomEvent, names: Map<string, string>, meParticipa
 export function formatRequestStatus(request: MessageRequest, names: Map<string, string>, showIds = false): string {
     const state = requestState(request);
     const descriptions = {
-        awaiting_ack: 'Waiting for acknowledgement',
-        awaiting_reply: 'Acknowledged · waiting for reply',
-        ack_overdue: 'Acknowledgement overdue',
-        reply_overdue: 'Reply overdue',
+        awaiting_ack: 'Queued',
+        awaiting_reply: 'Queued',
+        ack_overdue: 'Queued · receipt overdue',
+        reply_overdue: 'Queued · response overdue',
         answered: 'Answered',
-        failed: 'Delivery failed',
+        no_action: 'No action needed',
+        declined: 'Declined',
+        failed: failureLabel(request.failureStage),
         waiting_turn: 'Waiting for a speaking turn', answering: 'Answering', stalled: 'Speaking turn stalled', passed: 'Passed', skipped: 'Skipped', cancelled: 'Cancelled'
     };
-    return `${state.includes('overdue') || state === 'failed' || state === 'stalled' ? 'ATTENTION: ' : ''}${names.get(request.from) ?? request.from} → ${names.get(request.to) ?? request.to}: ${descriptions[state]}${showIds ? ` [${request.eventId}]` : ''}`;
+    const receipt = request.readAt !== undefined ? 'Read' : request.receivedAt !== null ? 'Received' : 'Sent · receipt unconfirmed';
+    const attention = state === 'failed' || state === 'stalled' || (state.includes('overdue') && request.action !== 'waiting' && request.action !== 'reply_pending');
+    return `${attention ? 'ATTENTION: ' : ''}${names.get(request.from) ?? request.from} → ${names.get(request.to) ?? request.to}: ${receipt} · ${request.action || request.responseEventId || request.failureAt ? messageActionLabel(request) : descriptions[state]}${showIds || state === 'failed' ? ` [${request.eventId}]` : ''}`;
 }
 
 function systemLine(event: RoomEvent, names: Map<string, string>, sender: string, showIds = false): string {
@@ -682,7 +683,7 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
         case 'room.access_changed':
             return event.payload.joinPolicy === 'open_to_guests' ? `${sender} opened the room to read-only guests` : `${sender} made the room invite only`;
         case 'message.delivery_failed':
-            return `Delivery failed${showIds ? ` [${event.payload.eventId}]` : ''}: ${event.payload.reason} (request remains unanswered)`;
+            return `${failureLabel(event.payload.stage)} [${event.payload.eventId}]: ${event.payload.reason} (failed attempt)`;
         case 'message.received':
             return `${sender} read it`;
         default:

@@ -56,7 +56,8 @@ export class CodexReceiver {
             developerInstructions: INSTRUCTIONS + (this.options.roomId && this.options.sessionId ? ` Your PairLobby room is ${this.options.roomId} and participant session is ${this.options.sessionId}. Use these exact --room and --session values for room commands; other local memberships belong to other participants.` : ''),
             ...(this.options.model ? {model: this.options.model} : {}),
             dynamicTools: [
-                {type: 'function', name: 'pairlobby_acknowledge', description: 'Acknowledge receipt of the current room request before beginning work.', inputSchema: {type: 'object', properties: {}, additionalProperties: false}},
+                {type: 'function', name: 'pairlobby_acknowledge', description: 'Explicitly confirm you have read the current room request. Transport receipt is recorded separately.', inputSchema: {type: 'object', properties: {}, additionalProperties: false}},
+                {type: 'function', name: 'pairlobby_message_status', description: 'Declare waiting, no_action, or declined with a reason. After no_action/declined end the turn; no additional reply is posted.', inputSchema: {type: 'object', properties: {state: {type: 'string', enum: ['waiting', 'no_action', 'declined']}, reason: {type: 'string', minLength: 1, maxLength: 1024}}, required: ['state', 'reason'], additionalProperties: false}},
                 {type: 'function', name: 'pairlobby_working', description: 'Explicitly declare that you have started working on an answer to this request, after acknowledging it.', inputSchema: {type: 'object', properties: {}, additionalProperties: false}},
                 {type: 'function', name: 'pairlobby_pass', description: 'Pass the current speaking turn when you have nothing to add, then end the turn.', inputSchema: {type: 'object', properties: {}, additionalProperties: false}}
             ]
@@ -137,9 +138,15 @@ export class CodexReceiver {
             if (message.method === 'item/tool/call') {
                 let success = false;
                 let text = 'Tool unavailable for this turn';
-                if (this.active && params.threadId === this.threadId && ['pairlobby_acknowledge', 'pairlobby_working', 'pairlobby_pass'].includes(params.tool)) {
+                if (this.active && params.threadId === this.threadId && ['pairlobby_acknowledge', 'pairlobby_working', 'pairlobby_pass', 'pairlobby_message_status'].includes(params.tool)) {
                     try {
-                        if (params.tool === 'pairlobby_working') {
+                        if (params.tool === 'pairlobby_message_status') {
+                            const input = params.arguments;
+                            if (!this.active.hooks.messageStatus || !input || !['waiting', 'no_action', 'declined'].includes(input.state) || typeof input.reason !== 'string' || !input.reason.trim() || input.reason.length > 1024) {
+                                throw new Error('Choose a valid action with a reason.');
+                            }
+                            await this.active.hooks.messageStatus(input.state, input.reason);
+                        } else if (params.tool === 'pairlobby_working') {
                             if (!this.active.hooks.working) {
                                 throw new Error('Working status is unavailable');
                             }
@@ -153,7 +160,7 @@ export class CodexReceiver {
                             await this.active.hooks.acknowledge();
                         }
                         success = true;
-                        text = params.tool === 'pairlobby_working' ? 'Working declared. Continue your work and provide the final answer.' : params.tool === 'pairlobby_pass' ? 'Pass recorded. End this turn now; no public answer will be posted.' : 'Request acknowledged. Provide a final answer when ready.';
+                        text = params.tool === 'pairlobby_message_status' ? 'Status recorded. For no_action or declined, end this turn now; no extra answer will be posted.' : params.tool === 'pairlobby_working' ? 'Working declared. Continue your work and provide the final answer.' : params.tool === 'pairlobby_pass' ? 'Pass recorded. End this turn now; no public answer will be posted.' : 'Read confirmed. Provide a final answer or an explicit no-action/declined decision.';
                     } catch (error) {
                         text = error instanceof Error ? error.message : 'The status could not be saved. Retry before proceeding.';
                     }

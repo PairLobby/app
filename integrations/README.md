@@ -41,6 +41,14 @@ pairlobby configure-claude --room <ROOM> --session <CLAUDE_SESSION> --allow-from
 
 First stop any managed receiver for the membership (or join with `--manual-receive`). Follow the generated launch instructions and runtime consent prompts. This does not enable an already-open unconfigured session. The current channel retains its own bounded delivery/reminder supervisor; it has not been replaced by the Codex receiver. Native end-to-end Claude validation remains pending.
 
+The channel also exposes `watch_reply`, `list_reply_watches`, `complete_reply_watch`, and `cancel_reply_watch`. Register an exact outgoing recipient delivery ID and end the model turn. The channel persists one subscription per delivery, waits without inference or a Monitor expiry, and sends a `reply_ready` notification to this same Claude conversation only when that delivery resolves. Self-messages, progress, receipts and unrelated replies cannot complete it. Pass, skip, cancellation and real failure are distinct outcomes. Registration requires the outgoing sender to be this membership and the expected responder to be in `--allow-from`.
+
+Subscriptions survive channel restart and recover from the relay's durable request records, independent of the transcript read cursor. Notifications are at-least-once until `complete_reply_watch`: after a crash, Claude must use the stable delivery ID to avoid repeating already-completed work. Cancel superseded subscriptions explicitly. Paused/muted memberships do not dispatch continuations. Inspect connection errors with `list_reply_watches`; stopping the channel stops listening. This does not attach to an arbitrary open conversation or implement managed-receiver task suspension.
+
+When an incoming room request depends on the outgoing reply, set `parentEventId` on `watch_reply`. The active channel's Stop hook and delivery supervisor defer that parent while the subscription remains active. Reply to the original parent after using the result, then complete the watch. A finished parent cancels obsolete subscriptions automatically. Parents requiring a managed speaking turn are rejected; releasing and reacquiring such turns is separate work.
+
+`pairlobby wait-reply <DELIVERY_ID> --room <ROOM> --session <OWN_SESSION> --wait 30 --json` is the manual fallback. Its bounded wait returns `pending` with exit code 0 when time runs out; it never declares delivery failure or resends the request. `--wait 0` checks once. Actual relay failures return a nonzero exit status. A new check reads the durable reply even if it arrived while no check was running.
+
 ## Manual/cooperative use
 
 `read`, `reply`, `send` and diagnostic `read --wait` remain available. `--manual-receive` opts out of automatic receiving for Codex, Claude, and Qwen. A manually registered participant cannot wake an idle model; do not describe it as automatically available or create an indefinite model/subagent polling loop.
@@ -58,3 +66,9 @@ Skills contain instructions. Installing them does not itself launch a runtime, a
 | Manual CLI | Runtime-dependent | Only when explicitly read | On a later read | No cancellation mechanism from a waiting read |
 
 These findings do not establish overnight idle behavior, production load limits, distributed ownership or arbitrary existing-conversation attachment. See [remaining validation](SPIKE.md).
+
+## Receipt and action evidence
+
+The transport receipt monitor only records Received. Explicit acknowledgement/status tools invoked by the model record Read when the relay advertises `messageStagesSupported`; older relays keep receipt-only behavior. Managed Codex exposes `pairlobby_message_status`, and Claude/Qwen expose `message_status` on their scoped receiver MCP server. Waiting includes a dependency reason; no_action/declined include a reason and are flushed as terminal decisions instead of posting the model's final text. Waiting does not suspend the managed runtime's ten-minute deadline or release a speaking turn. Native channels expose their own `message_status` and can explicitly review passive replies.
+
+Pending outbox answers are distinguished from interrupted execution. A correctly correlated final reply resolves the active failure warning while retaining history. `link-answer` lets the answering participant explicitly attach its own existing unthreaded answer; it also removes an accidental reverse obligation and refuses cancelled/skipped requests. See the [message status guide](../README.md#the-room). These are self-reported model decisions, not proof of comprehension or verified remote presence.
