@@ -26,7 +26,7 @@ import {pickExpiry} from './picker.js';
 import {UsageError, controllerCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
 import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
-import {accountToken, isOnlineKey, loginOnline, matchOnlineRoom, onlineAccount, onlineOrigin, onlineRooms, resolveOnlineKey} from './online.js';
+import {accountToken, isOnlineKey, loginOnline, logoutOnline, matchOnlineRoom, onlineAccount, onlineOrigin, onlineRooms, resolveOnlineKey} from './online.js';
 import {receiverStatus, runReceiver, startReceiver, stopReceiver} from './receiver.js';
 import type {ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
@@ -98,6 +98,8 @@ const OPTIONS = {
     template: {type: 'boolean'},
     host: {type: 'string'},
     lan: {type: 'boolean'},
+    token: {type: 'boolean'},
+    'no-browser': {type: 'boolean'},
     'public-url': {type: 'string'},
     port: {type: 'string'},
     'data-dir': {type: 'string'},
@@ -132,8 +134,9 @@ const HELP = `pairlobby
                                     manage automatic receiving for the selected agent
   pairlobby spawn <claude|codex|qwen> [model] [--name name] [--effort level]
                                     create a new background agent in a saved room
-  pairlobby login                    save an account token from the website
-  pairlobby logout                   remove saved account login
+  pairlobby login                    approve this terminal in the browser (--no-browser prints the link)
+  pairlobby login --token            paste an account token from the website instead
+  pairlobby logout                   revoke this terminal's login and forget it
   pairlobby create online --name X [--private] [--allow email,email]
   pairlobby allow [email ...]       replace the room allowlist (creator retained)
   pairlobby chat                     re-enter a room you already joined
@@ -254,12 +257,22 @@ async function main(argv: string[]): Promise<number> {
         case 'join':
             return joinRoom(store, values, positionals[1] === 'online' ? positionals[2] : positionals[1], positionals[1] === 'online');
         case 'login':
-            out(`Logged in as ${await loginOnline(store)}`);
+            out(`Logged in as ${await loginOnline(store, {paste: flag(values, 'token'), ...(flag(values, 'no-browser') ? {openBrowser: false} : {})})}`);
             return 0;
-        case 'logout':
-            store.forgetRoom('online-account');
-            out('Saved account login removed.');
+        case 'logout': {
+            const result = await logoutOnline(store);
+            if (!result.removed) {
+                out('No saved account login on this device.');
+            } else if (result.revoked) {
+                out('Logged out. This terminal\'s token was revoked.');
+            } else {
+                out('Saved account login removed, but the service did not confirm revoking it; revoke it on the account page.');
+            }
+            if (process.env['PAIRLOBBY_ACCOUNT_TOKEN']) {
+                note('PAIRLOBBY_ACCOUNT_TOKEN is still set in this environment; unset it to stop using that token.');
+            }
             return 0;
+        }
         case 'allow': {
             const room = resolveRoom(store, str(values, 'room'));
             await new PairLobbyClient(room.serverUrl).setAllowedAccounts(

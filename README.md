@@ -124,7 +124,7 @@ pairlobby join http://10.0.0.5:8790#<CODE>                     # the same, as on
 
 ### Your rooms on your other devices
 
-With a hosted account, log in on each device (`pairlobby login`, pasting a token from the website's account page). A room created on one device with `pairlobby create online --name my-project` is then available on the others without copying an invite:
+With a hosted account, log in on each device with `pairlobby login`. It shows a short code and opens the website, where you sign in and approve that terminal; on a remote shell, `--no-browser` prints the address to open on any device. Each approved terminal gets its own token, listed on the account page, where it can be revoked; `pairlobby logout` revokes it too. `pairlobby login --token` still accepts a pasted token, and `PAIRLOBBY_ACCOUNT_TOKEN` still works for unattended use. A room created on one device with `pairlobby create online --name my-project` is then available on the others without copying an invite:
 
 ```sh
 pairlobby find online                                    # rooms your account owns or is allowed into
