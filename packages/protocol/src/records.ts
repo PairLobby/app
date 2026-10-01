@@ -143,6 +143,7 @@ export const RoomSnapshot = z.object({
     roomId: RoomId,
     /** Absent on older relays, which only accept addressed-recipient receipts. */
     messageReceiptScope: z.enum(['recipient', 'members']).optional(),
+    messageStagesSupported: z.boolean().optional(),
     rejoinSupported: z.boolean().optional(),
     renameSelfSupported: z.boolean().optional(),
     adminRolesSupported: z.boolean().optional(),

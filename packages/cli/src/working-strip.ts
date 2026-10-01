@@ -7,7 +7,7 @@ import {LOGO_FRAME_MS, clearWorkingGraphics, drawWorkingGraphics, graphicsMode, 
 import type {LogoPlacement} from './working-graphics.js';
 import {fitPopup} from './terminal-layout.js';
 
-type WorkingStripOptions = {screen: blessed.Widgets.Screen; render: () => void; rebuild: () => void; obscured: () => boolean};
+type WorkingStripOptions = {screen: blessed.Widgets.Screen; render: () => void; rebuild: () => void; obscured: () => boolean; beforeOpen: (pinned: boolean) => boolean};
 type Badge = {group: WorkingGroup; box: blessed.Widgets.BoxElement; icon: blessed.Widgets.BoxElement; label: blessed.Widgets.BoxElement; compact: boolean};
 type CursorProgram = blessed.BlessedProgram & {cursorHidden?: boolean};
 
@@ -51,7 +51,7 @@ export class WorkingStrip {
     bind(box: blessed.Widgets.BoxElement, selection: string): void {
         this.targets.add(box);
         box.on('mouseover', () => {
-            if (!this.pinned) {
+            if (!this.pinned && this.options.beforeOpen(false)) {
                 if (this.selection !== selection) {
                     this.popup.setScroll(0);
                 }
@@ -61,6 +61,9 @@ export class WorkingStrip {
         });
         box.on('mouseout', () => { if (!this.pinned) { this.hide(); } });
         box.on('click', () => {
+            if (!this.options.beforeOpen(true)) {
+                return;
+            }
             if (this.selection !== selection) {
                 this.popup.setScroll(0);
             }
@@ -71,17 +74,30 @@ export class WorkingStrip {
     }
 
     showAll(): void {
+        if (!this.options.beforeOpen(true)) {
+            return;
+        }
         this.popup.setScroll(0);
         this.selection = 'all';
         this.pinned = true;
         this.options.render();
     }
 
-    hide(): void {
+    hide(render = true): void {
         this.selection = undefined;
         this.pinned = false;
         this.popup.hide();
-        this.options.render();
+        if (render) {
+            this.options.render();
+        }
+    }
+
+    dismissForDetails(explicit: boolean): boolean {
+        if (this.selection && this.pinned && !explicit) {
+            return false;
+        }
+        this.hide(false);
+        return true;
     }
 
     clearGraphics(): void {
@@ -179,6 +195,10 @@ export class WorkingStrip {
             const spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'][this.frame % 8]!;
             badge.icon.setContent(badge.compact || !frame ? spinner : this.graphics === 'cells' ? frame.cells : '');
             badge.label.setContent(`${PROVIDER_LABELS[badge.group.provider]} ×${badge.group.count}`);
+        }
+        if (this.options.obscured()) {
+            this.popup.hide();
+            return;
         }
         if (this.selection) {
             const entries = this.selection === 'all' ? this.state.active() : this.selection.startsWith('provider:')

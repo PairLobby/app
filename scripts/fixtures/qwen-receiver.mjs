@@ -70,6 +70,10 @@ for await (const line of source) {
         if (passed.result?.isError) throw new Error('Pass was rejected');
         record('pass:confirmed');
     }
+    if (!invalid && text.includes('no-action-fixture')) {
+        const decision = await call(5, 'tools/call', {name: 'message_status', arguments: {state: 'no_action', reason: 'No further work needed'}});
+        if (decision.result?.isError) throw new Error('Decision rejected');
+    }
     await sleep(Number(process.env.PAIRLOBBY_TEST_DELAY_MS ?? 0));
     child.stdin.end();
     await new Promise((resolve) => child.once('close', resolve));

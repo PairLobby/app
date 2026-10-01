@@ -2,6 +2,7 @@
 //! everything diagnostic goes to stderr so a piped command stays parseable.
 
 import type {RoomEvent, RoomSnapshot} from '@pairlobby/protocol';
+import {failureLabel} from '@pairlobby/protocol';
 import type {OpenRequest, RoomEntry} from '@pairlobby/client';
 
 type ParticipantLabel = {displayName: string; kind: string};
@@ -242,9 +243,9 @@ function describe(event: RoomEvent): string {
         case 'room.access_changed':
             return event.payload.joinPolicy === 'open_to_guests' ? 'the room is now open to read-only guests' : 'the room is now invite only';
         case 'message.delivery_failed':
-            return `adapter delivery failure for ${event.payload.eventId}: ${event.payload.reason} (not an agent answer)`;
+            return `${failureLabel(event.payload.stage)} for ${event.payload.eventId}: ${event.payload.reason} (failed attempt)`;
         case 'message.received':
-            return `acknowledged ${event.payload.eventId}`;
+            return `${event.payload.stage === 'read' ? 'read' : 'received'} ${event.payload.eventId}${event.payload.action ? ` · ${event.payload.action.replaceAll('_', ' ')}` : ''}`;
         case 'conversation.turn_changed':
             return `speaking turns: ${event.payload.action} (${event.payload.mode})`;
     }

@@ -20,7 +20,7 @@ def keys(value):
     pump()
 def command(value): keys(b'\x01\x0b' + value.encode() + b'\r')
 def hover_seen(row):
-    col = screen.display[row].index('Seen')
+    col = screen.display[row].index('Status')
     keys(f'\x1b[<35;{col+1};{row+1}M'.encode())
 try:
     pump(.6)
@@ -31,7 +31,7 @@ try:
     body = screen.display[row].index('SHORT')
     original_bg = screen.buffer[row][body].bg
     hover_seen(row)
-    assert 'Confirmed receipts' in text(), text()
+    assert 'Message status' in text(), text()
     assert screen.buffer[row][sender].underscore and screen.buffer[row][receiver].underscore, 'header identities must underline'
     assert screen.buffer[row][body].bg != original_bg, 'message needs a subtle hover background'
     keys(b'\x1b[<35;1;23M')
@@ -44,8 +44,13 @@ try:
     assert heading.index('Working on an answer') >= 75, heading
     keys(b'\x1b')
     command('/done')
+    command('/failure')
+    assert 'ATTENTION: unresolved request' in text(), text()
+    command('/resolve')
+    assert 'ATTENTION: unresolved request' not in text(), text()
+    assert 'Attempt interrupted' in text(), 'historical failed attempt must remain'
     command('/unread')
-    assert '2 unread' in text() and 'All agents idle' not in text(), text()
+    assert '2 receipt unconfirmed' in text() and 'All agents idle' not in text(), text()
     command('/read')
     assert 'All agents idle (2)' in text()
     command('/waiting')
@@ -57,31 +62,33 @@ try:
     # Footer hover explains each agent's state in a compact popup.
     row = next(i for i, line in enumerate(screen.display) if 'All agents idle' in line)
     keys(f'\x1b[<35;25;{row+1}M'.encode())
-    assert 'Agent activity' in text() and 'Idle' in text() and 'caught up' in text(), text()
+    assert 'Agent activity' in text() and 'Idle' in text() and 'no further action' in text(), text()
     keys(b'\x1b')
     command('/long')
-    row = next(i for i, line in enumerate(screen.display[:-3]) if 'Seen' in line)
+    row = next(i for i, line in enumerate(screen.display[:-3]) if 'Status' in line)
     assert 'LONG099' in screen.display[row], text()
     keys(b'\x1b[5~')
-    row = next(i for i, line in enumerate(screen.display[:-3]) if 'Seen' in line)
+    row = next(i for i, line in enumerate(screen.display[:-3]) if 'Status' in line)
     assert 5 <= row <= 15 and 'LONG' in screen.display[row], text()
     hover_seen(row)
-    assert 'Confirmed receipts' in text(), text()
+    assert 'Message status' in text(), text()
     assert screen.buffer[row][2].bg != 'default', 'visible fragment should highlight'
     keys(b'\x1b')
     for _ in range(7): keys(b'\x1b[5~')
     row = next(i for i, line in enumerate(screen.display) if 'LONG000' in line)
-    assert 'Seen' in screen.display[row], text()
+    assert 'Status' in screen.display[row], text()
     hover_seen(row)
     sender = screen.display[row].index('hjoncour')
     assert screen.buffer[row][sender].underscore
     keys(b'\x1b')
     command('/many')
     keys(b'\x1bOQ')
-    assert 'Confirmed receipts (scroll)' in text(), text()
-    row = next(i for i, line in enumerate(screen.display) if 'Confirmed receipts' in line)
-    col = screen.display[row].index('Confirmed receipts')
-    for _ in range(5): keys(f'\x1b[<65;{col+1};{row+3}M'.encode())
+    assert 'Message status — Participant | Receipt | Action (scroll)' in text(), text()
+    row = next(i for i, line in enumerate(screen.display) if 'Message status' in line)
+    col = screen.display[row].index('Message status')
+    for _ in range(25):
+        if 'Reader 15' in text(): break
+        keys(f'\x1b[<65;{col+1};{row+3}M'.encode())
     assert 'Reader 15' in text(), text()
     keys(b'draft remains')
     fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 18, 60, 0, 0))
@@ -93,7 +100,7 @@ try:
     command('/quit')
     process.wait(timeout=3)
     assert process.returncode == 0
-    print('PASS compact popups, scrollable overflow, idle/unread/waiting/working states, sticky Seen top/middle/bottom, scoped highlight/underlines, resize and draft preservation.')
+    print('PASS compact popups, scrollable overflow, idle/unread/waiting/working states, sticky Status top/middle/bottom, scoped highlight/underlines, resize and draft preservation.')
 finally:
     if process.poll() is None:
         process.kill()

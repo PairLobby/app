@@ -14,7 +14,7 @@ function post(text) {
 }
 function readAll() {
     for (const agent of participants) {
-        view.addEvent({...latest, eventId: `receipt-${++seq}`, seq, senderId: agent.participantId, type: 'message.received', payload: {eventId: latest.eventId}});
+        view.addEvent({...latest, eventId: `receipt-${++seq}`, seq, senderId: agent.participantId, type: 'message.received', payload: {eventId: latest.eventId, stage: 'read', action: 'no_action', reason: 'Nothing further to do'}});
     }
 }
 function sync(available = true) {
@@ -36,6 +36,11 @@ view.input.on('line', (line) => {
     if (line === '/long') {
         post(Array.from({length: 100}, (_, index) => `LONG${String(index).padStart(3, '0')} content belonging to this message`).join('\n'));
         readAll();
+    } else if (line === '/failure') {
+        view.addEvent({...latest, eventId: `failed-${++seq}`, seq, senderId: 'codex', type: 'message.delivery_failed', payload: {eventId: latest.eventId, stage: 'execution', reason: 'Attempt interrupted'}});
+        view.setRequestAlerts([{requestId: latest.eventId, text: 'ATTENTION: unresolved request'}]);
+    } else if (line === '/resolve') {
+        view.setRequestAlerts([]);
     } else if (line === '/unread') {
         post('NEW unread message');
     } else if (line === '/read') {

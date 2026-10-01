@@ -6,6 +6,7 @@ import {PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, ServerFrame, n
 import type {
     AdapterCapabilities,
     MessageRequest,
+    MessageAction,
     TurnAction,
     TurnGrant,
     TurnMode,
@@ -30,6 +31,7 @@ export type RoomAccountRestrictions = {private: boolean; accounts: string[]; pre
 type InviteAttempt = {attemptId: string; participantCredential: string};
 
 type OperationResult = {ok: boolean};
+export type MessageStatusOptions = {reason?: string; turnToken?: string; responseEventId?: string};
 
 type HandoverRevisionResult = {revision: number; event: RoomEvent};
 
@@ -225,12 +227,18 @@ export class PairLobbyClient {
     async acknowledgeMessage(roomId: string, credential: string, eventId: string): Promise<void> {
         await this.call('POST', `/v1/rooms/${roomId}/requests/${eventId}/ack`, credential, {});
     }
-    async deliveryFailed(roomId: string, credential: string, eventId: string, reason: string, turnToken?: string): Promise<void> {
+    async reportMessageStatus(roomId: string, credential: string, eventId: string, action: MessageAction | 'read', options: MessageStatusOptions = {}): Promise<void> {
+        if (!(await this.snapshot(roomId, credential)).messageStagesSupported) {
+            throw new ProtocolError('unsupported_capability', 'Update this relay before declaring Read or message action stages.');
+        }
+        await this.send(roomId, credential, {type: 'message.received', payload: {eventId, ...(action !== 'reply_pending' ? {stage: 'read' as const} : {}), ...(action !== 'read' ? {action} : {}), ...(options.reason ? {reason: options.reason} : {}), ...(options.responseEventId ? {responseEventId: options.responseEventId} : {})}, idempotencyKey: action === 'done' && options.responseEventId ? `link-${eventId}-${options.responseEventId}` : newId('event'), ...(options.turnToken ? {turnToken: options.turnToken} : {})});
+    }
+    async deliveryFailed(roomId: string, credential: string, eventId: string, reason: string, turnToken?: string, stage?: MessageRequest['failureStage']): Promise<void> {
         const request = await this.request(roomId, credential, eventId);
         if (request.failureAt || request.responseEventId) {
             return;
         }
-        await this.send(roomId, credential, {type: 'message.delivery_failed', payload: {eventId: request.eventId, reason}, idempotencyKey: `failure-${request.eventId}`, ...(turnToken ? {turnToken} : {})});
+        await this.send(roomId, credential, {type: 'message.delivery_failed', payload: {eventId: request.eventId, reason, ...(stage ? {stage} : {})}, idempotencyKey: `failure-${request.eventId}`, ...(turnToken ? {turnToken} : {})});
     }
     async reply(roomId: string, credential: string, eventId: string, text: string, progress = false, turnToken?: string): Promise<SendEventResponse> {
         const target = await this.request(roomId, credential, eventId);

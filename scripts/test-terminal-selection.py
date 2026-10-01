@@ -50,7 +50,7 @@ try:
     keys(b'\x03do not send this\r')
     assert bytes(raw) == frozen and process.poll() is None, 'selection must not send input or quit on Ctrl+C'
     keys(b'\x1b')
-    assert 'Select text: drag' not in text() and 'Seen' in text(), text()
+    assert 'Select text: drag' not in text() and 'Status' in text(), text()
     assert '> draft stays here' in text(), text()
     assert re.search(rb'\x1b\[\?(1000|1002|1003|1006)h', raw[len(frozen):]), 'restore mouse controls'
     keys(b'\x01\x0b/select\r')

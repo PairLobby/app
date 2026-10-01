@@ -4,7 +4,7 @@ import {format} from '../../packages/cli/dist/chat.js';
 const names = new Map([['pt_human', 'hjoncour'], ['pt_codex', 'codex'], ['pt_claude', 'claude']]);
 const view = new ChatTerminal({names, participantId: 'pt_human', format: (event, highlightNames) => format(event, names, 'pt_human', false, highlightNames), complete: (line) => [[], line]});
 view.setPrompt('> ');
-view.setHint('Hover Seen or press F2. Escape dismisses details.');
+view.setHint('Hover Status or press F2. Escape dismisses details.');
 view.log('PairLobby receipt layout test');
 const event = {protocolVersion: 1, roomId: 'rm_test', eventId: 'ev_test', seq: 1, senderId: 'pt_human', recipientId: 'pt_codex', replyTo: null, idempotencyKey: null, at: Date.UTC(2026, 8, 19, 21, 42), type: 'message', payload: {text: 'hey @codex', priority: 'normal'}};
 view.addEvent(event);

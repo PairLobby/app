@@ -33,11 +33,13 @@ test('normal chat shows sender and recipient without protocol IDs on requests or
 });
 
 test('normal delivery statuses use readable wording and reserve IDs for debug display', () => {
-    expect(formatRequestStatus(request, names)).toBe('hjoncour → codex: Waiting for acknowledgement');
-    expect(formatRequestStatus({...request, receivedAt: Date.now()}, names)).toContain('Acknowledged · waiting for reply');
+    expect(formatRequestStatus(request, names)).toContain('Sent · receipt unconfirmed');
+    expect(formatRequestStatus({...request, receivedAt: Date.now()}, names)).toContain('Received · Queued');
+    expect(formatRequestStatus({...request, receivedAt: Date.now()}, names)).not.toContain('Read');
+    expect(formatRequestStatus({...request, readAt: Date.now()}, names)).toContain('Read');
     expect(formatRequestStatus(request, names, true)).toContain('[ev_request]');
     const failure: RoomEvent = {...event, type: 'message.delivery_failed', payload: {eventId: 'ev_request', reason: 'Runtime unavailable'}};
-    expect(format(failure, names, 'pt_human')).not.toContain('ev_request');
+    expect(format(failure, names, 'pt_human')).toContain('Request failed [ev_request]');
     expect(format(failure, names, 'pt_human', true)).toContain('ev_request');
 });
 

@@ -38,12 +38,12 @@ def keys(data):
 
 try:
     pump(0.4)
-    assert 'Seen' in text(), text()
+    assert 'Status' in text(), text()
     assert not any('Working' in row for row in screen.display[:-1]), text()
     keys(b'draft stays here')
     pump(0.7)
     assert 'Claude ×2' in text() and 'OpenAI ×1' in text() and 'DeepSeek ×1' in text(), text()
-    message_row = next(y for y, row in enumerate(screen.display) if 'Working' in row and 'Seen' in row)
+    message_row = next(y for y, row in enumerate(screen.display) if 'Working' in row and 'Status' in row)
     column = screen.display[message_row].index('Working')
     first = list(screen.display[-5:-2])
     pump(0.3)
@@ -75,7 +75,7 @@ try:
     keys(b'/quit\r')
     process.wait(timeout=3)
     assert process.returncode == 0
-    print('PASS explicit Working versus Seen, four animated logos, grouped agent counts, hover/F3/outside-click, draft preservation, resize and expiry.')
+    print('PASS explicit Working versus Status, four animated logos, grouped agent counts, hover/F3/outside-click, draft preservation, resize and expiry.')
 finally:
     if process.poll() is None:
         process.kill()

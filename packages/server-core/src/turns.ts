@@ -74,7 +74,7 @@ export class TurnCoordinator {
                 return {
                     requestId: request.eventId, conversationId: request.conversationId ?? request.eventId,
                     participantId: request.to, name: participant?.displayName ?? request.to,
-                    state: request.failureAt ? 'failed' : request.turnStatus === 'running' ? ((request.turnExpiresAt ?? 0) <= this.now() ? 'stalled' : 'answering') : unavailable ? 'unavailable' : paused ? 'paused' : overdue ? 'stalled' : 'waiting',
+                    state: request.failureAt ? 'failed' : request.turnStatus === 'running' ? ((request.turnExpiresAt ?? 0) <= this.now() ? 'stalled' : request.action === 'waiting' || request.action === 'reply_pending' ? 'waiting' : 'answering') : unavailable ? 'unavailable' : paused ? 'paused' : overdue ? 'stalled' : 'waiting',
                     ...(request.workingAt !== undefined && !unavailable && !paused ? {workingAt: request.workingAt} : {}),
                     ...(participant?.capabilities?.runtime ? {runtime: participant.capabilities.runtime} : {}),
                     expiresAt: request.turnExpiresAt ?? null
