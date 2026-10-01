@@ -2,6 +2,7 @@ import {emitKeypressEvents} from 'node:readline';
 import {LocalStore} from '@pairlobby/client';
 import {normalizeInviteCode} from '@pairlobby/protocol';
 import {UsageError} from './context.js';
+import {DeviceLoginUnavailable, loginInBrowser, revokeToken} from './device-login.js';
 
 type Keypress = {name?: string; ctrl?: boolean};
 
@@ -92,41 +93,62 @@ function validateRelay(value: string): string {
     }
     return server.href;
 }
-export async function loginOnline(store: LocalStore): Promise<string> {
-    let token = process.env['PAIRLOBBY_ACCOUNT_TOKEN'];
-    if (!token) {
-        if (!process.stdin.isTTY) {
-            throw new UsageError('Set PAIRLOBBY_ACCOUNT_TOKEN or run pairlobby login in a terminal');
+export type LoginOptions = {
+    /** Paste a token from the account page instead of approving in the browser. */
+    paste?: boolean;
+    /** False prints the approval address without opening a browser. */
+    openBrowser?: boolean;
+};
+
+async function promptForToken(): Promise<string> {
+    if (!process.stdin.isTTY) {
+        throw new UsageError('Set PAIRLOBBY_ACCOUNT_TOKEN or run pairlobby login in a terminal');
+    }
+    process.stderr.write(`Create an account token at ${onlineOrigin()}/account.\nPaste account token (hidden): `);
+    return new Promise<string>((resolve, reject) => {
+        let value = '';
+        const raw = process.stdin.isRaw;
+        emitKeypressEvents(process.stdin);
+        process.stdin.setRawMode(true);
+        process.stdin.resume();
+        function finish(error?: Error) {
+            process.stdin.off('keypress', press);
+            process.stdin.setRawMode(raw);
+            process.stdin.pause();
+            process.stderr.write('\n');
+            error ? reject(error) : resolve(value.trim());
         }
-        process.stderr.write(`Create an account token at ${onlineOrigin()}/account.\nPaste account token (hidden): `);
-        token = await new Promise<string>((resolve, reject) => {
-            let value = '';
-            const raw = process.stdin.isRaw;
-            emitKeypressEvents(process.stdin);
-            process.stdin.setRawMode(true);
-            process.stdin.resume();
-            function finish(error?: Error) {
-                process.stdin.off('keypress', press);
-                process.stdin.setRawMode(raw);
-                process.stdin.pause();
-                process.stderr.write('\n');
-                error ? reject(error) : resolve(value.trim());
+        function press(text: string, key: Keypress) {
+            if (key.ctrl && key.name === 'c') {
+                return finish(new UsageError('Login cancelled'));
             }
-            function press(text: string, key: Keypress) {
-                if (key.ctrl && key.name === 'c') {
-                    return finish(new UsageError('Login cancelled'));
-                }
-                if (key.name === 'return' || key.name === 'enter') {
-                    return finish();
-                }
-                if (key.name === 'backspace') {
-                    value = value.slice(0, -1);
-                } else if (!key.ctrl && text) {
-                    value += text.replace(/[\x00-\x1f\x7f]/g, '');
-                }
+            if (key.name === 'return' || key.name === 'enter') {
+                return finish();
             }
-            process.stdin.on('keypress', press);
-        });
+            if (key.name === 'backspace') {
+                value = value.slice(0, -1);
+            } else if (!key.ctrl && text) {
+                value += text.replace(/[\x00-\x1f\x7f]/g, '');
+            }
+        }
+        process.stdin.on('keypress', press);
+    });
+}
+
+export async function loginOnline(store: LocalStore, options: LoginOptions = {}): Promise<string> {
+    let token = process.env['PAIRLOBBY_ACCOUNT_TOKEN'];
+    if (!token && options.paste) {
+        token = await promptForToken();
+    } else if (!token) {
+        try {
+            token = await loginInBrowser({origin: onlineOrigin(), openBrowser: options.openBrowser ?? process.stdin.isTTY === true});
+        } catch (error) {
+            if (!(error instanceof DeviceLoginUnavailable)) {
+                throw error;
+            }
+            process.stderr.write('This service does not offer browser login yet; paste a token instead.\n');
+            token = await promptForToken();
+        }
     }
     if (!token) {
         throw new UsageError('Account token required');
@@ -134,4 +156,15 @@ export async function loginOnline(store: LocalStore): Promise<string> {
     const account = await request<{email: string}>('/api/online/account', token);
     store.putCredential('online-account', onlineOrigin(), token);
     return account.email;
+}
+
+export type LogoutResult = {removed: boolean; revoked: boolean | null};
+
+/** Forgets the saved login and revokes it on the service; null means there was nothing saved to revoke. */
+export async function logoutOnline(store: LocalStore): Promise<LogoutResult> {
+    const origin = onlineOrigin();
+    const saved = store.credential('online-account', origin);
+    const revoked = saved ? await revokeToken(origin, saved) : null;
+    store.forgetRoom('online-account');
+    return {removed: saved !== undefined, revoked};
 }
