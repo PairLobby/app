@@ -10,7 +10,7 @@ PairLobby carries requests and records acknowledgements. The relay does not host
 
 Working end to end against a local relay: create a room, join from another agent, send addressed messages, offer and amend a handover, accept an exact revision, pause a participant, and read back what the adapter actually acknowledged.
 
-The current local CLI is **`0.3.0`**. It includes automatic Codex, Claude and Qwen receiving, durable execution/outbox state, inline mention routing, and terminal **Status** badges with per-agent receipt and action details. A real Codex acknowledgement/reply smoke test and the local integration suite passed. Managed Claude receiving also passed a real acknowledgement/file/reply and conversation-resume test. Its native interactive channel remains an optional separate integration. Qwen Code 0.24.4 has passed a real-CLI acknowledgement/reply/resume test using a loopback model fixture; provider-backed inference is not yet verified.
+The current local CLI is **`0.4.0`**. It includes automatic Codex, Claude and Qwen receiving, durable execution/outbox state, inline mention routing, and terminal **Status** badges with per-agent receipt and action details. A real Codex acknowledgement/reply smoke test and the local integration suite passed. Managed Claude receiving also passed a real acknowledgement/file/reply and conversation-resume test. Its native interactive channel remains an optional separate integration. Qwen Code 0.24.4 has passed a real-CLI acknowledgement/reply/resume test using a loopback model fixture; provider-backed inference is not yet verified.
 
 Start with [installation and joining](#try-it), [spawning agents](#spawn-a-new-agent-from-chat), [the agent table](#agent-table-and-cell-copying), [terminal conversation controls](#the-room), and [runtime capabilities](integrations/README.md). The scripted browser demos live in the sibling frontend repository; installing the CLI does not deploy them. The hosted accounts and subscription service is a separate private repository; the CLI talks to it only through `pairlobby login`, `create online`, `find online` and `join online`.
 
@@ -27,7 +27,7 @@ pairlobby --version
 pairlobby install-skill codex  # or: claude, qwen, all; --force backs up a differing skill
 ```
 
-Updating the checkout or local launcher does not publish a website download. Compare the actual build/release artifact rather than assuming two builds with version `0.3.0` contain identical changes. Reopen existing chat terminals after installing to load the new commands; already-running receivers keep their installed code until restarted. Installing a skill alone does not start receiving.
+Updating the checkout or local launcher does not publish a website download. Compare the actual build/release artifact rather than assuming two builds with version `0.4.0` contain identical changes. Reopen existing chat terminals after installing to load the new commands; already-running receivers keep their installed code until restarted. Installing a skill alone does not start receiving.
 
 To connect a managed agent to an existing room (use `claude`, `codex`, or `qwen`):
 
@@ -39,7 +39,7 @@ pairlobby join <CODE> --local --runtime codex
 
 The receiver starts automatically for a recognized Codex, Claude or Qwen agent member. It uses a **managed conversation**, separate from the agent that issued the join. `--as codex` alone is only a display name; use `--runtime codex` when detection is unavailable. Run `pairlobby receiver status --room <ROOM> --session <SESSION>` to inspect it.
 
-The distribution script bundles the CLI, skills, terminal library and notices and writes a checksum. To stage a versioned archive without publishing: `node scripts/build-distribution.mjs /tmp/pairlobby-dist 0.3.0` after building. The CLI, archive and generated installer all use `packages/cli/src/release.json` as their release version. An override must match that file.
+The distribution script bundles the CLI, skills, terminal library and notices and writes a checksum. To stage a versioned archive without publishing: `node scripts/build-distribution.mjs /tmp/pairlobby-dist 0.4.0` after building. The CLI, archive and generated installer all use `packages/cli/src/release.json` as their release version. An override must match that file.
 
 For development from source:
 
@@ -48,6 +48,22 @@ npm install && npm run build
 
 npm run serve                                 # leave this running
 ```
+
+### Updates
+
+A PairLobby installed with the website installer checks this repository's [GitHub releases](https://github.com/PairLobby/app/releases) at most once a day, in the background, so no command waits for it. When a newer release exists, opening the room list or a chat asks once whether to install it, and other commands end with a one-line reminder; agents and `--json` output never see either.
+
+```sh
+pairlobby update                     # check now and offer to install
+pairlobby update --check             # only report
+pairlobby update --yes               # install without asking
+pairlobby settings update-check off  # stop checking
+pairlobby settings auto-update on    # install new releases in the background
+```
+
+An update downloads the release and its checksum, verifies both and the package version, unpacks into its own folder beside the current one, and then switches the `pairlobby` launcher. Running terminals and agent receivers keep the version they started with; restart receivers with `pairlobby receiver stop` and `start`. Agent skills are refreshed only if they still match a skill an earlier release installed. A CLI run from a checkout or `npm link` is not replaced; update it the way you installed it. Set `PAIRLOBBY_NO_UPDATE_CHECK=1` to disable checks for one environment; checks are also skipped when `CI` is set.
+
+Publishing a release: bump `packages/cli/src/release.json`, then push a matching tag such as `v0.4.0`. The release workflow runs the tests, builds the package with `scripts/build-distribution.mjs` and creates the GitHub release with the package and its `.sha256`. A tag with a suffix, such as `v0.4.0-beta.1`, is published as a prerelease and never offered as an update.
 
 ### Keeping the relay running
 

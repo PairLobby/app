@@ -74,9 +74,13 @@ export interface Settings {
     defaultRoomLifetimeMs: number | null;
     /** How long a new invite code stays redeemable, or null for no expiry. */
     defaultInviteLifetimeMs: number | null;
+    /** Check GitHub for a newer PairLobby release, at most once a day. */
+    updateCheck: boolean;
+    /** Install a newer release in the background instead of only offering it. */
+    autoUpdate: boolean;
 }
 
-export const DEFAULT_SETTINGS: Settings = {confirmDelete: true, pollIntervalMs: 700, showIds: false, defaultRoomLifetimeMs: null, defaultInviteLifetimeMs: null};
+export const DEFAULT_SETTINGS: Settings = {confirmDelete: true, pollIntervalMs: 700, showIds: false, defaultRoomLifetimeMs: null, defaultInviteLifetimeMs: null, updateCheck: true, autoUpdate: false};
 
 export function dataDirectory(): string {
     const override = process.env['PAIRLOBBY_DATA_DIR'];
