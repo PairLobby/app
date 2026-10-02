@@ -49,14 +49,17 @@ export async function runRoomCommand(line: string, context: RoomCommandContext):
         return formatTurnQueue(await runTurnCommand(argument, context), true);
     }
     if (command === '/invite') {
-        if (argument && !/^as\s+\S/.test(argument)) {
-            throw new Error('Usage: /invite or /invite as <name>');
+        if (argument && !/^as\s+\S/.test(argument) && !['member', 'observer'].includes(argument)) {
+            throw new Error('Usage: /invite, /invite member, /invite observer or /invite as <name>');
         }
-        const defaultName = argument ? argument.slice(3).trim() : undefined;
-        const invite = await client.mintInvite(roomId, credential, defaultName ? 'member' : 'guest', true, undefined, defaultName);
+        const defaultName = /^as\s/.test(argument) ? argument.slice(3).trim() : undefined;
+        // A named invite or an explicit choice wins; otherwise the room's /settings default, which is member.
+        const role = defaultName || argument === 'member' ? 'member' : argument === 'observer' ? 'guest' : snapshot.policy.inviteRole ?? 'member';
+        const invite = await client.mintInvite(roomId, credential, role, true, undefined, defaultName);
         const share = await joinCommand(client.serverUrl, invite.code);
         const reach = share.target.localOnly ? ' (this device only; restart the server with pairlobby serve --lan to share it)' : '';
-        return `Invite: ${invite.code} — ${defaultName ? `participant, default name: ${defaultName}` : 'read-only observer'} · ${share.command}${reach}`;
+        const admits = role === 'guest' ? 'read-only observer' : defaultName ? `member who can speak, default name: ${defaultName}` : 'member who can speak';
+        return `Invite: ${invite.code} — ${admits} · ${share.command}${reach}`;
     }
     const owner = controllerCredential ?? (member.role === 'controller' ? credential : undefined);
     if (!owner) {

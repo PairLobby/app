@@ -39,7 +39,7 @@ pairlobby join <CODE> --local --runtime codex
 
 The receiver starts automatically for a recognized Codex, Claude or Qwen agent member. It uses a **managed conversation**, separate from the agent that issued the join. `--as codex` alone is only a display name; use `--runtime codex` when detection is unavailable. Run `pairlobby receiver status --room <ROOM> --session <SESSION>` to inspect it.
 
-The distribution script bundles the CLI, skills, terminal library and notices and writes a checksum. To stage a versioned archive without publishing: `node scripts/build-distribution.mjs /tmp/pairlobby-dist 0.4.0` after building. The CLI, archive and generated installer all use `packages/cli/src/release.json` as their release version. An override must match that file.
+The distribution script bundles the CLI, skills, terminal library and notices and writes a checksum. To stage a versioned archive without publishing: `node scripts/build-distribution.mjs /tmp/pairlobby-dist 0.4.0` after building. The CLI, archive and generated installer all use the version in `packages/cli/package.json`, which ssmver manages. An override must match it.
 
 For development from source:
 
@@ -63,7 +63,7 @@ pairlobby settings auto-update on    # install new releases in the background
 
 An update downloads the release and its checksum, verifies both and the package version, unpacks into its own folder beside the current one, and then switches the `pairlobby` launcher. Running terminals and agent receivers keep the version they started with; restart receivers with `pairlobby receiver stop` and `start`. Agent skills are refreshed only if they still match a skill an earlier release installed. A CLI run from a checkout or `npm link` is not replaced; update it the way you installed it. Set `PAIRLOBBY_NO_UPDATE_CHECK=1` to disable checks for one environment; checks are also skipped when `CI` is set.
 
-Publishing a release: bump `packages/cli/src/release.json`, then push a matching tag such as `v0.4.0`. The release workflow runs the tests, builds the package with `scripts/build-distribution.mjs` and creates the GitHub release with the package and its `.sha256`. A tag with a suffix, such as `v0.4.0-beta.1`, is published as a prerelease and never offered as an update.
+Versioning and releases use [ssmver](https://github.com/hjoncour/ssmver): `ssmver.toml` holds the version and keeps every workspace `package.json` in step; the CLI reads its version from `packages/cli/package.json`. Run `ssmver init` once per clone to install its commit hooks. A commit whose message starts with `feature:` bumps the minor version, `fix:` the patch and `release:` the major; within one branch only the highest bump applies, and other prefixes such as `chore:` or `docs:` bump nothing. ssmver stages the bumped files with the commit. On every merge to `master`, the release workflow checks that version; if it has no GitHub release yet, it runs the tests, builds the package with `scripts/build-distribution.mjs`, tags the merged commit `v<version>` and creates the release with the package and its `.sha256`. A version with a suffix, such as `0.5.0-beta.1`, is published as a prerelease and never offered as an update. The workflow can also be started by hand from the Actions tab. `package-lock.json` keeps the old workspace version until the next `npm install`; `npm ci` does not check it, so this never blocks CI.
 
 ### Keeping the relay running
 
@@ -209,9 +209,11 @@ pairlobby settings default-expiry 24h     # or: never
 
 ```sh
 pairlobby forget <room>                   # drop the local record, leave the server alone
-pairlobby settings                        # show preferences
+pairlobby settings                        # interactive menu in a terminal; a list when piped
 pairlobby settings confirm-delete false   # stop asking before delete
 ```
+
+In a terminal, `pairlobby settings` opens the same kind of menu as `/settings` inside a room, for this device: your default name; defaults for rooms you create (reply mode, what `/invite` admits, guest access for local rooms, private online rooms, room and invite expiry); terminal preferences; and update checks. Arrows select, Enter edits and saves immediately, Escape closes. Each setting can also be set from the shell, for example `pairlobby settings default-reply-mode parallel`, `pairlobby settings default-invites observer` or `pairlobby settings default-private-online on`; `--json` prints them all. New-room defaults are applied right after `create`; if a relay is too old for one, the room is still created and the CLI says which default was not applied. `create online --public` overrides a private-by-default setting.
 
 An invite code is a **seat**: it admits one participant at a time and frees up when
 that participant leaves, so closing your session and rejoining with the same code
@@ -305,7 +307,7 @@ Messages with multiple recipients display `→ all`; this is a compact label and
 
 - **Room:** name and expiry, including Never, presets, and a custom duration/date.
 - **Turns:** sequential/parallel response mode, the speaking queue, and confirmed skip/cancel actions.
-- **Privacy:** invite-only or read-only guest admission, plus the admission lock. Guest admission does not grant write access or remove existing members.
+- **Privacy:** invite-only or read-only guest admission, what a plain `/invite` admits (members who can speak, the default, or read-only observers), and the admission lock. Guest admission does not grant write access or remove existing members.
 - **Admins and members:** grant/remove admin rights, mute/unmute, request pause/resume, and remove a participant. Admins use their own memberships; the owner keeps separate control. Regular members and observers see read-only settings. Sensitive changes require confirmation with Cancel selected by default.
 - **Hosted rooms:** owners can toggle account restrictions while retaining the allowlist and separately replace the verified-email allowlist. These controls require a hosted relay that supports them; local room admission has no account allowlist.
 
@@ -322,8 +324,9 @@ Set or change your device default with `pairlobby profile --as "Hugo" --human`. 
 | Command | Effect |
 | --- | --- |
 | `/name <new name>` | Save your display name for this room; leave the device default unchanged. |
-| `/invite` | Generate a read-only observer code. |
-| `/invite as <name>` | Generate a participant code with that default display name. |
+| `/invite` | Generate a code for a member who can speak, or a read-only observer if the room's `/settings` says so. |
+| `/invite member` / `/invite observer` | Generate a member or read-only observer code regardless of the room default. |
+| `/invite as <name>` | Generate a member code with that default display name. |
 | `/lock` | Block new invites, joins, and rejoining with old codes. |
 | `/unlock` | Re-enable invites and entry without changing the room's guest-access policy. |
 | `/kick <name or ID>` | Remove a participant, revoke their credential, and disable their invite seat. |

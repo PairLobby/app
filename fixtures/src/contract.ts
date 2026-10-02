@@ -178,6 +178,20 @@ export function runRoomContract(label: string, makeStore: StoreFactory): void {
                 await expectError('unauthorized', () => server.setJoinPolicy(alice.credential, 'open_to_guests'));
             });
 
+            test('test_invitations_admit_members_until_the_owner_chooses_observers', async () => {
+                const before = await server.snapshot(controller);
+                expect(before.inviteRoleSupported).toBe(true);
+                expect(before.policy.inviteRole ?? 'member').toBe('member');
+                await expectError('unauthorized', () => server.setInviteRole(alice.credential, 'guest'));
+                await server.setInviteRole(controller, 'guest');
+                expect((await server.snapshot(controller)).policy.inviteRole).toBe('guest');
+                await expectError('invalid_request', () => server.setInviteRole(controller, 'guest'));
+                const changed = (await server.read(alice.credential, 0)).events.find((event) => event.type === 'room.access_changed');
+                expect(changed?.type === 'room.access_changed' && changed.payload).toEqual({joinPolicy: 'invite_only', inviteRole: 'guest'});
+                await server.setInviteRole(controller, 'member');
+                expect((await server.snapshot(controller)).policy.inviteRole).toBe('member');
+            });
+
             test('test_opening_is_recorded_in_history', async () => {
                 await server.setJoinPolicy(controller, 'open_to_guests');
                 const page = await server.read(alice.credential, 0);

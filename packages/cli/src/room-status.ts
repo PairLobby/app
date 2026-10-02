@@ -59,6 +59,7 @@ export function roomStatusRows(status: RoomStatus): RoomPanelRow[] {
         {id: 'room-id', section: 'Room', label: 'Room ID', value: room.roomId},
         {id: 'state', section: 'Room', label: 'State', value: room.lifecycle},
         {id: 'privacy', section: 'Room', label: 'Guest access', value: room.policy.joinPolicy === 'invite_only' ? 'Invite only' : 'Anyone with room ID (read only)'},
+        {id: 'invites', section: 'Room', label: 'Invitations', value: room.policy.inviteRole === 'guest' ? 'Read-only observers' : 'Members who can speak'},
         {id: 'lock', section: 'Room', label: 'Admission lock', value: room.locked ? 'Locked' : 'Unlocked'},
         {id: 'mode', section: 'Room', label: 'Reply mode', value: turns?.mode ?? 'Unavailable on this relay'},
         {id: 'messages', section: 'Messages', label: 'Messages (retained)', value: String(messages.count), hint: room.earliestSeq > 1 ? 'Older history was removed; this is the retained count.' : 'Message events only; joins and receipts are not counted.'},

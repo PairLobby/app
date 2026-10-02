@@ -113,6 +113,10 @@ export class RoomHarness {
         return this.service.setJoinPolicy(this.roomId, credential, joinPolicy);
     }
 
+    async setInviteRole(credential: string, inviteRole: 'member' | 'guest'): Promise<RoomEvent> {
+        return this.service.setInviteRole(this.roomId, credential, inviteRole);
+    }
+
     async joinAsGuest(identity: Identity, participantCredential: string) {
         return this.service.joinAsGuest(this.roomId, {...identity, participantCredential});
     }

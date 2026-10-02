@@ -5,7 +5,7 @@ export const CHAT_COMMANDS = ['/claude', '/codex', '/qwen', '/spawn', '/agents',
 const SUBCOMMANDS: Record<string, string[]> = {
     '/agent': ['start', 'stop'],
     '/turns': ['sequential', 'parallel', 'skip', 'cancel'],
-    '/invite': ['as']
+    '/invite': ['as', 'member', 'observer']
 };
 
 /** Readline supplies the text before the cursor; it preserves the suffix itself. */

@@ -11,8 +11,13 @@
  */
 export type JoinPolicy = 'invite_only' | 'open_to_guests';
 
+/** What a plain `/invite` admits: a `member` who can speak, or a read-only `guest`. */
+export type InviteRole = 'member' | 'guest';
+
 export interface RoomPolicy {
     joinPolicy: JoinPolicy;
+    /** Absent on rooms created before invitation defaults existed, which means `member`. */
+    inviteRole?: InviteRole;
     maxParticipants: number;
     maxEventPayloadBytes: number;
     maxRetainedEventBytes: number;
@@ -47,6 +52,7 @@ const HOUR = 60 * MINUTE;
  */
 export const DEFAULT_ROOM_POLICY: RoomPolicy = {
     joinPolicy: 'invite_only',
+    inviteRole: 'member',
     maxParticipants: 16,
     maxEventPayloadBytes: 32 * KIB,
     maxRetainedEventBytes: 32 * MIB,

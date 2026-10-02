@@ -8,7 +8,7 @@ import {spawn,execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 const publicDirectory=resolve(process.env.PAIRLOBBY_TEST_INSTALLER_DIR??'../frontend/public');
 const installer=join(publicDirectory,'install.mjs');
-const version=JSON.parse(readFileSync('packages/cli/src/release.json','utf8')).version;
+const version=JSON.parse(readFileSync('packages/cli/package.json','utf8')).version;
 const archive=readFileSync(join(publicDirectory,`downloads/pairlobby-cli-${version}.tgz`));
 const hash=createHash('sha256').update(archive).digest('hex');
 test('staged installers and checksum match the shared release version',()=>{

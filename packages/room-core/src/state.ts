@@ -83,6 +83,7 @@ export function toSnapshot(view: RoomView): RoomSnapshot {
         messageStagesSupported: true,
         rejoinSupported: true,
         renameSelfSupported: true,
+        inviteRoleSupported: true,
         adminRolesSupported: true,
         quotedMessagesSupported: true,
         groupTurnsSupported: true,
