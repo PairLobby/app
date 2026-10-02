@@ -31,6 +31,8 @@ import {receiverStatus, runReceiver, startReceiver, stopReceiver} from './receiv
 import type {ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
 import {joinCommand, localOnlyNote, parseJoinLink} from './share.js';
+import {checkForUpdate, installRelease, managedInstall, runBackgroundUpdate, scheduleBackgroundCheck, shouldOfferUpdate, updateNotice, writeUpdateState} from './updater.js';
+import type {LatestRelease} from './updater.js';
 import {findRooms, formatFoundRooms} from './find.js';
 import {formatTurnQueue, runTurnCommand} from './turn-commands.js';
 import {spawnAgent, formatSpawnResult} from './spawn-agent.js';
@@ -99,6 +101,9 @@ const OPTIONS = {
     host: {type: 'string'},
     lan: {type: 'boolean'},
     token: {type: 'boolean'},
+    yes: {type: 'boolean'},
+    check: {type: 'boolean'},
+    background: {type: 'boolean'},
     'no-browser': {type: 'boolean'},
     'public-url': {type: 'string'},
     port: {type: 'string'},
@@ -172,6 +177,8 @@ const HELP = `pairlobby
   pairlobby pause <who>              controller only
   pairlobby resume <who>             controller only
   pairlobby serve                    run a local room server
+  pairlobby update                   check GitHub for a new release and offer to install it
+  pairlobby update --check           only report; --yes installs without asking
   pairlobby serve --lan              also accept devices on your network (unencrypted HTTP)
   pairlobby serve --public-url <url> advertise this address in invites (Tailscale, proxy)
 
@@ -214,6 +221,7 @@ async function main(argv: string[]): Promise<number> {
         return 0;
     }
     const store = new LocalStore();
+    scheduleBackgroundCheck(store, command);
 
     switch (command) {
         case 'receiver-tools':
@@ -237,6 +245,7 @@ async function main(argv: string[]): Promise<number> {
         }
         case 'rooms':
         case 'list':
+            await offerUpdate(store, values);
             return listRooms(store, values);
         case 'find':
             return positionals[1] === 'online' ? findOnline(store, values) : findCommand(store, values);
@@ -359,7 +368,10 @@ async function main(argv: string[]): Promise<number> {
         case 'link-answer':
             return messageStatusCommand(store, values, positionals[1], 'done', positionals[2]);
         case 'chat':
+            await offerUpdate(store, values);
             return chatRoom(store, values);
+        case 'update':
+            return updateCommand(store, values);
         case 'session':
             return sessionInfo(store, values);
         case 'profile':
@@ -724,7 +736,9 @@ const SETTING_KEYS = {
     'poll-interval': {field: 'pollIntervalMs', kind: 'number', help: 'milliseconds between live-room polls'},
     'show-ids': {field: 'showIds', kind: 'boolean', help: 'print ids next to names in the live room'},
     'default-expiry': {field: 'defaultRoomLifetimeMs', kind: 'duration', help: 'how long a new room lives: never, or a duration like 24h'},
-    'default-invite-expiry': {field: 'defaultInviteLifetimeMs', kind: 'duration', help: 'how long a new invite code lasts: never, or a duration like 10m'}
+    'default-invite-expiry': {field: 'defaultInviteLifetimeMs', kind: 'duration', help: 'how long a new invite code lasts: never, or a duration like 10m'},
+    'update-check': {field: 'updateCheck', kind: 'boolean', help: 'check GitHub for a new PairLobby release once a day'},
+    'auto-update': {field: 'autoUpdate', kind: 'boolean', help: 'install new releases in the background (needs update-check)'}
 } as const;
 
 function settingsCommand(store: LocalStore, values: Values, key?: string, value?: string): number {
@@ -1749,6 +1763,95 @@ async function closeRoom(store: LocalStore, values: Values): Promise<number> {
     return 0;
 }
 
+/** Null when the terminal closed or Ctrl+C was pressed before an answer. */
+async function askYesNo(question: string): Promise<boolean | null> {
+    const {createInterface} = await import('node:readline/promises');
+    const terminal = createInterface({input: process.stdin, output: process.stdout});
+    try {
+        return ['y', 'yes'].includes((await terminal.question(question)).trim().toLowerCase());
+    } catch {
+        process.stdout.write('\n');
+        return null;
+    } finally {
+        terminal.close();
+    }
+}
+
+async function installUpdate(store: LocalStore, latest: LatestRelease): Promise<boolean> {
+    const install = managedInstall();
+    if (!install) {
+        note(`This PairLobby runs from ${process.argv[1]}, not from the PairLobby installer, so it cannot replace itself. Update it the way you installed it, or reinstall: curl -fsSL https://pairlobby.com/install.sh | sh`);
+        return false;
+    }
+    await installRelease(latest, install, {say: note});
+    writeUpdateState(store, {dismissed: latest.version, installed: null});
+    out(`Installed PairLobby ${latest.version}. New terminals use it; running agent receivers keep their version until restarted with pairlobby receiver stop and start.`);
+    return true;
+}
+
+/** Asks once per release before an interactive session; a declined version is not offered again. */
+async function offerUpdate(store: LocalStore, values: Values): Promise<void> {
+    if (flag(values, 'json') || flag(values, 'no-follow') || !process.stdin.isTTY || !process.stdout.isTTY) {
+        return;
+    }
+    const latest = shouldOfferUpdate(store);
+    if (!latest || !managedInstall()) {
+        return;
+    }
+    const answer = await askYesNo(`PairLobby ${latest.version} is available (you have ${release.version}). Update now? [y/N] `);
+    if (!answer) {
+        if (answer === false) {
+            writeUpdateState(store, {dismissed: latest.version});
+        }
+        note('Not updated. Run pairlobby update whenever you want it.');
+        return;
+    }
+    try {
+        await installUpdate(store, latest);
+    } catch (error) {
+        note(`Update failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+
+async function updateCommand(store: LocalStore, values: Values): Promise<number> {
+    if (flag(values, 'background')) {
+        await runBackgroundUpdate(store);
+        return 0;
+    }
+    const check = await checkForUpdate(store, true);
+    if (flag(values, 'json') && !flag(values, 'yes')) {
+        json({...check, managed: managedInstall() !== null});
+        return 0;
+    }
+    if (!check.latest) {
+        out('No PairLobby release is published on GitHub yet.');
+        return 0;
+    }
+    if (!check.available) {
+        out(`PairLobby ${check.current} is up to date.`);
+        return 0;
+    }
+    out(`PairLobby ${check.latest.version} is available (you have ${check.current}): ${check.latest.pageUrl}`);
+    if (flag(values, 'check')) {
+        return 0;
+    }
+    if (!flag(values, 'yes')) {
+        if (!process.stdin.isTTY) {
+            note('Run pairlobby update --yes to install it.');
+            return 0;
+        }
+        const answer = await askYesNo(`Install PairLobby ${check.latest.version} now? [y/N] `);
+        if (!answer) {
+            if (answer === false) {
+                writeUpdateState(store, {dismissed: check.latest.version});
+            }
+            out('Not updated.');
+            return 0;
+        }
+    }
+    return (await installUpdate(store, check.latest)) ? 0 : 1;
+}
+
 function parsePublicUrl(value: string): string {
     let url: URL;
     try {
@@ -1809,9 +1912,25 @@ async function serve(values: Values): Promise<number> {
     return 0;
 }
 
+/** Reminds a person at a terminal about a newer release once the command is done; never agents or scripts. */
+function remindAboutUpdate(argv: string[]): void {
+    if (!process.stderr.isTTY || argv.includes('--json') || ['update', 'receiver-run', 'receiver-tools', 'channel', 'guard-stop'].includes(argv[0] ?? '')) {
+        return;
+    }
+    try {
+        const notice = updateNotice(new LocalStore());
+        if (notice) {
+            note(notice);
+        }
+    } catch {
+        // A reminder is never worth an error.
+    }
+}
+
 void main(process.argv.slice(2))
     .then((code) => {
         process.exitCode = code;
+        remindAboutUpdate(process.argv.slice(2));
     })
     .catch((error: unknown) => {
         if (error instanceof UsageError) {

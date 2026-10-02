@@ -1,0 +1,39 @@
+name: Release
+
+# Pushing a tag such as v0.4.0 publishes a GitHub release with the CLI package and
+# its checksum. Installed CLIs check this repository's latest release for updates.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Check the tag matches the CLI version
+        run: |
+          version=$(node -p "require('./packages/cli/src/release.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match packages/cli/src/release.json ($version)" >&2
+            exit 1
+          fi
+      - run: npm test
+      - run: node scripts/build-distribution.mjs artifacts "${GITHUB_REF_NAME#v}"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # A prerelease (v0.4.0-beta.1) is published but never offered as an update.
+          prerelease=""
+          case "$version" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" "artifacts/pairlobby-cli-$version.tgz" "artifacts/pairlobby-cli-$version.tgz.sha256" --title "PairLobby $version" --generate-notes --verify-tag $prerelease

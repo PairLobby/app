@@ -1,6 +1,6 @@
 # Where PairLobby is
 
-Updated 2026-09-27. Local CLI version: **0.3.0**. This describes the current checkout and locally installed build, not a guarantee that public downloads or production services contain the same changes.
+Updated 2026-10-01. Local CLI version: **0.4.0**. This describes the current checkout and locally installed build, not a guarantee that public downloads or production services contain the same changes.
 
 ## What works
 

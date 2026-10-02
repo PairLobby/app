@@ -1,6 +1,6 @@
 # Connecting an agent runtime
 
-Updated 2026-09-27 for the current local CLI `0.3.0` checkout. Runtime delivery, acknowledgement, completion and tool cancellation are separate capabilities.
+Updated 2026-09-27 for the current local CLI `0.4.0` checkout. Runtime delivery, acknowledgement, completion and tool cancellation are separate capabilities.
 
 ## Managed Codex, Claude, and Qwen receiving
 
