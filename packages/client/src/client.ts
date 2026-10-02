@@ -283,6 +283,10 @@ export class PairLobbyClient {
         return this.call('POST', `/v1/rooms/${roomId}/name`, credential, {name});
     }
 
+    setInviteRole(roomId: string, credential: string, inviteRole: 'member' | 'guest'): Promise<RoomEventResult> {
+        return this.call('POST', `/v1/rooms/${roomId}/invite-role`, credential, {inviteRole});
+    }
+
     setJoinPolicy(roomId: string, credential: string, joinPolicy: 'invite_only' | 'open_to_guests'): Promise<RoomEventResult> {
         return this.call('POST', `/v1/rooms/${roomId}/access`, credential, {joinPolicy});
     }

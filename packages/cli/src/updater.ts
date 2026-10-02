@@ -15,7 +15,7 @@ import {basename, dirname, join, resolve} from 'node:path';
 
 import type {LocalStore} from '@pairlobby/client';
 
-import release from './release.json' with {type: 'json'};
+import {VERSION} from './version.js';
 
 export const UPDATE_REPOSITORY = 'PairLobby/app';
 const CHECK_INTERVAL_MS = 24 * 3600_000;
@@ -59,7 +59,7 @@ export type InstallOptions = {
 const EMPTY_STATE: UpdateState = {checkedAt: 0, latest: null, dismissed: null, installed: null, lastError: null};
 
 export function currentVersion(): string {
-    return release.version;
+    return VERSION;
 }
 
 function parts(version: string): {numbers: number[]; prerelease: string | null} {

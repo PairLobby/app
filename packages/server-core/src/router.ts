@@ -14,6 +14,7 @@ import {
     RenameSelfRequest,
     SendEventRequest,
     SetAccessRequest,
+    SetInviteRoleRequest,
     SetLockedRequest,
     SetMutedRequest,
     SetRoleRequest,
@@ -202,6 +203,10 @@ async function route(request: Request, service: RoomService): Promise<Response> 
         case 'POST access': {
             const {joinPolicy} = SetAccessRequest.parse(await request.json());
             return json({event: await service.setJoinPolicy(roomId, credential, joinPolicy)});
+        }
+        case 'POST invite-role': {
+            const {inviteRole} = SetInviteRoleRequest.parse(await request.json());
+            return json({event: await service.setInviteRole(roomId, credential, inviteRole)});
         }
         case 'POST expiry': {
             const {expiresAt} = SetExpiryRequest.parse(await request.json());

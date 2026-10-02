@@ -9,11 +9,11 @@
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {spawn} from 'node:child_process';
-import release from './release.json' with {type: 'json'};
 import {userInfo} from 'node:os';
 import {parseArgs} from 'node:util';
 
 import {LocalStore, PairLobbyClient, openRequests, owedByMe, unreceipted} from '@pairlobby/client';
+import type {Settings} from '@pairlobby/client';
 import {ParticipantName, ProtocolError, requestState, newId, MessageAction} from '@pairlobby/protocol';
 import type {AdapterCapabilities} from '@pairlobby/protocol';
 
@@ -31,6 +31,9 @@ import {receiverStatus, runReceiver, startReceiver, stopReceiver} from './receiv
 import type {ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
 import {joinCommand, localOnlyNote, parseJoinLink} from './share.js';
+import {VERSION} from './version.js';
+import {SETTING_KEYS, describeSettingValue, parseLifetime, parseSettingValue} from './device-settings.js';
+import {runSettingsMenu} from './settings-menu.js';
 import {checkForUpdate, installRelease, managedInstall, runBackgroundUpdate, scheduleBackgroundCheck, shouldOfferUpdate, updateNotice, writeUpdateState} from './updater.js';
 import type {LatestRelease} from './updater.js';
 import {findRooms, formatFoundRooms} from './find.js';
@@ -102,6 +105,7 @@ const OPTIONS = {
     lan: {type: 'boolean'},
     token: {type: 'boolean'},
     yes: {type: 'boolean'},
+    public: {type: 'boolean'},
     check: {type: 'boolean'},
     background: {type: 'boolean'},
     'no-browser': {type: 'boolean'},
@@ -125,7 +129,7 @@ const HELP = `pairlobby
   pairlobby open <room> --off        back to invite only
   pairlobby delete <room>            delete a room (controller only)
   pairlobby forget <room>            drop the local record, leave the server alone
-  pairlobby settings                 show or change preferences
+  pairlobby settings                 interactive menu for this device's preferences and new-room defaults
   pairlobby create --name <name>     start a room and print an invite
   pairlobby join <code>              join a local room and enter it
   pairlobby join <code> --server http://10.0.0.5:8790
@@ -142,7 +146,7 @@ const HELP = `pairlobby
   pairlobby login                    approve this terminal in the browser (--no-browser prints the link)
   pairlobby login --token            paste an account token from the website instead
   pairlobby logout                   revoke this terminal's login and forget it
-  pairlobby create online --name X [--private] [--allow email,email]
+  pairlobby create online --name X [--private | --public] [--allow email,email]
   pairlobby allow [email ...]       replace the room allowlist (creator retained)
   pairlobby chat                     re-enter a room you already joined
   pairlobby send <text> --to <who>   send a message to one participant
@@ -212,7 +216,7 @@ async function main(argv: string[]): Promise<number> {
         return 0;
     }
     if (values.version) {
-        out(`PairLobby ${release.version} (automatic Codex, Claude and Qwen receivers)`);
+        out(`PairLobby ${VERSION} (automatic Codex, Claude and Qwen receivers)`);
         return 0;
     }
     const command = positionals[0] ?? 'rooms';
@@ -731,33 +735,28 @@ function identityFrom(store: LocalStore, values: Values, fallbackName: string): 
     return {displayName: validatedName(displayName), nameSource: str(values, 'as') !== undefined ? 'room' : 'profile', kind, sessionId: newId('session'), ...(capabilities ? {capabilities} : {})};
 }
 
-const SETTING_KEYS = {
-    'confirm-delete': {field: 'confirmDelete', kind: 'boolean', help: 'ask before deleting a room'},
-    'poll-interval': {field: 'pollIntervalMs', kind: 'number', help: 'milliseconds between live-room polls'},
-    'show-ids': {field: 'showIds', kind: 'boolean', help: 'print ids next to names in the live room'},
-    'default-expiry': {field: 'defaultRoomLifetimeMs', kind: 'duration', help: 'how long a new room lives: never, or a duration like 24h'},
-    'default-invite-expiry': {field: 'defaultInviteLifetimeMs', kind: 'duration', help: 'how long a new invite code lasts: never, or a duration like 10m'},
-    'update-check': {field: 'updateCheck', kind: 'boolean', help: 'check GitHub for a new PairLobby release once a day'},
-    'auto-update': {field: 'autoUpdate', kind: 'boolean', help: 'install new releases in the background (needs update-check)'}
-} as const;
 
-function settingsCommand(store: LocalStore, values: Values, key?: string, value?: string): number {
+async function settingsCommand(store: LocalStore, values: Values, key?: string, value?: string): Promise<number> {
     if (flag(values, 'reset')) {
         store.resetSettings();
         note('settings reset to defaults');
         return 0;
     }
     if (key !== undefined) {
-        const definition = SETTING_KEYS[key as keyof typeof SETTING_KEYS];
+        const definition = SETTING_KEYS[key];
         if (!definition) {
             throw new UsageError(`unknown setting "${key}"; known settings: ${Object.keys(SETTING_KEYS).join(', ')}`);
         }
         if (value === undefined) {
             throw new UsageError(`pairlobby settings ${key} <value>`);
         }
-        const parsed = definition.kind === 'boolean' ? parseBoolean(key, value) : definition.kind === 'duration' ? parseLifetime(value) : parseCount(key, value);
-        store.setSettings({[definition.field]: parsed} as never);
-        note(`${key} is now ${definition.kind === 'duration' ? describeLifetime(parsed as number | null) : parsed}`);
+        const parsed = parseSettingValue(key, definition, value);
+        store.setSettings({[definition.field]: parsed} as Partial<Settings>);
+        note(`${key} is now ${describeSettingValue(definition, parsed)}`);
+        return 0;
+    }
+    if (!flag(values, 'json') && process.stdin.isTTY && process.stdout.isTTY) {
+        await runSettingsMenu(store);
         return 0;
     }
     const settings = store.settings();
@@ -767,49 +766,17 @@ function settingsCommand(store: LocalStore, values: Values, key?: string, value?
     }
     const width = Math.max(...Object.keys(SETTING_KEYS).map((name) => name.length));
     for (const [name, definition] of Object.entries(SETTING_KEYS)) {
-        const raw = settings[definition.field];
-        out(`${name.padEnd(width)}  ${definition.kind === 'duration' ? describeLifetime(raw as number | null) : String(raw)}`);
+        out(`${name.padEnd(width)}  ${describeSettingValue(definition, settings[definition.field])}`);
         out(`${' '.repeat(width)}  ${definition.help}`);
     }
     out('');
-    note('pairlobby settings <name> <value>   ·   pairlobby settings --reset');
+    note('pairlobby settings <name> <value>   ·   pairlobby settings --reset   ·   run in a terminal for the interactive menu');
     return 0;
 }
 
-function parseBoolean(key: string, value: string): boolean {
-    const normalized = value.trim().toLowerCase();
-    if (['true', 'yes', 'on', '1'].includes(normalized)) {
-        return true;
-    }
-    if (['false', 'no', 'off', '0'].includes(normalized)) {
-        return false;
-    }
-    throw new UsageError(`${key} takes true or false, not "${value}"`);
-}
 
-function parseLifetime(value: string): number | null {
-    const normalized = value.trim().toLowerCase();
-    if (['never', 'none', 'off', 'no', 'permanent', 'forever'].includes(normalized)) {
-        return null;
-    }
-    try {
-        return parseDuration(normalized);
-    } catch (error) {
-        throw new UsageError(error instanceof WhenError ? error.message : String(error));
-    }
-}
 
-function describeLifetime(ms: number | null): string {
-    return ms === null ? 'never' : formatDuration(ms);
-}
 
-function parseCount(key: string, value: string): number {
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-        throw new UsageError(`${key} takes a positive number, not "${value}"`);
-    }
-    return parsed;
-}
 
 /**
  * Drops a room from this device without touching the server. The room may still
@@ -919,6 +886,27 @@ async function enableReceiver(store: LocalStore, values: Values, roomId: string,
     return receiver;
 }
 
+/** Applies this device's defaults for new rooms; a relay that refuses one keeps the room and says so. */
+async function applyRoomDefaults(client: PairLobbyClient, roomId: string, controller: string, settings: Settings, online: boolean): Promise<void> {
+    const changes: [string, () => Promise<unknown>][] = [];
+    if (settings.defaultTurnMode === 'parallel') {
+        changes.push(['parallel replies', () => client.setTurnMode(roomId, controller, 'parallel')]);
+    }
+    if (settings.defaultInviteRole === 'guest') {
+        changes.push(['read-only invitations', () => client.setInviteRole(roomId, controller, 'guest')]);
+    }
+    if (!online && settings.defaultGuestAccess === 'open_to_guests') {
+        changes.push(['open guest access', () => client.setJoinPolicy(roomId, controller, 'open_to_guests')]);
+    }
+    for (const [label, apply] of changes) {
+        try {
+            await apply();
+        } catch (error) {
+            note(`Room created, but the default for ${label} was not applied: ${error instanceof Error ? error.message : String(error)}. Change it with /settings in the room.`);
+        }
+    }
+}
+
 async function createRoom(store: LocalStore, values: Values, online = false): Promise<number> {
     const name = str(values, 'name');
     if (!name) {
@@ -927,16 +915,22 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
     if (online && (str(values, 'server') || flag(values, 'local'))) {
         throw new UsageError('online cannot be combined with --server or --local');
     }
-    if (str(values, 'allow') && !flag(values, 'private')) {
-        throw new UsageError('--allow requires --private');
+    if (flag(values, 'private') && flag(values, 'public')) {
+        throw new UsageError('use either --private or --public, not both');
     }
-    if (flag(values, 'private') && !online) {
-        throw new UsageError('Use create online --private for an account-restricted room');
+    if ((flag(values, 'private') || flag(values, 'public')) && !online) {
+        throw new UsageError('--private and --public apply to online rooms: pairlobby create online --name <name> --private');
+    }
+    const settings = store.settings();
+    // The device default decides when neither flag is given.
+    const privateRoom = online && (flag(values, 'private') || (settings.defaultPrivateOnline && !flag(values, 'public')));
+    if (str(values, 'allow') && !privateRoom) {
+        throw new UsageError('--allow requires a private room (--private)');
     }
     const serverUrl = online ? (await onlineAccount(store)).server : resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')});
     const identity = identityFrom(store, values, 'agent');
     const client = new PairLobbyClient(serverUrl, online ? accountToken(store) : process.env['PAIRLOBBY_ACCOUNT_TOKEN']);
-    const lifetime = store.settings().defaultRoomLifetimeMs;
+    const lifetime = settings.defaultRoomLifetimeMs;
     const expiresAt = str(values, 'expiry') !== undefined ? parseExpirySpec(str(values, 'expiry')!) : lifetime === null ? null : Date.now() + lifetime;
     const created = await client.createRoom(
         name,
@@ -944,7 +938,7 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
         expiresAt,
         online
             ? {
-                  private: flag(values, 'private'),
+                  private: privateRoom,
                   allowedAccounts: (str(values, 'allow') ?? '')
                       .split(',')
                       .map((s) => s.trim())
@@ -969,6 +963,7 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
         ...localDetail(values)
     });
 
+    await applyRoomDefaults(client, created.roomId, created.controllerCredential, settings, online);
     const receiver = await enableReceiver(store, values, created.roomId, identity.sessionId);
     const share = await joinCommand(serverUrl, created.invite.code);
     if (flag(values, 'json')) {
@@ -1798,7 +1793,7 @@ async function offerUpdate(store: LocalStore, values: Values): Promise<void> {
     if (!latest || !managedInstall()) {
         return;
     }
-    const answer = await askYesNo(`PairLobby ${latest.version} is available (you have ${release.version}). Update now? [y/N] `);
+    const answer = await askYesNo(`PairLobby ${latest.version} is available (you have ${VERSION}). Update now? [y/N] `);
     if (!answer) {
         if (answer === false) {
             writeUpdateState(store, {dismissed: latest.version});

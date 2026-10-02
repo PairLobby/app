@@ -37,6 +37,7 @@ import {
     revokeParticipant,
     sendEvent,
     setExpiry,
+    setInviteRole,
     setJoinPolicy,
     setLocked,
     setMuted,
@@ -602,6 +603,10 @@ export class RoomService {
 
     async setJoinPolicy(roomId: string, credential: string, joinPolicy: 'invite_only' | 'open_to_guests'): Promise<RoomEvent> {
         return this.applyOne(setJoinPolicy(await this.view(roomId), await hashCredential(credential), joinPolicy, this.ctx()));
+    }
+
+    async setInviteRole(roomId: string, credential: string, inviteRole: 'member' | 'guest'): Promise<RoomEvent> {
+        return this.applyOne(setInviteRole(await this.view(roomId), await hashCredential(credential), inviteRole, this.ctx()));
     }
 
     /** Guest entry. Knowing the room id is the entire claim, so the room must allow it. */

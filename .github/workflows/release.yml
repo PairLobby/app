@@ -1,39 +1,58 @@
 name: Release
 
-# Pushing a tag such as v0.4.0 publishes a GitHub release with the CLI package and
-# its checksum. Installed CLIs check this repository's latest release for updates.
+# Every merge to master checks packages/cli/package.json, which ssmver bumps from
+# commit prefixes (feature: minor, fix: patch, release: major). When that version has
+# no GitHub release yet, this tests, builds and publishes it, creating the v<version>
+# tag on the merged commit.
+# Installed CLIs check this repository's latest release for updates.
 on:
   push:
-    tags: ['v*']
+    branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Check the tag matches the CLI version
-        run: |
-          version=$(node -p "require('./packages/cli/src/release.json').version")
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match packages/cli/src/release.json ($version)" >&2
-            exit 1
-          fi
-      - run: npm test
-      - run: node scripts/build-distribution.mjs artifacts "${GITHUB_REF_NAME#v}"
-      - name: Publish the release
+      - name: Find the version to release
+        id: version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          # A prerelease (v0.4.0-beta.1) is published but never offered as an update.
+          version=$(node -p "require('./packages/cli/package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v$version is already released; nothing to do."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.version.outputs.publish == 'true'
+        with:
+          node-version: 22
+          cache: npm
+      - if: steps.version.outputs.publish == 'true'
+        run: npm ci
+      - if: steps.version.outputs.publish == 'true'
+        run: npm test
+      - if: steps.version.outputs.publish == 'true'
+        run: node scripts/build-distribution.mjs artifacts "${{ steps.version.outputs.version }}"
+      - name: Publish the release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # A prerelease (0.5.0-beta.1) is published but never offered as an update.
           prerelease=""
-          case "$version" in *-*) prerelease="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" "artifacts/pairlobby-cli-$version.tgz" "artifacts/pairlobby-cli-$version.tgz.sha256" --title "PairLobby $version" --generate-notes --verify-tag $prerelease
+          case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "v$VERSION" "artifacts/pairlobby-cli-$VERSION.tgz" "artifacts/pairlobby-cli-$VERSION.tgz.sha256" --target "$GITHUB_SHA" --title "PairLobby $VERSION" --generate-notes $prerelease

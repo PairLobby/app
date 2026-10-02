@@ -78,9 +78,29 @@ export interface Settings {
     updateCheck: boolean;
     /** Install a newer release in the background instead of only offering it. */
     autoUpdate: boolean;
+    /** Reply mode for rooms this device creates. */
+    defaultTurnMode: 'sequential' | 'parallel';
+    /** What a plain `/invite` admits in rooms this device creates. */
+    defaultInviteRole: 'member' | 'guest';
+    /** Whether local rooms this device creates let anyone with the room id read as a guest. */
+    defaultGuestAccess: 'invite_only' | 'open_to_guests';
+    /** Whether online rooms this device creates are restricted to allowed accounts. */
+    defaultPrivateOnline: boolean;
 }
 
-export const DEFAULT_SETTINGS: Settings = {confirmDelete: true, pollIntervalMs: 700, showIds: false, defaultRoomLifetimeMs: null, defaultInviteLifetimeMs: null, updateCheck: true, autoUpdate: false};
+export const DEFAULT_SETTINGS: Settings = {
+    confirmDelete: true,
+    pollIntervalMs: 700,
+    showIds: false,
+    defaultRoomLifetimeMs: null,
+    defaultInviteLifetimeMs: null,
+    updateCheck: true,
+    autoUpdate: false,
+    defaultTurnMode: 'sequential',
+    defaultInviteRole: 'member',
+    defaultGuestAccess: 'invite_only',
+    defaultPrivateOnline: false,
+};
 
 export function dataDirectory(): string {
     const override = process.env['PAIRLOBBY_DATA_DIR'];

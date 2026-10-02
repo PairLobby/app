@@ -46,9 +46,32 @@ function inviteCode(output: string): string {
     return output.split(' ')[1]!;
 }
 
-test('plain invite creates an observer that cannot write or run room commands', async () => {
+test('test_plain_invite_admits_a_member_who_can_speak', async () => {
     const {owner} = await createRoom();
-    const code = inviteCode(await runRoomCommand('/invite', owner));
+    const reply = await runRoomCommand('/invite', owner);
+    expect(reply).toContain('member who can speak');
+    const {context: member} = await joinRoom(inviteCode(reply), 'speaker');
+    const snapshot = await client.snapshot(member.roomId, member.credential);
+    expect(snapshot.participants.find((participant) => participant.participantId === member.participantId)?.role).toBe('member');
+    await expect(say(member)).resolves.toBeDefined();
+    await client.leave(member.roomId, member.credential);
+});
+
+test('test_the_room_setting_makes_plain_invites_read_only_and_explicit_choices_still_win', async () => {
+    const {owner} = await createRoom();
+    await client.setInviteRole(owner.roomId, owner.controllerCredential!, 'guest');
+    const reply = await runRoomCommand('/invite', owner);
+    expect(reply).toContain('read-only observer');
+    const {context: observer} = await joinRoom(inviteCode(reply), 'reader');
+    expect((await client.snapshot(observer.roomId, observer.credential)).participants.find((participant) => participant.participantId === observer.participantId)?.role).toBe('guest');
+    const {context: member} = await joinRoom(inviteCode(await runRoomCommand('/invite member', owner)), 'speaker');
+    expect((await client.snapshot(member.roomId, member.credential)).participants.find((participant) => participant.participantId === member.participantId)?.role).toBe('member');
+    await expect(runRoomCommand('/invite everyone', owner)).rejects.toThrow('Usage: /invite');
+});
+
+test('test_observer_invite_cannot_write_or_run_room_commands', async () => {
+    const {owner} = await createRoom();
+    const code = inviteCode(await runRoomCommand('/invite observer', owner));
     const {context: guest} = await joinRoom(code, 'observer');
     const snapshot = await client.snapshot(guest.roomId, guest.credential);
     expect(snapshot.participants.find((participant) => participant.participantId === guest.participantId)?.role).toBe('guest');

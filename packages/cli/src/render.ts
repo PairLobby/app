@@ -241,6 +241,9 @@ function describe(event: RoomEvent): string {
         case 'room.expiry_changed':
             return event.payload.expiresAt === null ? 'the room no longer expires' : `the room now expires ${relativeTime(event.payload.expiresAt)}`;
         case 'room.access_changed':
+            if (event.payload.inviteRole) {
+                return event.payload.inviteRole === 'guest' ? 'new invitations now admit read-only observers' : 'new invitations now admit members who can speak';
+            }
             return event.payload.joinPolicy === 'open_to_guests' ? 'the room is now open to read-only guests' : 'the room is now invite only';
         case 'message.delivery_failed':
             return `${failureLabel(event.payload.stage)} for ${event.payload.eventId}: ${event.payload.reason} (failed attempt)`;

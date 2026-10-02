@@ -166,6 +166,9 @@ export type SetExpiryRequest = z.infer<typeof SetExpiryRequest>;
 export const SetAccessRequest = z.object({joinPolicy: z.enum(['invite_only', 'open_to_guests'])});
 export type SetAccessRequest = z.infer<typeof SetAccessRequest>;
 
+export const SetInviteRoleRequest = z.object({inviteRole: z.enum(['member', 'guest'])});
+export type SetInviteRoleRequest = z.infer<typeof SetInviteRoleRequest>;
+
 /** Guest entry carries no invite code: knowing the room id is the whole claim. */
 export const JoinAsGuestRequest = z.intersection(identity, z.object({participantCredential: z.string().min(32).max(256)}));
 export type JoinAsGuestRequest = z.infer<typeof JoinAsGuestRequest>;

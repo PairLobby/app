@@ -73,8 +73,10 @@ const HELP = `  <message>          address all eligible agents (same as @all)
   /reply <id> <text>  reply to an exact message
   /who               who is registered in this room
   /name <new name>   change your name in this room (default profile unchanged)
-  /invite            create a read-only observer invite
-  /invite as <name>  create a participant invite with a default name
+  /invite            create an invite (members can speak; the room's /settings may make it read-only)
+  /invite member     create an invite for a member who can speak
+  /invite observer   create a read-only observer invite
+  /invite as <name>  create a member invite with a default name
   /lock              block joining, rejoining, and new invites (owner)
   /unlock            allow joining and invitations again (owner)
   /kick <name>       remove a participant and disable their invite (owner)
@@ -681,6 +683,9 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
         case 'room.expiry_changed':
             return event.payload.expiresAt === null ? `${sender} made the room permanent` : `${sender} set the room to expire ${new Date(event.payload.expiresAt).toLocaleString()}`;
         case 'room.access_changed':
+            if (event.payload.inviteRole) {
+                return event.payload.inviteRole === 'guest' ? `${sender} made new invitations read-only` : `${sender} made new invitations admit members who can speak`;
+            }
             return event.payload.joinPolicy === 'open_to_guests' ? `${sender} opened the room to read-only guests` : `${sender} made the room invite only`;
         case 'message.delivery_failed':
             return `${failureLabel(event.payload.stage)} [${event.payload.eventId}]: ${event.payload.reason} (failed attempt)`;

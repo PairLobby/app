@@ -333,6 +333,24 @@ export function setJoinPolicy(view: RoomView, credentialHash: string, joinPolicy
     return emptyMutation(updated, event);
 }
 
+/** Sets what a plain invitation admits: members who can speak, or read-only guests. Owner or admin only. */
+export function setInviteRole(view: RoomView, credentialHash: string, inviteRole: 'member' | 'guest', ctx: CoreContext): Mutation {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    if ((view.room.policy.inviteRole ?? 'member') === inviteRole) {
+        throw new ProtocolError('invalid_request', inviteRole === 'guest' ? 'invitations already admit read-only observers' : 'invitations already admit members');
+    }
+    const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
+    const room = {...view.room, policy: {...view.room.policy, inviteRole}};
+    const {room: updated, event} = appendEvent(
+        room,
+        {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'room.access_changed', payload: {joinPolicy: view.room.policy.joinPolicy, inviteRole}}},
+        ctx
+    );
+    return emptyMutation(updated, event);
+}
+
 /**
  * Admits a read-only guest. There is no invite to redeem: the caller's claim is
  * that they know the room id, which is only sufficient while the room says so.
