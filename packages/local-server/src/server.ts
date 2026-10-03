@@ -54,13 +54,39 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
     // One local relay owns this store. Serialize mutating requests so two
     // async service calls cannot both choose the same next event sequence.
     let mutations: Promise<unknown> = Promise.resolve();
+
+    // One timer for the whole relay, aimed at the earliest auto-close deadline. Sweeps
+    // join the write queue, and every write re-plans it, so a changed policy or a new
+    // message moves the wake-up instead of leaving a stale one to fire.
+    let wake: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
+    const plan = (at: number | null): void => {
+        clearTimeout(wake);
+        wake = undefined;
+        if (stopped || at === null) {
+            return;
+        }
+        wake = setTimeout(sweep, Math.min(Math.max(0, at - Date.now()), 2 ** 31 - 1));
+        wake.unref();
+    };
+    const sweep = (): void => {
+        mutations = mutations
+            .then(async () => {
+                const result = await service.closeDueRooms();
+                plan(result.more ? Date.now() : result.nextAt);
+            })
+            .catch(() => plan(Date.now() + 60_000));
+    };
+
     const handle = (request: Request): Promise<Response> => {
         const result = mutations.then(() => route(request));
         if (!['GET', 'HEAD'].includes(request.method)) {
             mutations = result.catch(() => {});
+            sweep();
         }
         return result;
     };
+    sweep();
 
     const server = createHttpServer((incoming, outgoing) => {
         void respond(handle, incoming, outgoing, `http://${incoming.headers.host ?? `${host}:${port}`}`);
@@ -80,7 +106,11 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
                 host,
                 port: boundPort,
                 dataFile: options.dataFile,
-                close: () => shutdown(server, store)
+                close: () => {
+                    stopped = true;
+                    clearTimeout(wake);
+                    return mutations.then(() => shutdown(server, store));
+                }
             });
         });
     });

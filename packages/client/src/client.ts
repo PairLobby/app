@@ -5,6 +5,7 @@
 import {PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, ServerFrame, newCredential, newId} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
+    AutoClosePolicy,
     MessageRequest,
     MessageAction,
     TurnAction,
@@ -283,6 +284,10 @@ export class PairLobbyClient {
         return this.call('POST', `/v1/rooms/${roomId}/name`, credential, {name});
     }
 
+    setAutoClose(roomId: string, credential: string, autoClose: AutoClosePolicy): Promise<RoomEventResult> {
+        return this.call('POST', `/v1/rooms/${roomId}/auto-close`, credential, {autoClose});
+    }
+
     setInviteRole(roomId: string, credential: string, inviteRole: 'member' | 'guest'): Promise<RoomEventResult> {
         return this.call('POST', `/v1/rooms/${roomId}/invite-role`, credential, {inviteRole});
     }
@@ -336,8 +341,10 @@ export class PairLobbyClient {
             this.liveRoom = roomId;
             this.watermark = after;
             socket.addEventListener('message', (event) => {
+                let raw: unknown;
                 try {
-                    const frame = ServerFrame.parse(JSON.parse(String(event.data)));
+                    raw = JSON.parse(String(event.data));
+                    const frame = ServerFrame.parse(raw);
                     if (frame.type === 'hello') {
                         this.watermark = Math.max(this.watermark, frame.watermarkSeq);
                         this.earliestSeq = frame.snapshot.earliestSeq;
@@ -355,6 +362,12 @@ export class PairLobbyClient {
                     }
                     for (const wake of this.changed) wake();
                 } catch {
+                    // An event kind from a newer relay is not a broken connection: skip it,
+                    // and the gap it leaves makes the next read fetch it over HTTP instead.
+                    if (isEventFrame(raw)) {
+                        for (const wake of this.changed) wake();
+                        return;
+                    }
                     socket.close();
                 }
             });
@@ -449,4 +462,9 @@ function toProtocolError(status: number, text: string): ProtocolError {
         // Fall through to a generic error rather than surfacing a parse failure.
     }
     return new ProtocolError(status >= 500 ? 'server_unavailable' : 'invalid_request', `the server returned ${status}`);
+}
+
+function isEventFrame(value: unknown): boolean {
+    const frame = value as {type?: unknown; event?: {seq?: unknown}} | null;
+    return typeof frame === 'object' && frame !== null && frame.type === 'event' && typeof frame.event?.seq === 'number';
 }

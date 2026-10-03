@@ -4,6 +4,7 @@
 import {DEFAULT_ROOM_POLICY, ProtocolError, hashCredential, newId, newInviteCode, normalizeInviteCode} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
+    AutoClosePolicy,
     MessageRequest,
     RequestPage,
     ExportResponse,
@@ -37,6 +38,7 @@ import {
     revokeParticipant,
     sendEvent,
     setExpiry,
+    setAutoClose,
     setInviteRole,
     setJoinPolicy,
     setLocked,
@@ -49,6 +51,7 @@ import type {Mutation, RoomView} from '@pairlobby/room-core';
 import {stableStringify} from './stable-json.js';
 import {TurnCoordinator, assertTurn} from './turns.js';
 import type {RoomStore} from './store.js';
+import {AutoCloseStore} from './auto-close-store.js';
 
 type InviteDirectory = {
     reserve(code: string, roomId: string, expiresAt: number | null): Promise<boolean>;
@@ -59,6 +62,13 @@ type MintedInvite = {code: string; expiresAt: number | null; reusable: boolean};
 type SentEventResult = {event: RoomEvent; deduplicated: boolean};
 
 type GuestJoinInput = Identity & {participantCredential: string};
+
+/** One scheduler pass: rooms closed, whether more were already due, and the next deadline. */
+export interface AutoCloseSweep {
+    closed: number;
+    more: boolean;
+    nextAt: number | null;
+}
 
 export interface Identity {
     displayName: string;
@@ -110,9 +120,9 @@ export class RoomService {
         now: Clock = () => Date.now(),
         private readonly directory?: InviteDirectory
     ) {
-        this.store = store;
         this.now = now;
-        this.turns = new TurnCoordinator(store, now);
+        this.store = new AutoCloseStore(store, () => this.now());
+        this.turns = new TurnCoordinator(this.store, now);
     }
 
     private ctx() {
@@ -638,6 +648,28 @@ export class RoomService {
 
     async setExpiry(roomId: string, credential: string, expiresAt: number | null): Promise<RoomEvent> {
         return this.applyOne(setExpiry(await this.view(roomId), await hashCredential(credential), expiresAt, this.ctx()));
+    }
+
+    async setAutoClose(roomId: string, credential: string, autoClose: AutoClosePolicy): Promise<RoomEvent> {
+        const event = await this.applyOne(setAutoClose(await this.view(roomId), await hashCredential(credential), autoClose, this.ctx()));
+        // A policy that is already overdue closes the room now rather than at the next request.
+        await this.store.loadRoom(roomId);
+        return event;
+    }
+
+    /**
+     * Closes rooms whose deadline has passed, in a bounded batch. Returns how many
+     * closed and the next deadline, so a scheduler can wake once, at the earliest.
+     */
+    async closeDueRooms(limit = 50): Promise<AutoCloseSweep> {
+        const due = await this.store.dueAutoCloses(this.now(), limit);
+        let closed = 0;
+        for (const roomId of due) {
+            if ((await this.store.loadRoom(roomId))?.room.lifecycle === 'closed') {
+                closed++;
+            }
+        }
+        return {closed, more: due.length === limit, nextAt: await this.store.nextAutoCloseAt()};
     }
 
     async close(roomId: string, credential: string): Promise<RoomEvent> {

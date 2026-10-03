@@ -265,6 +265,18 @@ export class SqliteRoomStore implements RoomStore {
         });
     }
 
+    async dueAutoCloses(now: number, limit: number): Promise<string[]> {
+        const rows = this.db
+            .prepare("SELECT room_id FROM rooms WHERE json_extract(body, '$.lifecycle') = 'open' AND json_extract(body, '$.autoCloseAt') IS NOT NULL AND json_extract(body, '$.autoCloseAt') <= ? ORDER BY json_extract(body, '$.autoCloseAt') LIMIT ?")
+            .all(now, limit) as {room_id: string}[];
+        return rows.map((row) => row.room_id);
+    }
+
+    async nextAutoCloseAt(): Promise<number | null> {
+        const row = this.db.prepare("SELECT min(json_extract(body, '$.autoCloseAt')) AS at FROM rooms WHERE json_extract(body, '$.lifecycle') = 'open' AND json_extract(body, '$.autoCloseAt') IS NOT NULL").get() as {at: number | null};
+        return row.at;
+    }
+
     /** Simulates retention dropping the front of the log without touching room state. */
     dropHistoryBefore(roomId: string, seq: number): void {
         this.transaction(() => {

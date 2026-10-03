@@ -1,6 +1,7 @@
 import {stripVTControlCharacters} from 'node:util';
 import type {RoomSnapshot, TurnQueue} from '@pairlobby/protocol';
 import type {PairLobbyClient} from '@pairlobby/client';
+import {describeAutoClose, describeCloseReason} from './auto-close.js';
 import type {RoomPanelRow} from './room-panel.js';
 
 type RoomStatusClient = Pick<PairLobbyClient, 'snapshot' | 'readEvents' | 'turnQueue'>;
@@ -61,6 +62,9 @@ export function roomStatusRows(status: RoomStatus): RoomPanelRow[] {
         {id: 'privacy', section: 'Room', label: 'Guest access', value: room.policy.joinPolicy === 'invite_only' ? 'Invite only' : 'Anyone with room ID (read only)'},
         {id: 'invites', section: 'Room', label: 'Invitations', value: room.policy.inviteRole === 'guest' ? 'Read-only observers' : 'Members who can speak'},
         {id: 'lock', section: 'Room', label: 'Admission lock', value: room.locked ? 'Locked' : 'Unlocked'},
+        {id: 'auto-close', section: 'Room', label: 'Auto-close', value: room.autoCloseSupported ? describeAutoClose(room.policy.autoClose) : 'Unavailable on this relay'},
+        ...(room.policy.autoClose?.mode === 'agents_and_guests_left' ? [{id: 'auto-close-armed', section: 'Room', label: 'Auto-close armed', value: room.autoCloseArmed ? 'Yes — an agent or guest has joined' : 'No — waiting for an agent or guest to join'}] : []),
+        ...(room.closeReason ? [{id: 'close-reason', section: 'Room', label: 'Closed because', value: describeCloseReason(room.closeReason)}] : []),
         {id: 'mode', section: 'Room', label: 'Reply mode', value: turns?.mode ?? 'Unavailable on this relay'},
         {id: 'messages', section: 'Messages', label: 'Messages (retained)', value: String(messages.count), hint: room.earliestSeq > 1 ? 'Older history was removed; this is the retained count.' : 'Message events only; joins and receipts are not counted.'},
         {id: 'joined', section: 'Members', label: 'Joined', value: String(joined.length), hint: 'Membership count, not verified online presence.'},
@@ -76,6 +80,7 @@ export function roomStatusRows(status: RoomStatus): RoomPanelRow[] {
         {id: 'muted', section: 'Activity', label: 'Muted members', value: String(joined.filter((person) => person.muted).length)},
         {id: 'created', section: 'Dates', label: 'Created (UTC)', value: new Date(room.createdAt).toISOString()},
         {id: 'expiry', section: 'Dates', label: 'Expires (UTC)', value: room.expiresAt === null ? 'Never' : new Date(room.expiresAt).toISOString()},
+        {id: 'auto-close-at', section: 'Dates', label: 'Auto-closes (UTC)', value: room.autoCloseAt ? new Date(room.autoCloseAt).toISOString() : room.lifecycle === 'open' ? 'Not scheduled' : 'Not applicable'},
         {id: 'latest', section: 'Dates', label: 'Last message (UTC)', value: messages.lastAt === null ? 'None retained' : new Date(messages.lastAt).toISOString()},
         {id: 'snapshot', section: 'Dates', label: 'Snapshot (UTC)', value: new Date(at).toISOString()}
     ];

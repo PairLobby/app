@@ -3,6 +3,7 @@
 
 import type {RoomEvent, RoomSnapshot} from '@pairlobby/protocol';
 import {failureLabel} from '@pairlobby/protocol';
+import {describeAutoClose, describeCloseReason} from './auto-close.js';
 import type {OpenRequest, RoomEntry} from '@pairlobby/client';
 
 type ParticipantLabel = {displayName: string; kind: string};
@@ -235,7 +236,9 @@ function describe(event: RoomEvent): string {
         case 'participant.role_changed':
             return `${event.payload.participantId} is now ${event.payload.role === 'controller' ? 'an admin' : 'a member'}`;
         case 'room.closed':
-            return 'the room was closed';
+            return `the room was ${describeCloseReason(event.payload.reason)}`;
+        case 'room.auto_close_changed':
+            return `auto-close is now: ${describeAutoClose(event.payload.autoClose).toLowerCase()}`;
         case 'room.renamed':
             return `renamed from ${event.payload.previousName} to ${event.payload.name}`;
         case 'room.expiry_changed':

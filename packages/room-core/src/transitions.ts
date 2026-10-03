@@ -382,20 +382,6 @@ export function setExpiry(view: RoomView, credentialHash: string, expiresAt: num
     return emptyMutation(room, event);
 }
 
-export function closeRoom(view: RoomView, credentialHash: string, ctx: CoreContext): Mutation {
-    const actor = authenticate(view, credentialHash, ctx.now);
-    assertController(actor);
-    assertRoomWritable(view, ctx.now);
-    const closed: RoomRecord = {...view.room, lifecycle: 'closed', closedAt: ctx.now};
-    const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
-    const {room, event} = appendEvent(
-        closed,
-        {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'room.closed', payload: {exportWindowEndsAt: ctx.now + view.room.policy.exportWindowMs}}},
-        ctx
-    );
-    return emptyMutation(room, event);
-}
-
 function applyControlAck(view: RoomView, sender: ParticipantRecord, payload: ControlAcknowledgement, ctx: CoreContext) {
     if (payload.targetParticipantId !== sender.participantId) {
         throw new ProtocolError('unauthorized', 'a participant may only acknowledge control requests addressed to itself');

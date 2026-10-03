@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS rooms (
     earliest_seq INTEGER NOT NULL DEFAULT 1,
     body         TEXT NOT NULL
 ) STRICT;
+CREATE INDEX IF NOT EXISTS rooms_by_auto_close ON rooms (json_extract(body, '$.autoCloseAt')) WHERE json_extract(body, '$.lifecycle') = 'open' AND json_extract(body, '$.autoCloseAt') IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS participants (
     participant_id  TEXT PRIMARY KEY,

@@ -15,6 +15,7 @@ import {
     SendEventRequest,
     SetAccessRequest,
     SetInviteRoleRequest,
+    SetAutoCloseRequest,
     SetLockedRequest,
     SetMutedRequest,
     SetRoleRequest,
@@ -203,6 +204,10 @@ async function route(request: Request, service: RoomService): Promise<Response> 
         case 'POST access': {
             const {joinPolicy} = SetAccessRequest.parse(await request.json());
             return json({event: await service.setJoinPolicy(roomId, credential, joinPolicy)});
+        }
+        case 'POST auto-close': {
+            const {autoClose} = SetAutoCloseRequest.parse(await request.json());
+            return json({event: await service.setAutoClose(roomId, credential, autoClose)});
         }
         case 'POST invite-role': {
             const {inviteRole} = SetInviteRoleRequest.parse(await request.json());

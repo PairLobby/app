@@ -33,6 +33,7 @@ import {receiverRuntimeName} from './receiver-runtime.js';
 import {joinCommand, localOnlyNote, parseJoinLink} from './share.js';
 import {VERSION} from './version.js';
 import {SETTING_KEYS, describeSettingValue, parseLifetime, parseSettingValue} from './device-settings.js';
+import {applyAutoCloseToRooms, parseAutoClose, summarizeBulk} from './auto-close.js';
 import {runSettingsMenu} from './settings-menu.js';
 import {checkForUpdate, installRelease, managedInstall, runBackgroundUpdate, scheduleBackgroundCheck, shouldOfferUpdate, updateNotice, writeUpdateState} from './updater.js';
 import type {LatestRelease} from './updater.js';
@@ -105,6 +106,7 @@ const OPTIONS = {
     lan: {type: 'boolean'},
     token: {type: 'boolean'},
     yes: {type: 'boolean'},
+    'apply-existing': {type: 'boolean'},
     public: {type: 'boolean'},
     check: {type: 'boolean'},
     background: {type: 'boolean'},
@@ -753,6 +755,20 @@ async function settingsCommand(store: LocalStore, values: Values, key?: string, 
         const parsed = parseSettingValue(key, definition, value);
         store.setSettings({[definition.field]: parsed} as Partial<Settings>);
         note(`${key} is now ${describeSettingValue(definition, parsed)}`);
+        if (flag(values, 'apply-existing')) {
+            if (key !== 'auto-close') {
+                throw new UsageError('--apply-existing only applies to auto-close');
+            }
+            const outcomes = await applyAutoCloseToRooms(store, parseAutoClose(String(parsed)));
+            if (flag(values, 'json')) {
+                json({setting: key, value: parsed, rooms: outcomes});
+                return 0;
+            }
+            note(`applying to ${outcomes.length} saved room(s): ${summarizeBulk(outcomes)}`);
+            for (const outcome of outcomes) {
+                out(`${outcome.result.padEnd(11)} ${outcome.name} (${outcome.roomId}) — ${outcome.detail}`);
+            }
+        }
         return 0;
     }
     if (!flag(values, 'json') && process.stdin.isTTY && process.stdout.isTTY) {
@@ -891,6 +907,9 @@ async function applyRoomDefaults(client: PairLobbyClient, roomId: string, contro
     const changes: [string, () => Promise<unknown>][] = [];
     if (settings.defaultTurnMode === 'parallel') {
         changes.push(['parallel replies', () => client.setTurnMode(roomId, controller, 'parallel')]);
+    }
+    if (settings.defaultAutoClose !== 'off') {
+        changes.push([`auto-close (${settings.defaultAutoClose})`, () => client.setAutoClose(roomId, controller, parseAutoClose(settings.defaultAutoClose))]);
     }
     if (settings.defaultInviteRole === 'guest') {
         changes.push(['read-only invitations', () => client.setInviteRole(roomId, controller, 'guest')]);

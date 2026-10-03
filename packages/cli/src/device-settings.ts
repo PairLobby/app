@@ -5,9 +5,10 @@ import type {LocalStore, Profile, Settings} from '@pairlobby/client';
 
 import {UsageError} from './context.js';
 import type {PanelChoice, RoomPanelPage, RoomPanelRow} from './room-panel.js';
+import {AUTO_CLOSE_CHOICES, AUTO_CLOSE_USAGE, applyAutoCloseToRooms, describeAutoClose, formatAutoClose, parseAutoClose, summarizeBulk} from './auto-close.js';
 import {WhenError, formatDuration, parseDuration} from './when.js';
 
-type SettingKind = 'boolean' | 'number' | 'duration' | 'choice';
+type SettingKind = 'boolean' | 'number' | 'duration' | 'choice' | 'auto-close';
 
 export type SettingDefinition = {
     field: keyof Settings;
@@ -25,6 +26,7 @@ export const SETTING_KEYS: Record<string, SettingDefinition> = {
     'default-invites': {field: 'defaultInviteRole', kind: 'choice', label: 'Invitations', section: 'New rooms', help: 'what a plain /invite admits in rooms you create: member or observer', choices: [{label: 'Members — invitees can send messages', value: 'member'}, {label: 'Read-only observers — invitees can only read', value: 'guest'}]},
     'default-guest-access': {field: 'defaultGuestAccess', kind: 'choice', label: 'Guest access (local rooms)', section: 'New rooms', help: 'whether anyone with a local room id may read it: invite-only or open', choices: [{label: 'Invite only — require an invitation', value: 'invite_only'}, {label: 'Anyone with the room ID may read as a guest', value: 'open_to_guests'}]},
     'default-private-online': {field: 'defaultPrivateOnline', kind: 'boolean', label: 'Private online rooms', section: 'New rooms', help: 'restrict online rooms you create to allowed accounts (create online --public overrides)'},
+    'auto-close': {field: 'defaultAutoClose', kind: 'auto-close', label: 'Auto-close discussions', section: 'New rooms', help: `when rooms you create close themselves: ${AUTO_CLOSE_USAGE}`, choices: AUTO_CLOSE_CHOICES},
     'default-expiry': {field: 'defaultRoomLifetimeMs', kind: 'duration', label: 'Room expiry', section: 'New rooms', help: 'how long a new room lives: never, or a duration like 24h'},
     'default-invite-expiry': {field: 'defaultInviteLifetimeMs', kind: 'duration', label: 'Invite expiry', section: 'New rooms', help: 'how long a new invite code lasts: never, or a duration like 10m'},
     'confirm-delete': {field: 'confirmDelete', kind: 'boolean', label: 'Confirm deletes', section: 'Terminal', help: 'ask before deleting a room'},
@@ -77,6 +79,7 @@ export function parseSettingValue(key: string, definition: SettingDefinition, va
         case 'boolean':  return parseBoolean(key, value);
         case 'duration': return parseLifetime(value);
         case 'number':   return parseCount(key, value);
+        case 'auto-close': return formatAutoClose(parseAutoClose(value));
         case 'choice': {
             const normalized = value.trim().toLowerCase();
             const chosen = CHOICE_ALIASES[normalized] ?? normalized;
@@ -98,11 +101,16 @@ export function describeSettingValue(definition: SettingDefinition, value: Setti
     if (definition.kind === 'boolean') {
         return value ? 'On' : 'Off';
     }
+    if (definition.kind === 'auto-close') {
+        return describeAutoClose(parseAutoClose(String(value)));
+    }
     return String(value);
 }
 
+type MenuState = {note: string};
+
 /** The interactive menu: every setting grouped by section, each saved as soon as it is applied. */
-export function deviceSettingsPage(store: LocalStore): RoomPanelPage {
+export function deviceSettingsPage(store: LocalStore, state: MenuState = {note: ''}): RoomPanelPage {
     const settings = store.settings();
     const profile = store.profile();
     const rows: RoomPanelRow[] = [
@@ -123,8 +131,12 @@ export function deviceSettingsPage(store: LocalStore): RoomPanelPage {
             store.setSettings({[definition.field]: parseSettingValue(key, definition, value)} as Partial<Settings>);
         }}});
     }
+    const autoClose = parseAutoClose(settings.defaultAutoClose);
+    rows.push({id: 'apply-auto-close', label: 'Apply auto-close to my rooms', value: state.note || 'Existing rooms you administer on this device', section: 'New rooms', action: {kind: 'command', confirm: `Set auto-close to "${describeAutoClose(autoClose).toLowerCase()}" on every room this device administers? Rooms already past that limit close immediately. Rooms it cannot reach or change are listed, not changed.`, run: async () => {
+        state.note = summarizeBulk(await applyAutoCloseToRooms(store, autoClose));
+    }}});
     rows.push({id: 'reset', label: 'Reset all settings', value: 'Back to the built-in defaults', section: 'Reset', action: {kind: 'command', confirm: 'Reset every device setting to its default? Your profile name is kept.', run: async () => {
         store.resetSettings();
     }}});
-    return {id: 'device-settings', title: 'PairLobby settings — this device', rows, note: 'Enter edits a setting and saves it immediately. Room-specific settings live in /settings inside a room.', reload: async () => deviceSettingsPage(store)};
+    return {id: 'device-settings', title: 'PairLobby settings — this device', rows, note: 'Enter edits a setting and saves it immediately. Room-specific settings live in /settings inside a room.', reload: async () => deviceSettingsPage(store, state)};
 }

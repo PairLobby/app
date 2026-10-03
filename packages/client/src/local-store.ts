@@ -86,6 +86,8 @@ export interface Settings {
     defaultGuestAccess: 'invite_only' | 'open_to_guests';
     /** Whether online rooms this device creates are restricted to allowed accounts. */
     defaultPrivateOnline: boolean;
+    /** Auto-close for rooms this device creates: off, idle:<duration>, age:<duration> or agents-and-guests-left. */
+    defaultAutoClose: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -100,6 +102,7 @@ export const DEFAULT_SETTINGS: Settings = {
     defaultInviteRole: 'member',
     defaultGuestAccess: 'invite_only',
     defaultPrivateOnline: false,
+    defaultAutoClose: 'off',
 };
 
 export function dataDirectory(): string {

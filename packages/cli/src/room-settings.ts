@@ -1,8 +1,9 @@
 import type {LocalStore, PairLobbyClient, RoomAccountRestrictions} from '@pairlobby/client';
-import type {RoomSnapshot} from '@pairlobby/protocol';
+import type {AutoClosePolicy, RoomSnapshot} from '@pairlobby/protocol';
 import {ProtocolError} from '@pairlobby/protocol';
 import type {RoomPanelPage, RoomPanelRow, PanelEdit} from './room-panel.js';
 import {parseExpiry} from './when.js';
+import {AUTO_CLOSE_CHOICES, describeAutoClose, formatAutoClose, parseAutoClose} from './auto-close.js';
 import {loadRoomStatus, roomStatusRows} from './room-status.js';
 
 export type RoomSettingsContext = {client: PairLobbyClient; roomId: string; credential: string; participantId: string; controllerCredential?: string | undefined; store?: LocalStore};
@@ -57,6 +58,9 @@ export async function settingsPage(context: RoomSettingsContext): Promise<RoomPa
         }
         await change(context, (owner) => context.client.setExpiry(context.roomId, owner, expiresAt));
     }});
+    const autoClose = room.policy.autoClose ?? {mode: 'off' as const};
+    const closes = room.autoCloseAt ? ` · closes ${new Date(room.autoCloseAt).toLocaleString()}` : autoClose.mode === 'agents_and_guests_left' && !room.autoCloseArmed ? ' · waiting for an agent or guest to join' : '';
+    edit('auto-close', 'Auto-close discussion', `${describeAutoClose(autoClose)}${closes}`, 'Lifecycle', {kind: 'edit', initial: formatAutoClose(autoClose), choices: AUTO_CLOSE_CHOICES, hint: 'Closing keeps history readable and exportable; it does not stop agent processes or undo work already started. Custom: idle:<duration> or age:<duration>, e.g. idle:90m.', confirm: (value) => closesNow(room, parseAutoClose(value)) ? `${describeAutoClose(parseAutoClose(value))}: this room is already past that limit and will close immediately. Continue?` : `Set auto-close to: ${describeAutoClose(parseAutoClose(value)).toLowerCase()}?`, save: (value) => change(context, (owner) => context.client.setAutoClose(context.roomId, owner, parseAutoClose(value)))}, Boolean(room.autoCloseSupported));
     edit('privacy', 'Guest access', room.policy.joinPolicy === 'invite_only' ? 'Invite only' : 'Anyone with room ID (read only)', 'Privacy', {kind: 'edit', initial: room.policy.joinPolicy, choices: [{label: 'Invite only — require an invitation', value: 'invite_only'}, {label: 'Anyone with room ID may read as a guest', value: 'open_to_guests'}], hint: 'Guest access controls reading. Guests cannot send messages or invite others. Existing memberships remain.', confirm: (value) => value === 'open_to_guests' ? 'Allow anyone who knows this room ID to read its retained transcript as a guest?' : 'Require invitations for new guests? Existing members and guests remain.', save: (value) => change(context, (owner) => context.client.setJoinPolicy(context.roomId, owner, value === 'open_to_guests' ? 'open_to_guests' : 'invite_only'))});
     edit('invites', 'Invitations', room.policy.inviteRole === 'guest' ? 'Read-only observers' : 'Members who can speak', 'Privacy', {kind: 'edit', initial: room.policy.inviteRole ?? 'member', choices: [{label: 'Members — invitees can send messages', value: 'member'}, {label: 'Read-only observers — invitees can only read', value: 'guest'}], hint: 'What a plain /invite admits. /invite member and /invite observer still choose explicitly. Existing invites keep their role.', save: (value) => change(context, (owner) => context.client.setInviteRole(context.roomId, owner, value === 'guest' ? 'guest' : 'member'))}, Boolean(room.inviteRoleSupported));
     edit('lock', 'Admission lock', room.locked ? 'Locked' : 'Unlocked', 'Privacy', {kind: 'edit', initial: room.locked ? 'locked' : 'unlocked', choices: [{label: 'Unlocked — normal admission policy', value: 'unlocked'}, {label: 'Locked — block joins, rejoins and new invites', value: 'locked'}], hint: 'A lock blocks admission but does not remove current members.', save: (value) => change(context, (owner) => context.client.setLocked(context.roomId, owner, value === 'locked'))});
@@ -82,6 +86,18 @@ export async function settingsPage(context: RoomSettingsContext): Promise<RoomPa
     }
     rows.push({id: 'status', label: 'Room status', value: 'Counts, activity and dates', section: 'Inspect', action: {kind: 'menu', load: () => statusPage(context)}});
     return {id: 'settings', title: `Room settings — ${room.name}`, rows, note: authority ? 'Select a setting and press Enter. Esc cancels unsaved edits.' : 'Read-only settings. Ask the room owner for admin access.', reload: () => settingsPage(context)};
+}
+
+/** Whether applying `policy` would close the room at once, so the change can be confirmed as such. */
+function closesNow(room: RoomSnapshot, policy: AutoClosePolicy): boolean {
+    const now = Date.now();
+    const present = room.participants.filter((person) => !person.left && !person.revoked);
+    switch (policy.mode) {
+        case 'inactivity':             return (room.lastMessageAt ?? room.createdAt) + policy.afterMs <= now;
+        case 'age':                    return room.createdAt + policy.afterMs <= now;
+        case 'agents_and_guests_left': return Boolean(room.autoCloseArmed) && !present.some((person) => person.kind === 'agent' || person.role === 'guest');
+        case 'off':                    return false;
+    }
 }
 
 async function turnsPage(context: RoomSettingsContext): Promise<RoomPanelPage> {

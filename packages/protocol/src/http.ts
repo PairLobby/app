@@ -8,6 +8,7 @@ import {AdapterCapabilities, ParticipantKind, ParticipantRole, RoomEvent, SendEv
 import {AttemptId, EventId, ParticipantId, RoomId, SessionId} from './ids.js';
 import {HandoverRecord, RoomSnapshot} from './records.js';
 import {ERROR_CODES} from './errors.js';
+import {AutoClosePolicySchema} from './auto-close.js';
 
 export const ROUTES = {
     createRoom: {method: 'POST', path: '/v1/rooms'},
@@ -167,6 +168,9 @@ export const SetAccessRequest = z.object({joinPolicy: z.enum(['invite_only', 'op
 export type SetAccessRequest = z.infer<typeof SetAccessRequest>;
 
 export const SetInviteRoleRequest = z.object({inviteRole: z.enum(['member', 'guest'])});
+
+export const SetAutoCloseRequest = z.object({autoClose: AutoClosePolicySchema});
+export type SetAutoCloseRequest = z.infer<typeof SetAutoCloseRequest>;
 export type SetInviteRoleRequest = z.infer<typeof SetInviteRoleRequest>;
 
 /** Guest entry carries no invite code: knowing the room id is the whole claim. */
