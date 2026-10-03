@@ -12,7 +12,7 @@ import {LocalStore, PairLobbyClient} from '@pairlobby/client';
 
 import {pickExpiry} from './picker.js';
 import {isRoomCommand, runRoomCommand} from './chat-commands.js';
-import {applyMention, commonPrefix, currentMention, matchNames, renderSuggestions, routeChatMessage} from './mentions.js';
+import {applyMention, commonPrefix, currentMention, hasAgentsToAsk, matchNames, renderSuggestions, routeChatMessage, routeForRoom} from './mentions.js';
 import type {RoutedChatMessage} from './mentions.js';
 import {formatTurnQueue} from './turn-commands.js';
 import {sendChatReply} from './chat-reply.js';
@@ -357,7 +357,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 return;
             }
             if (reply) {
-                void sendChatReply(reply, {client, roomId, credential, participantId, quotedMessagesSupported: snapshot.quotedMessagesSupported === true})
+                void sendChatReply(reply, {client, roomId, credential, participantId, quotedMessagesSupported: snapshot.quotedMessagesSupported === true, agentsToAsk: hasAgentsToAsk(snapshot.participants, participantId)})
                     .then((result) => {
                         seen.add(result.event.eventId);
                         view.addEvent(result.event);
@@ -455,7 +455,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             }
 
             try {
-                const routed = routeChatMessage(line, snapshot.participants, recipient?.id ?? null);
+                const routed = routeForRoom(routeChatMessage(line, snapshot.participants, recipient?.id ?? null), snapshot.participants, participantId);
                 void send(routed);
             } catch (error) {
                 emit(`${DIM}  ${error instanceof Error ? error.message : String(error)}${RESET}`);
