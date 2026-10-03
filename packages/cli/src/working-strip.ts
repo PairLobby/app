@@ -25,6 +25,8 @@ export class WorkingStrip {
     private layout = '';
     private graphics = graphicsMode();
     private placements: LogoPlacement[] = [];
+    /** What iTerm2 is currently showing; an unchanged placement is left alone. */
+    private shown = '';
     private suspended = false;
 
     constructor(private readonly options: WorkingStripOptions) {
@@ -108,6 +110,7 @@ export class WorkingStrip {
             program.flush();
             process.stdout.write(clearWorkingGraphics(this.graphics, this.placements));
             this.placements = [];
+            this.shown = '';
             if (!hidden) {
                 program.showCursor();
             }
@@ -227,10 +230,24 @@ export class WorkingStrip {
             return;
         }
         const placements = this.badges.filter((badge) => !badge.compact && badge.group.provider !== 'other').map((badge) => ({provider: badge.group.provider, row: Number(badge.icon.atop), column: Number(badge.icon.aleft)}));
+        if (this.graphics === 'iterm2') {
+            // The terminal owns the animation. Replace the image only when it moved, changed
+            // provider or was cleared (resize, popup, suspend, completion); never on a tick.
+            const key = JSON.stringify(placements);
+            if (key === this.shown) {
+                return;
+            }
+            this.options.screen.program.hideCursor();
+            this.options.screen.program.flush();
+            process.stdout.write(clearWorkingGraphics(this.graphics, this.placements) + drawWorkingGraphics(this.graphics, placements, this.frame));
+            this.placements = placements;
+            this.shown = key;
+            return;
+        }
         if (this.graphics !== 'cells' && placements.length) {
             this.options.screen.program.hideCursor();
             this.options.screen.program.flush();
-            process.stdout.write((this.graphics === 'iterm2' ? clearWorkingGraphics(this.graphics, this.placements) : '') + drawWorkingGraphics(this.graphics, placements, this.frame));
+            process.stdout.write(drawWorkingGraphics(this.graphics, placements, this.frame));
             this.placements = placements;
         }
     }

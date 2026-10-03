@@ -39,22 +39,33 @@ def run(mode):
         return pump()
 
     try:
-        pump(1.2)
+        start = pump(1.2)
+        if mode == 'iterm2':
+            # One animated GIF per visible logo; iTerm2 plays it, so nothing is re-sent per frame.
+            logos = len(set(re.findall(rb'\x1b\[(\d+;\d+)H\x1b\]1337;File=', start)))
+            assert logos >= 1 and start.count(b'1337;File=') == logos, (logos, start.count(b'1337;File='))
+            assert b'1337;File=inline=1;width=6;height=3;preserveAspectRatio=1:R0lGOD' in start, 'the iTerm2 logo must be the animated GIF'
         # A refresh is the same queue delivered by normal chat polling. It must
-        # not delete and recreate unchanged Kitty images/placements.
+        # not delete and recreate unchanged images/placements.
         refresh = keys(b'/refresh\r')
         if mode == 'kitty':
             assert b'a=T' in refresh and b'a=d' not in refresh, 'polling cleared an unchanged logo'
             assert b'i=5262337,p=1,' in refresh, 'Claude needs a stable named placement'
         else:
-            assert b'1337;File=' in refresh
-        pump(3)  # Cross the 30-frame loop boundary while the room stays idle.
-        keys(b'draft stays')
+            assert b'1337;File=' not in refresh and b'\x1b[6X' not in refresh, 'polling re-sent or erased an unchanged iTerm2 logo'
+        idle = pump(3)  # Cross the 30-frame loop boundary while the room stays idle.
+        typing = keys(b'draft stays')
+        if mode == 'iterm2':
+            assert b'1337;File=' not in idle + typing and b'\x1b[6X' not in idle + typing, 'ticks or typing touched the iTerm2 logo'
         keys(b'\x1bOR')  # Working details (F3), then close.
-        keys(b'\x1b')
+        closed = keys(b'\x1b')
+        if mode == 'iterm2':
+            assert closed.count(b'1337;File=') == logos, 'closing the popup must restore each logo exactly once'
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 18, 65, 0, 0))
         process.send_signal(signal.SIGWINCH)
-        pump()
+        resized = pump()
+        if mode == 'iterm2':
+            assert resized.count(b'1337;File=') == logos, 'a resize must re-place each logo once'
         complete = keys(b'\x01\x0b/complete\r')
         if mode == 'kitty':
             assert b'a=d,d=I,i=5262337' in complete, 'completed work must release owned images'
@@ -66,7 +77,10 @@ def run(mode):
         assert data.count(BEGIN) == data.count(END), 'unbalanced synchronized updates'
         frames = re.findall(re.escape(BEGIN) + b'(.*?)' + re.escape(END), data, re.S)
         image_frames = [frame for frame in frames if b'a=T' in frame or b'1337;File=' in frame]
-        assert len(image_frames) >= 35, 'animation did not advance through a full loop'
+        if mode == 'kitty':
+            assert len(image_frames) >= 35, 'animation did not advance through a full loop'
+        else:
+            assert 3 <= len(image_frames) <= 6, f'iTerm2 uploads only on placement changes, got {len(image_frames)}'
         for frame in image_frames:
             image_start = min(index for index in (frame.find(b'\x1b_Ga=T'), frame.find(b'\x1b]1337;')) if index >= 0)
             assert frame.rfind(HIDE, 0, image_start) > frame.rfind(SHOW, 0, image_start), 'cursor visible during image write'
@@ -76,7 +90,7 @@ def run(mode):
             assert re.search(rb'\x1b\[(?:23|17);\d+H', frame[image_start:last_show]), 'cursor not returned to composer'
         outside = re.sub(re.escape(BEGIN) + b'.*?' + re.escape(END), b'', data, flags=re.S)
         assert b'a=T' not in outside and b'1337;File=' not in outside, 'image escaped a synchronized frame'
-        print(f'PASS {mode}: synchronized animation, hidden drawing cursor, stable polling, hover, resize and cleanup.')
+        print(f'PASS {mode}: synchronized drawing, hidden drawing cursor, stable polling, hover, resize and cleanup' + (' (one GIF upload per placement)' if mode == 'iterm2' else '') + '.')
     finally:
         if process.poll() is None:
             process.kill()

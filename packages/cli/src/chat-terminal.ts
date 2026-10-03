@@ -12,7 +12,9 @@ import {AgentTable} from './agent-table.js';
 import type {AgentRoster} from './agent-roster.js';
 import {RoomPanel} from './room-panel.js';
 import type {RoomPanelPage} from './room-panel.js';
-import {fitPopup, visibleMessageRow} from './terminal-layout.js';
+import {applyPopupLayout, fitPopup, visibleMessageRow} from './terminal-layout.js';
+import {statusTable} from './status-table.js';
+import type {StatusRow} from './status-table.js';
 import {agentActivities, activitySummary} from './agent-activity.js';
 import type {AgentActivity, AgentActivityContext} from './agent-activity.js';
 
@@ -397,7 +399,10 @@ export class ChatTerminal {
         }
     }
 
-    showLatestReceipt(reference?: string): void {
+    showLatestReceipt(argument?: string): void {
+        const words = (argument ?? '').split(/\s+/).filter(Boolean);
+        const full = words.at(-1) === 'full';
+        const reference = (full ? words.slice(0, -1) : words)[0];
         const messages = this.entries.filter((entry) => entry.event?.type === 'message');
         const selected = reference
             ? messages.findLast((entry) => entry.event!.eventId === reference || entry.event!.seq.toString() === reference)
@@ -406,7 +411,22 @@ export class ChatTerminal {
             this.log('No matching message in the loaded transcript.');
             return;
         }
+        if (full) {
+            this.logFullStatus(selected.event.eventId, selected.event.seq);
+            return;
+        }
         this.showDetails(selected.event.eventId, true);
+    }
+
+    /** The table's values before any clipping, with full dates and time zone, for reading or copying. */
+    private logFullStatus(eventId: string, seq: number): void {
+        const rows = this.statusRows(eventId);
+        const when = (at: number) => new Date(at).toLocaleString(undefined, {timeZoneName: 'short'});
+        this.log(`Receipts for message #${seq}:${rows.length ? '' : ' no participant receipt yet.'}`);
+        for (const row of rows) {
+            const receipt = row.receipt.kind === 'read' ? `Read ${when(row.receipt.at)}` : row.receipt.kind === 'received' ? `Received ${when(row.receipt.at)}` : 'Unconfirmed';
+            this.log(`  ${row.name} (${row.id}) — ${receipt} — ${row.action}${row.reason ? ` — ${row.reason}` : ''}`);
+        }
     }
 
     suspend(): void {
@@ -558,6 +578,26 @@ export class ChatTerminal {
         return this.activityContext ? agentActivities(this.activityContext, {latestMessage: this.latestMessage, acknowledged, settled}) : [];
     }
 
+    /** One row per participant who should see `eventId`, shared by the popup and `/seen full`. */
+    private statusRows(eventId: string): StatusRow[] {
+        const message = this.entries.find((entry) => entry.event?.eventId === eventId)?.event;
+        const receipts = this.receipts.forMessage(eventId);
+        const participants = new Set([...this.receipts.participants(eventId), ...(this.activityContext?.participants.filter((person) => !person.left && !person.revoked && person.role !== 'guest' && person.participantId !== message?.senderId && person.joinedAt <= (message?.at ?? Infinity)).map((person) => person.participantId) ?? [])]);
+        return [...participants].map((id) => {
+            const receipt = receipts.find((item) => item.participantId === id);
+            const stage = this.receipts.forParticipant(eventId, id);
+            const addressed = message?.type === 'message' && !message.replyTo && (message.recipientId === id || message.recipientIds?.includes(id));
+            return {
+                id,
+                name: this.options.names.get(id) ?? id,
+                // A bare time means the client received it; "Read" means the agent declared reading it.
+                receipt: stage.readAt !== undefined ? {kind: 'read', at: stage.readAt} : receipt ? {kind: 'received', at: receipt.acknowledgedAt} : {kind: 'unconfirmed'},
+                action: stage.action ?? (addressed ? 'Queued' : 'No response requested'),
+                reason: stage.reason,
+            };
+        });
+    }
+
     private paintDetails(): void {
         if (this.activityOpen) {
             const descriptions = {idle: 'Idle · explicitly no further action', clear: 'No queued room task · reading not implied', failed: 'Failed task needs attention', unread: 'Latest transport receipt unconfirmed', working: 'Working', preparing: 'Preparing an answer', waiting: 'Waiting · pending request', stalled: 'Stalled request', paused: 'Paused', muted: 'Muted', unknown: 'Status unavailable'};
@@ -571,22 +611,8 @@ export class ChatTerminal {
         if (!eventId) {
             return;
         }
-        const message = this.entries.find((entry) => entry.event?.eventId === eventId)?.event;
-        const receipts = this.receipts.forMessage(eventId);
-        const participants = new Set([...this.receipts.participants(eventId), ...(this.activityContext?.participants.filter((person) => !person.left && !person.revoked && person.role !== 'guest' && person.participantId !== message?.senderId && person.joinedAt <= (message?.at ?? Infinity)).map((person) => person.participantId) ?? [])]);
-        const nameWidth = Math.max(5, ...[...participants].map((id) => Number(this.popup.strWidth(stripVTControlCharacters(this.options.names.get(id) ?? id)))));
-        const rows = [...participants].map((id) => {
-            const receipt = receipts.find((item) => item.participantId === id);
-            const stage = this.receipts.forParticipant(eventId, id);
-            const name = stripVTControlCharacters(this.options.names.get(id) ?? id);
-            const received = stage.readAt !== undefined ? `Read ${new Date(stage.readAt).toLocaleString()}` : receipt ? `Received ${new Date(receipt.acknowledgedAt).toLocaleString()}` : 'Sent · unconfirmed';
-            const addressed = message?.type === 'message' && !message.replyTo && (message.recipientId === id || message.recipientIds?.includes(id));
-            const action = stage.action ?? (addressed ? 'Queued' : 'No response requested');
-            return [name, received, `${action}${stage.reason ? ` — ${stripVTControlCharacters(stage.reason)}` : ''}`] as const;
-        });
-        const receiptWidth = Math.max(7, ...rows.map((row) => Number(this.popup.strWidth(row[1]))));
-        const lines = rows.map(([name, receipt, action]) => `${name}${' '.repeat(Math.max(0, nameWidth - Number(this.popup.strWidth(name))))} | ${receipt}${' '.repeat(Math.max(0, receiptWidth - Number(this.popup.strWidth(receipt))))} | ${action}`);
-        fitPopup(this.popup, ['Message status — Participant | Receipt | Action', ...(lines.length ? lines : ['Sent · no participant receipt yet.'])], this.screen);
+        const rows = this.statusRows(eventId);
+        applyPopupLayout(this.popup, statusTable(rows, {columns: Number(this.screen.width), rows: Number(this.screen.height), measure: (text) => Number(this.popup.strWidth(text))}));
         const anchor = this.labels.get(eventId);
         this.popup.top = Math.max(0, Math.min(anchor?.visible ? Number(anchor.atop) + 1 : Number(this.screen.height) - 3, Number(this.screen.height) - Number(this.popup.height) - 3));
         this.popup.show();

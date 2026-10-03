@@ -31,7 +31,7 @@ try:
     body = screen.display[row].index('SHORT')
     original_bg = screen.buffer[row][body].bg
     hover_seen(row)
-    assert 'Message status' in text(), text()
+    assert 'Participant' in text(), text()
     assert screen.buffer[row][sender].underscore and screen.buffer[row][receiver].underscore, 'header identities must underline'
     assert screen.buffer[row][body].bg != original_bg, 'message needs a subtle hover background'
     keys(b'\x1b[<35;1;23M')
@@ -71,7 +71,7 @@ try:
     row = next(i for i, line in enumerate(screen.display[:-3]) if 'Status' in line)
     assert 5 <= row <= 15 and 'LONG' in screen.display[row], text()
     hover_seen(row)
-    assert 'Message status' in text(), text()
+    assert 'Participant' in text(), text()
     assert screen.buffer[row][2].bg != 'default', 'visible fragment should highlight'
     keys(b'\x1b')
     for _ in range(7): keys(b'\x1b[5~')
@@ -83,9 +83,9 @@ try:
     keys(b'\x1b')
     command('/many')
     keys(b'\x1bOQ')
-    assert 'Message status — Participant | Receipt | Action (scroll)' in text(), text()
-    row = next(i for i, line in enumerate(screen.display) if 'Message status' in line)
-    col = screen.display[row].index('Message status')
+    assert 'Participant' in text() and '(scroll)' not in text() and 'Message status' not in text(), text()
+    row = next(i for i, line in enumerate(screen.display) if 'Participant' in line)
+    col = screen.display[row].index('Participant')
     for _ in range(25):
         if 'Reader 15' in text(): break
         keys(f'\x1b[<65;{col+1};{row+3}M'.encode())

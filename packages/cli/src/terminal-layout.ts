@@ -36,7 +36,10 @@ export function popupLayout(lines: string[], bounds: PopupBounds): PopupLayout {
 }
 
 export function fitPopup(popup: blessed.Widgets.BoxElement, lines: string[], screen: blessed.Widgets.Screen): void {
-    const layout = popupLayout(lines, {columns: Number(screen.width), rows: Number(screen.height), measure: (text) => Number(popup.strWidth(text))});
+    applyPopupLayout(popup, popupLayout(lines, {columns: Number(screen.width), rows: Number(screen.height), measure: (text) => Number(popup.strWidth(text))}));
+}
+
+export function applyPopupLayout(popup: blessed.Widgets.BoxElement, layout: PopupLayout): void {
     popup.width = layout.width;
     popup.height = layout.height;
     if (popup.content !== layout.content) {
