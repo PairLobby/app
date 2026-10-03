@@ -57,7 +57,7 @@ export async function runRoomCommand(line: string, context: RoomCommandContext):
         const role = defaultName || argument === 'member' ? 'member' : argument === 'observer' ? 'guest' : snapshot.policy.inviteRole ?? 'member';
         const invite = await client.mintInvite(roomId, credential, role, true, undefined, defaultName);
         const share = await joinCommand(client.serverUrl, invite.code);
-        const reach = !share.target.localOnly ? '' : share.target.otherRelay ? ' (this device only; other devices need an address of this relay they can reach)' : ' (this device only; restart the server with pairlobby serve --lan to share it)';
+        const reach = share.target.discoverable ? ` (on your network or tailnet, pairlobby join ${invite.code} is enough)` : !share.target.localOnly ? '' : share.target.otherRelay ? ' (this device only; other devices need an address of this relay they can reach)' : ' (this device only; share it with pairlobby settings network-sharing, then restart the relay)';
         const admits = role === 'guest' ? 'read-only observer' : defaultName ? `member who can speak, default name: ${defaultName}` : 'member who can speak';
         return `Invite: ${invite.code} — ${admits} · ${share.command}${reach}`;
     }

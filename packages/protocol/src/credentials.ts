@@ -43,3 +43,15 @@ export function digestsEqual(a: string, b: string): boolean {
     for (let index = 0; index < a.length; index += 1) difference |= a.charCodeAt(index) ^ b.charCodeAt(index);
     return difference === 0;
 }
+
+/**
+ * Hex digits of an invite's digest that a client sends when asking the relays it
+ * can see which one issued a code. Four digits reveal 16 of an 8-character code's
+ * 40 bits: enough to pick out the right relay, too few to rebuild the code.
+ */
+export const INVITE_PROBE_LENGTH = 4;
+
+/** The probe for an already normalized invite code. */
+export async function inviteProbe(normalizedCode: string): Promise<string> {
+    return (await hashCredential(normalizedCode)).slice(0, INVITE_PROBE_LENGTH);
+}

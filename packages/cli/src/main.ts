@@ -23,16 +23,18 @@ import {runChatRoom} from './chat.js';
 import {chooseHumanSession, selectHumanSession} from './human-session.js';
 import {WhenError, formatDuration, parseDuration, parseExpiry} from './when.js';
 import {pickExpiry} from './picker.js';
-import {UsageError, controllerCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
+import {DEFAULT_LOCAL_SERVER, DEFAULT_RELAY_PORT, UsageError, controllerCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
 import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
 import {accountToken, isOnlineKey, loginOnline, logoutOnline, matchOnlineRoom, onlineAccount, onlineOrigin, onlineRooms, resolveOnlineKey} from './online.js';
 import {receiverStatus, runReceiver, startReceiver, stopReceiver} from './receiver.js';
 import type {ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
-import {joinCommand, localOnlyNote, parseJoinLink} from './share.js';
+import {discoverableNote, joinCommand, localOnlyNote, parseJoinLink} from './share.js';
+import {findRelayForInvite} from './relay-discovery.js';
+import {tailscaleNames, tailscaleView} from './tailscale.js';
 import {VERSION} from './version.js';
-import {SETTING_KEYS, describeSettingValue, parseLifetime, parseSettingValue} from './device-settings.js';
+import {NETWORK_SHARING_RESTART, SETTING_KEYS, describeSettingValue, parseLifetime, parseSettingValue} from './device-settings.js';
 import {applyAutoCloseToRooms, parseAutoClose, summarizeBulk} from './auto-close.js';
 import {runSettingsMenu} from './settings-menu.js';
 import {checkForUpdate, installRelease, managedInstall, runBackgroundUpdate, scheduleBackgroundCheck, shouldOfferUpdate, updateNotice, writeUpdateState} from './updater.js';
@@ -104,6 +106,7 @@ const OPTIONS = {
     template: {type: 'boolean'},
     host: {type: 'string'},
     lan: {type: 'boolean'},
+    tailscale: {type: 'boolean'},
     token: {type: 'boolean'},
     yes: {type: 'boolean'},
     'apply-existing': {type: 'boolean'},
@@ -134,8 +137,9 @@ const HELP = `pairlobby
   pairlobby settings                 interactive menu for this device's preferences and new-room defaults
   pairlobby create --name <name>     start a room and print an invite
   pairlobby join <code>              join a local room and enter it
-  pairlobby join <code> --server http://10.0.0.5:8790
-                                    join a room served by another device on your network
+  pairlobby join <code>             finds the relay that issued the code: this device, the local network, your tailnet
+  pairlobby join <code> --server laptop
+                                    join a room served by another device; a bare name or address means port 8790
   pairlobby join online <key>       join a hosted room without a URL or room ID
   pairlobby join online <room>      join one of your account's rooms from any logged-in device
   pairlobby find online [--json]    list the rooms your account owns or is allowed into
@@ -183,16 +187,17 @@ const HELP = `pairlobby
   pairlobby interrupt <agent>        stop one agent's current task, hold its queue (owner/admin)
   pairlobby pause <who>              controller only
   pairlobby resume <who>             controller only
-  pairlobby serve                    run a local room server
+  pairlobby serve                    run a local room server (shared as pairlobby settings network-sharing says)
   pairlobby update                   check GitHub for a new release and offer to install it
   pairlobby update --check           only report; --yes installs without asking
+  pairlobby serve --tailscale        also accept your Tailscale devices (encrypted by Tailscale)
   pairlobby serve --lan              also accept devices on your network (unencrypted HTTP)
   pairlobby serve --public-url <url> advertise this address in invites (Tailscale, proxy)
 
 Common options
   --room <name|id>      required when this device holds more than one room
   --session <id>        required when one room holds more than one local session
-  --server <url>        choose the relay; --local means http://127.0.0.1:8790
+  --server <url>        choose the relay: a URL, or a name or address such as laptop or 10.0.0.5:8791; --local means http://127.0.0.1:8790
   --json                machine-readable output on stdout
   --workdir <directory> project scope when first starting a managed receiver
   --conversation <id>   the runtime's own conversation id, so a human can find
@@ -408,7 +413,7 @@ async function main(argv: string[]): Promise<number> {
         case 'close':
             return closeRoom(store, values);
         case 'serve':
-            return serve(values);
+            return serve(store, values);
         case 'help':
             out(HELP);
             return 0;
@@ -758,6 +763,9 @@ async function settingsCommand(store: LocalStore, values: Values, key?: string, 
         const parsed = parseSettingValue(key, definition, value);
         store.setSettings({[definition.field]: parsed} as Partial<Settings>);
         note(`${key} is now ${describeSettingValue(definition, parsed)}`);
+        if (key === 'network-sharing') {
+            note(NETWORK_SHARING_RESTART);
+        }
         if (flag(values, 'apply-existing')) {
             if (key !== 'auto-close') {
                 throw new UsageError('--apply-existing only applies to auto-close');
@@ -1004,8 +1012,24 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
     if (share.target.localOnly) {
         note(localOnlyNote(share.target));
     }
+    if (share.target.discoverable) {
+        note(discoverableNote(created.invite.code));
+    }
     note('The controller credential for this room was stored on this device and is not printed.');
     return 0;
+}
+
+/** True when nothing on the command line, in the environment or in the profile says which relay to use. */
+function namesNoRelay(store: LocalStore, values: Values): boolean {
+    return !str(values, 'server') && !flag(values, 'local') && !process.env['PAIRLOBBY_SERVER'] && !store.profile().server;
+}
+
+async function discoverRelay(code: string): Promise<string> {
+    const found = await findRelayForInvite(code);
+    if (found !== DEFAULT_LOCAL_SERVER) {
+        note(`found the relay for ${code} at ${found}`);
+    }
+    return found;
 }
 
 async function joinRoom(store: LocalStore, values: Values, code?: string, online = false): Promise<number> {
@@ -1024,7 +1048,7 @@ async function joinRoom(store: LocalStore, values: Values, code?: string, online
     }
     // Online, a dash-grouped key is an invite; anything else names one of the account's own rooms.
     const accountRoom = online && !isOnlineKey(code) ? await onlineRooms(store).then(({server, rooms}) => ({server, room: matchOnlineRoom(rooms, code)})) : null;
-    const serverUrl = accountRoom ? accountRoom.server : online ? await resolveOnlineKey(store, code) : (link?.serverUrl ?? resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')}));
+    const serverUrl = accountRoom ? accountRoom.server : online ? await resolveOnlineKey(store, code) : (link?.serverUrl ?? (namesNoRelay(store, values) && !code.startsWith('rm_') ? await discoverRelay(code) : resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')})));
     const identity = identityFrom(store, values, 'agent');
     const token = new URL(serverUrl).origin === onlineOrigin() ? accountToken(store) : undefined;
     const client = new PairLobbyClient(serverUrl, token);
@@ -1648,6 +1672,9 @@ async function invite(store: LocalStore, values: Values): Promise<number> {
     if (share.target.localOnly) {
         note(localOnlyNote(share.target));
     }
+    if (share.target.discoverable) {
+        note(discoverableNote(minted.code));
+    }
     return 0;
 }
 
@@ -1904,17 +1931,34 @@ function parsePublicUrl(value: string): string {
     return url.origin;
 }
 
-async function serve(values: Values): Promise<number> {
+/** --lan or --tailscale on the command line, else --host alone (sharing as the address allows), else the device setting. */
+function relayNetwork(store: LocalStore, values: Values): 'off' | 'tailscale' | 'lan' {
+    if (flag(values, 'lan') && flag(values, 'tailscale')) {
+        throw new UsageError('use either --lan or --tailscale, not both');
+    }
+    if (flag(values, 'lan')) {
+        return 'lan';
+    }
+    if (flag(values, 'tailscale')) {
+        return 'tailscale';
+    }
+    return str(values, 'host') !== undefined ? 'off' : store.settings().relayNetwork;
+}
+
+async function serve(store: LocalStore, values: Values): Promise<number> {
     const {startServer} = await import('@pairlobby/local-server');
     const {dataDirectory} = await import('@pairlobby/client');
     const {join} = await import('node:path');
     const dataDir = str(values, 'data-dir') ?? dataDirectory();
-    const host = str(values, 'host') ?? (flag(values, 'lan') ? '0.0.0.0' : '127.0.0.1');
-    const port = str(values, 'port') !== undefined ? Number(str(values, 'port')) : 8790;
+    const network = relayNetwork(store, values);
+    const host = str(values, 'host') ?? (network === 'off' ? '127.0.0.1' : '0.0.0.0');
+    const port = str(values, 'port') !== undefined ? Number(str(values, 'port')) : DEFAULT_RELAY_PORT;
     const publicUrl = str(values, 'public-url') !== undefined ? parsePublicUrl(str(values, 'public-url')!) : undefined;
+    // Tailnet devices may address this one by its MagicDNS names, which are not interface addresses.
+    const tailnet = host === '127.0.0.1' ? null : await tailscaleView();
     let running;
     try {
-        running = await startServer({host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {})});
+        running = await startServer({host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
     } catch (error) {
         // Say what is wrong and what to do, rather than surfacing a raw errno. The
         // occupant is never probed: something else owning the port is not ours to poke.
@@ -1929,14 +1973,22 @@ async function serve(values: Values): Promise<number> {
         throw error;
     }
     out(`PairLobby server on ${running.url}`);
+    if (network !== 'off') {
+        out(`Shared with: ${network === 'tailscale' ? 'this device and your Tailscale devices' : 'any device that can reach this one on the network'}`);
+    }
     for (const url of running.shareUrls) {
         out(`Other devices: pairlobby join <code> --server ${url}`);
     }
-    if (flag(values, 'lan') && running.shareUrls.length === 0) {
+    if (running.discoverable) {
+        out(`On ${network === 'tailscale' ? 'your tailnet' : 'your network or tailnet'}, pairlobby join <code> finds this relay without --server.`);
+    }
+    if (network === 'tailscale' && running.shareUrls.length === 0) {
+        note('no Tailscale address found; start Tailscale on this device, then restart the relay');
+    } else if (network !== 'off' && running.shareUrls.length === 0) {
         note('no network address found; other devices cannot reach this server until this machine joins a network');
     }
-    if (running.shareUrls.some((url) => url.startsWith('http:'))) {
-        note('Room traffic, including credentials, crosses the network unencrypted. Use --lan only on networks you trust, or reach this server through Tailscale.');
+    if (network !== 'tailscale' && running.shareUrls.some((url) => url.startsWith('http:'))) {
+        note('Room traffic, including credentials, crosses the network unencrypted. Share on the local network only if you trust it; network-sharing tailscale keeps traffic inside Tailscale\'s encryption.');
     }
     out(`Data: ${running.dataFile}`);
     out('Press Ctrl+C to stop.');

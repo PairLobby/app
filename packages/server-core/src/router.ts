@@ -2,6 +2,7 @@
 //! and the Cloudflare Worker share one implementation of the HTTP contract.
 
 import {
+    INVITE_PROBE_LENGTH,
     CreateInviteRequest,
     CreateRoomRequest,
     PROTOCOL_VERSION,
@@ -42,11 +43,19 @@ export interface RouterOptions {
     allowedHosts?: string[] | ((host: string) => boolean);
     /** Answers `GET /v1/server`; absent means the path is unknown. */
     serverInfo?: () => ServerInfo;
+    /**
+     * Answers `GET /v1/invites/probe?prefix=`: whether any invite this server issued
+     * has a digest starting with that prefix. Lets a client on the same network find
+     * the relay behind a bare code; absent means the path is unknown.
+     */
+    inviteProbe?: (prefix: string) => Promise<boolean>;
 }
 
 export interface ServerInfo {
     /** Addresses other devices can use to reach this server; empty when it only listens on this device. */
     shareUrls: string[];
+    /** True when a device on the same network or tailnet can find this server from an invite code alone. */
+    discoverable?: boolean;
 }
 
 const JSON_HEADERS = {'content-type': 'application/json; charset=utf-8', [PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)};
@@ -62,6 +71,13 @@ export function createRouter(options: RouterOptions): (request: Request) => Prom
             }
             if (options.serverInfo && request.method.toUpperCase() === 'GET' && new URL(request.url).pathname === '/v1/server') {
                 return json(options.serverInfo());
+            }
+            if (options.inviteProbe && request.method.toUpperCase() === 'GET' && new URL(request.url).pathname === '/v1/invites/probe') {
+                const prefix = new URL(request.url).searchParams.get('prefix') ?? '';
+                if (!new RegExp(`^[0-9a-f]{${INVITE_PROBE_LENGTH}}$`).test(prefix)) {
+                    return errorResponse('invalid_request', `prefix must be ${INVITE_PROBE_LENGTH} lowercase hex digits`, 400);
+                }
+                return json({known: await options.inviteProbe(prefix)});
             }
             return await route(request, service);
         } catch (error) {

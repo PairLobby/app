@@ -43,11 +43,22 @@ test('test_setting_values_accept_short_names_and_reject_others', () => {
     expect(describeSettingValue(SETTING_KEYS['auto-update']!, true)).toBe('On');
 });
 
+test('test_network_sharing_takes_off_tailscale_or_lan_and_says_to_restart', async () => {
+    const sharing = SETTING_KEYS['network-sharing']!;
+    expect(DEFAULT_SETTINGS.relayNetwork).toBe('off');
+    expect(parseSettingValue('network-sharing', sharing, 'Tailscale')).toBe('tailscale');
+    expect(() => parseSettingValue('network-sharing', sharing, 'everyone')).toThrow('off or tailscale or lan');
+    const {stderr} = await execute(process.execPath, [resolve('packages/cli/dist/main.js'), 'settings', 'network-sharing', 'lan'], {env: {...process.env, PAIRLOBBY_DATA_DIR: join(directory, 'client'), PAIRLOBBY_NO_UPDATE_CHECK: '1'}, timeout: 15_000});
+    expect(stderr).toMatch(/network-sharing is now Local network/);
+    expect(stderr).toMatch(/restart the relay/);
+    expect(new LocalStore(join(directory, 'client')).settings().relayNetwork).toBe('lan');
+});
+
 test('test_the_menu_lists_every_setting_and_saves_edits_immediately', async () => {
     const store = new LocalStore(join(directory, 'menu'));
     const page = deviceSettingsPage(store);
     expect(page.rows.map((row) => row.id)).toEqual(['profile-name', ...Object.keys(SETTING_KEYS), 'apply-auto-close', 'reset']);
-    expect(new Set(page.rows.map((row) => row.section))).toEqual(new Set(['Profile', 'New rooms', 'Terminal', 'Updates', 'Reset']));
+    expect(new Set(page.rows.map((row) => row.section))).toEqual(new Set(['Profile', 'New rooms', 'Terminal', 'Updates', 'Network', 'Reset']));
     const edit = (id: string) => page.rows.find((row) => row.id === id)!.action as PanelEdit;
     expect(edit('default-reply-mode').choices?.map((choice) => choice.value)).toEqual(['sequential', 'parallel']);
     await edit('default-reply-mode').save('parallel');

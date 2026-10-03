@@ -88,6 +88,8 @@ export interface Settings {
     defaultPrivateOnline: boolean;
     /** Auto-close for rooms this device creates: off, idle:<duration>, age:<duration> or agents-and-guests-left. */
     defaultAutoClose: string;
+    /** Which other devices this device's relay (`pairlobby serve`) accepts: none, Tailscale peers, or the local network. */
+    relayNetwork: 'off' | 'tailscale' | 'lan';
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -103,6 +105,7 @@ export const DEFAULT_SETTINGS: Settings = {
     defaultGuestAccess: 'invite_only',
     defaultPrivateOnline: false,
     defaultAutoClose: 'off',
+    relayNetwork: 'off',
 };
 
 export function dataDirectory(): string {

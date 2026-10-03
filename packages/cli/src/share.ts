@@ -15,6 +15,8 @@ export type ShareTarget = {
     localOnly: boolean;
     /** Set on a local-only target that is not `pairlobby serve`, so `--lan` cannot widen it. */
     otherRelay?: true;
+    /** Set when devices on the same network or tailnet can join with the bare code. */
+    discoverable?: true;
 };
 
 export type JoinLink = {
@@ -38,13 +40,14 @@ export async function shareTarget(serverUrl: string): Promise<ShareTarget> {
     }
     let shareUrls: string[] = [];
     let reported = true;
+    let discoverable = false;
     try {
-        ({shareUrls, reported} = await new PairLobbyClient(serverUrl).serverInfo());
+        ({shareUrls, reported, discoverable} = await new PairLobbyClient(serverUrl).serverInfo());
     } catch {
         // An unreachable server has already failed the command that minted the invite.
     }
     if (shareUrls.length > 0) {
-        return {serverUrl: shareUrls[0]!, localOnly: false};
+        return discoverable ? {serverUrl: shareUrls[0]!, localOnly: false, discoverable: true} : {serverUrl: shareUrls[0]!, localOnly: false};
     }
     return reported ? {serverUrl, localOnly: true} : {serverUrl, localOnly: true, otherRelay: true};
 }
@@ -57,11 +60,15 @@ export async function joinCommand(serverUrl: string, code: string): Promise<{com
     return {command: `pairlobby join ${code} --server ${target.serverUrl}`, target};
 }
 
+export function discoverableNote(code: string): string {
+    return `on a device on the same network or tailnet, pairlobby join ${code} is enough`;
+}
+
 export function localOnlyNote(target: ShareTarget): string {
     if (target.otherRelay) {
         return `Only this device can reach ${target.serverUrl}. Other devices need an address of this relay they can reach, such as its network address or public URL.`;
     }
-    return `Only this device can reach ${target.serverUrl}. To invite another device on your network, restart the server with: pairlobby serve --lan`;
+    return `Only this device can reach ${target.serverUrl}. To invite your other devices, share this relay: pairlobby settings network-sharing tailscale (or lan), then restart it`;
 }
 
 /** Accepts `http://10.0.0.5:8790#K7MP-4QWX`, a server address with the invite code as its fragment. */

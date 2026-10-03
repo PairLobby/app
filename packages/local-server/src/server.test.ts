@@ -7,10 +7,10 @@ import {mkdtempSync, rmSync} from 'node:fs';
 import {hostname, networkInterfaces, tmpdir} from 'node:os';
 import {join} from 'node:path';
 
-import {PROTOCOL_VERSION_HEADER, newCredential, newId} from '@pairlobby/protocol';
+import {PROTOCOL_VERSION_HEADER, inviteProbe, newCredential, newId, normalizeInviteCode} from '@pairlobby/protocol';
 import {afterAll, beforeAll, describe, expect, test} from 'vitest';
 
-import {startServer, type RunningServer} from './server.js';
+import {peerAllowed, startServer, type RunningServer} from './server.js';
 import {SqliteRoomStore} from './sqlite-store.js';
 
 type AuthenticatedRequestOptions = RequestInit & {credential?: string};
@@ -199,7 +199,7 @@ describe('local server shared with other devices', () => {
     test('test_a_loopback_server_has_nothing_to_share', async () => {
         const response = await call('/v1/server');
         expect(response.status).toBe(200);
-        expect(await response.json()).toEqual({shareUrls: []});
+        expect(await response.json()).toEqual({shareUrls: [], discoverable: false});
         expect(server.shareUrls).toEqual([]);
     });
 
@@ -224,9 +224,21 @@ describe('local server shared with other devices', () => {
         try {
             const expected = networkAddresses().map((address) => `http://${address}:${lan.port}`);
             expect(lan.shareUrls).toEqual(expected);
-            expect(await (await fetch(`${lan.url}/v1/server`)).json()).toEqual({shareUrls: expected});
+            // Not on the default port and not announced over mDNS, so a bare code cannot find it.
+            expect(await (await fetch(`${lan.url}/v1/server`)).json()).toEqual({shareUrls: expected, discoverable: false});
         } finally {
             await lan.close();
+        }
+    });
+
+    test('test_an_advertised_relay_is_discoverable_unless_it_has_a_public_url', async () => {
+        const announced = await startServer({host: '0.0.0.0', port: 0, dataFile: join(directory, 'announced.sqlite'), advertise: true});
+        const proxied = await startServer({host: '0.0.0.0', port: 0, dataFile: join(directory, 'announced-proxied.sqlite'), advertise: true, publicUrl: 'https://laptop.tailnet.example'});
+        try {
+            expect(announced.discoverable).toBe(true);
+            expect(proxied.discoverable).toBe(false);
+        } finally {
+            await Promise.all([announced.close(), proxied.close()]);
         }
     });
 
@@ -238,6 +250,57 @@ describe('local server shared with other devices', () => {
             expect((await rawGet(`/v1/rooms/${room.roomId}`, {authorization: `Bearer ${room.controllerCredential}`, host: 'laptop.tailnet.example'}, proxied.port)).status).toBe(200);
         } finally {
             await proxied.close();
+        }
+    });
+});
+
+describe('local server names, peers and invite probes', () => {
+    test('test_extra_hostnames_are_accepted_on_a_shared_relay', async () => {
+        const shared = await startServer({host: '0.0.0.0', port: 0, dataFile: join(directory, 'names.sqlite'), hostnames: ['h', 'h.example-tailnet.ts.net']});
+        try {
+            const room = await createRoom(`http://127.0.0.1:${shared.port}`);
+            const authorization = `Bearer ${room.controllerCredential}`;
+            for (const name of ['h', 'H.example-tailnet.ts.net']) {
+                expect((await rawGet(`/v1/rooms/${room.roomId}`, {authorization, host: `${name}:${shared.port}`}, shared.port)).status).toBe(200);
+            }
+            expect((await rawGet(`/v1/rooms/${room.roomId}`, {authorization, host: `attacker.example:${shared.port}`}, shared.port)).status).toBe(401);
+        } finally {
+            await shared.close();
+        }
+    });
+
+    test('test_a_loopback_relay_answers_to_no_names_but_loopback', async () => {
+        const local = await startServer({port: 0, dataFile: join(directory, 'loopback-names.sqlite'), hostnames: ['h']});
+        try {
+            const room = await createRoom(local.url);
+            expect((await rawGet(`/v1/rooms/${room.roomId}`, {authorization: `Bearer ${room.controllerCredential}`, host: `h:${local.port}`}, local.port)).status).toBe(401);
+        } finally {
+            await local.close();
+        }
+    });
+
+    test('test_a_tailscale_only_relay_admits_loopback_and_tailscale_peers', () => {
+        for (const address of ['127.0.0.1', '::1', '::ffff:127.0.0.1', '100.64.0.1', '100.111.208.123', '::ffff:100.127.255.254', 'fd7a:115c:a1e0::1']) {
+            expect(peerAllowed('tailscale', address)).toBe(true);
+        }
+        for (const address of ['10.0.0.240', '192.168.1.20', '100.63.255.255', '100.128.0.1', 'fe80::1', '']) {
+            expect(peerAllowed('tailscale', address)).toBe(false);
+        }
+        expect(peerAllowed('any', '10.0.0.240')).toBe(true);
+    });
+
+    test('test_the_invite_probe_finds_only_codes_this_relay_issued', async () => {
+        const relay = await startServer({port: 0, dataFile: join(directory, 'probe.sqlite')});
+        try {
+            const room = await createRoom(relay.url);
+            const probe = await inviteProbe(normalizeInviteCode(room.invite.code)!);
+            const other = `${probe[0] === 'f' ? '0' : 'f'}${probe.slice(1)}`;
+            expect(await (await fetch(`${relay.url}/v1/invites/probe?prefix=${probe}`)).json()).toEqual({known: true});
+            expect(await (await fetch(`${relay.url}/v1/invites/probe?prefix=${other}`)).json()).toEqual({known: false});
+            expect((await fetch(`${relay.url}/v1/invites/probe?prefix=${probe}0`)).status).toBe(400);
+            expect((await fetch(`${relay.url}/v1/invites/probe?prefix=ZZZZ`)).status).toBe(400);
+        } finally {
+            await relay.close();
         }
     });
 });

@@ -34,7 +34,11 @@ export const SETTING_KEYS: Record<string, SettingDefinition> = {
     'poll-interval': {field: 'pollIntervalMs', kind: 'number', label: 'Poll interval (ms)', section: 'Terminal', help: 'milliseconds between live-room polls'},
     'update-check': {field: 'updateCheck', kind: 'boolean', label: 'Check for updates', section: 'Updates', help: 'check GitHub for a new PairLobby release once a day'},
     'auto-update': {field: 'autoUpdate', kind: 'boolean', label: 'Install updates automatically', section: 'Updates', help: 'install new releases in the background (needs update-check)'},
+    'network-sharing': {field: 'relayNetwork', kind: 'choice', label: 'Share this device\'s relay', section: 'Network', help: 'which other devices may join rooms on this device\'s relay: off, tailscale or lan; restart the relay to apply', choices: [{label: 'Off — only this device', value: 'off'}, {label: 'Tailscale — your devices on your tailnet, encrypted', value: 'tailscale'}, {label: 'Local network — any device on this Wi-Fi or LAN, unencrypted', value: 'lan'}]},
 };
+
+/** Printed after network-sharing changes: a running relay keeps the setting it started with. */
+export const NETWORK_SHARING_RESTART = 'restart the relay to apply this: stop and rerun pairlobby serve, or run npm run service -- restart for the background relay';
 
 export function parseBoolean(key: string, value: string): boolean {
     const normalized = value.trim().toLowerCase();

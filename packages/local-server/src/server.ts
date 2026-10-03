@@ -8,6 +8,7 @@ import {dirname} from 'node:path';
 
 import {RoomService, createRouter} from '@pairlobby/server-core';
 
+import {advertiseRelay, isLoopbackAddress, isTailscaleAddress} from './network.js';
 import {SqliteRoomStore} from './sqlite-store.js';
 
 export interface ServeOptions {
@@ -18,21 +19,32 @@ export interface ServeOptions {
     allowedOrigins?: string[];
     /** Address to advertise in invitations when the server sits behind Tailscale or another proxy. */
     publicUrl?: string;
+    /** Who may connect: anyone who can reach the address (default), or only this device and its Tailscale peers. */
+    peers?: 'any' | 'tailscale';
+    /** More names this server answers to beyond its own addresses and hostname, such as Tailscale MagicDNS names. */
+    hostnames?: string[];
+    /** Announce this relay on the local network over mDNS, so `pairlobby join <code>` there can find it. */
+    advertise?: boolean;
 }
 
 export interface RunningServer {
     url: string;
     /** Addresses other devices can join through; empty when the server only listens on this device. */
     shareUrls: string[];
+    /** Whether `pairlobby join <code>` on another device can find this server without --server. */
+    discoverable: boolean;
     host: string;
     port: number;
     dataFile: string;
     close(): Promise<void>;
 }
 
+/** The port a relay listens on unless told otherwise, and the one other devices try when searching a tailnet. */
+export const DEFAULT_PORT = 8790;
+
 export function startServer(options: ServeOptions): Promise<RunningServer> {
     const host = options.host ?? '127.0.0.1';
-    const port = options.port ?? 8790;
+    const port = options.port ?? DEFAULT_PORT;
     mkdirSync(dirname(options.dataFile), {recursive: true});
     const store = new SqliteRoomStore(options.dataFile);
     const service = new RoomService(store);
@@ -47,9 +59,14 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
     }
     const wildcard = isWildcard(host);
     let boundPort = port;
-    const acceptHost = (value: string) => allowedHosts.includes(value) || (wildcard && isOwnHost(value, boundPort));
-    const serverInfo = () => ({shareUrls: shareUrls(host, boundPort, options.publicUrl)});
-    const route = createRouter({service, allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo});
+    const tailscaleOnly = options.peers === 'tailscale';
+    const extraNames = (options.hostnames ?? []).map((name) => name.toLowerCase());
+    const acceptHost = (value: string) => allowedHosts.includes(value) || (!isLoopback(host) && isOwnHost(value, boundPort, extraNames));
+    // Found by mDNS when advertised, or by a tailnet device trying the default port on this one's Tailscale address.
+    const discoverable = () => !options.publicUrl && !isLoopback(host) && (options.advertise === true || (boundPort === DEFAULT_PORT && (wildcard || isTailscaleAddress(host))));
+    const serverInfo = () => ({shareUrls: shareUrls(host, boundPort, options.publicUrl, tailscaleOnly), discoverable: discoverable()});
+    const inviteProbe = async (prefix: string) => store.hasInviteDigestPrefix(prefix);
+    const route = createRouter({service, allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo, inviteProbe});
 
     // One local relay owns this store. Serialize mutating requests so two
     // async service calls cannot both choose the same next event sequence.
@@ -91,6 +108,14 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
     const server = createHttpServer((incoming, outgoing) => {
         void respond(handle, incoming, outgoing, `http://${incoming.headers.host ?? `${host}:${port}`}`);
     });
+    // Enforced on the connection, before any request is read: the bind address alone
+    // cannot say "Tailscale only" when the Tailscale address may not exist yet at boot.
+    server.on('connection', (socket) => {
+        if (!peerAllowed(options.peers ?? 'any', socket.remoteAddress ?? '')) {
+            socket.destroy();
+        }
+    });
+    let stopAdvertising = () => {};
 
     return new Promise<RunningServer>((resolve, reject) => {
         server.once('error', reject);
@@ -100,15 +125,20 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
             const address = server.address();
             boundPort = typeof address === 'object' && address !== null ? address.port : port;
             allowedHosts.push(`${host}:${boundPort}`, `localhost:${boundPort}`, `127.0.0.1:${boundPort}`);
+            if (options.advertise && !isLoopback(host)) {
+                stopAdvertising = advertiseRelay(boundPort);
+            }
             resolve({
                 url: options.publicUrl ?? `http://${wildcard ? '127.0.0.1' : host}:${boundPort}`,
-                shareUrls: shareUrls(host, boundPort, options.publicUrl),
+                shareUrls: shareUrls(host, boundPort, options.publicUrl, tailscaleOnly),
+                discoverable: discoverable(),
                 host,
                 port: boundPort,
                 dataFile: options.dataFile,
                 close: () => {
                     stopped = true;
                     clearTimeout(wake);
+                    stopAdvertising();
                     return mutations.then(() => shutdown(server, store));
                 }
             });
@@ -138,17 +168,23 @@ function ownHostnames(): Set<string> {
     return names;
 }
 
-function isOwnHost(value: string, port: number): boolean {
+/** Whether a connection from `address` may reach a relay limited to `peers`. */
+export function peerAllowed(peers: 'any' | 'tailscale', address: string): boolean {
+    return peers === 'any' || isLoopbackAddress(address) || isTailscaleAddress(address);
+}
+
+function isOwnHost(value: string, port: number, extraNames: string[]): boolean {
     let parsed: URL;
     try {
         parsed = new URL(`http://${value}`);
     } catch {
         return false;
     }
-    return (parsed.port === '' ? 80 : Number(parsed.port)) === port && ownHostnames().has(parsed.hostname.toLowerCase());
+    const name = parsed.hostname.toLowerCase();
+    return (parsed.port === '' ? 80 : Number(parsed.port)) === port && (ownHostnames().has(name) || extraNames.includes(name));
 }
 
-function shareUrls(host: string, port: number, publicUrl?: string): string[] {
+function shareUrls(host: string, port: number, publicUrl: string | undefined, tailscaleOnly: boolean): string[] {
     if (publicUrl) {
         return [publicUrl.replace(/\/+$/, '')];
     }
@@ -162,7 +198,7 @@ function shareUrls(host: string, port: number, publicUrl?: string): string[] {
     const urls: string[] = [];
     for (const addresses of Object.values(networkInterfaces())) {
         for (const address of addresses ?? []) {
-            if (address.family === 'IPv4' && !address.internal) {
+            if (address.family === 'IPv4' && !address.internal && (!tailscaleOnly || isTailscaleAddress(address.address))) {
                 urls.push(`http://${address.address}:${port}`);
             }
         }
