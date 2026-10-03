@@ -144,7 +144,8 @@ export function renderRoomList(entries: RoomListEntry[], now = Date.now()): void
 
 /** Says plainly whether knowing the room id is enough to get in. */
 function joinPolicyLine(snapshot: RoomSnapshot): string {
-    return snapshot.policy.joinPolicy === 'open_to_guests' ? 'open — anyone with the room id can join as a read-only guest' : 'private — an invite code is required, the room id alone is not enough';
+    const base = snapshot.policy.joinPolicy === 'open_to_guests' ? 'open — anyone with the room id can join as a read-only guest' : 'private — an invite code is required, the room id alone is not enough';
+    return snapshot.policy.localJoin ? `${base}; anyone on the relay's local network or tailnet can join by name as a member` : base;
 }
 
 export function renderSnapshot(snapshot: RoomSnapshot, now = Date.now()): void {
@@ -248,6 +249,8 @@ function describe(event: RoomEvent): string {
                 return event.payload.inviteRole === 'guest' ? 'new invitations now admit read-only observers' : 'new invitations now admit members who can speak';
             }
             return event.payload.joinPolicy === 'open_to_guests' ? 'the room is now open to read-only guests' : 'the room is now invite only';
+        case 'room.local_join_changed':
+            return event.payload.localJoin ? 'anyone on the local network can now join by name' : 'joining by name on the local network is now off';
         case 'message.delivery_failed':
             return `${failureLabel(event.payload.stage)} for ${event.payload.eventId}: ${event.payload.reason} (failed attempt)`;
         case 'message.received':

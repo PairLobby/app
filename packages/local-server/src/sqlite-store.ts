@@ -5,7 +5,7 @@
 import {ProtocolError, mergeMessageRequest} from '@pairlobby/protocol';
 import {DatabaseSync} from 'node:sqlite';
 
-import type {HandoverRecord, MessageRequest, RequestPage, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
+import type {HandoverRecord, InviteRecord, LocalRoom, MessageRequest, ParticipantRecord, RequestPage, RoomEvent, RoomRecord} from '@pairlobby/protocol';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 import {REQUEST_BACKFILL_SQL} from '@pairlobby/server-core';
 import type {EventPage, IdempotencyRecord, RoomStore} from '@pairlobby/server-core';
@@ -136,6 +136,13 @@ export class SqliteRoomStore implements RoomStore {
     async inviteByDigest(digest: string): Promise<InviteRecord | null> {
         const row = this.db.prepare('SELECT body FROM invites WHERE digest = ?').get(digest) as BodyRow | undefined;
         return row ? (JSON.parse(row.body) as InviteRecord) : null;
+    }
+
+    /** Open, unexpired rooms that allow local joins and are named `name`, ignoring case. */
+    localJoinRooms(name: string, now = Date.now()): LocalRoom[] {
+        const rows = this.db.prepare("SELECT room_id, body FROM rooms WHERE json_extract(body, '$.policy.localJoin') = 1 AND json_extract(body, '$.lifecycle') = 'open' AND lower(json_extract(body, '$.name')) = lower(?)").all(name) as {room_id: string; body: string}[];
+        const count = this.db.prepare("SELECT count(*) AS active FROM participants WHERE room_id = ? AND json_extract(body, '$.revokedAt') IS NULL AND json_extract(body, '$.leftAt') IS NULL");
+        return rows.map((row) => JSON.parse(row.body) as RoomRecord).filter((room) => room.expiresAt === null || room.expiresAt > now).map((room) => ({roomId: room.roomId, name: room.name, createdAt: room.createdAt, participantCount: Number((count.get(room.roomId) as {active: number}).active)}));
     }
 
     /** Whether any invite digest starts with this lowercase hex prefix; a range over the primary key, not a scan. */

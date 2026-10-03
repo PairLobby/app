@@ -33,6 +33,12 @@ export interface RoomPolicy {
     inviteRole?: InviteRole;
     /** Absent means off. */
     autoClose?: AutoClosePolicy;
+    /**
+     * Anyone on the relay's local network or tailnet may join by the room's name, as
+     * a member who can speak. Only a relay that can see where a request comes from
+     * (`pairlobby serve`) admits these joins; others refuse them. Absent means off.
+     */
+    localJoin?: boolean;
     maxParticipants: number;
     maxEventPayloadBytes: number;
     maxRetainedEventBytes: number;
@@ -89,6 +95,7 @@ export const QUOTA_EXEMPT_EVENT_TYPES = [
     'room.expiry_changed',
     'room.access_changed',
     'room.auto_close_changed',
+    'room.local_join_changed',
     'message.received',
     'conversation.turn_changed',
     'message.delivery_failed'

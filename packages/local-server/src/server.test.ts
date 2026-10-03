@@ -9,6 +9,7 @@ import {join} from 'node:path';
 
 import {PROTOCOL_VERSION_HEADER, inviteProbe, newCredential, newId, normalizeInviteCode} from '@pairlobby/protocol';
 import {afterAll, beforeAll, describe, expect, test} from 'vitest';
+import {RoomService, createRouter} from '@pairlobby/server-core';
 
 import {peerAllowed, startServer, type RunningServer} from './server.js';
 import {SqliteRoomStore} from './sqlite-store.js';
@@ -301,6 +302,50 @@ describe('local server names, peers and invite probes', () => {
             expect((await fetch(`${relay.url}/v1/invites/probe?prefix=ZZZZ`)).status).toBe(400);
         } finally {
             await relay.close();
+        }
+    });
+});
+
+describe('local server joins by name', () => {
+    async function openLocal(baseUrl: string, name: string) {
+        const controllerCredential = newCredential('controller');
+        const created = await fetch(`${baseUrl}/v1/rooms`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({name, displayName: 'hugo', kind: 'human', controllerCredential, participantCredential: newCredential('participant')})});
+        const roomId = ((await created.json()) as {room: {roomId: string}}).room.roomId;
+        const opened = await fetch(`${baseUrl}/v1/rooms/${roomId}/local-access`, {method: 'POST', headers: {'content-type': 'application/json', authorization: `Bearer ${controllerCredential}`}, body: JSON.stringify({localJoin: true})});
+        expect(opened.status).toBe(200);
+        return roomId;
+    }
+
+    test('test_a_device_on_the_network_finds_and_joins_an_open_local_room_by_name', async () => {
+        const relay = await startServer({port: 0, dataFile: join(directory, 'local-join.sqlite')});
+        try {
+            const roomId = await openLocal(relay.url, 'Tower Test');
+            await createRoom(relay.url);
+            const found = (await (await fetch(`${relay.url}/v1/rooms/local?name=tower%20test`)).json()) as {rooms: {roomId: string; participantCount: number}[]};
+            expect(found.rooms.map((room) => room.roomId)).toEqual([roomId]);
+            expect(found.rooms[0]!.participantCount).toBe(1);
+            expect(await (await fetch(`${relay.url}/v1/rooms/local?name=http-room`)).json()).toEqual({rooms: []});
+            const joined = await fetch(`${relay.url}/v1/rooms/${roomId}/local-join`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({displayName: 'tower', kind: 'human', participantCredential: newCredential('participant')})});
+            expect(joined.status).toBe(200);
+            expect(((await joined.json()) as {role: string}).role).toBe('member');
+        } finally {
+            await relay.close();
+        }
+    });
+
+    test('test_joining_by_name_needs_a_transport_that_vouches_the_caller_is_local', async () => {
+        const store = new SqliteRoomStore(join(directory, 'not-local.sqlite'));
+        try {
+            const service = new RoomService(store);
+            const created = await service.createRoom({name: 'tower-test', displayName: 'hugo', kind: 'human', controllerCredential: newCredential('controller'), participantCredential: newCredential('participant')});
+            const body = JSON.stringify({displayName: 'stranger', kind: 'human', participantCredential: newCredential('participant')});
+            for (const route of [createRouter({service, peerIsLocal: () => false, localRooms: async () => []}), createRouter({service})]) {
+                expect((await route(new Request(`http://relay/v1/rooms/${created.roomId}/local-join`, {method: 'POST', headers: {'content-type': 'application/json'}, body}))).status).toBe(401);
+            }
+            expect((await createRouter({service, peerIsLocal: () => false, localRooms: async () => []})(new Request('http://relay/v1/rooms/local?name=tower-test'))).status).toBe(401);
+            expect((await createRouter({service})(new Request('http://relay/v1/rooms/local?name=tower-test'))).status).toBe(404);
+        } finally {
+            store.close();
         }
     });
 });

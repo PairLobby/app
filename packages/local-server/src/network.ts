@@ -31,6 +31,25 @@ export function isLoopbackAddress(address: string): boolean {
     return plain === '::1' || plain.startsWith('127.');
 }
 
+/**
+ * This device, a private or link-local network address, or a Tailscale address:
+ * what may join a room by name when the room allows it. A request through a proxy
+ * arrives from the proxy, so a public URL in front of the relay is judged by the
+ * proxy's address; keep such rooms closed to the local network.
+ */
+export function isLocalNetworkAddress(address: string): boolean {
+    const plain = plainAddress(address);
+    if (isLoopbackAddress(plain) || isTailscaleAddress(plain)) {
+        return true;
+    }
+    const v4 = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(plain);
+    if (v4) {
+        const [first, second] = [Number(v4[1]), Number(v4[2])];
+        return first === 10 || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168) || (first === 169 && second === 254);
+    }
+    return /^f[cd][0-9a-f]{2}:/.test(plain) || /^fe[89ab][0-9a-f]:/.test(plain);
+}
+
 /** This machine's non-internal IPv4 addresses, optionally only its Tailscale ones. */
 export function ownAddresses(tailscaleOnly = false): string[] {
     return Object.values(networkInterfaces()).flatMap((addresses) => (addresses ?? []).filter((address) => address.family === 'IPv4' && !address.internal && (!tailscaleOnly || isTailscaleAddress(address.address))).map((address) => address.address));

@@ -8,7 +8,7 @@ import {dirname} from 'node:path';
 
 import {RoomService, createRouter} from '@pairlobby/server-core';
 
-import {advertiseRelay, isLoopbackAddress, isTailscaleAddress} from './network.js';
+import {advertiseRelay, isLocalNetworkAddress, isLoopbackAddress, isTailscaleAddress} from './network.js';
 import {SqliteRoomStore} from './sqlite-store.js';
 
 export interface ServeOptions {
@@ -66,7 +66,11 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
     const discoverable = () => !options.publicUrl && !isLoopback(host) && (options.advertise === true || (boundPort === DEFAULT_PORT && (wildcard || isTailscaleAddress(host))));
     const serverInfo = () => ({shareUrls: shareUrls(host, boundPort, options.publicUrl, tailscaleOnly), discoverable: discoverable()});
     const inviteProbe = async (prefix: string) => store.hasInviteDigestPrefix(prefix);
-    const route = createRouter({service, allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo, inviteProbe});
+    // Where each request's connection came from, read off the socket: no header can claim it.
+    const peerAddresses = new WeakMap<Request, string>();
+    const peerIsLocal = (request: Request) => isLocalNetworkAddress(peerAddresses.get(request) ?? '');
+    const localRooms = async (name: string) => store.localJoinRooms(name);
+    const route = createRouter({service, allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo, inviteProbe, peerIsLocal, localRooms});
 
     // One local relay owns this store. Serialize mutating requests so two
     // async service calls cannot both choose the same next event sequence.
@@ -106,7 +110,7 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
     sweep();
 
     const server = createHttpServer((incoming, outgoing) => {
-        void respond(handle, incoming, outgoing, `http://${incoming.headers.host ?? `${host}:${port}`}`);
+        void respond(handle, incoming, outgoing, `http://${incoming.headers.host ?? `${host}:${port}`}`, peerAddresses);
     });
     // Enforced on the connection, before any request is read: the bind address alone
     // cannot say "Tailscale only" when the Tailscale address may not exist yet at boot.
@@ -206,9 +210,11 @@ function shareUrls(host: string, port: number, publicUrl: string | undefined, ta
     return urls;
 }
 
-async function respond(handle: (request: Request) => Promise<Response>, incoming: IncomingMessage, outgoing: ServerResponse, origin: string): Promise<void> {
+async function respond(handle: (request: Request) => Promise<Response>, incoming: IncomingMessage, outgoing: ServerResponse, origin: string, peerAddresses: WeakMap<Request, string>): Promise<void> {
     try {
-        const response = await handle(await toRequest(incoming, origin));
+        const request = await toRequest(incoming, origin);
+        peerAddresses.set(request, incoming.socket.remoteAddress ?? '');
+        const response = await handle(request);
         outgoing.writeHead(response.status, Object.fromEntries(response.headers));
         outgoing.end(response.body ? Buffer.from(await response.arrayBuffer()) : undefined);
     } catch {

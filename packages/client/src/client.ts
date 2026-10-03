@@ -16,6 +16,7 @@ import type {
     CreateInviteResponse,
     ErrorCode,
     ExportResponse,
+    LocalRoom,
     ParticipantKind,
     NameSource,
     ParticipantRole,
@@ -343,6 +344,38 @@ export class PairLobbyClient {
             ...identity
         });
         return {roomId: body.roomId, participantId: body.participantId, participantCredential, role: body.role, room: body.room};
+    }
+
+    /** Joins a room open to the relay's local network, as a member. The relay checks where the request comes from. */
+    async joinOnLocalNetwork(roomId: string, identity: ClientIdentity): Promise<JoinedRoom> {
+        const participantCredential = newCredential('participant');
+        const body = await this.call<{roomId: string; participantId: string; role: ParticipantRole; room: RoomSnapshot}>('POST', `/v1/rooms/${roomId}/local-join`, null, {
+            participantCredential,
+            ...identity
+        });
+        return {roomId: body.roomId, participantId: body.participantId, participantCredential, role: body.role, room: body.room};
+    }
+
+    /**
+     * Rooms on this relay that its local network may join by name. Null when the relay
+     * cannot be reached, predates local joins, or does not count this device as local.
+     * Never throws: a device looking for a room asks several relays.
+     */
+    async localRooms(name: string, timeoutMs = 1500): Promise<LocalRoom[] | null> {
+        try {
+            const response = await fetch(`${this.serverUrl}/v1/rooms/local?name=${encodeURIComponent(name)}`, {headers: {[PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)}, redirect: 'error', signal: AbortSignal.timeout(timeoutMs)});
+            if (!response.ok) {
+                return null;
+            }
+            const body = (await response.json()) as {rooms?: unknown};
+            return Array.isArray(body.rooms) ? (body.rooms as LocalRoom[]) : null;
+        } catch {
+            return null;
+        }
+    }
+
+    setLocalJoin(roomId: string, credential: string, localJoin: boolean): Promise<RoomEventResult> {
+        return this.call('POST', `/v1/rooms/${roomId}/local-access`, credential, {localJoin});
     }
 
     setExpiry(roomId: string, credential: string, expiresAt: number | null): Promise<RoomEventResult> {

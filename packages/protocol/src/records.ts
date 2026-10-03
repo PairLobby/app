@@ -16,6 +16,7 @@ export const RoomPolicySchema = z.object({
     joinPolicy: z.enum(['invite_only', 'open_to_guests']).default('invite_only'),
     inviteRole: z.enum(['member', 'guest']).optional(),
     autoClose: AutoClosePolicySchema.optional(),
+    localJoin: z.boolean().optional(),
     maxParticipants: z.number().int().min(2),
     maxEventPayloadBytes: z.number().int().min(1),
     maxRetainedEventBytes: z.number().int().min(1),

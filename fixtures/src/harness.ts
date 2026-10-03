@@ -121,6 +121,19 @@ export class RoomHarness {
         return this.service.joinAsGuest(this.roomId, {...identity, participantCredential});
     }
 
+    async setLocalJoin(credential: string, localJoin: boolean): Promise<RoomEvent> {
+        return this.service.setLocalJoin(this.roomId, credential, localJoin);
+    }
+
+    /** As the relay would call it after establishing the caller is on its local network. */
+    async joinOnLocalNetwork(identity: Identity, participantCredential: string) {
+        return this.service.joinOnLocalNetwork(this.roomId, {...identity, participantCredential});
+    }
+
+    async setLocked(credential: string, locked: boolean): Promise<RoomEvent> {
+        return this.service.setLocked(this.roomId, credential, locked);
+    }
+
     async setExpiry(credential: string, expiresAt: number | null): Promise<RoomEvent> {
         return this.service.setExpiry(this.roomId, credential, expiresAt);
     }

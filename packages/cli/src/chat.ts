@@ -728,6 +728,8 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
                 return event.payload.inviteRole === 'guest' ? `${sender} made new invitations read-only` : `${sender} made new invitations admit members who can speak`;
             }
             return event.payload.joinPolicy === 'open_to_guests' ? `${sender} opened the room to read-only guests` : `${sender} made the room invite only`;
+        case 'room.local_join_changed':
+            return event.payload.localJoin ? `${sender} let anyone on the local network join by name` : `${sender} turned off joining by name on the local network`;
         case 'message.delivery_failed':
             return `${failureLabel(event.payload.stage)} [${event.payload.eventId}]: ${event.payload.reason} (failed attempt)`;
         case 'message.received':

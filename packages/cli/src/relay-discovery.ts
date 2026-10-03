@@ -11,6 +11,7 @@
 
 import {PairLobbyClient, type InviteProbeResult} from '@pairlobby/client';
 import {inviteProbe, normalizeInviteCode} from '@pairlobby/protocol';
+import type {LocalRoom} from '@pairlobby/protocol';
 
 import {DEFAULT_LOCAL_SERVER, DEFAULT_RELAY_PORT, UsageError} from './context.js';
 import {tailscaleView} from './tailscale.js';
@@ -76,4 +77,38 @@ export async function findRelayForInvite(code: string, deps: DiscoveryDeps = DEF
     const answered = results.filter((candidate) => candidate.result !== 'unreachable');
     const searched = [`this device${local === 'unreachable' ? ' (no relay running)' : ''}`, `${lan.length} on the local network`, `${tailnet.length} Tailscale device(s), ${answered.filter((candidate) => tailnet.some((peer) => peer.url === candidate.url)).length} with a relay`];
     throw new UsageError(`no relay this device can see issued ${code} (searched ${searched.join(', ')}).\nAsk for the full join command, which names the relay with --server, or pass --server <address>. A relay is found automatically only when its owner shares it (pairlobby settings network-sharing) on port ${DEFAULT_RELAY_PORT} or on the local network.`);
+}
+
+export type LocalRoomMatch = RelayCandidate & {room: LocalRoom};
+
+export type LocalRoomDeps = Omit<DiscoveryDeps, 'probe'> & {
+    /** Rooms open to the local network on one relay with this name; null when it cannot say. */
+    lookup: (url: string, name: string) => Promise<LocalRoom[] | null>;
+};
+
+export const DEFAULT_LOCAL_ROOMS: LocalRoomDeps = {
+    local: DEFAULT_DISCOVERY.local,
+    lan: DEFAULT_DISCOVERY.lan,
+    tailnet: DEFAULT_DISCOVERY.tailnet,
+    lookup: (url, name) => new PairLobbyClient(url).localRooms(name),
+};
+
+/**
+ * The one room named `name` that is open to the local network, on this device's
+ * relay, a relay announced on the local network, or a tailnet device. Names are not
+ * unique, so several matches are listed for the person to pick by room id.
+ */
+export async function findLocalRoom(name: string, deps: LocalRoomDeps = DEFAULT_LOCAL_ROOMS, only?: string): Promise<LocalRoomMatch> {
+    const candidates = only ? [{url: only, label: only}] : [{url: deps.local, label: 'this device'}, ...(await Promise.all([deps.lan(), deps.tailnet()])).flat()];
+    const unique = [...new Map(candidates.map((candidate) => [candidate.url, candidate])).values()];
+    const answers = await Promise.all(unique.map(async (candidate) => ({...candidate, rooms: await deps.lookup(candidate.url, name)})));
+    const matches = answers.flatMap((answer) => (answer.rooms ?? []).map((room) => ({url: answer.url, label: answer.label, room})));
+    if (matches.length === 1) {
+        return matches[0]!;
+    }
+    if (matches.length > 1) {
+        throw new UsageError(`more than one room named "${name}" is open to the local network; pick one:\n${matches.map((match) => `  pairlobby join local ${match.room.roomId} --server ${match.url}   (${match.label}, ${match.room.participantCount} in the room, created ${new Date(match.room.createdAt).toLocaleString()})`).join('\n')}`);
+    }
+    const asked = answers.filter((answer) => answer.rooms !== null).length;
+    throw new UsageError(`no room named "${name}" is open to the local network on the ${asked} relay(s) that answered${only ? '' : ` (of ${unique.length} this device can see)`}.\nIf this was an invite code, check it; otherwise the room's owner can open it with: pairlobby open-local <room>`);
 }

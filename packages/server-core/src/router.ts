@@ -11,6 +11,9 @@ import {
     ReadEventsQuery,
     RedeemInviteRequest,
     JoinAsGuestRequest,
+    LocalJoinRequest,
+    RoomId,
+    SetLocalJoinRequest,
     RenameRoomRequest,
     RenameSelfRequest,
     SendEventRequest,
@@ -27,7 +30,7 @@ import {
     SetExpiryRequest,
     ControlRequest
 } from '@pairlobby/protocol';
-import type {ErrorCode} from '@pairlobby/protocol';
+import type {ErrorCode, LocalRoom} from '@pairlobby/protocol';
 
 import type {RoomService} from './service.js';
 
@@ -49,6 +52,14 @@ export interface RouterOptions {
      * the relay behind a bare code; absent means the path is unknown.
      */
     inviteProbe?: (prefix: string) => Promise<boolean>;
+    /**
+     * Whether this request came from the relay's own device, its local network or its
+     * tailnet. Only a transport that sees the connection's real address can say; absent
+     * means never, so joining by name is refused.
+     */
+    peerIsLocal?: (request: Request) => boolean;
+    /** Open rooms that allow local joins, matching a name; answers `GET /v1/rooms/local?name=`. */
+    localRooms?: (name: string) => Promise<LocalRoom[]>;
 }
 
 export interface ServerInfo {
@@ -79,6 +90,10 @@ export function createRouter(options: RouterOptions): (request: Request) => Prom
                 }
                 return json({known: await options.inviteProbe(prefix)});
             }
+            const local = await routeLocal(request, options);
+            if (local) {
+                return local;
+            }
             return await route(request, service);
         } catch (error) {
             if (error instanceof ProtocolError) {
@@ -90,6 +105,37 @@ export function createRouter(options: RouterOptions): (request: Request) => Prom
             return errorResponse('server_unavailable', 'the server could not complete this request', 503);
         }
     };
+}
+
+const NOT_LOCAL = 'joining by name is only open to devices on this relay\'s local network or tailnet; ask for an invite code';
+
+/** Finding and joining rooms by name: both need a transport that vouches the caller is local. */
+async function routeLocal(request: Request, options: RouterOptions): Promise<Response | null> {
+    const url = new URL(request.url);
+    const segments = url.pathname.split('/').filter(Boolean);
+    const method = request.method.toUpperCase();
+    const lookup = method === 'GET' && segments.length === 3 && segments[0] === 'v1' && segments[1] === 'rooms' && segments[2] === 'local';
+    const join = method === 'POST' && segments.length === 4 && segments[0] === 'v1' && segments[1] === 'rooms' && segments[3] === 'local-join';
+    if (!lookup && !join) {
+        return null;
+    }
+    if (lookup && !options.localRooms) {
+        return errorResponse('invalid_request', 'unknown path', 404);
+    }
+    if (!options.peerIsLocal?.(request)) {
+        return errorResponse('unauthorized', NOT_LOCAL, 401);
+    }
+    if (lookup) {
+        const name = (url.searchParams.get('name') ?? '').trim();
+        if (name.length === 0 || name.length > 64) {
+            return errorResponse('invalid_request', 'name must be 1–64 characters', 400);
+        }
+        return json({rooms: await options.localRooms!(name)});
+    }
+    const roomId = RoomId.parse(segments[2]);
+    const input = LocalJoinRequest.parse(await request.json());
+    const result = await options.service.joinOnLocalNetwork(roomId, input);
+    return json({roomId: result.roomId, participantId: result.participantId, role: result.role, room: result.snapshot});
 }
 
 async function route(request: Request, service: RoomService): Promise<Response> {
@@ -227,6 +273,10 @@ async function route(request: Request, service: RoomService): Promise<Response> 
         case 'POST access': {
             const {joinPolicy} = SetAccessRequest.parse(await request.json());
             return json({event: await service.setJoinPolicy(roomId, credential, joinPolicy)});
+        }
+        case 'POST local-access': {
+            const {localJoin} = SetLocalJoinRequest.parse(await request.json());
+            return json({event: await service.setLocalJoin(roomId, credential, localJoin)});
         }
         case 'POST auto-close': {
             const {autoClose} = SetAutoCloseRequest.parse(await request.json());

@@ -159,6 +159,21 @@ pairlobby join http://10.0.0.5:8790#<CODE>            # the full join link that 
 
 A shared relay answers to its own addresses, its hostname and its Tailscale names (`laptop` and `laptop.tailnet-name.ts.net`); any other name is refused, which defeats DNS rebinding from a web page. With `tailscale`, it listens on every interface but drops any connection that does not come from this device or a Tailscale address, so it keeps working when Tailscale starts after the relay. With `lan`, room traffic, including credentials, is plain HTTP, so use it only on networks you trust. Behind a proxy, `pairlobby serve --public-url https://laptop.example` advertises that address instead, and such a relay is not discoverable. Rooms remember the address they were joined through, so a changed IP address means joining again.
 
+#### Joining by name, without an invite
+
+For a room everyone on your network may take part in, skip invite codes:
+
+```sh
+pairlobby create --name tower-test --open-local      # on the device that holds the rooms
+pairlobby join tower-test                            # on any device on its network or tailnet
+pairlobby open-local <room>                          # open an existing room the same way
+pairlobby open-local <room> --off                    # stop; members who joined stay
+```
+
+Whoever joins by name is a **member who can send messages**, just as with a plain `/invite`. The relay admits these joins only from this device, private network addresses (10.x, 172.16–31.x, 192.168.x, link-local) and Tailscale addresses. It reads the address from the connection itself, so no header or flag can claim it. Behind a proxy or `--public-url`, requests arrive from the proxy, so keep such rooms closed to the local network. Locking the room still refuses these joins, the participant cap still applies, and the owner can mute or remove anyone. Only a relay run with `pairlobby serve` admits joins by name; hosted rooms and Durable Object relays refuse them.
+
+`join <name>` asks the same relays as `join <code>`. Each relay lists only rooms that are open to the local network, matching the name exactly (ignoring case), and only to callers on its local network. Room names are not unique: if several rooms match, nothing is joined and each is listed with its id, so you can run `pairlobby join local <room-id> --server <relay>`. A name that looks like an invite code (two groups of four letters and digits) is read as a code; use `pairlobby join local <name>` for those. With `--server`, only that relay is asked. The room is reachable from other devices only once this device shares its relay (`network-sharing`, above). `create` and `open-local` tell you when it doesn't. The same switch is **Join by name** under Privacy in `/settings`.
+
 On macOS, finding relays on the local network needs the **Local Network** permission for the app that runs `pairlobby`, such as Terminal or iTerm (System Settings → Privacy & Security → Local Network). Without it, macOS refuses the traffic and only Tailscale devices are found. Tailscale is not affected. On Windows, allow Node.js through the firewall when asked, or other devices cannot reach a relay running there.
 
 ### A self-hosted relay on Durable Objects (Celld)
@@ -348,7 +363,7 @@ Messages with multiple recipients display `→ all`; this is a compact label and
 - **Room:** name and expiry, including Never, presets, and a custom duration/date.
 - **Lifecycle:** auto-close discussion. Off (the default); after a period without messages (replies count; receipts, joins and settings changes do not); a fixed time after creation; or once every agent and read-only guest has left (it arms only after one has joined, humans may stay). Presets plus a custom `idle:<duration>` or `age:<duration>`; a change that would close an already-overdue room says so before you confirm. `/status` shows the mode, the next auto-close time and, after closing, why.
 - **Turns:** sequential/parallel response mode, the speaking queue, and confirmed skip/cancel actions.
-- **Privacy:** invite-only or read-only guest admission, what a plain `/invite` admits (members who can speak, the default, or read-only observers), and the admission lock. Guest admission does not grant write access or remove existing members.
+- **Privacy:** invite-only or read-only guest admission; joining by name from the relay's local network or tailnet, as members (see [Joining by name](#joining-by-name-without-an-invite)); what a plain `/invite` admits (members who can speak, the default, or read-only observers); and the admission lock. Guest admission does not grant write access, and none of these remove existing members. Hosted rooms do not offer joining by name.
 - **Admins and members:** grant/remove admin rights, mute/unmute, request pause/resume, and remove a participant. Admins use their own memberships; the owner keeps separate control. Regular members and observers see read-only settings. Sensitive changes require confirmation with Cancel selected by default.
 - **Hosted rooms:** owners can toggle account restrictions while retaining the allowlist and separately replace the verified-email allowlist. These controls require a hosted relay that supports them; local room admission has no account allowlist.
 
