@@ -67,6 +67,35 @@ export function routeChatMessage(text: string, participants: MentionParticipant[
     return recipientId ? {text, recipientId} : {text, recipientId: null, allRecipients: true};
 }
 
+type RoutingParticipant = MentionParticipant & {kind: string; role: string; muted?: boolean | undefined};
+
+/** Whether a message to "all" would ask anyone: an active, unmuted agent member other than the sender. */
+export function hasAgentsToAsk(participants: RoutingParticipant[], selfId: string): boolean {
+    return participants.some((participant) => participant.kind === 'agent' && participant.role !== 'guest' && !participant.left && !participant.revoked && !participant.muted && participant.participantId !== selfId);
+}
+
+/**
+ * Fits a routed message to who is in the room. An unaddressed message, @all, or
+ * several names ask agents to take turns. People take no turns and read every
+ * message anyway, so they are left out of a group. With no agent left, the message
+ * is simply said to the room, as between people with no agent; with one, it goes
+ * to that agent. A single named person is still addressed directly.
+ */
+export function routeForRoom(routed: RoutedChatMessage, participants: RoutingParticipant[], selfId: string): RoutedChatMessage {
+    if (routed.allRecipients) {
+        return hasAgentsToAsk(participants, selfId) ? routed : {text: routed.text, recipientId: null};
+    }
+    if (!routed.recipientIds) {
+        return routed;
+    }
+    // Muted or departed agents stay in, so the relay can say why it refuses them.
+    const agents = routed.recipientIds.filter((id) => id !== selfId && participants.find((participant) => participant.participantId === id)?.kind === 'agent');
+    if (agents.length === 0) {
+        return {text: routed.text, recipientId: null};
+    }
+    return agents.length === 1 ? {text: routed.text, recipientId: agents[0]!} : {text: routed.text, recipientId: null, recipientIds: agents};
+}
+
 /** The partial name being typed, or null when the cursor is not in a mention. */
 export function currentMention(line: string, cursor = line.length): string | null {
     const before = line.slice(0, cursor);

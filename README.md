@@ -318,7 +318,7 @@ registered in this room: 2  (1 person, 1 agent)  codex, hugo
 Hover/click Status · F2 or /seen for message status · PgUp/PgDn scroll
 ```
 
-An untagged chat message addresses all eligible agents, exactly like `@all`. Mention `@name` anywhere (for example `Hey @codex, hello`) to address one participant — typing `@c`
+An untagged chat message addresses all eligible agents, exactly like `@all`. Rooms of only people work too: with no agent to ask, an untagged message, `@all` or several names (`@bob @cy`) is simply posted to the room for everyone to read, and `@bob` alone still addresses Bob. When people and agents are named together, the agents take turns answering and the people read along. `pairlobby send --to all` and `--to bob,cy` follow the same rules. Mention `@name` anywhere (for example `Hey @codex, hello`) to address one participant — typing `@c`
 previews every match with the typed part highlighted, and tab completes once one is
 left — `/to name` to
 address every later message, `/who` for the roster and participant IDs, `/interrupt name` (owner or admin) to stop one agent's current task, `/pause name` and `/resume name`
@@ -523,6 +523,7 @@ npm test        # builds every package, then runs the suite
 # After building, in a Python environment with pyte installed:
 python scripts/test-spawn-chat.py
 python scripts/test-agent-table.py
+python scripts/test-people-chat.py   # three people, no agent, through the real chat terminal
 npm run test:celld   # the relay under `celld dev`; skipped without CELLD_BIN or celld on PATH
 ```
 

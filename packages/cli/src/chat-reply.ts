@@ -3,7 +3,7 @@ import type {MessageRequest, SendEventResponse} from '@pairlobby/protocol';
 import type {PairLobbyClient} from '@pairlobby/client';
 import type {ReplySubmission} from './reply-composer.js';
 
-type ChatReplyContext = {client: PairLobbyClient; roomId: string; credential: string; participantId: string; quotedMessagesSupported: boolean};
+type ChatReplyContext = {client: PairLobbyClient; roomId: string; credential: string; participantId: string; quotedMessagesSupported: boolean; agentsToAsk?: boolean};
 
 export async function sendChatReply(submission: ReplySubmission, context: ChatReplyContext): Promise<SendEventResponse> {
     const {client, roomId, credential, participantId} = context;
@@ -32,6 +32,7 @@ export async function sendChatReply(submission: ReplySubmission, context: ChatRe
     return client.send(roomId, credential, {
         type: 'message', payload: {text: submission.text, priority: 'normal'},
         quoteOf: submission.target.eventId, idempotencyKey: submission.idempotencyKey,
-        ...(recipientId && recipientId !== participantId ? {recipientId} : {allRecipients: true})
+        // Quoting yourself asks the room's agents, or simply says it to the room when there are none.
+        ...(recipientId && recipientId !== participantId ? {recipientId} : context.agentsToAsk === false ? {} : {allRecipients: true})
     });
 }
