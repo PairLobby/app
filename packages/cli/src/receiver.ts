@@ -10,8 +10,8 @@ import {select, UsageError} from './context.js';
 import {CodexReceiver} from './codex-receiver.js';
 import {ClaudeReceiver} from './claude-receiver.js';
 import {QwenReceiver} from './qwen-receiver.js';
-import {receiverRuntimeName} from './receiver-runtime.js';
-import type {ReceiverRuntime, ReceiverRuntimeName} from './receiver-runtime.js';
+import {RuntimeInterrupted, receiverRuntimeName} from './receiver-runtime.js';
+import type {InterruptOutcome, ReceiverRuntime, ReceiverRuntimeName} from './receiver-runtime.js';
 import {validateEffort} from './spawn-options.js';
 import {startReceiptMonitor} from './receipt-monitor.js';
 import type {ReceiptMonitor} from './receipt-monitor.js';
@@ -217,6 +217,11 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         database.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES (?,?)').run(key, value);
     }
 
+    /** Reports what an interrupt really stopped. The revision makes a retry or a late report harmless. */
+    async function acknowledgeControl(revision: number, outcome: InterruptOutcome): Promise<void> {
+        await client.send(room.roomId, credential, {type: 'control.ack', payload: {targetParticipantId: session.participantId, revision, outcome}, idempotencyKey: `control-ack-${session.participantId}-${revision}`});
+    }
+
     async function flush(): Promise<void> {
         const jobs = database.prepare("SELECT * FROM jobs WHERE phase IN ('reply', 'failed', 'pass', 'decision')").all() as Job[];
         if (jobs.length === 0) {
@@ -294,6 +299,8 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
             current = grant.request ?? current;
         }
         let leaseFailure: Error | undefined;
+        let interrupting: Promise<void> | undefined;
+        let watching = true;
         let renewing = false;
         let renewal: Promise<void> = Promise.resolve();
         const heartbeat = token ? setInterval(() => {
@@ -306,7 +313,10 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                     return;
                 }
                 leaseFailure = error instanceof Error ? error : new Error('Speaking turn could not be renewed');
-                runtime?.close();
+                // An interrupt fences the turn on purpose; let the interrupt stop the runtime and report it.
+                if (!interrupting) {
+                    runtime?.close();
+                }
             }).finally(() => { renewing = false; });
         }, 10_000) : undefined;
         database.prepare("UPDATE jobs SET phase='running' WHERE event_id=?").run(request.eventId);
@@ -331,6 +341,30 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                     status({model: runtime.model});
                 }
             }
+            // Watch the room while the turn runs: an interrupt for this participant stops
+            // the turn now instead of waiting for it to finish. Started before execute()
+            // returns control, so a request the runtime has begun is always reachable.
+            const active = runtime;
+            void (async () => {
+                let cursor = snapshot.latestSeq;
+                while (watching) {
+                    await client.waitForChange(room.roomId, credential, cursor, 30_000, 1000);
+                    if (!watching) {
+                        return;
+                    }
+                    const page = await client.readEvents(room.roomId, credential, cursor, 200);
+                    for (const event of page.events) {
+                        cursor = Math.max(cursor, event.seq);
+                        if (event.type === 'control.pause' && event.payload.interrupt && event.payload.targetParticipantId === session.participantId) {
+                            watching = false;
+                            status({detail: 'Interrupt requested; stopping the current turn.'});
+                            interrupting = active.interrupt().then((outcome) => acknowledgeControl(event.payload.revision, outcome));
+                            await interrupting;
+                            return;
+                        }
+                    }
+                }
+            })().catch((error: unknown) => status({detail: `Interrupt watch: ${error instanceof Error ? error.message : String(error)}`}));
             const answer = await runtime.execute(current, {
                 acknowledge: async () => {
                     await client.acknowledgeMessage(room.roomId, credential, request.eventId);
@@ -393,13 +427,16 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
             database.prepare('UPDATE jobs SET phase=?, answer=? WHERE event_id=?').run(savedValue(`decision:${request.eventId}`) ? 'decision' : savedValue(`pass:${request.eventId}`) === '1' ? 'pass' : 'reply', answer, request.eventId);
         } catch (error) {
             const reason = error instanceof Error ? error.message : 'Runtime failed';
-            database.prepare("UPDATE jobs SET phase='failed', failure=? WHERE event_id=?").run(reason, request.eventId);
+            // An interrupted turn is not a failure to report: the relay already fenced it.
+            database.prepare('UPDATE jobs SET phase=?, failure=? WHERE event_id=?').run(error instanceof RuntimeInterrupted ? 'interrupted' : 'failed', reason, request.eventId);
             runtime?.close();
             runtime = undefined;
             status({detail: reason});
         } finally {
+            watching = false;
             clearInterval(heartbeat);
             await renewal;
+            await interrupting?.catch((error: unknown) => status({detail: `Interrupt report failed: ${error instanceof Error ? error.message : String(error)}`}));
         }
         await flush();
         status({state: 'available', eventId: ''});
@@ -424,6 +461,10 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                     break;
                 }
                 let waiting = false;
+                // An interrupt that arrived between turns stopped nothing; say so once.
+                if (member.paused && member.interruptRequested && (member.acknowledgedRevision ?? 0) < member.controlRevision) {
+                    await acknowledgeControl(member.controlRevision, 'paused_between_turns').catch(() => {});
+                }
                 if (!member.paused && !member.muted) {
                     const requests = await client.pendingRequests(room.roomId, credential, session.participantId);
                     for (const request of requests) {

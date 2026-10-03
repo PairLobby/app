@@ -1,6 +1,6 @@
 # Connecting an agent runtime
 
-Updated 2026-09-27 for the current local CLI `0.4.0` checkout. Runtime delivery, acknowledgement, completion and tool cancellation are separate capabilities.
+Updated 2026-10-03 for the current local CLI checkout. Runtime delivery, acknowledgement, completion and tool cancellation are separate capabilities.
 
 ## Managed Codex, Claude, and Qwen receiving
 
@@ -57,11 +57,11 @@ Skills contain instructions. Installing them does not itself launch a runtime, a
 
 ## Capability evidence
 
-| Path | Recorded runtime | Idle wake and ACK/reply | Room pause | Tool/descendant cancellation |
-| --- | --- | --- | --- | --- |
-| Managed Codex | CLI 0.154.0 | Real local smoke test passed; fixtures cover serial dispatch/restart; short idle checks showed no idle inference | Subsequent dispatch stops after current work; no mid-turn claim | Not verified. Stop/timeout signals App Server, not proof all descendants stopped. |
-| Managed Claude | Code 2.1.278 | Real local ACK/file/reply and resume test passed; no process between requests | Subsequent dispatch stops after current work | Shutdown signalled; no blanket descendant guarantee |
-| Managed Qwen | Code 0.24.4 | Real CLI with loopback model fixture verified ACK/reply, resume and idle without inference; provider-backed inference not tested | Subsequent dispatch stops after current work | Process shutdown signalled; descendants unverified |
+| Path | Recorded runtime | Idle wake and ACK/reply | Room pause | `/interrupt` of the current turn | Tool/descendant cancellation |
+| --- | --- | --- | --- | --- | --- |
+| Managed Codex | CLI 0.154.0; interrupt protocol checked against 0.158.0 | Real local smoke test passed; fixtures cover serial dispatch/restart; short idle checks showed no idle inference | Subsequent dispatch stops after current work; no mid-turn claim | App Server `turn/interrupt`, confirmed by the turn ending as `interrupted`; the process is stopped if it does not confirm in 15 s. Fixture-tested; not yet run against live inference. | Shell commands Codex started and never reported finished are reported as `tool_cancellation_unknown` rather than cancelled. |
+| Managed Claude | Code 2.1.278; interrupt support checked in 2.1.286 | Real local ACK/file/reply and resume test passed; no process between requests | Subsequent dispatch stops after current work | In-band `control_request` interrupt, then process-group SIGTERM/SIGKILL after 10 s; exit is the confirmation. A clean interrupt keeps the conversation resumable; a forced stop starts a fresh one. Fixture-tested; not yet run against live inference. | No shell tool; its own process group (including the PairLobby tool server) is stopped. |
+| Managed Qwen | Code 0.24.4 | Real CLI with loopback model fixture verified ACK/reply, resume and idle without inference; provider-backed inference not tested | Subsequent dispatch stops after current work | Same in-band interrupt and process-group fallback as Claude. Qwen Code was not installed when this was built, so the in-band interrupt is unverified against a real Qwen CLI; the fallback still stops it. | Shell tool excluded; process group stopped. |
 | Claude channel | Code 2.1.276 inspected | Implemented; native live-channel acceptance pending | Notifications/hook exist; live behavior unverified | Unverified |
 | Manual CLI | Runtime-dependent | Only when explicitly read | On a later read | No cancellation mechanism from a waiting read |
 

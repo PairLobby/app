@@ -71,7 +71,8 @@ const participantJoinedPayload = z.object({
 const participantLeftPayload = z.object({participantId: ParticipantId});
 const participantRevokedPayload = z.object({participantId: ParticipantId});
 
-const controlPausePayload = z.object({targetParticipantId: ParticipantId, revision: z.number().int().min(1), reason: z.string().max(512).optional()});
+/** `interrupt` asks the receiver to stop the agent's current turn too, not only to hold later work. */
+const controlPausePayload = z.object({targetParticipantId: ParticipantId, revision: z.number().int().min(1), reason: z.string().max(512).optional(), interrupt: z.boolean().optional()});
 const controlResumePayload = z.object({targetParticipantId: ParticipantId, revision: z.number().int().min(1)});
 const controlAckPayload = z.object({targetParticipantId: ParticipantId, revision: z.number().int().min(1), outcome: ControlOutcome, detail: z.string().max(512).optional()});
 

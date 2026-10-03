@@ -123,6 +123,8 @@ export const ControlRecord = z.object({
     roomId: RoomId,
     targetParticipantId: ParticipantId,
     paused: z.boolean(),
+    /** The latest pause also asked to stop the current turn. Absent on older records. */
+    interruptRequested: z.boolean().optional(),
     revision: z.number().int().min(1),
     requestedAt: z.number().int().nonnegative(),
     acknowledgedRevision: z.number().int().nonnegative(),
@@ -145,7 +147,10 @@ export const ParticipantView = z.object({
     paused: z.boolean(),
     muted: z.boolean().optional(),
     controlRevision: z.number().int().nonnegative(),
-    acknowledgedOutcome: ControlOutcome.nullable()
+    acknowledgedOutcome: ControlOutcome.nullable(),
+    /** The revision the receiver last acknowledged, so a client can tell whether the latest control was answered. */
+    acknowledgedRevision: z.number().int().nonnegative().optional(),
+    interruptRequested: z.boolean().optional()
 });
 export type ParticipantView = z.infer<typeof ParticipantView>;
 
@@ -159,6 +164,7 @@ export const RoomSnapshot = z.object({
     adminRolesSupported: z.boolean().optional(),
     inviteRoleSupported: z.boolean().optional(),
     autoCloseSupported: z.boolean().optional(),
+    interruptSupported: z.boolean().optional(),
     lastMessageAt: z.number().int().nonnegative().nullable().optional(),
     autoCloseArmed: z.boolean().optional(),
     autoCloseAt: z.number().int().nonnegative().nullable().optional(),

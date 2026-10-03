@@ -72,7 +72,9 @@ export function toParticipantView(view: RoomView, participant: ParticipantRecord
         paused: control?.paused ?? false,
         muted: participant.muted ?? false,
         controlRevision: control?.revision ?? 0,
-        acknowledgedOutcome: control?.acknowledgedOutcome ?? null
+        acknowledgedOutcome: control?.acknowledgedOutcome ?? null,
+        acknowledgedRevision: control?.acknowledgedRevision ?? 0,
+        interruptRequested: Boolean(control?.paused && control.interruptRequested)
     };
 }
 
@@ -85,6 +87,7 @@ export function toSnapshot(view: RoomView): RoomSnapshot {
         renameSelfSupported: true,
         inviteRoleSupported: true,
         autoCloseSupported: true,
+        interruptSupported: true,
         adminRolesSupported: true,
         quotedMessagesSupported: true,
         groupTurnsSupported: true,

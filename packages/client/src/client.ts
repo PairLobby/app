@@ -36,6 +36,8 @@ export type MessageStatusOptions = {reason?: string; turnToken?: string; respons
 
 type HandoverRevisionResult = {revision: number; event: RoomEvent};
 
+export type InterruptResult = {revision: number; event: RoomEvent; fenced: string[]};
+
 type RoomEventResult = {event: RoomEvent};
 
 export interface ClientIdentity {
@@ -262,6 +264,11 @@ export class PairLobbyClient {
 
     control(roomId: string, credential: string, targetParticipantId: string, paused: boolean): Promise<HandoverRevisionResult> {
         return this.call('POST', `/v1/rooms/${roomId}/control`, credential, {targetParticipantId, paused});
+    }
+
+    /** Stops one agent's running turn and holds its queued work until resume. Owner or admin only. */
+    interrupt(roomId: string, credential: string, targetParticipantId: string): Promise<InterruptResult> {
+        return this.call('POST', `/v1/rooms/${roomId}/control`, credential, {targetParticipantId, paused: true, interrupt: true});
     }
 
     revoke(roomId: string, credential: string, participantId: string): Promise<RoomEventResult> {

@@ -84,8 +84,9 @@ const HELP = `  <message>          address all eligible agents (same as @all)
   /mute <name>       prevent a participant from writing (owner)
   /unmute <name>     allow them to write again (owner)
   /expiry            set when this room expires
-  /pause <name>      controller only
-  /resume <name>     controller only
+  /interrupt <name>  stop one agent's current task and hold its queue (owner/admin)
+  /pause <name>      hold an agent's later work (owner)
+  /resume <name>     release a paused or interrupted agent (owner)
   /help              this
   /quit              leave (Ctrl+C also works)`;
 
@@ -241,6 +242,31 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 const result = await client.control(roomId, options.controllerCredential, target.id, paused);
                 // A request, not a confirmation: what happened is whatever the agent acknowledges.
                 emit(`${DIM}  ${paused ? 'pause' : 'resume'} requested for ${target.name}, revision ${result.revision} — watch for the acknowledgement${RESET}`);
+            } catch (error) {
+                emit(`${DIM}  ${error instanceof ProtocolError ? error.message : String(error)}${RESET}`);
+            }
+        }
+
+        /** Interrupts one agent. The relay decides who may; the agent's receiver reports what stopped. */
+        async function interrupt(reference: string): Promise<void> {
+            const target = resolveName(reference);
+            if (!target) {
+                return;
+            }
+            const self = snapshot.participants.find((participant) => participant.participantId === options.participantId);
+            const authority = options.controllerCredential ?? (self?.role === 'controller' ? options.credential : undefined);
+            if (!authority) {
+                emit(`${DIM}  only the room owner or an admin can interrupt an agent${RESET}`);
+                return;
+            }
+            if (!snapshot.interruptSupported) {
+                emit(`${DIM}  this relay cannot interrupt agents yet; update it, or use /pause to hold later work${RESET}`);
+                return;
+            }
+            try {
+                const result = await client.interrupt(roomId, authority, target.id);
+                const fenced = result.fenced.length ? `its current task was stopped from posting a late answer` : 'it was between tasks';
+                emit(`${DIM}  interrupt requested for ${target.name}: ${fenced}; its queue is held until /resume ${target.name}. Watch for what its receiver confirms.${RESET}`);
             } catch (error) {
                 emit(`${DIM}  ${error instanceof ProtocolError ? error.message : String(error)}${RESET}`);
             }
@@ -404,6 +430,14 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             }
             if (line === '/expiry') {
                 void changeExpiry();
+                return;
+            }
+            if (line.startsWith('/interrupt ')) {
+                void interrupt(line.slice(11).trim());
+                return;
+            }
+            if (line === '/interrupt') {
+                emit(`${DIM}  Usage: /interrupt <agent name or participant ID>${RESET}`);
                 return;
             }
             if (line.startsWith('/pause ')) {
@@ -659,11 +693,14 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
         case 'handover.declined':
             return `${sender} declined handover ${event.payload.handoverId} rev ${event.payload.revision}`;
         case 'control.pause':
+            if (event.payload.interrupt) {
+                return `${sender} interrupted ${names.get(event.payload.targetParticipantId) ?? 'someone'}: current task stopped from posting, queue held until resume`;
+            }
             return `pause requested for ${names.get(event.payload.targetParticipantId) ?? 'someone'}, revision ${event.payload.revision}`;
         case 'control.resume':
             return `resume requested for ${names.get(event.payload.targetParticipantId) ?? 'someone'}, revision ${event.payload.revision}`;
         case 'control.ack':
-            return `${sender} acknowledged revision ${event.payload.revision}: ${event.payload.outcome}`;
+            return `${sender} ${controlOutcomeText(event.payload.outcome)}`;
         case 'room.lock_changed':
             return event.payload.locked ? 'the room was locked' : 'the room was unlocked';
         case 'participant.mute_changed':
@@ -712,3 +749,15 @@ function sleep(ms: number): Promise<void> {
 }
 
 export type {Interface};
+
+/** What a receiver said it did, without claiming more than it confirmed. */
+export function controlOutcomeText(outcome: string): string {
+    switch (outcome) {
+        case 'current_turn_cancelled':    return 'stopped its current task (its runtime confirmed the turn ended; edits already made are not undone)';
+        case 'tool_cancellation_unknown': return 'stopped its current turn, but a command it started may still be running';
+        case 'paused_between_turns':      return 'was between tasks; nothing was running to stop';
+        case 'resumed':                   return 'resumed';
+        case 'unsupported':               return 'cannot be interrupted by its runtime';
+        default:                          return `reported: ${outcome.replaceAll('_', ' ')}`;
+    }
+}

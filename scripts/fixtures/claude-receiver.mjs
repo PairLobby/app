@@ -25,12 +25,23 @@ if (!args.includes('--restricted') || value('--permission-mode') !== 'acceptEdit
 }
 record(args.includes('--resume') ? 'thread/resume' : 'thread/start');
 const source = createInterface({input: process.stdin});
+let heldText = '';
 for await (const line of source) {
     const input = JSON.parse(line);
+    if (input.type === 'control_request') {
+        // An interrupt ends the held turn with an error result unless the test wants it ignored.
+        if (input.request?.subtype === 'interrupt' && !heldText.includes('ignore-interrupt')) {
+            record('interrupt');
+            send({type: 'control_response', response: {subtype: 'success', request_id: input.request_id}});
+            send({type: 'result', subtype: 'error_during_execution', is_error: true, session_id: session});
+        }
+        continue;
+    }
     const text = input.message.content[0].text;
     record('turn/start');
     send({type: 'system', subtype: 'init', session_id: session, model: 'claude-opus-5-5'});
-    if (text.includes('hang-until-crash')) {
+    if (text.includes('hang-until-crash') || text.includes('hold-for-interrupt')) {
+        heldText = text;
         continue;
     }
     const config = JSON.parse(readFileSync(value('--mcp-config'), 'utf8')).mcpServers.pairlobby_receiver;

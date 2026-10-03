@@ -77,6 +77,7 @@ export function roomStatusRows(status: RoomStatus): RoomPanelRow[] {
         {id: 'stalled', section: 'Activity', label: 'Stalled agents', value: turns ? String(stalled) : 'Unavailable'},
         {id: 'failed', section: 'Activity', label: 'Failed requests', value: turns ? String(entries.filter((entry) => entry.state === 'failed').length) : 'Unavailable'},
         {id: 'paused', section: 'Activity', label: 'Paused members', value: String(joined.filter((person) => person.paused).length)},
+        {id: 'interrupted', section: 'Activity', label: 'Interrupted agents (held)', value: String(joined.filter((person) => person.paused && person.interruptRequested).length), hint: 'Resume them with /resume <name>; their queued work waits until then.'},
         {id: 'muted', section: 'Activity', label: 'Muted members', value: String(joined.filter((person) => person.muted).length)},
         {id: 'created', section: 'Dates', label: 'Created (UTC)', value: new Date(room.createdAt).toISOString()},
         {id: 'expiry', section: 'Dates', label: 'Expires (UTC)', value: room.expiresAt === null ? 'Never' : new Date(room.expiresAt).toISOString()},

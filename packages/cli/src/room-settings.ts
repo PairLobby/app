@@ -135,6 +135,9 @@ async function memberPage(context: RoomSettingsContext, id: string): Promise<Roo
     rows[1]!.hint = room.adminRolesSupported ? 'Read-only observers must be invited as members before they can become admins.' : 'Update this relay to change admin roles.';
     const control = (key: string, label: string, value: string, confirm: string, run: (owner: string) => Promise<unknown>) => rows.push({id: key, label, value, section: 'Controls', ...(authority ? {action: {kind: 'command' as const, confirm, run: () => change(context, run)}} : {hint: 'Owner or admin access required.'})});
     control('mute', person.muted ? 'Unmute' : 'Mute', person.muted ? 'Muted' : 'Can write', `${person.muted ? 'Unmute' : 'Mute'} ${person.displayName}? Reading and receipts continue.`, (owner) => context.client.setMuted(context.roomId, owner, id, !person.muted));
+    if (person.kind === 'agent' && room.interruptSupported && !person.paused) {
+        control('interrupt', 'Interrupt current task', 'Stop the turn it is running', `Interrupt ${person.displayName}? Its current task stops and cannot post an answer; its queued requests wait until you resume it. Edits or commands already carried out are not undone.`, (owner) => context.client.interrupt(context.roomId, owner, id));
+    }
     if (person.kind === 'agent') {
         control('pause', person.paused ? 'Resume requests' : 'Pause requests', person.paused ? 'Paused' : 'Accepting requests', `${person.paused ? 'Resume' : 'Pause'} ${person.displayName}? This does not verify interruption of tools already running.`, (owner) => context.client.control(context.roomId, owner, id, !person.paused));
     }
