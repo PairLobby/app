@@ -32,6 +32,8 @@ import type {ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
 import {discoverableNote, joinCommand, localOnlyNote, parseJoinLink, shareTarget} from './share.js';
 import {findLocalRoom, findRelayForInvite} from './relay-discovery.js';
+import {routeForRoom} from './mentions.js';
+import type {RoutedChatMessage} from './mentions.js';
 import {tailscaleNames, tailscaleView} from './tailscale.js';
 import {VERSION} from './version.js';
 import {NETWORK_SHARING_RESTART, SETTING_KEYS, describeSettingValue, parseLifetime, parseSettingValue} from './device-settings.js';
@@ -1208,7 +1210,7 @@ async function sendMessage(store: LocalStore, values: Values, text: string): Pro
     if (!Number.isFinite(wait) || wait < 0 || wait > 300) {
         throw new UsageError('--wait-for-ack must be between 0 and 300 seconds');
     }
-    const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     const recipient = str(values, 'to');
     const replyTo = str(values, 'reply-to');
     if (replyTo) {
@@ -1219,20 +1221,25 @@ async function sendMessage(store: LocalStore, values: Values, text: string): Pro
     if (recipient && !references.length) {
         throw new UsageError('--to needs one or more names, or all');
     }
-    const allRecipients = references.length === 1 && references[0]!.toLowerCase() === 'all';
-    const selected = allRecipients ? [] : [...new Set(references.map((reference) => resolveRecipient(snapshot!.participants, reference)))];
-    const group = allRecipients || selected.length > 1;
+    const everyone = references.length === 1 && references[0]!.toLowerCase() === 'all';
+    const selected = everyone ? [] : [...new Set(references.map((reference) => resolveRecipient(snapshot!.participants, reference)))];
+    const requested: RoutedChatMessage = everyone ? {text, recipientId: null, allRecipients: true} : selected.length > 1 ? {text, recipientId: null, recipientIds: selected} : {text, recipientId: selected[0] ?? null};
+    const routed = snapshot ? routeForRoom(requested, snapshot.participants, session.participantId) : requested;
+    const {recipientId, recipientIds, allRecipients} = routed;
+    const group = Boolean(allRecipients || recipientIds);
     if (group && !snapshot?.groupTurnsSupported) {
         throw new UsageError('Update this relay before sending to multiple agents.');
     }
-    const recipientId = !group ? selected[0] : undefined;
+    if ((requested.allRecipients || requested.recipientIds) && !group) {
+        note(recipientId ? 'only one agent was named, so the message goes to it; the people named read it in the room' : 'no agent to ask, so the message is posted to the room for everyone to read');
+    }
     // The key is generated once so a retry after a lost response is a replay, not a second message.
     const result = await client.send(room.roomId, credential, {
         type: 'message',
         payload: {text, priority: 'normal'},
         idempotencyKey: newId('event'),
         ...(recipientId ? {recipientId} : {}),
-        ...(allRecipients ? {allRecipients: true} : group ? {recipientIds: selected} : {})
+        ...(allRecipients ? {allRecipients: true} : recipientIds ? {recipientIds} : {})
     });
 
     const seconds = flag(values, 'no-wait') ? 0 : Number(str(values, 'wait-for-ack') ?? 30);

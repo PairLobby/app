@@ -1,6 +1,6 @@
 import {describe, expect, test} from 'vitest';
 
-import {applyMention, commonPrefix, currentMention, matchNames, renderSuggestions, routeChatMessage} from './mentions.js';
+import {applyMention, commonPrefix, currentMention, hasAgentsToAsk, matchNames, renderSuggestions, routeChatMessage, routeForRoom} from './mentions.js';
 
 const NAMES = ['claude', 'codex', 'hugo', 'cursor'];
 const BOLD = '\u001b[1m';
@@ -147,5 +147,47 @@ describe('rendering', () => {
     test('test_a_long_roster_is_truncated_with_a_count', () => {
         const many = ['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8'];
         expect(renderSuggestions('a', many)).toContain('+2 more');
+    });
+});
+
+describe('messages in a room without agents', () => {
+    const people = [
+        {participantId: 'pt_mac', displayName: 'hjoncour', kind: 'human', role: 'member', revoked: false, left: false},
+        {participantId: 'pt_tower', displayName: 'hugoj', kind: 'human', role: 'member', revoked: false, left: false},
+    ];
+    const codex = {participantId: 'pt_codex', displayName: 'codex', kind: 'agent', role: 'member', revoked: false, left: false};
+
+    test('test_an_unaddressed_message_between_people_is_said_to_the_room', () => {
+        expect(hasAgentsToAsk(people, 'pt_tower')).toBe(false);
+        expect(routeForRoom(routeChatMessage('hello from the tower', people), people, 'pt_tower')).toEqual({text: 'hello from the tower', recipientId: null});
+        expect(routeForRoom(routeChatMessage('@all hello', people), people, 'pt_tower')).toEqual({text: '@all hello', recipientId: null});
+    });
+
+    test('test_a_message_to_one_person_still_goes_to_them', () => {
+        expect(routeForRoom(routeChatMessage('@hjoncour hello', people), people, 'pt_tower')).toEqual({text: '@hjoncour hello', recipientId: 'pt_mac'});
+    });
+
+    test('test_with_an_agent_present_an_unaddressed_message_still_asks_the_agents', () => {
+        const room = [...people, codex];
+        expect(routeForRoom(routeChatMessage('hello', room), room, 'pt_tower')).toEqual({text: 'hello', recipientId: null, allRecipients: true});
+    });
+
+    test('test_muted_left_or_observer_agents_are_not_asked', () => {
+        for (const agent of [{...codex, muted: true}, {...codex, left: true}, {...codex, revoked: true}, {...codex, role: 'guest'}]) {
+            expect(hasAgentsToAsk([...people, agent], 'pt_tower')).toBe(false);
+        }
+        expect(hasAgentsToAsk([...people, codex], 'pt_codex')).toBe(false);
+    });
+
+    test('test_naming_several_people_says_it_to_the_room', () => {
+        const room = [...people, {participantId: 'pt_cy', displayName: 'cy', kind: 'human', role: 'member', revoked: false, left: false}];
+        expect(routeForRoom(routeChatMessage('@hugoj @cy both of you', room), room, 'pt_mac')).toEqual({text: '@hugoj @cy both of you', recipientId: null});
+    });
+
+    test('test_people_named_with_agents_read_it_while_the_agents_take_turns', () => {
+        const claude = {...codex, participantId: 'pt_claude', displayName: 'claude'};
+        const room = [...people, codex, claude];
+        expect(routeForRoom(routeChatMessage('@hugoj @codex look', room), room, 'pt_mac')).toEqual({text: '@hugoj @codex look', recipientId: 'pt_codex'});
+        expect(routeForRoom(routeChatMessage('@hugoj @codex @claude look', room), room, 'pt_mac')).toEqual({text: '@hugoj @codex @claude look', recipientId: null, recipientIds: ['pt_codex', 'pt_claude']});
     });
 });

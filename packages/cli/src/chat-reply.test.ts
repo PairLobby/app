@@ -70,3 +70,12 @@ test('a lookup outage cannot turn an answer into an unrelated request', async ()
     expect(lookup).toHaveBeenCalledOnce();
     expect(send).not.toHaveBeenCalled();
 });
+
+test('quoting your own message in a room of people says it to the room', async () => {
+    const room = await client.createRoom('people', {displayName: 'hjoncour', kind: 'human'});
+    await client.redeemInvite(room.invite.code, {displayName: 'hugoj', kind: 'human'});
+    const source = await client.send(room.roomId, room.participantCredential, {type: 'message', payload: {text: 'first thought', priority: 'normal'}, idempotencyKey: newId('event')});
+    const context = {client, roomId: room.roomId, credential: room.participantCredential, participantId: room.participantId, quotedMessagesSupported: true, agentsToAsk: false};
+    const sent = await sendChatReply({target: messageTarget(source.event)!, text: 'and another'}, context);
+    expect(sent.event.quoteOf).toBe(source.event.eventId);
+});
