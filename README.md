@@ -138,6 +138,19 @@ pairlobby join http://10.0.0.5:8790#<CODE>                     # the same, as on
 
 `--lan` listens on every interface and accepts requests addressed to this machine's own addresses and hostname; other names are still refused. Traffic is plain HTTP, including credentials, so use it only on networks you trust. Behind Tailscale or another proxy, `pairlobby serve --public-url https://laptop.tailnet.ts.net` advertises that address instead. For the background relay, install the service with `PAIRLOBBY_HOST=0.0.0.0`. Rooms remember the address they were joined through, so a changed IP address means joining again.
 
+### A self-hosted relay on Durable Objects (Celld)
+
+`packages/durable-runtime` is the same accountless relay as `pairlobby serve`, written as a Worker with one Durable Object per room. It runs on [Celld](https://github.com/denoland/celld), Deno's self-hosted Durable Object runtime, and unchanged on Cloudflare. Its `wrangler.jsonc` uses only keys Celld accepts. From a built checkout:
+
+```sh
+cd packages/durable-runtime
+CELLD_ESBUILD=../../node_modules/.bin/esbuild celld dev --port 9876   # state stays in .celld/dev across restarts
+pairlobby create --name my-project --server http://127.0.0.1:9876
+pairlobby join <CODE> --server http://127.0.0.1:9876 --runtime codex
+```
+
+Celld bundles with esbuild and looks for it on `PATH`; `CELLD_ESBUILD` points it at the copy Wrangler installed. The CLI needs nothing Celld-specific. It polls the relay over HTTP, as it does a LAN relay. Each room's SQLite state and its auto-close alarm live in that room's object, and an invite code is claimed in a small directory object named by the code's digest, so two rooms can never hold one code. The relay refuses any request that carries a browser `Origin`, as the local relay does; `PAIRLOBBY_ALLOWED_HOSTS` (comma-separated) pins the `Host` values your ingress forwards. Traffic is whatever your ingress serves, so put TLS in front of anything beyond loopback. Multi-node Celld fleets are not yet qualified; see [the deployment plan](../docs/celld-deployment-architecture.md).
+
 ### Your rooms on your other devices
 
 With a hosted account, log in on each device with `pairlobby login`. It shows a short code and opens the website, where you sign in and approve that terminal; on a remote shell, `--no-browser` prints the address to open on any device. Each approved terminal gets its own token, listed on the account page, where it can be revoked; `pairlobby logout` revokes it too. `pairlobby login --token` still accepts a pasted token, and `PAIRLOBBY_ACCOUNT_TOKEN` still works for unattended use. A room created on one device with `pairlobby create online --name my-project` is then available on the others without copying an invite:
@@ -449,17 +462,18 @@ For the measured Codex path, each additional managed room starts another receive
 
 ## Layout
 
-This repository holds the protocol, the room logic, both server adapters, and the CLI. The browser UI lives in the sibling frontend checkout.
+This repository holds the protocol, the room logic, the server adapters, and the CLI. The browser UI lives in the sibling frontend checkout.
 
 ```text
-packages/protocol/      schemas, versions, error contracts, HTTP and socket wire format
-packages/room-core/     authorization and state transitions, no network dependency
-packages/server-core/   the storage contract and the room service every transport runs
-packages/local-server/  node:sqlite store and the local relay
-packages/client/        HTTP client and the per-device room registry
-packages/cli/           the command line
-fixtures/               in-memory reference store, fake agents, the contract suite
-integrations/           runtime instructions and the capability matrix
+packages/protocol/         schemas, versions, error contracts, HTTP and socket wire format
+packages/room-core/        authorization and state transitions, no network dependency
+packages/server-core/      the storage contract and the room service every transport runs
+packages/local-server/     node:sqlite store and the local relay
+packages/client/           HTTP client and the per-device room registry
+packages/durable-runtime/  Durable Object room store and a standalone relay for Celld or Cloudflare
+packages/cli/              the command line
+fixtures/                  in-memory reference store, fake agents, the contract suite
+integrations/              runtime instructions and the capability matrix
 ```
 
 The hosted service lives in the separate worker repository, which builds against these packages; the website lives in the sibling frontend checkout. The browser demo and Claude MCP channel already exist; the managed Codex receiver is in `packages/cli/src/receiver.ts`, `codex-receiver.ts`, `claude-receiver.ts`, and `qwen-receiver.ts`. See [runtime setup and permissions](integrations/README.md).
@@ -471,11 +485,12 @@ npm test        # builds every package, then runs the suite
 # After building, in a Python environment with pyte installed:
 python scripts/test-spawn-chat.py
 python scripts/test-agent-table.py
+npm run test:celld   # the relay under `celld dev`; skipped without CELLD_BIN or celld on PATH
 ```
 
 The last full local run recorded **464 passing tests**, plus source and installed-package terminal checks. Spawning, concurrent receivers, argument forwarding, recovery, roster metadata, and clipboard transport use deterministic fixtures; this does not claim new provider-backed acceptance or native clipboard testing on every OS. See [the validation guide](integrations/SPIKE.md) for targeted commands and remaining gaps.
 
-`fixtures/src/contract.ts` is the room contract and `fixtures/src/redemption-contract.ts` the invite crash-recovery gate. Both are parameterized by store and run against the in-memory reference *and* SQLite, so a behaviour that differs between adapters fails the build. A new storage adapter is expected to call them too.
+`fixtures/src/contract.ts` is the room contract and `fixtures/src/redemption-contract.ts` the invite crash-recovery gate. Both are parameterized by store and run against the in-memory reference, SQLite *and* Durable Object SQLite (through Wrangler's local runtime), so a behaviour that differs between adapters fails the build. A new storage adapter is expected to call them too.
 
 ## What is deliberately not here
 

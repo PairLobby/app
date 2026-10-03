@@ -68,6 +68,8 @@ export interface JoinedRoom {
 export type ServerShareInfo = {
     /** Addresses other devices can join through; empty when the server only listens on the device running it. */
     shareUrls: string[];
+    /** False when the server does not answer at all: a hosted or durable relay rather than `pairlobby serve`. */
+    reported: boolean;
 };
 
 export class PairLobbyClient {
@@ -119,10 +121,10 @@ export class PairLobbyClient {
     async serverInfo(): Promise<ServerShareInfo> {
         try {
             const info = await this.call<Partial<ServerShareInfo>>('GET', '/v1/server', null);
-            return {shareUrls: Array.isArray(info.shareUrls) ? info.shareUrls.filter((url) => typeof url === 'string') : []};
+            return {shareUrls: Array.isArray(info.shareUrls) ? info.shareUrls.filter((url) => typeof url === 'string') : [], reported: true};
         } catch (error) {
             if (error instanceof ProtocolError && error.code === 'invalid_request') {
-                return {shareUrls: []};
+                return {shareUrls: [], reported: false};
             }
             throw error;
         }

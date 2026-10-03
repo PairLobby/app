@@ -13,6 +13,8 @@ export type ShareTarget = {
     serverUrl: string;
     /** True when only the device running the server can reach it. */
     localOnly: boolean;
+    /** Set on a local-only target that is not `pairlobby serve`, so `--lan` cannot widen it. */
+    otherRelay?: true;
 };
 
 export type JoinLink = {
@@ -35,12 +37,16 @@ export async function shareTarget(serverUrl: string): Promise<ShareTarget> {
         return {serverUrl, localOnly: false};
     }
     let shareUrls: string[] = [];
+    let reported = true;
     try {
-        shareUrls = (await new PairLobbyClient(serverUrl).serverInfo()).shareUrls;
+        ({shareUrls, reported} = await new PairLobbyClient(serverUrl).serverInfo());
     } catch {
         // An unreachable server has already failed the command that minted the invite.
     }
-    return shareUrls.length > 0 ? {serverUrl: shareUrls[0]!, localOnly: false} : {serverUrl, localOnly: true};
+    if (shareUrls.length > 0) {
+        return {serverUrl: shareUrls[0]!, localOnly: false};
+    }
+    return reported ? {serverUrl, localOnly: true} : {serverUrl, localOnly: true, otherRelay: true};
 }
 
 export async function joinCommand(serverUrl: string, code: string): Promise<{command: string; target: ShareTarget}> {
@@ -51,8 +57,11 @@ export async function joinCommand(serverUrl: string, code: string): Promise<{com
     return {command: `pairlobby join ${code} --server ${target.serverUrl}`, target};
 }
 
-export function localOnlyNote(serverUrl: string): string {
-    return `Only this device can reach ${serverUrl}. To invite another device on your network, restart the server with: pairlobby serve --lan`;
+export function localOnlyNote(target: ShareTarget): string {
+    if (target.otherRelay) {
+        return `Only this device can reach ${target.serverUrl}. Other devices need an address of this relay they can reach, such as its network address or public URL.`;
+    }
+    return `Only this device can reach ${target.serverUrl}. To invite another device on your network, restart the server with: pairlobby serve --lan`;
 }
 
 /** Accepts `http://10.0.0.5:8790#K7MP-4QWX`, a server address with the invite code as its fragment. */
