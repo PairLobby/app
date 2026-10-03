@@ -27,9 +27,22 @@ for await (const line of createInterface({input: process.stdin})) {
             appendFileSync(process.env.PAIRLOBBY_TEST_RECORD, `effort:${message.params.effort}\n`);
         }
         send({id: message.id, result: {turn: {id: turn}}});
+        if (text.includes('hold-for-interrupt')) {
+            // A long turn with one shell command running, until the receiver interrupts it.
+            send({method: 'item/started', params: {threadId: 'test-thread', turnId: turn, item: {type: 'commandExecution', id: 'cmd-1', status: 'inProgress'}}});
+            continue;
+        }
         if (!text.includes('hang-until-crash')) {
             send({id: 'approval', method: 'item/commandExecution/requestApproval', params: {threadId: 'test-thread', turnId: turn}});
         }
+    } else if (message.method === 'turn/interrupt') {
+        appendFileSync(process.env.PAIRLOBBY_TEST_RECORD, 'turn/interrupt\n');
+        send({id: message.id, result: {}});
+        // Unless the test wants the command to outlive the turn, Codex reports it ended.
+        if (!text.includes('command-lingers')) {
+            send({method: 'item/completed', params: {threadId: 'test-thread', turnId: turn, item: {type: 'commandExecution', id: 'cmd-1', status: 'failed'}}});
+        }
+        send({method: 'turn/completed', params: {threadId: 'test-thread', turn: {id: message.params.turnId, status: 'interrupted'}}});
     } else if (message.id === 'approval') {
         appendFileSync(process.env.PAIRLOBBY_TEST_RECORD, `approval:${message.result.decision}\n`);
         send({id: 'ack', method: 'item/tool/call', params: {threadId: 'test-thread', turnId: turn, tool: 'pairlobby_acknowledge', arguments: {}}});

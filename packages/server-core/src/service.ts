@@ -63,6 +63,12 @@ type SentEventResult = {event: RoomEvent; deduplicated: boolean};
 
 type GuestJoinInput = Identity & {participantCredential: string};
 
+export interface InterruptResult {
+    event: RoomEvent;
+    /** Requests whose running turn was fenced; empty when the agent was between turns. */
+    fenced: string[];
+}
+
 /** One scheduler pass: rooms closed, whether more were already due, and the next deadline. */
 export interface AutoCloseSweep {
     closed: number;
@@ -575,6 +581,17 @@ export class RoomService {
 
     async control(roomId: string, credential: string, targetParticipantId: string, paused: boolean): Promise<RoomEvent> {
         return this.applyOne(requestControl(await this.view(roomId), await hashCredential(credential), targetParticipantId, paused, this.ctx()));
+    }
+
+    /**
+     * Stops one agent: holds its later work like a pause, then fences the turn it is
+     * running so a late answer cannot be posted. Its receiver acknowledges what it could
+     * actually stop. Other agents and the rest of a group round are not affected.
+     */
+    async interrupt(roomId: string, credential: string, targetParticipantId: string): Promise<InterruptResult> {
+        const event = await this.applyOne(requestControl(await this.view(roomId), await hashCredential(credential), targetParticipantId, true, this.ctx(), true));
+        const fenced = await this.turns.fenceRunning(roomId, credential, targetParticipantId);
+        return {event, fenced};
     }
 
     async revoke(roomId: string, credential: string, targetParticipantId: string): Promise<RoomEvent> {

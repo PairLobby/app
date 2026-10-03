@@ -224,7 +224,7 @@ function describe(event: RoomEvent): string {
         case 'participant.revoked':
             return 'was removed from the room';
         case 'control.pause':
-            return `pause requested, revision ${event.payload.revision}`;
+            return event.payload.interrupt ? `interrupt requested, revision ${event.payload.revision}` : `pause requested, revision ${event.payload.revision}`;
         case 'control.resume':
             return `resume requested, revision ${event.payload.revision}`;
         case 'control.ack':

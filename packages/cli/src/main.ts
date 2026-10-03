@@ -180,6 +180,7 @@ const HELP = `pairlobby
   pairlobby invite                   mint an invite code (a reusable seat; --once for single use)
   pairlobby invite --expires-in 10m  mint one that stops working after a while
   pairlobby ack --outcome <outcome>  report what a pause actually did
+  pairlobby interrupt <agent>        stop one agent's current task, hold its queue (owner/admin)
   pairlobby pause <who>              controller only
   pairlobby resume <who>             controller only
   pairlobby serve                    run a local room server
@@ -398,6 +399,8 @@ async function main(argv: string[]): Promise<number> {
             return resolveHandover(store, values, positionals[1], false);
         case 'ack':
             return acknowledge(store, values);
+        case 'interrupt':
+            return interruptAgent(store, values, positionals.slice(1).join(' '));
         case 'pause':
             return setPaused(store, values, positionals[1], true);
         case 'resume':
@@ -1762,6 +1765,28 @@ async function setPaused(store: LocalStore, values: Values, target: string | und
     out(`${paused ? 'Pause' : 'Resume'} requested for ${target}, revision ${result.revision}`);
     // The request is recorded; what actually happened is whatever the adapter acknowledges.
     note('this is a request, not a confirmation — run "pairlobby status" to see what the adapter acknowledged');
+    return 0;
+}
+
+async function interruptAgent(store: LocalStore, values: Values, target: string): Promise<number> {
+    if (!target) {
+        throw new UsageError('pairlobby interrupt needs an agent name or participant id');
+    }
+    const room = resolveRoom(store, str(values, 'room'));
+    const credential = controllerCredential(store, room);
+    const client = new PairLobbyClient(room.serverUrl);
+    const snapshot = await client.snapshot(room.roomId, credential);
+    if (!snapshot.interruptSupported) {
+        throw new UsageError('this relay cannot interrupt agents yet; update it, or use "pairlobby pause" to hold later work');
+    }
+    const targetId = resolveRecipient(snapshot.participants, target);
+    const result = await client.interrupt(room.roomId, credential, targetId);
+    if (flag(values, 'json')) {
+        json({revision: result.revision, targetParticipantId: targetId, fenced: result.fenced});
+        return 0;
+    }
+    out(`Interrupt requested for ${target}, revision ${result.revision}: ${result.fenced.length ? 'its current task can no longer post an answer' : 'it was between tasks'}.`);
+    note(`its queue is held until "pairlobby resume ${target}". What actually stopped is what its receiver reports; "pairlobby status" shows it.`);
     return 0;
 }
 

@@ -45,6 +45,10 @@ function statusFor(participant: RoomSnapshot['participants'][number], receiver: 
     if (participant.muted) {
         return 'Muted';
     }
+    if (participant.paused && participant.interruptRequested) {
+        // Interrupted agents stay held until resumed; say whether the receiver has reported back.
+        return (participant.acknowledgedRevision ?? 0) >= participant.controlRevision ? 'Interrupted · held' : 'Interrupt requested';
+    }
     if (participant.paused) {
         return 'Paused';
     }

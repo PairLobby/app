@@ -161,7 +161,11 @@ export function sendEvent(view: RoomView, credentialHash: string, request: SendE
     return {...emptyMutation(room, event), upsertHandovers: handovers, upsertControls};
 }
 
-export function requestControl(view: RoomView, credentialHash: string, targetParticipantId: string, paused: boolean, ctx: CoreContext): Mutation {
+/**
+ * Pause holds a participant's later work; `interrupt` also asks its receiver to stop
+ * the turn it is running now. Resume clears both. Owner or admin only.
+ */
+export function requestControl(view: RoomView, credentialHash: string, targetParticipantId: string, paused: boolean, ctx: CoreContext, interrupt = false): Mutation {
     const actor = authenticate(view, credentialHash, ctx.now);
     assertController(actor);
     assertRoomWritable(view, ctx.now);
@@ -169,12 +173,16 @@ export function requestControl(view: RoomView, credentialHash: string, targetPar
     if (!target || !isActive(target)) {
         throw new ProtocolError('invalid_request', 'control target is not an active participant of this room');
     }
+    if (interrupt && (!paused || target.kind !== 'agent')) {
+        throw new ProtocolError('invalid_request', 'only an agent can be interrupted');
+    }
     const revision = view.room.controlRevision + 1;
     const previous = controlFor(view, targetParticipantId);
     const control = {
         roomId: view.room.roomId,
         targetParticipantId,
         paused,
+        interruptRequested: interrupt,
         revision,
         requestedAt: ctx.now,
         acknowledgedRevision: previous?.acknowledgedRevision ?? 0,
@@ -182,7 +190,7 @@ export function requestControl(view: RoomView, credentialHash: string, targetPar
         acknowledgedAt: previous?.acknowledgedAt ?? null
     };
     const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
-    const body = paused ? {type: 'control.pause' as const, payload: {targetParticipantId, revision}} : {type: 'control.resume' as const, payload: {targetParticipantId, revision}};
+    const body = paused ? {type: 'control.pause' as const, payload: {targetParticipantId, revision, ...(interrupt ? {interrupt: true} : {})}} : {type: 'control.resume' as const, payload: {targetParticipantId, revision}};
     const {room, event} = appendEvent({...view.room, controlRevision: revision}, {senderId, idempotencyKey: null, recipientId: targetParticipantId, replyTo: null, body}, ctx);
     return {...emptyMutation(room, event), upsertControls: [control]};
 }

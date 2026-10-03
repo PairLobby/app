@@ -177,7 +177,7 @@ export type SetInviteRoleRequest = z.infer<typeof SetInviteRoleRequest>;
 export const JoinAsGuestRequest = z.intersection(identity, z.object({participantCredential: z.string().min(32).max(256)}));
 export type JoinAsGuestRequest = z.infer<typeof JoinAsGuestRequest>;
 
-export const ControlRequest = z.object({targetParticipantId: ParticipantId, paused: z.boolean()});
+export const ControlRequest = z.object({targetParticipantId: ParticipantId, paused: z.boolean(), interrupt: z.boolean().optional()});
 export type ControlRequest = z.infer<typeof ControlRequest>;
 
 export const ControlResponse = z.object({revision: z.number().int().min(1), event: RoomEvent});

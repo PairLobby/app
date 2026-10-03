@@ -18,8 +18,18 @@ if (!args.includes('--bare') || value('--approval-mode') !== 'default' || value(
 }
 record(args.includes('--resume') ? 'thread/resume' : 'thread/start');
 const source = createInterface({input: process.stdin});
+let heldText = '';
 for await (const line of source) {
     const input = JSON.parse(line);
+    if (input.type === 'control_request') {
+        // An interrupt ends the held turn with an error result unless the test wants it ignored.
+        if (input.request?.subtype === 'interrupt' && !heldText.includes('ignore-interrupt')) {
+            record('interrupt');
+            send({type: 'control_response', response: {subtype: 'success', request_id: input.request_id}});
+            send({type: 'result', subtype: 'error_during_execution', is_error: true, session_id: session});
+        }
+        continue;
+    }
     if (input.type === 'control_response') {
         if (input.response.response?.behavior !== 'deny') throw new Error('Background approval was not declined');
         record('approval:decline');
@@ -28,7 +38,8 @@ for await (const line of source) {
     const text = input.message.content[0].text;
     record('turn/start');
     send({type: 'system', subtype: 'session_start', session_id: session, model: 'qwen3-coder-plus'});
-    if (text.includes('hang-until-crash')) {
+    if (text.includes('hang-until-crash') || text.includes('hold-for-interrupt')) {
+        heldText = text;
         continue;
     }
     if (text.includes('no-ack')) {

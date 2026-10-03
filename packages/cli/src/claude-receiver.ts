@@ -5,7 +5,9 @@ import {readFileSync, renameSync, unlinkSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {createInterface} from 'node:readline';
 import type {MessageRequest} from '@pairlobby/protocol';
-import type {ReceiverRuntime, RuntimeHooks, RuntimeOptions} from './receiver-runtime.js';
+import {RuntimeInterrupted} from './receiver-runtime.js';
+import type {InterruptOutcome, ReceiverRuntime, RuntimeHooks, RuntimeOptions} from './receiver-runtime.js';
+import {OWN_PROCESS_GROUP, interruptProcess, signalTree} from './runtime-process.js';
 import {streamModel} from './model-metadata.js';
 
 export type ClaudeRuntimeOptions = RuntimeOptions & {stateDirectory: string; cliPath: string; dataDirectory: string; roomId: string; sessionId: string};
@@ -17,6 +19,7 @@ const INSTRUCTIONS = `For a group question, you already hold the speaking turn; 
 /** Runs the installed Claude CLI only while there is actual work, retaining completed conversation history. */
 export class ClaudeReceiver implements ReceiverRuntime {
     private child: ChildProcessWithoutNullStreams | undefined;
+    private running: {closed: Promise<void>; interrupted: boolean; forced: boolean} | undefined;
     private closed = false;
     private resumable = false;
     private sessionFile: string;
@@ -75,8 +78,11 @@ export class ClaudeReceiver implements ReceiverRuntime {
                 let stderr = '';
                 let shutdown: NodeJS.Timeout | undefined;
                 let terminating = false;
-                const child = spawn(this.options.executable ?? 'claude', args, {cwd: this.options.cwd, env: environment, stdio: ['pipe', 'pipe', 'pipe']});
+                const child = spawn(this.options.executable ?? 'claude', args, {cwd: this.options.cwd, env: environment, stdio: ['pipe', 'pipe', 'pipe'], detached: OWN_PROCESS_GROUP});
                 this.child = child;
+                let markClosed: () => void = () => {};
+                const run = {closed: new Promise<void>((done) => { markClosed = done; }), interrupted: false, forced: false};
+                this.running = run;
                 const terminate = (reason: Error) => {
                     if (terminating) {
                         return;
@@ -84,8 +90,8 @@ export class ClaudeReceiver implements ReceiverRuntime {
                     terminating = true;
                     failure ??= reason;
                     clearTimeout(shutdown);
-                    child.kill('SIGTERM');
-                    shutdown = setTimeout(() => child.kill('SIGKILL'), 5000);
+                    signalTree(child, 'SIGTERM');
+                    shutdown = setTimeout(() => signalTree(child, 'SIGKILL'), 5000);
                 };
                 const deadline = setTimeout(() => terminate(new Error('Claude exceeded the ten-minute request deadline; work was stopped, not retried.')), 600_000);
                 const reader = createInterface({input: child.stdout});
@@ -119,6 +125,22 @@ export class ClaudeReceiver implements ReceiverRuntime {
                     clearTimeout(shutdown);
                     reader.close();
                     this.child = undefined;
+                    this.running = undefined;
+                    markClosed();
+                    if (run.interrupted) {
+                        // A clean interrupt leaves a consistent conversation; a forced stop may not,
+                        // so the next request starts a fresh one rather than resuming half a turn.
+                        if (!run.forced && result?.session_id === this.threadId) {
+                            this.resumable = true;
+                            this.saveState(true);
+                        } else {
+                            this.resumable = false;
+                            this.threadId = randomUUID();
+                            this.saveState(false);
+                        }
+                        reject(new RuntimeInterrupted());
+                        return;
+                    }
                     if (failure || code !== 0 || !result || result.is_error || result.subtype !== 'success' || !result.result?.trim()) {
                         // Do not dump prompts, runtime logs or provider credentials into the room.
                         const startup = /unknown option|unknown argument/i.test(stderr) ? ' Installed Claude CLI is missing required options; update Claude Code.' : '';
@@ -141,6 +163,18 @@ export class ClaudeReceiver implements ReceiverRuntime {
         }
     }
 
+    /** Interrupts the running request; its process exiting is the confirmation. */
+    async interrupt(): Promise<InterruptOutcome> {
+        const child = this.child;
+        const run = this.running;
+        if (!child || !run) {
+            return 'paused_between_turns';
+        }
+        run.interrupted = true;
+        const stopped = await interruptProcess(child, run.closed, randomUUID(), () => { run.forced = true; });
+        return stopped.exited ? 'current_turn_cancelled' : 'tool_cancellation_unknown';
+    }
+
     private saveState(completed: boolean): void {
         const temporary = this.sessionFile + '.tmp';
         writeFileSync(temporary, JSON.stringify({threadId: this.threadId, completed}) + '\n', {mode: 0o600});
@@ -151,8 +185,8 @@ export class ClaudeReceiver implements ReceiverRuntime {
         this.closed = true;
         const child = this.child;
         if (child) {
-            child.kill('SIGTERM');
-            const kill = setTimeout(() => child.kill('SIGKILL'), 5000);
+            signalTree(child, 'SIGTERM');
+            const kill = setTimeout(() => signalTree(child, 'SIGKILL'), 5000);
             kill.unref();
             child.once('close', () => clearTimeout(kill));
         }

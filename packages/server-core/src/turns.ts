@@ -225,6 +225,22 @@ export class TurnCoordinator {
         return this.status(roomId, credential);
     }
 
+    /**
+     * Fences the turns a participant is running right now, as a skip: its late reply,
+     * pass or working declaration is refused, and the rest of any group round goes on.
+     * Queued requests are left alone; a pause holds them. Returns the fenced request ids.
+     */
+    async fenceRunning(roomId: string, credential: string, participantId: string): Promise<string[]> {
+        const view = await this.view(roomId);
+        const actor = authenticate(view, await hashCredential(credential), this.now());
+        assertController(actor);
+        const running = (await this.pending(roomId)).filter((request) => request.to === participantId && request.turnStatus === 'running');
+        if (running.length) {
+            await this.change(view, actor, running.map((request) => ({...request, requiresReply: false, turnStatus: 'skipped' as const, turnToken: '', turnExpiresAt: 0})), 'skipped');
+        }
+        return running.map((request) => request.eventId);
+    }
+
     async control(roomId: string, credential: string, action: TurnAction): Promise<TurnQueue> {
         const view = await this.view(roomId);
         const actor = authenticate(view, await hashCredential(credential), this.now());

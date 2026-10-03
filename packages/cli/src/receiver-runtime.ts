@@ -4,10 +4,23 @@ export type RuntimeOptions = {cwd: string; threadId?: string; model?: string; ef
 export type RuntimeMessageStatus = 'waiting' | 'no_action' | 'declined';
 export type RuntimeHooks = {acknowledge: () => Promise<void>; pass?: () => Promise<void>; working?: () => Promise<void>; messageStatus?: (state: RuntimeMessageStatus, reason: string) => Promise<void>; started: (turnId: string) => void; usage: (value: unknown) => void; model?: (model: string) => void};
 
+/** What an interrupt really stopped; never more than the runtime confirmed. */
+export type InterruptOutcome = 'current_turn_cancelled' | 'tool_cancellation_unknown' | 'paused_between_turns';
+
+/** The turn ended because it was interrupted; its partial output must not be posted. */
+export class RuntimeInterrupted extends Error {
+    constructor() {
+        super('Interrupted by a room owner or admin; no answer was posted.');
+        this.name = 'RuntimeInterrupted';
+    }
+}
+
 export interface ReceiverRuntime {
     readonly model?: string | undefined;
     connect(): Promise<string>;
     execute(request: MessageRequest, hooks: RuntimeHooks): Promise<string>;
+    /** Stops the running turn, if any, and resolves once the runtime confirms what stopped. */
+    interrupt(): Promise<InterruptOutcome>;
     close(): void;
 }
 

@@ -179,6 +179,13 @@ async function route(request: Request, service: RoomService): Promise<Response> 
         }
         case 'POST control': {
             const input = ControlRequest.parse(await request.json());
+            if (input.interrupt) {
+                if (!input.paused) {
+                    return errorResponse('invalid_request', 'an interrupt also pauses; send paused: true', 400);
+                }
+                const result = await service.interrupt(roomId, credential, input.targetParticipantId);
+                return json({revision: result.event.type === 'control.pause' ? result.event.payload.revision : 0, event: result.event, fenced: result.fenced});
+            }
             const event = await service.control(roomId, credential, input.targetParticipantId, input.paused);
             return json({revision: event.type === 'control.pause' || event.type === 'control.resume' ? event.payload.revision : 0, event});
         }
