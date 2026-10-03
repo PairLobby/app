@@ -9,7 +9,7 @@ for width in (100, 60, 40):
     os.close(slave)
     screen = pyte.Screen(width, 24)
     stream = pyte.Stream(screen)
-    headings = ('Agent activity', 'Working on an answer', 'Message status')
+    headings = ('Agent activity', 'Working on an answer', '| Receipt')
 
     def text():
         return '\n'.join(screen.display)
@@ -65,7 +65,7 @@ for width in (100, 60, 40):
         hover('Status')
         only('Working on an answer')
         keys(b'\x1bOQ')  # F2 explicitly replaces Working with message status.
-        only('Message status')
+        only('| Receipt')
         keys(b'\x1bOR')
         only('Working on an answer')
         click('Turns:')

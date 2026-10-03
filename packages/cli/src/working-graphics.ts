@@ -30,6 +30,11 @@ export function logoFrame(provider: LogoProvider, frame: number): LogoFrame | un
     return frames[frame % frames.length];
 }
 
+/** The provider's whole animation as one GIF, which iTerm2 plays itself. */
+export function logoAnimation(provider: LogoProvider): string | undefined {
+    return provider === 'other' ? undefined : (logos.providers[provider] as {gif?: string}).gif;
+}
+
 export function logoColor(provider: LogoProvider): string {
     return provider === 'other' ? 'cyan' : logos.providers[provider].color;
 }
@@ -67,7 +72,9 @@ export function drawWorkingGraphics(mode: GraphicsMode, placements: LogoPlacemen
         }
         sequence += `\u001b[${placement.row + 1};${placement.column + 1}H`;
         if (mode === 'iterm2') {
-            sequence += `\u001b]1337;File=inline=1;width=6;height=3;preserveAspectRatio=1:${image.png}\u0007`;
+            // One upload of the animated GIF; iTerm2 animates it, so ticks send nothing.
+            // Re-uploading a frame every tick is what let iTerm2 show its missing-image placeholder.
+            sequence += `\u001b]1337;File=inline=1;width=6;height=3;preserveAspectRatio=1:${logoAnimation(placement.provider) ?? image.png}\u0007`;
         } else {
             // Reuse a named placement rather than deleting the visible frame or
             // accumulating anonymous placements on every animation tick.

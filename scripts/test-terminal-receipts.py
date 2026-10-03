@@ -1,4 +1,5 @@
 """PTY integration check; requires Python pyte (install in an isolated virtualenv)."""
+import re
 import os, pty, fcntl, termios, struct, subprocess, select, time, signal
 import pyte
 master, slave = pty.openpty()
@@ -30,38 +31,40 @@ try:
  assert column>=92, (column, screen.display[row])
  assert 'hey @codex' in screen.display[row]
  send(f'\x1b[<35;{column+1};{row+1}M'.encode())
- assert 'Message status' in text()
- assert 'Received' in text() and 'codex' in text()
+ assert '| Receipt' in text() and 'Message status' not in text()
+ assert 'Received' not in text() and 'codex' in text()
  assert 'Esc to close' not in text()
- receipt_line=next(line for line in screen.display if 'Received' in line)
- assert 'codex' in receipt_line
- assert receipt_line.index('Received') > receipt_line.index('codex') + len('codex')
+ # A received receipt is a bare local time in its own column; no "Received" prefix.
+ receipt_line=next((line for line in screen.display if re.search(r'codex\s+\| (\d\d-\d\d )?\d\d:\d\d', line)), None)
+ assert receipt_line, text()
+ time_at=re.search(r'\| ((\d\d-\d\d )?\d\d:\d\d)', receipt_line).start(1)
+ assert time_at > receipt_line.index('codex') + len('codex')
  assert 'Read' not in receipt_line and 'Queued' in receipt_line, receipt_line
  send(b'\x1b[<35;1;20M')
- assert 'Message status' not in text()
+ assert 'Participant' not in text()
  send(f'\x1b[<0;{column+1};{row+1}M'.encode())
  send(f'\x1b[<0;{column+1};{row+1}m'.encode())
  send(b'\x1b[<35;1;20M')
- assert 'Message status' in text()
+ assert '| Receipt' in text()
  # A pinned popup survives clicks inside it, but any outside click dismisses it.
- popup_row=next(i for i,line in enumerate(screen.display) if 'Message status' in line)
- popup_column=screen.display[popup_row].index('Message status')
+ popup_row=next(i for i,line in enumerate(screen.display) if '| Receipt' in line)
+ popup_column=screen.display[popup_row].index('| Receipt')
  send(f'\x1b[<0;{popup_column+1};{popup_row+1}M'.encode())
  send(f'\x1b[<0;{popup_column+1};{popup_row+1}m'.encode())
- assert 'Message status' in text()
+ assert '| Receipt' in text()
  for outside_row in [1, 20, 23, 24]:
   send(f'\x1b[<0;1;{outside_row}M'.encode())
   send(f'\x1b[<0;1;{outside_row}m'.encode())
-  assert 'Message status' not in text(), outside_row
+  assert '| Receipt' not in text(), outside_row
   assert 'draft stays here' in text()
   send(f'\x1b[<0;{column+1};{row+1}M'.encode())
   send(f'\x1b[<0;{column+1};{row+1}m'.encode())
-  assert 'Message status' in text()
+  assert '| Receipt' in text()
  send(b'\x1b')
  send(b'\x1bOQ')
- assert 'Message status' in text()
+ assert '| Receipt' in text()
  send(b'\x1b')
- assert 'Message status' not in text()
+ assert '| Receipt' not in text()
  fcntl.ioctl(master,termios.TIOCSWINSZ,struct.pack('HHHH',24,60,0,0))
  screen.resize(24,60)
  process.send_signal(signal.SIGWINCH)
@@ -85,11 +88,11 @@ try:
   exchange_column=screen.display[exchange_row].index('Status')
   send(f'\x1b[<0;{exchange_column+1};{exchange_row+1}M'.encode())
   send(f'\x1b[<0;{exchange_column+1};{exchange_row+1}m'.encode())
-  receipt_lines=[line for line in screen.display if 'Received' in line]
+  receipt_lines=[line for line in screen.display if re.search(r'\| (Read )?(\d\d-\d\d )?\d\d:\d\d', line)]
   assert any(reader in line for line in receipt_lines), text()
   assert any('hjoncour' in line for line in receipt_lines), text()
   send(b'\x1b[<0;1;23M\x1b[<0;1;23m')
-  assert 'Message status' not in text()
+  assert '| Receipt' not in text()
  send(b'\x01\x0b/quit\r')
  process.wait(timeout=3)
  assert process.returncode==0

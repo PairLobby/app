@@ -66,7 +66,8 @@ const HELP = `  <message>          address all eligible agents (same as @all)
   /turns cancel [request]  cancel the active group round (owner)
   /to <name>         address every later message to one participant
   /to                clear the default recipient
-  /seen [message]    receipt details (latest sent message by default; F2 also works)
+  /seen [message]    receipt table (latest sent message; F2 too): a time = received, Read <time> = read
+  /seen [message] full  the same rows unclipped, with full dates and time zone, in the conversation
   /working           show agents that explicitly started answering (F3)
   /select            select and copy text with your terminal (F4; Esc resumes)
   /requests          show every unanswered request
