@@ -2,7 +2,7 @@ import {createRequire} from 'node:module';
 
 import {describe, expect, test} from 'vitest';
 
-import {advertiseRelay, browseRelays, isLoopbackAddress, isTailscaleAddress, ownAddresses} from './network.js';
+import {advertiseRelay, browseRelays, isLocalNetworkAddress, isLoopbackAddress, isTailscaleAddress, ownAddresses} from './network.js';
 
 describe('relay network', () => {
     test('test_tailscale_addresses_are_the_cgnat_range_and_its_ipv6_prefix', () => {
@@ -13,6 +13,15 @@ describe('relay network', () => {
         expect(isTailscaleAddress('100.63.255.255')).toBe(false);
         expect(isTailscaleAddress('100.128.0.0')).toBe(false);
         expect(isTailscaleAddress('10.0.0.1')).toBe(false);
+    });
+
+    test('test_local_network_addresses_are_private_link_local_tailscale_or_this_device', () => {
+        for (const address of ['127.0.0.1', '::1', '10.0.0.240', '172.16.0.1', '172.31.255.254', '192.168.1.20', '::ffff:192.168.1.20', '169.254.10.1', '100.125.214.0', 'fd00::1', 'fe80::1']) {
+            expect(isLocalNetworkAddress(address)).toBe(true);
+        }
+        for (const address of ['8.8.8.8', '172.32.0.1', '172.15.0.1', '192.169.0.1', '100.128.0.1', '2001:4860::8888', '']) {
+            expect(isLocalNetworkAddress(address)).toBe(false);
+        }
     });
 
     test('test_loopback_addresses', () => {

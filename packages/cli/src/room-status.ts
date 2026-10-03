@@ -60,6 +60,7 @@ export function roomStatusRows(status: RoomStatus): RoomPanelRow[] {
         {id: 'room-id', section: 'Room', label: 'Room ID', value: room.roomId},
         {id: 'state', section: 'Room', label: 'State', value: room.lifecycle},
         {id: 'privacy', section: 'Room', label: 'Guest access', value: room.policy.joinPolicy === 'invite_only' ? 'Invite only' : 'Anyone with room ID (read only)'},
+        {id: 'local-join', section: 'Room', label: 'Join by name', value: room.policy.localJoin ? 'Anyone on the local network, as members' : 'Off'},
         {id: 'invites', section: 'Room', label: 'Invitations', value: room.policy.inviteRole === 'guest' ? 'Read-only observers' : 'Members who can speak'},
         {id: 'lock', section: 'Room', label: 'Admission lock', value: room.locked ? 'Locked' : 'Unlocked'},
         {id: 'auto-close', section: 'Room', label: 'Auto-close', value: room.autoCloseSupported ? describeAutoClose(room.policy.autoClose) : 'Unavailable on this relay'},

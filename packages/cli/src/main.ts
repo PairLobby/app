@@ -13,8 +13,8 @@ import {userInfo} from 'node:os';
 import {parseArgs} from 'node:util';
 
 import {LocalStore, PairLobbyClient, openRequests, owedByMe, unreceipted} from '@pairlobby/client';
-import type {Settings} from '@pairlobby/client';
-import {ParticipantName, ProtocolError, requestState, newId, MessageAction} from '@pairlobby/protocol';
+import type {JoinedRoom, Settings} from '@pairlobby/client';
+import {ParticipantName, ProtocolError, requestState, newId, normalizeInviteCode, MessageAction} from '@pairlobby/protocol';
 import type {AdapterCapabilities} from '@pairlobby/protocol';
 
 import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
@@ -30,8 +30,8 @@ import {accountToken, isOnlineKey, loginOnline, logoutOnline, matchOnlineRoom, o
 import {receiverStatus, runReceiver, startReceiver, stopReceiver} from './receiver.js';
 import type {ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
-import {discoverableNote, joinCommand, localOnlyNote, parseJoinLink} from './share.js';
-import {findRelayForInvite} from './relay-discovery.js';
+import {discoverableNote, joinCommand, localOnlyNote, parseJoinLink, shareTarget} from './share.js';
+import {findLocalRoom, findRelayForInvite} from './relay-discovery.js';
 import {tailscaleNames, tailscaleView} from './tailscale.js';
 import {VERSION} from './version.js';
 import {NETWORK_SHARING_RESTART, SETTING_KEYS, describeSettingValue, parseLifetime, parseSettingValue} from './device-settings.js';
@@ -107,6 +107,7 @@ const OPTIONS = {
     host: {type: 'string'},
     lan: {type: 'boolean'},
     tailscale: {type: 'boolean'},
+    'open-local': {type: 'boolean'},
     token: {type: 'boolean'},
     yes: {type: 'boolean'},
     'apply-existing': {type: 'boolean'},
@@ -132,12 +133,16 @@ const HELP = `pairlobby
   pairlobby expire [room]            pick expiry from a menu
   pairlobby open <room>              let anyone with the room id join as a guest
   pairlobby open <room> --off        back to invite only
+  pairlobby open-local <room>        let anyone on your network or tailnet join by name, as a member (--off to stop)
   pairlobby delete <room>            delete a room (controller only)
   pairlobby forget <room>            drop the local record, leave the server alone
   pairlobby settings                 interactive menu for this device's preferences and new-room defaults
   pairlobby create --name <name>     start a room and print an invite
+  pairlobby create --name <name> --open-local
+                                    the same, and anyone on your network or tailnet can join by its name
   pairlobby join <code>              join a local room and enter it
   pairlobby join <code>             finds the relay that issued the code: this device, the local network, your tailnet
+  pairlobby join <room name>        joins a room opened with --open-local, found the same way (join local <name> if it looks like a code)
   pairlobby join <code> --server laptop
                                     join a room served by another device; a bare name or address means port 8790
   pairlobby join online <key>       join a hosted room without a URL or room ID
@@ -271,12 +276,14 @@ async function main(argv: string[]): Promise<number> {
             return expireInteractive(store, values, positionals[1]);
         case 'open':
             return setAccess(store, values, positionals[1]);
+        case 'open-local':
+            return setLocalJoin(store, values, positionals[1]);
         case 'delete':
             return deleteRoom(store, values, positionals[1]);
         case 'create':
             return createRoom(store, values, positionals[1] === 'online');
         case 'join':
-            return joinRoom(store, values, positionals[1] === 'online' ? positionals[2] : positionals[1], positionals[1] === 'online');
+            return joinRoom(store, values, ['online', 'local'].includes(positionals[1] ?? '') ? positionals[2] : positionals[1], positionals[1] === 'online', positionals[1] === 'local');
         case 'login':
             out(`Logged in as ${await loginOnline(store, {paste: flag(values, 'token'), ...(flag(values, 'no-browser') ? {openBrowser: false} : {})})}`);
             return 0;
@@ -548,6 +555,36 @@ function parseExpirySpec(spec: string): number | null {
  * printed at the moment of opting in because that is the only moment anyone is
  * thinking about it.
  */
+/** Lets anyone on the relay's local network or tailnet join by name, as a member; --off stops it. */
+async function setLocalJoin(store: LocalStore, values: Values, reference?: string): Promise<number> {
+    const room = resolveRoom(store, reference ?? str(values, 'room'));
+    const localJoin = !flag(values, 'off');
+    await new PairLobbyClient(room.serverUrl).setLocalJoin(room.roomId, controllerCredential(store, room), localJoin);
+    if (flag(values, 'json')) {
+        json({roomId: room.roomId, localJoin});
+        return 0;
+    }
+    if (!localJoin) {
+        out(`${room.name} can no longer be joined by name. Members who joined that way stay until you remove them.`);
+        return 0;
+    }
+    out(`${room.name} is open to the local network.`);
+    await printLocalJoin(room.serverUrl, room.name);
+    return 0;
+}
+
+/** How other devices join an open-local room, and whether this relay can actually be reached by them. */
+async function printLocalJoin(serverUrl: string, name: string): Promise<void> {
+    out('');
+    out(`  pairlobby join ${/\s/.test(name) ? `"${name}"` : name}`);
+    out('');
+    note('anyone on this relay\'s local network or tailnet can join by that name as a member who can send messages.');
+    note('Locking the room still refuses them; close it again with: pairlobby open-local <room> --off');
+    if ((await shareTarget(serverUrl)).localOnly) {
+        note('this relay only listens on this device, so other devices cannot reach it yet: pairlobby settings network-sharing tailscale (or lan), then restart the relay');
+    }
+}
+
 async function setAccess(store: LocalStore, values: Values, reference?: string): Promise<number> {
     const room = resolveRoom(store, reference ?? str(values, 'room'));
     const joinPolicy = flag(values, 'off') ? ('invite_only' as const) : ('open_to_guests' as const);
@@ -948,6 +985,9 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
     if (flag(values, 'private') && flag(values, 'public')) {
         throw new UsageError('use either --private or --public, not both');
     }
+    if (flag(values, 'open-local') && online) {
+        throw new UsageError('--open-local applies to rooms on your own relay; online rooms are shared through accounts');
+    }
     if ((flag(values, 'private') || flag(values, 'public')) && !online) {
         throw new UsageError('--private and --public apply to online rooms: pairlobby create online --name <name> --private');
     }
@@ -994,10 +1034,19 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
     });
 
     await applyRoomDefaults(client, created.roomId, created.controllerCredential, settings, online);
+    let openLocal = false;
+    if (flag(values, 'open-local')) {
+        try {
+            await client.setLocalJoin(created.roomId, created.controllerCredential, true);
+            openLocal = true;
+        } catch (error) {
+            note(`Room created, but it could not be opened to the local network: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
     const receiver = await enableReceiver(store, values, created.roomId, identity.sessionId);
     const share = await joinCommand(serverUrl, created.invite.code);
     if (flag(values, 'json')) {
-        json({roomId: created.roomId, name, serverUrl, shareServerUrl: share.target.localOnly ? null : share.target.serverUrl, joinCommand: share.command, participantId: created.participantId, sessionId: identity.sessionId, invite: created.invite, ...localDetail(values), receiver});
+        json({roomId: created.roomId, name, serverUrl, shareServerUrl: share.target.localOnly ? null : share.target.serverUrl, joinCommand: share.command, participantId: created.participantId, sessionId: identity.sessionId, invite: created.invite, ...(flag(values, 'open-local') ? {localJoin: openLocal} : {}), ...localDetail(values), receiver});
         return 0;
     }
     const detail = localDetail(values);
@@ -1014,6 +1063,9 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
     }
     if (share.target.discoverable) {
         note(discoverableNote(created.invite.code));
+    }
+    if (openLocal) {
+        await printLocalJoin(serverUrl, name);
     }
     note('The controller credential for this room was stored on this device and is not printed.');
     return 0;
@@ -1032,9 +1084,9 @@ async function discoverRelay(code: string): Promise<string> {
     return found;
 }
 
-async function joinRoom(store: LocalStore, values: Values, code?: string, online = false): Promise<number> {
+async function joinRoom(store: LocalStore, values: Values, code?: string, online = false, local = false): Promise<number> {
     if (!code) {
-        throw new UsageError('pairlobby join needs an invite code or the id of an open room');
+        throw new UsageError(local ? 'pairlobby join local needs a room name or id' : 'pairlobby join needs an invite code, a room name or the id of an open room');
     }
     if (online && (str(values, 'server') || flag(values, 'local'))) {
         throw new UsageError('online cannot be combined with --server or --local');
@@ -1045,6 +1097,13 @@ async function joinRoom(store: LocalStore, values: Values, code?: string, online
     }
     if (link) {
         code = link.code;
+    }
+    // Neither a code, a room id nor a link: a room name, joined over the local network.
+    if (!online && !link && !code.startsWith('rm_') && normalizeInviteCode(code) === null) {
+        local = true;
+    }
+    if (local) {
+        return joinLocalRoom(store, values, code);
     }
     // Online, a dash-grouped key is an invite; anything else names one of the account's own rooms.
     const accountRoom = online && !isOnlineKey(code) ? await onlineRooms(store).then(({server, rooms}) => ({server, room: matchOnlineRoom(rooms, code)})) : null;
@@ -1059,6 +1118,29 @@ async function joinRoom(store: LocalStore, values: Values, code?: string, online
         : code.startsWith('rm_')
           ? await client.joinAsGuest(code, identity)
           : await client.redeemInvite(code, identity, undefined, useInviteName);
+    return finishJoin(store, values, joined, serverUrl, identity, accountRoom || code.startsWith('rm_') ? undefined : code);
+}
+
+/**
+ * Joins a room open to the local network by name, or by id with --server: asks the
+ * relays this device can see, joins the single match as a member.
+ */
+async function joinLocalRoom(store: LocalStore, values: Values, reference: string): Promise<number> {
+    const named = namesNoRelay(store, values) ? undefined : resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')});
+    if (reference.startsWith('rm_') && !named) {
+        throw new UsageError('joining by room id needs its relay: pairlobby join local <room-id> --server <address>');
+    }
+    const match = reference.startsWith('rm_') ? {url: named!, roomId: reference} : await findLocalRoom(reference, undefined, named).then((found) => ({url: found.url, roomId: found.room.roomId}));
+    if (!named && match.url !== DEFAULT_LOCAL_SERVER) {
+        note(`found ${reference} at ${match.url}`);
+    }
+    const identity = identityFrom(store, values, 'agent');
+    const joined = await new PairLobbyClient(match.url).joinOnLocalNetwork(match.roomId, identity);
+    return finishJoin(store, values, joined, match.url, identity);
+}
+
+/** Saves a new membership on this device, starts its receiver when it has one, then enters or describes the room. */
+async function finishJoin(store: LocalStore, values: Values, joined: JoinedRoom, serverUrl: string, identity: LocalIdentity, code?: string): Promise<number> {
     identity.displayName = joined.room.participants.find((participant) => participant.participantId === joined.participantId)?.displayName ?? identity.displayName;
 
     store.upsertRoom({
@@ -1071,7 +1153,7 @@ async function joinRoom(store: LocalStore, values: Values, code?: string, online
         sessions: store.room(joined.roomId)?.sessions ?? []
     });
     store.putCredential(joined.roomId, identity.sessionId, joined.participantCredential);
-    if (!accountRoom && !code.startsWith('rm_')) {
+    if (code) {
         store.putSessionInvite(joined.roomId, identity.sessionId, code);
     }
     store.addSession(joined.roomId, {

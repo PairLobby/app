@@ -177,6 +177,20 @@ export type SetInviteRoleRequest = z.infer<typeof SetInviteRoleRequest>;
 export const JoinAsGuestRequest = z.intersection(identity, z.object({participantCredential: z.string().min(32).max(256)}));
 export type JoinAsGuestRequest = z.infer<typeof JoinAsGuestRequest>;
 
+/** Joining a room open to the local network: the same claim as a guest, but admitted as a member. */
+export const LocalJoinRequest = JoinAsGuestRequest;
+export type LocalJoinRequest = JoinAsGuestRequest;
+
+export const SetLocalJoinRequest = z.object({localJoin: z.boolean()});
+export type SetLocalJoinRequest = z.infer<typeof SetLocalJoinRequest>;
+
+/** A room that devices on the relay's network may join by name. Only what is needed to choose one. */
+export const LocalRoom = z.object({roomId: RoomId, name: z.string(), createdAt: z.number().int().nonnegative(), participantCount: z.number().int().nonnegative()});
+export type LocalRoom = z.infer<typeof LocalRoom>;
+
+export const LocalRoomsResponse = z.object({rooms: z.array(LocalRoom)});
+export type LocalRoomsResponse = z.infer<typeof LocalRoomsResponse>;
+
 export const ControlRequest = z.object({targetParticipantId: ParticipantId, paused: z.boolean(), interrupt: z.boolean().optional()});
 export type ControlRequest = z.infer<typeof ControlRequest>;
 

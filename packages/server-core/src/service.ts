@@ -29,6 +29,7 @@ import {
     closeRoom,
     createRoom,
     joinAsGuest,
+    joinOnLocalNetwork,
     joinRoom,
     leaveRoom,
     rejoinRoom,
@@ -41,6 +42,7 @@ import {
     setAutoClose,
     setInviteRole,
     setJoinPolicy,
+    setLocalJoin,
     setLocked,
     setMuted,
     setParticipantRole,
@@ -641,8 +643,26 @@ export class RoomService {
         return this.applyOne(setInviteRole(await this.view(roomId), await hashCredential(credential), inviteRole, this.ctx()));
     }
 
+    async setLocalJoin(roomId: string, credential: string, localJoin: boolean): Promise<RoomEvent> {
+        return this.applyOne(setLocalJoin(await this.view(roomId), await hashCredential(credential), localJoin, this.ctx()));
+    }
+
     /** Guest entry. Knowing the room id is the entire claim, so the room must allow it. */
     async joinAsGuest(roomId: string, input: GuestJoinInput): Promise<RedeemResult> {
+        return this.joinWithoutInvite(roomId, input, joinAsGuest);
+    }
+
+    /**
+     * Member entry by name from the relay's local network or tailnet. Only call this
+     * once the transport has established where the request came from; the room
+     * itself must also allow it.
+     */
+    async joinOnLocalNetwork(roomId: string, input: GuestJoinInput): Promise<RedeemResult> {
+        return this.joinWithoutInvite(roomId, input, joinOnLocalNetwork);
+    }
+
+    /** A retry with the same credential gets its original membership back instead of a second one. */
+    private async joinWithoutInvite(roomId: string, input: GuestJoinInput, admit: typeof joinAsGuest): Promise<RedeemResult> {
         const view = await this.view(roomId);
         assertRoomJoinable(view, this.now());
         const credentialHash = await hashCredential(input.participantCredential);
@@ -652,7 +672,7 @@ export class RoomService {
             return {roomId, participantId: existing.participantId, role: existing.role, replayed: true, snapshot: toSnapshot(view)};
         }
 
-        const joined = joinAsGuest(
+        const joined = admit(
             view,
             {
                 credentialHash,
@@ -665,7 +685,7 @@ export class RoomService {
             this.ctx()
         );
         await this.store.apply(joined.mutation, null);
-        return {roomId, participantId: joined.participant.participantId, role: 'guest', replayed: false, snapshot: toSnapshot(await this.view(roomId))};
+        return {roomId, participantId: joined.participant.participantId, role: joined.participant.role, replayed: false, snapshot: toSnapshot(await this.view(roomId))};
     }
 
     async setExpiry(roomId: string, credential: string, expiresAt: number | null): Promise<RoomEvent> {

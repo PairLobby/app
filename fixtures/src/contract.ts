@@ -212,6 +212,62 @@ export function runRoomContract(label: string, makeStore: StoreFactory): void {
             });
         });
 
+        describe('local network join', () => {
+            let server: RoomHarness;
+            let alice: FakeAgent;
+            let controller: string;
+            const neighbour = {displayName: 'tower', kind: 'human' as const};
+
+            beforeEach(async () => {
+                server = track(new RoomHarness(makeStore()));
+                alice = new FakeAgent(server, 'claude');
+                controller = (await alice.create('local-room')).controllerCredential;
+            });
+
+            test('test_a_room_is_closed_to_the_local_network_by_default', async () => {
+                expect((await server.snapshot(controller)).policy.localJoin ?? false).toBe(false);
+                await expectError('unauthorized', () => server.joinOnLocalNetwork(neighbour, newCredential('participant')));
+            });
+
+            test('test_an_open_local_room_admits_a_member_who_can_speak', async () => {
+                await server.setLocalJoin(controller, true);
+                const credential = newCredential('participant');
+                const joined = await server.joinOnLocalNetwork(neighbour, credential);
+                expect(joined.role).toBe('member');
+                await server.send(credential, {type: 'message', payload: {text: 'hello from the tower', priority: 'normal'}, idempotencyKey: newId('event')});
+                expect((await server.read(alice.credential, 0)).events.some((event) => event.type === 'message' && event.payload.text === 'hello from the tower')).toBe(true);
+            });
+
+            test('test_a_local_join_retried_with_the_same_credential_is_one_membership', async () => {
+                await server.setLocalJoin(controller, true);
+                const credential = newCredential('participant');
+                const first = await server.joinOnLocalNetwork(neighbour, credential);
+                const again = await server.joinOnLocalNetwork(neighbour, credential);
+                expect(again.participantId).toBe(first.participantId);
+                expect(again.replayed).toBe(true);
+            });
+
+            test('test_only_an_owner_or_admin_opens_a_room_to_the_local_network', async () => {
+                await expectError('unauthorized', () => server.setLocalJoin(alice.credential, true));
+                await server.setLocalJoin(controller, true);
+                await expectError('invalid_request', () => server.setLocalJoin(controller, true));
+                const changed = (await server.read(alice.credential, 0)).events.find((event) => event.type === 'room.local_join_changed');
+                expect(changed?.type === 'room.local_join_changed' && changed.payload).toEqual({localJoin: true});
+            });
+
+            test('test_a_lock_or_turning_it_off_refuses_new_local_joins', async () => {
+                await server.setLocalJoin(controller, true);
+                const stays = newCredential('participant');
+                await server.joinOnLocalNetwork(neighbour, stays);
+                await server.setLocked(controller, true);
+                await expectError('room_locked', () => server.joinOnLocalNetwork({displayName: 'late', kind: 'human'}, newCredential('participant')));
+                await server.setLocked(controller, false);
+                await server.setLocalJoin(controller, false);
+                await expectError('unauthorized', () => server.joinOnLocalNetwork({displayName: 'later', kind: 'human'}, newCredential('participant')));
+                expect((await server.snapshot(stays)).participants.some((participant) => participant.displayName === 'tower' && !participant.left)).toBe(true);
+            });
+        });
+
         describe('invite seats', () => {
             let server: RoomHarness;
             let alice: FakeAgent;

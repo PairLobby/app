@@ -8,8 +8,8 @@ import type {InviteProbeResult} from '@pairlobby/client';
 import {startServer} from '@pairlobby/local-server';
 import type {RunningServer} from '@pairlobby/local-server';
 
-import {findRelayForInvite} from './relay-discovery.js';
-import type {DiscoveryDeps, RelayCandidate} from './relay-discovery.js';
+import {findLocalRoom, findRelayForInvite} from './relay-discovery.js';
+import type {DiscoveryDeps, LocalRoomDeps, RelayCandidate} from './relay-discovery.js';
 
 type FakeRelays = Record<string, InviteProbeResult>;
 
@@ -82,4 +82,37 @@ test('test_real_relays_are_told_only_the_probe_and_the_issuer_is_found', async (
     expect(await findRelayForInvite(created.invite.code, deps)).toBe(theirs.url);
     const joined = await new PairLobbyClient(await findRelayForInvite(created.invite.code, deps)).redeemInvite(created.invite.code, {displayName: 'claude', kind: 'agent'});
     expect(joined.roomId).toBe(created.roomId);
+});
+
+function rooms(entries: Record<string, string[]>): LocalRoomDeps {
+    const list = (urls: string[], label: string): RelayCandidate[] => urls.map((url) => ({url, label}));
+    return {
+        local: 'http://127.0.0.1:8790',
+        lan: async () => list(Object.keys(entries).filter((url) => url.startsWith('http://10.')), 'local network'),
+        tailnet: async () => list(Object.keys(entries).filter((url) => url.startsWith('http://100.')), 'desktop'),
+        lookup: async (url) => url in entries ? entries[url]!.map((roomId) => ({roomId, name: 'tower-test', createdAt: 0, participantCount: 1})) : null,
+    };
+}
+
+test('test_a_room_name_resolves_to_the_one_relay_holding_it', async () => {
+    const found = await findLocalRoom('tower-test', rooms({'http://127.0.0.1:8790': [], 'http://100.111.208.123:8790': ['rm_A']}));
+    expect([found.url, found.room.roomId]).toEqual(['http://100.111.208.123:8790', 'rm_A']);
+});
+
+test('test_two_rooms_with_one_name_are_listed_for_the_person_to_pick', async () => {
+    await expect(findLocalRoom('tower-test', rooms({'http://127.0.0.1:8790': ['rm_A'], 'http://10.0.0.5:8790': ['rm_B']}))).rejects.toThrow(/more than one room named "tower-test"[\s\S]*join local rm_A --server http:\/\/127\.0\.0\.1:8790[\s\S]*join local rm_B --server http:\/\/10\.0\.0\.5:8790/);
+});
+
+test('test_no_room_by_that_name_says_how_many_relays_answered', async () => {
+    await expect(findLocalRoom('tower-test', rooms({'http://127.0.0.1:8790': []}))).rejects.toThrow(/no room named "tower-test" is open to the local network on the 1 relay\(s\) that answered \(of 1 this device can see\)/);
+});
+
+test('test_a_named_relay_is_the_only_one_asked', async () => {
+    const asked: string[] = [];
+    const deps = {...rooms({'http://10.0.0.5:8790': ['rm_B']}), lookup: async (url: string) => {
+        asked.push(url);
+        return [{roomId: 'rm_C', name: 'tower-test', createdAt: 0, participantCount: 1}];
+    }};
+    expect((await findLocalRoom('tower-test', deps, 'http://laptop:8790')).room.roomId).toBe('rm_C');
+    expect(asked).toEqual(['http://laptop:8790']);
 });

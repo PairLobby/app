@@ -370,6 +370,35 @@ export function joinAsGuest(view: RoomView, input: Omit<JoinRoomInput, 'role'>, 
     return joinRoom(view, {...input, role: 'guest'}, ctx);
 }
 
+/** Lets devices on the relay's local network join by name, as members. Owner or admin only. */
+export function setLocalJoin(view: RoomView, credentialHash: string, localJoin: boolean, ctx: CoreContext): Mutation {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    if ((view.room.policy.localJoin ?? false) === localJoin) {
+        throw new ProtocolError('invalid_request', localJoin ? 'this room is already open to the local network' : 'this room is already closed to the local network');
+    }
+    const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
+    const room = {...view.room, policy: {...view.room.policy, localJoin}};
+    const {room: updated, event} = appendEvent(
+        room,
+        {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'room.local_join_changed', payload: {localJoin}}},
+        ctx
+    );
+    return emptyMutation(updated, event);
+}
+
+/**
+ * Admits a member who found the room by name. The relay has already checked that
+ * the request came from its local network or tailnet; this checks the room allows it.
+ */
+export function joinOnLocalNetwork(view: RoomView, input: Omit<JoinRoomInput, 'role'>, ctx: CoreContext): JoinedRoom {
+    if (!view.room.policy.localJoin) {
+        throw new ProtocolError('unauthorized', 'this room is not open to the local network; ask its owner for an invite code');
+    }
+    return joinRoom(view, {...input, role: 'member'}, ctx);
+}
+
 export function setExpiry(view: RoomView, credentialHash: string, expiresAt: number | null, ctx: CoreContext): Mutation {
     const actor = authenticate(view, credentialHash, ctx.now);
     assertController(actor);

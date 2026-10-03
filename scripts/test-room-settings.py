@@ -97,7 +97,11 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-settings-ui-') as directory:
         wait_for('Room status')
         assert 'Members' in text() and 'Messages (retained)' in text(), text()
         assert any('Messages (retained)' in line and re.search(r'\b0\b',line) for line in screen.display), text()
-        keys(b'\x1b[6~')
+        # Page down until the dates show; how many pages that takes depends on the row count.
+        for _ in range(3):
+            keys(b'\x1b[6~'); pump(.3)
+            if 'Created (UTC)' in text():
+                break
         wait_for('Created (UTC)')
         keys(b'r')
         wait_for('Refreshed.')
