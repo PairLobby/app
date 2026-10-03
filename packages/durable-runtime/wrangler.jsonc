@@ -1,0 +1,20 @@
+// A self-hosted PairLobby relay. Only keys Celld accepts belong here: no routes,
+// account id, rate limits, email, D1 or secrets. Celld and `wrangler dev` both run it.
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "pairlobby-relay",
+  "main": "src/standalone.ts",
+  "compatibility_date": "2026-09-14",
+  "durable_objects": {
+    "bindings": [
+      {"name": "ROOMS", "class_name": "PairLobbyRoom"},
+      {"name": "INVITES", "class_name": "PairLobbyInviteDirectory"}
+    ]
+  },
+  "migrations": [
+    {"tag": "v1", "new_sqlite_classes": ["PairLobbyRoom", "PairLobbyInviteDirectory"]}
+  ],
+  "vars": {
+    "PAIRLOBBY_DEPLOYMENT_MODE": "self-hosted"
+  }
+}

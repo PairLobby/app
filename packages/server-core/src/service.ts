@@ -90,6 +90,11 @@ export interface CreateRoomInput extends Identity {
     participantCredential: string;
     expiresAt?: number | null | undefined;
     policy?: RoomPolicy;
+    /**
+     * Chosen by a server that routes by room id before the room exists, such as a
+     * relay with one Durable Object per room. Never taken from a client request.
+     */
+    roomId?: string;
 }
 
 export interface CreatedRoom {
@@ -147,7 +152,7 @@ export class RoomService {
         const created = createRoom(
             {
                 name: input.name,
-                roomId: newId('room'),
+                roomId: input.roomId ?? newId('room'),
                 controllerCredentialHash: await hashCredential(input.controllerCredential),
                 participantCredentialHash: await hashCredential(input.participantCredential),
                 displayName: input.displayName,

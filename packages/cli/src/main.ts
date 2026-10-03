@@ -1002,7 +1002,7 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
     out('');
     out(`  ${share.command}`);
     if (share.target.localOnly) {
-        note(localOnlyNote(serverUrl));
+        note(localOnlyNote(share.target));
     }
     note('The controller credential for this room was stored on this device and is not printed.');
     return 0;
@@ -1646,7 +1646,7 @@ async function invite(store: LocalStore, values: Values): Promise<number> {
     note(minted.reusable ? `one seat, reusable whenever nobody holds it — ${deadline}` : `single use — ${deadline}`);
     note(`join with: ${share.command}`);
     if (share.target.localOnly) {
-        note(localOnlyNote(room.serverUrl));
+        note(localOnlyNote(share.target));
     }
     return 0;
 }

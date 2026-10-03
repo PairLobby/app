@@ -1,12 +1,14 @@
 import {execFile} from 'node:child_process';
 import {mkdtempSync, rmSync} from 'node:fs';
+import {createServer} from 'node:http';
+import type {AddressInfo} from 'node:net';
 import {networkInterfaces, tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {promisify} from 'node:util';
 import {afterEach, beforeEach, expect, test} from 'vitest';
 import {startServer} from '@pairlobby/local-server';
 import type {RunningServer} from '@pairlobby/local-server';
-import {joinCommand, parseJoinLink, shareTarget} from './share.js';
+import {joinCommand, localOnlyNote, parseJoinLink, shareTarget} from './share.js';
 
 type CreatedJson = {roomId: string; invite: {code: string}; shareServerUrl: string | null; joinCommand: string};
 
@@ -51,7 +53,24 @@ test('test_parse_join_link_reads_server_and_code', () => {
 test('test_loopback_only_server_is_reported_as_local_only', async () => {
     const server = await serve('127.0.0.1');
     expect(await shareTarget(server.url)).toEqual({serverUrl: server.url, localOnly: true});
+    expect(localOnlyNote({serverUrl: server.url, localOnly: true})).toMatch(/serve --lan/);
     expect((await joinCommand(server.url, 'K7MP-4QWX')).command).toBe(`pairlobby join K7MP-4QWX --server ${server.url}`);
+});
+
+test('test_loopback_relay_without_server_info_is_not_told_to_use_lan', async () => {
+    const relay = createServer((_request, response) => {
+        response.writeHead(404, {'content-type': 'application/json'});
+        response.end(JSON.stringify({error: {code: 'invalid_request', message: 'unknown path'}}));
+    });
+    await new Promise<void>((done) => relay.listen(0, '127.0.0.1', done));
+    try {
+        const url = `http://127.0.0.1:${(relay.address() as AddressInfo).port}`;
+        const target = await shareTarget(url);
+        expect(target).toEqual({serverUrl: url, localOnly: true, otherRelay: true});
+        expect(localOnlyNote(target)).not.toMatch(/serve --lan/);
+    } finally {
+        await new Promise((done) => relay.close(done));
+    }
 });
 
 test('test_public_url_replaces_loopback_in_join_command', async () => {

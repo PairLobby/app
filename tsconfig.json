@@ -3,6 +3,7 @@
   "references": [
     {"path": "./packages/cli"},
     {"path": "./packages/client"},
+    {"path": "./packages/durable-runtime"},
     {"path": "./packages/local-server"},
     {"path": "./packages/protocol"},
     {"path": "./packages/room-core"},
