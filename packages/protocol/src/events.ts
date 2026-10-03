@@ -6,6 +6,7 @@ import {NameSource, ParticipantName} from './names.js';
 
 import {EventId, HandoverId, ParticipantId, RoomId} from './ids.js';
 import {HandoverDocument} from './handover.js';
+import {AutoClosePolicySchema, CloseReasonSchema} from './auto-close.js';
 
 export const PROTOCOL_VERSION = 1;
 export const PROTOCOL_VERSION_HEADER = 'pairlobby-protocol';
@@ -74,7 +75,9 @@ const controlPausePayload = z.object({targetParticipantId: ParticipantId, revisi
 const controlResumePayload = z.object({targetParticipantId: ParticipantId, revision: z.number().int().min(1)});
 const controlAckPayload = z.object({targetParticipantId: ParticipantId, revision: z.number().int().min(1), outcome: ControlOutcome, detail: z.string().max(512).optional()});
 
-const roomClosedPayload = z.object({exportWindowEndsAt: z.number().int().nonnegative()});
+/** `reason` is absent on closures recorded before auto-close existed, which were manual. */
+const roomClosedPayload = z.object({exportWindowEndsAt: z.number().int().nonnegative(), reason: CloseReasonSchema.optional()});
+const roomAutoCloseChangedPayload = z.object({autoClose: AutoClosePolicySchema, previous: AutoClosePolicySchema});
 const roomRenamedPayload = z.object({name: z.string().min(1).max(64), previousName: z.string().min(1).max(64)});
 const roomExpiryChangedPayload = z.object({expiresAt: z.number().int().nonnegative().nullable(), previousExpiresAt: z.number().int().nonnegative().nullable()});
 /** `inviteRole` is present only when the invitation default changed; older clients ignore it. */
@@ -109,6 +112,7 @@ export const EventBody = z.discriminatedUnion('type', [
     z.object({type: z.literal('control.resume'), payload: controlResumePayload}),
     z.object({type: z.literal('control.ack'), payload: controlAckPayload}),
     z.object({type: z.literal('room.closed'), payload: roomClosedPayload}),
+    z.object({type: z.literal('room.auto_close_changed'), payload: roomAutoCloseChangedPayload}),
     z.object({type: z.literal('room.renamed'), payload: roomRenamedPayload}),
     z.object({type: z.literal('room.expiry_changed'), payload: roomExpiryChangedPayload}),
     z.object({type: z.literal('room.access_changed'), payload: roomAccessChangedPayload}),

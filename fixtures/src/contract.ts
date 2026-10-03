@@ -12,6 +12,7 @@ import {runRequestContract} from './request-contract.js';
 import {runRejoinContract} from './rejoin-contract.js';
 import {runGroupContract} from './group-contract.js';
 import {runAdminContract} from './admin-contract.js';
+import {runAutoCloseContract} from './auto-close-contract.js';
 import {FakeAgent} from './fake-agent.js';
 import {RoomHarness, fixedClock} from './harness.js';
 import type {Clock, TestableRoomStore} from './harness.js';
@@ -35,6 +36,7 @@ export function runRoomContract(label: string, makeStore: StoreFactory): void {
     runRejoinContract(label, makeStore);
     runGroupContract(label, makeStore);
     runAdminContract(label, makeStore);
+    runAutoCloseContract(label, makeStore);
     describe(label, () => {
         const opened: RoomHarness[] = [];
         function track(harness: RoomHarness): RoomHarness {

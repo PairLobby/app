@@ -7,6 +7,7 @@ import {NameSource} from './names.js';
 import {AdapterCapabilities, ControlOutcome, ParticipantKind, ParticipantRole} from './events.js';
 import {AttemptId, EventId, HandoverId, ParticipantId, RoomId, SessionId} from './ids.js';
 import {HandoverDocument, HandoverState} from './handover.js';
+import {AutoClosePolicySchema, CloseReasonSchema} from './auto-close.js';
 
 export const RoomLifecycle = z.enum(['open', 'closed', 'expired', 'deleted']);
 export type RoomLifecycle = z.infer<typeof RoomLifecycle>;
@@ -14,6 +15,7 @@ export type RoomLifecycle = z.infer<typeof RoomLifecycle>;
 export const RoomPolicySchema = z.object({
     joinPolicy: z.enum(['invite_only', 'open_to_guests']).default('invite_only'),
     inviteRole: z.enum(['member', 'guest']).optional(),
+    autoClose: AutoClosePolicySchema.optional(),
     maxParticipants: z.number().int().min(2),
     maxEventPayloadBytes: z.number().int().min(1),
     maxRetainedEventBytes: z.number().int().min(1),
@@ -42,6 +44,13 @@ export const RoomRecord = z.object({
     turnChangedAt: z.number().int().nonnegative().optional(),
     allStartIndex: z.number().int().nonnegative().optional(),
     nextRequestSeq: z.number().int().nonnegative().optional(),
+    /** When the last `message` was accepted; drives inactivity auto-close without scanning the transcript. */
+    lastMessageAt: z.number().int().nonnegative().nullable().optional(),
+    /** The agents-and-guests mode closes only after one has joined. */
+    autoCloseArmed: z.boolean().optional(),
+    /** The computed next auto-close deadline, or null; recomputed in every mutation. */
+    autoCloseAt: z.number().int().nonnegative().nullable().optional(),
+    closeReason: CloseReasonSchema.optional(),
     nextSeq: z.number().int().min(1),
     retainedEventBytes: z.number().int().nonnegative(),
     retainedEvents: z.number().int().nonnegative()
@@ -149,6 +158,11 @@ export const RoomSnapshot = z.object({
     renameSelfSupported: z.boolean().optional(),
     adminRolesSupported: z.boolean().optional(),
     inviteRoleSupported: z.boolean().optional(),
+    autoCloseSupported: z.boolean().optional(),
+    lastMessageAt: z.number().int().nonnegative().nullable().optional(),
+    autoCloseArmed: z.boolean().optional(),
+    autoCloseAt: z.number().int().nonnegative().nullable().optional(),
+    closeReason: CloseReasonSchema.optional(),
     quotedMessagesSupported: z.boolean().optional(),
     groupTurnsSupported: z.boolean().optional(),
     workingStatusSupported: z.boolean().optional(),

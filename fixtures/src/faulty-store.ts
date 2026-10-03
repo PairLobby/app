@@ -34,7 +34,9 @@ export class FaultyStore implements TestableRoomStore {
             'updateTurns',
             'messageRequests',
             'setLifecycle',
-            'deleteRoom'
+            'deleteRoom',
+            'dueAutoCloses',
+            'nextAutoCloseAt'
         ] as const) {
             (this as Record<string, unknown>)[key] = (...args: unknown[]) => (this.inner[key] as (...rest: unknown[]) => unknown)(...args);
         }

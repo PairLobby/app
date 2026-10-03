@@ -11,6 +11,7 @@ import {PROTOCOL_VERSION_HEADER, newCredential, newId} from '@pairlobby/protocol
 import {afterAll, beforeAll, describe, expect, test} from 'vitest';
 
 import {startServer, type RunningServer} from './server.js';
+import {SqliteRoomStore} from './sqlite-store.js';
 
 type AuthenticatedRequestOptions = RequestInit & {credential?: string};
 
@@ -237,6 +238,46 @@ describe('local server shared with other devices', () => {
             expect((await rawGet(`/v1/rooms/${room.roomId}`, {authorization: `Bearer ${room.controllerCredential}`, host: 'laptop.tailnet.example'}, proxied.port)).status).toBe(200);
         } finally {
             await proxied.close();
+        }
+    });
+});
+
+describe('local server auto-close timer', () => {
+    test('test_the_relay_closes_an_idle_room_on_its_own_without_a_request', async () => {
+        const dataFile = join(directory, 'auto-close.sqlite');
+        const relay = await startServer({port: 0, dataFile});
+        try {
+            const room = await createRoom(relay.url);
+            const response = await fetch(`${relay.url}/v1/rooms/${room.roomId}/auto-close`, {method: 'POST', headers: {'content-type': 'application/json', authorization: `Bearer ${room.controllerCredential}`}, body: JSON.stringify({autoClose: {mode: 'inactivity', afterMs: 1000}})});
+            expect(response.status).toBe(200);
+            await new Promise((resolve) => setTimeout(resolve, 1600));
+            // Read the file directly: going through the relay would close it on request instead.
+            const raw = new SqliteRoomStore(dataFile);
+            try {
+                expect((await raw.loadRoom(room.roomId))?.room).toMatchObject({lifecycle: 'closed', closeReason: 'inactivity'});
+            } finally {
+                raw.close();
+            }
+        } finally {
+            await relay.close();
+        }
+    });
+
+    test('test_a_restarted_relay_closes_rooms_that_fell_due_while_it_was_down', async () => {
+        const dataFile = join(directory, 'auto-close-restart.sqlite');
+        const first = await startServer({port: 0, dataFile});
+        const room = await createRoom(first.url);
+        await fetch(`${first.url}/v1/rooms/${room.roomId}/auto-close`, {method: 'POST', headers: {'content-type': 'application/json', authorization: `Bearer ${room.controllerCredential}`}, body: JSON.stringify({autoClose: {mode: 'inactivity', afterMs: 1000}})});
+        await first.close();
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        const second = await startServer({port: 0, dataFile});
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await second.close();
+        const raw = new SqliteRoomStore(dataFile);
+        try {
+            expect((await raw.loadRoom(room.roomId))?.room.lifecycle).toBe('closed');
+        } finally {
+            raw.close();
         }
     });
 });

@@ -20,6 +20,7 @@ import {runAgentCommand} from './spawn-agent.js';
 import {isAgentCommand} from './spawn-options.js';
 import {commandHint, completeChatCommand} from './chat-completion.js';
 import {settingsPage, statusPage} from './room-settings.js';
+import {describeAutoClose, describeCloseReason} from './auto-close.js';
 import {loadAgentRoster} from './agent-roster.js';
 
 type ParticipantMatch = {id: string; name: string} | null;
@@ -468,7 +469,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 const page = await client.readEvents(roomId, credential, cursor);
                 if (page.events.length > 0) {
                     const nextCursor = page.events.at(-1)!.seq;
-                    if (page.events.some((event) => event.type === 'participant.joined' || event.type === 'participant.renamed' || event.type === 'participant.left' || event.type === 'participant.revoked' || event.type === 'participant.mute_changed' || event.type === 'participant.role_changed' || event.type === 'room.renamed' || event.type === 'room.expiry_changed' || event.type === 'room.access_changed' || event.type === 'room.lock_changed' || event.type === 'control.pause' || event.type === 'control.resume' || event.type === 'control.ack')) {
+                    if (page.events.some((event) => event.type === 'participant.joined' || event.type === 'participant.renamed' || event.type === 'participant.left' || event.type === 'participant.revoked' || event.type === 'participant.mute_changed' || event.type === 'participant.role_changed' || event.type === 'room.renamed' || event.type === 'room.expiry_changed' || event.type === 'room.access_changed' || event.type === 'room.auto_close_changed' || event.type === 'room.closed' || event.type === 'room.lock_changed' || event.type === 'control.pause' || event.type === 'control.resume' || event.type === 'control.ack')) {
                         snapshot = await client.snapshot(roomId, credential);
                         absorbNames(snapshot, names);
                         for (const saved of store.room(roomId)?.sessions ?? []) {
@@ -670,7 +671,9 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
         case 'participant.role_changed':
             return `${names.get(event.payload.participantId) ?? event.payload.participantId} is now ${event.payload.role === 'controller' ? 'an admin' : 'a member'}`;
         case 'room.closed':
-            return 'the room was closed';
+            return `the room was ${describeCloseReason(event.payload.reason)}`;
+        case 'room.auto_close_changed':
+            return `${sender} set auto-close: ${describeAutoClose(event.payload.autoClose).toLowerCase()}`;
         case 'conversation.turn_changed': {
             const agents = event.payload.participantIds.map((id) => names.get(id) ?? id).join(', ');
             if (event.payload.action === 'mode') {

@@ -46,7 +46,7 @@ test('test_setting_values_accept_short_names_and_reject_others', () => {
 test('test_the_menu_lists_every_setting_and_saves_edits_immediately', async () => {
     const store = new LocalStore(join(directory, 'menu'));
     const page = deviceSettingsPage(store);
-    expect(page.rows.map((row) => row.id)).toEqual(['profile-name', ...Object.keys(SETTING_KEYS), 'reset']);
+    expect(page.rows.map((row) => row.id)).toEqual(['profile-name', ...Object.keys(SETTING_KEYS), 'apply-auto-close', 'reset']);
     expect(new Set(page.rows.map((row) => row.section))).toEqual(new Set(['Profile', 'New rooms', 'Terminal', 'Updates', 'Reset']));
     const edit = (id: string) => page.rows.find((row) => row.id === id)!.action as PanelEdit;
     expect(edit('default-reply-mode').choices?.map((choice) => choice.value)).toEqual(['sequential', 'parallel']);
@@ -66,14 +66,15 @@ test('test_new_rooms_start_with_this_devices_defaults', async () => {
     await cli(['settings', 'default-reply-mode', 'parallel']);
     await cli(['settings', 'default-invites', 'observer']);
     await cli(['settings', 'default-guest-access', 'open']);
+    await cli(['settings', 'auto-close', 'idle:2h']);
     const created = JSON.parse(await cli(['create', '--name', 'defaults', '--as', 'owner', '--human', '--server', server.url, '--json'])) as CreatedJson;
     const store = new LocalStore(join(directory, 'client'));
     const client = new PairLobbyClient(server.url);
     const credential = store.credential(created.roomId, created.sessionId)!;
     const room = await client.snapshot(created.roomId, credential);
-    expect(room.policy).toMatchObject({inviteRole: 'guest', joinPolicy: 'open_to_guests'});
+    expect(room.policy).toMatchObject({inviteRole: 'guest', joinPolicy: 'open_to_guests', autoClose: {mode: 'inactivity', afterMs: 7_200_000}});
     expect((await client.turnQueue(created.roomId, credential)).mode).toBe('parallel');
-    expect(store.settings()).toEqual({...DEFAULT_SETTINGS, defaultTurnMode: 'parallel', defaultInviteRole: 'guest', defaultGuestAccess: 'open_to_guests'});
+    expect(store.settings()).toEqual({...DEFAULT_SETTINGS, defaultTurnMode: 'parallel', defaultInviteRole: 'guest', defaultGuestAccess: 'open_to_guests', defaultAutoClose: 'idle:2h'});
 });
 
 test('test_private_and_public_only_apply_to_online_rooms', async () => {

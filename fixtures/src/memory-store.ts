@@ -170,6 +170,21 @@ export class MemoryStore implements RoomStore {
         table.handovers = [];
     }
 
+    async dueAutoCloses(now: number, limit: number): Promise<string[]> {
+        return this.deadlines().filter(([, at]) => at <= now).slice(0, limit).map(([roomId]) => roomId);
+    }
+
+    async nextAutoCloseAt(): Promise<number | null> {
+        return this.deadlines()[0]?.[1] ?? null;
+    }
+
+    private deadlines(): [string, number][] {
+        return [...this.rooms.values()]
+            .filter((table) => table.room.lifecycle === 'open' && typeof table.room.autoCloseAt === 'number')
+            .map((table): [string, number] => [table.room.roomId, table.room.autoCloseAt!])
+            .sort((left, right) => left[1] - right[1]);
+    }
+
     /** Simulates retention dropping the front of the log without touching room state. */
     dropHistoryBefore(roomId: string, seq: number): void {
         const table = this.require(roomId);

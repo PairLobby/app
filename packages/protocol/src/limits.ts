@@ -14,10 +14,25 @@ export type JoinPolicy = 'invite_only' | 'open_to_guests';
 /** What a plain `/invite` admits: a `member` who can speak, or a read-only `guest`. */
 export type InviteRole = 'member' | 'guest';
 
+/**
+ * When a room closes itself. One mode per room, so a closure has exactly one reason.
+ * `inactivity` counts from the last accepted `message` (replies included), or from
+ * creation when there is none; `age` counts from creation; `agents_and_guests_left`
+ * arms once an agent or read-only guest has joined and closes when none remain.
+ */
+export type AutoClosePolicy = {mode: 'off'} | {mode: 'inactivity'; afterMs: number} | {mode: 'age'; afterMs: number} | {mode: 'agents_and_guests_left'};
+
+export type CloseReason = 'manual' | 'inactivity' | 'age' | 'agents_and_guests_left';
+
+/** Shortest auto-close duration a relay accepts. */
+export const MIN_AUTO_CLOSE_MS = 1000;
+
 export interface RoomPolicy {
     joinPolicy: JoinPolicy;
     /** Absent on rooms created before invitation defaults existed, which means `member`. */
     inviteRole?: InviteRole;
+    /** Absent means off. */
+    autoClose?: AutoClosePolicy;
     maxParticipants: number;
     maxEventPayloadBytes: number;
     maxRetainedEventBytes: number;
@@ -73,6 +88,7 @@ export const QUOTA_EXEMPT_EVENT_TYPES = [
     'room.renamed',
     'room.expiry_changed',
     'room.access_changed',
+    'room.auto_close_changed',
     'message.received',
     'conversation.turn_changed',
     'message.delivery_failed'

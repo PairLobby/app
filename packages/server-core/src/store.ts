@@ -63,4 +63,9 @@ export interface RoomStore {
 
     setLifecycle(roomId: string, lifecycle: RoomRecord['lifecycle']): Promise<void>;
     deleteRoom(roomId: string): Promise<void>;
+
+    /** Open rooms whose stored auto-close deadline is at or before `now`, earliest first; an index, not a transcript scan. */
+    dueAutoCloses(now: number, limit: number): Promise<string[]>;
+    /** The earliest stored auto-close deadline among open rooms, or null. */
+    nextAutoCloseAt(): Promise<number | null>;
 }

@@ -71,3 +71,35 @@ test('room settings edit the relay, respect permission changes, and status is re
         rmSync(directory, {recursive: true, force: true});
     }
 });
+
+test('test_auto_close_is_a_lifecycle_setting_with_presets_custom_values_and_an_immediate_close_warning', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'pairlobby-room-auto-close-'));
+    const relay = await startServer({port: 0, dataFile: join(directory, 'relay.sqlite')});
+    const client = new PairLobbyClient(relay.url);
+    const created = await client.createRoom('Lifecycle room', {displayName: 'Owner', kind: 'human'});
+    const member = await client.redeemInvite(created.invite.code, {displayName: 'Member', kind: 'human'});
+    const owner = {client, roomId: created.roomId, credential: created.participantCredential, participantId: created.participantId, controllerCredential: created.controllerCredential};
+    const other = {client, roomId: created.roomId, credential: member.participantCredential, participantId: member.participantId};
+    try {
+        const page = await settingsPage(owner);
+        const row = page.rows.find((candidate) => candidate.id === 'auto-close')!;
+        expect(row).toMatchObject({section: 'Lifecycle', value: 'Off'});
+        const autoClose = editor(page, 'auto-close');
+        expect(autoClose.choices?.map((choice) => choice.value)).toContain('agents-and-guests-left');
+        expect(autoClose.choices?.at(-1)?.custom).toBe(true);
+        expect(autoClose.confirm!('idle:24h')).toContain('Set auto-close');
+        await autoClose.save('idle:90m');
+        const updated = await settingsPage(owner);
+        expect(updated.rows.find((candidate) => candidate.id === 'auto-close')?.value).toMatch(/^After 90 minutes without messages · closes /);
+        // The room is younger than a minute here, so nothing is overdue yet; age:1m from a minute ago would be.
+        expect(editor(updated, 'auto-close').confirm!('age:1m')).not.toContain('immediately');
+        expect((await settingsPage(other)).rows.find((candidate) => candidate.id === 'auto-close')?.action).toBeUndefined();
+        const status = await statusPage(owner);
+        expect(status.rows.find((candidate) => candidate.id === 'auto-close')?.value).toBe('After 90 minutes without messages');
+        expect(status.rows.find((candidate) => candidate.id === 'auto-close-at')?.value).not.toBe('Not scheduled');
+        await expect(autoClose.save('idle:5s')).rejects.toThrow('one minute');
+    } finally {
+        await relay.close();
+        rmSync(directory, {recursive: true, force: true});
+    }
+});
