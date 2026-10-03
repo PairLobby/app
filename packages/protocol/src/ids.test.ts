@@ -1,7 +1,7 @@
 import {describe, expect, test} from 'vitest';
 
 import {CODE_ALPHABET, formatInviteCode, newId, newInviteCode, normalizeInviteCode} from './ids.js';
-import {digestsEqual, hashCredential, newCredential} from './credentials.js';
+import {INVITE_PROBE_LENGTH, digestsEqual, hashCredential, inviteProbe, newCredential} from './credentials.js';
 
 describe('invite codes', () => {
     test('test_new_invite_code_is_canonical', () => {
@@ -56,5 +56,12 @@ describe('credentials', () => {
         const b = await hashCredential(newCredential('participant'));
         expect(digestsEqual(a, b)).toBe(false);
         expect(digestsEqual(a, a)).toBe(true);
+    });
+
+    test('test_invite_probe_is_a_short_prefix_of_the_stored_digest', async () => {
+        const code = normalizeInviteCode(newInviteCode())!;
+        const probe = await inviteProbe(code);
+        expect(probe).toHaveLength(INVITE_PROBE_LENGTH);
+        expect((await hashCredential(code)).startsWith(probe)).toBe(true);
     });
 });

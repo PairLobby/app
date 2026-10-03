@@ -53,7 +53,7 @@ test('test_parse_join_link_reads_server_and_code', () => {
 test('test_loopback_only_server_is_reported_as_local_only', async () => {
     const server = await serve('127.0.0.1');
     expect(await shareTarget(server.url)).toEqual({serverUrl: server.url, localOnly: true});
-    expect(localOnlyNote({serverUrl: server.url, localOnly: true})).toMatch(/serve --lan/);
+    expect(localOnlyNote({serverUrl: server.url, localOnly: true})).toMatch(/network-sharing/);
     expect((await joinCommand(server.url, 'K7MP-4QWX')).command).toBe(`pairlobby join K7MP-4QWX --server ${server.url}`);
 });
 
@@ -67,7 +67,7 @@ test('test_loopback_relay_without_server_info_is_not_told_to_use_lan', async () 
         const url = `http://127.0.0.1:${(relay.address() as AddressInfo).port}`;
         const target = await shareTarget(url);
         expect(target).toEqual({serverUrl: url, localOnly: true, otherRelay: true});
-        expect(localOnlyNote(target)).not.toMatch(/serve --lan/);
+        expect(localOnlyNote(target)).not.toMatch(/network-sharing/);
     } finally {
         await new Promise((done) => relay.close(done));
     }

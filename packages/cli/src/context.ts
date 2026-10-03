@@ -12,7 +12,9 @@ type ServerOptions = {server?: string | undefined; local?: boolean | undefined};
 
 type RecipientParticipant = {participantId: string; displayName: string; revoked: boolean; left: boolean};
 
-export const DEFAULT_LOCAL_SERVER = 'http://127.0.0.1:8790';
+export const DEFAULT_RELAY_PORT = 8790;
+
+export const DEFAULT_LOCAL_SERVER = `http://127.0.0.1:${DEFAULT_RELAY_PORT}`;
 
 export class UsageError extends Error {
     constructor(message: string) {
@@ -28,6 +30,30 @@ export interface Selection {
     client: PairLobbyClient;
 }
 
+/**
+ * Completes a short relay address: `h` becomes `http://h:8790` and `10.0.0.5:8791`
+ * becomes `http://10.0.0.5:8791`. Anything with a scheme is kept as written, so
+ * `https://` and hosted relay paths are never rewritten. IPv6 needs brackets.
+ */
+export function normalizeServerUrl(value: string): string {
+    const trimmed = value.trim();
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+        return trimmed;
+    }
+    let url: URL;
+    try {
+        url = new URL(`http://${trimmed}`);
+    } catch {
+        throw new UsageError(`"${value}" is not a relay address; use a name such as laptop, an address such as 10.0.0.5:8790, or a full URL`);
+    }
+    if (url.pathname !== '/' || url.search || url.hash || url.username) {
+        throw new UsageError(`"${value}" is not a relay address; a short address is a host and an optional port`);
+    }
+    // Read the port as typed: URL drops an explicit :80 because it is http's default.
+    const port = /:(\d+)$/.exec(trimmed)?.[1] ?? String(DEFAULT_RELAY_PORT);
+    return `http://${url.hostname}:${port}`;
+}
+
 export function resolveServer(options: ServerOptions): string {
     // One mechanism: an explicit URL, else the configured default, and --local is
     // only sugar for the loopback URL rather than a second code path.
@@ -35,12 +61,12 @@ export function resolveServer(options: ServerOptions): string {
         throw new UsageError('use either --server or --local, not both');
     }
     if (options.server) {
-        return options.server;
+        return normalizeServerUrl(options.server);
     }
     if (options.local) {
         return DEFAULT_LOCAL_SERVER;
     }
-    return process.env['PAIRLOBBY_SERVER'] ?? DEFAULT_LOCAL_SERVER;
+    return process.env['PAIRLOBBY_SERVER'] ? normalizeServerUrl(process.env['PAIRLOBBY_SERVER']) : DEFAULT_LOCAL_SERVER;
 }
 
 export function resolveRoom(store: LocalStore, reference?: string): RoomEntry {

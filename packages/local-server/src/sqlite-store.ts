@@ -138,6 +138,11 @@ export class SqliteRoomStore implements RoomStore {
         return row ? (JSON.parse(row.body) as InviteRecord) : null;
     }
 
+    /** Whether any invite digest starts with this lowercase hex prefix; a range over the primary key, not a scan. */
+    hasInviteDigestPrefix(prefix: string): boolean {
+        return this.db.prepare('SELECT 1 FROM invites WHERE digest >= ? AND digest < ? LIMIT 1').get(prefix, `${prefix}g`) !== undefined;
+    }
+
     /**
      * The conditional UPDATE is the whole point: a second attempt matches no row
      * and gets null, rather than racing the first into membership creation.

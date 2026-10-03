@@ -83,7 +83,12 @@ npm run service:uninstall   # remove it; rooms and credentials are left alone
 
 Neither needs administrator rights. `npm run service -- logs` tails the log and
 `npm run service -- restart` kicks it. Set `PAIRLOBBY_PORT` before
-`service:install` to use a port other than 8790.
+`service:install` to use a port other than 8790. The relay shares itself as
+`pairlobby settings network-sharing` says each time it starts, so restart it
+after changing that setting; setting `PAIRLOBBY_HOST` before `service:install`
+pins a listen address instead and ignores the setting. A service installed by an
+earlier version always passes `--host 127.0.0.1`: re-run `service:install` once
+to let the setting apply.
 
 On Windows the task runs node through a small VBScript shim, because Windows has
 no windowless node and the task would otherwise flash a console at every logon.
@@ -121,22 +126,40 @@ pairlobby                                      # what this device is in
 
 ### Other devices on your network
 
-No account is needed. On the device that holds the rooms:
+No account is needed. On the device that holds the rooms, choose who may use its relay, once:
 
 ```sh
-pairlobby serve --lan                          # prints the address other devices use
+pairlobby settings network-sharing tailscale   # your devices on your tailnet; Tailscale encrypts the traffic
+pairlobby settings network-sharing lan         # any device on this Wi-Fi or LAN; plain HTTP
+pairlobby settings network-sharing off         # only this device (the default)
+```
+
+The setting is also in the `pairlobby settings` menu under **Network**. A running relay keeps the setting it started with: restart `pairlobby serve`, or run `npm run service -- restart` for the background relay. For a one-off, `pairlobby serve --tailscale` or `pairlobby serve --lan` overrides it. Then create a room as usual:
+
+```sh
 pairlobby create --name my-project --as host --human
 ```
 
-`create`, `invite` and chat `/invite` then print a join command that uses this machine's network address rather than loopback. On the other device:
+On the other device, the invite code is enough:
 
 ```sh
-pairlobby join <CODE> --server http://10.0.0.5:8790            # a human terminal
-pairlobby join <CODE> --server http://10.0.0.5:8790 --runtime codex   # a managed agent
-pairlobby join http://10.0.0.5:8790#<CODE>                     # the same, as one link
+pairlobby join <CODE>                          # a human terminal
+pairlobby join <CODE> --runtime codex          # a managed agent
 ```
 
-`--lan` listens on every interface and accepts requests addressed to this machine's own addresses and hostname; other names are still refused. Traffic is plain HTTP, including credentials, so use it only on networks you trust. Behind Tailscale or another proxy, `pairlobby serve --public-url https://laptop.tailnet.ts.net` advertises that address instead. For the background relay, install the service with `PAIRLOBBY_HOST=0.0.0.0`. Rooms remember the address they were joined through, so a changed IP address means joining again.
+`join` with only a code asks the relays it can see which one issued it: its own, those announced on the local network over mDNS (Bonjour), and the online devices on its tailnet, at port 8790. It sends each one only the first four hex digits of the code's SHA-256 digest, never the code. That is 16 of the code's 40 bits: enough to pick out the right relay, too few for any other relay to use the code. The code goes only to the relay that recognizes it. If two relays claim it, `join` sends it to neither and lists both, and you choose with `--server`. The search takes a few seconds and is skipped whenever a relay is already named: by `--server`, `--local`, a join link, `PAIRLOBBY_SERVER` or a profile server.
+
+A relay is found this way when it is shared on its default port 8790 (tailnet devices are asked on that port), or when it is shared with `lan`, which also announces it over mDNS on any port. `create`, `invite` and chat `/invite` say so when it applies. Otherwise, or from further away, name the relay. `--server` takes a full URL or just a name or address, which means `http://` and port 8790:
+
+```sh
+pairlobby join <CODE> --server laptop                 # a Tailscale MagicDNS name or a hostname
+pairlobby join <CODE> --server 10.0.0.5:8791          # an address and a port
+pairlobby join http://10.0.0.5:8790#<CODE>            # the full join link that create and invite print
+```
+
+A shared relay answers to its own addresses, its hostname and its Tailscale names (`laptop` and `laptop.tailnet-name.ts.net`); any other name is refused, which defeats DNS rebinding from a web page. With `tailscale`, it listens on every interface but drops any connection that does not come from this device or a Tailscale address, so it keeps working when Tailscale starts after the relay. With `lan`, room traffic, including credentials, is plain HTTP, so use it only on networks you trust. Behind a proxy, `pairlobby serve --public-url https://laptop.example` advertises that address instead, and such a relay is not discoverable. Rooms remember the address they were joined through, so a changed IP address means joining again.
+
+On macOS, finding relays on the local network needs the **Local Network** permission for the app that runs `pairlobby`, such as Terminal or iTerm (System Settings → Privacy & Security → Local Network). Without it, macOS refuses the traffic and only Tailscale devices are found. Tailscale is not affected. On Windows, allow Node.js through the firewall when asked, or other devices cannot reach a relay running there.
 
 ### A self-hosted relay on Durable Objects (Celld)
 
@@ -226,7 +249,7 @@ pairlobby settings                        # interactive menu in a terminal; a li
 pairlobby settings confirm-delete false   # stop asking before delete
 ```
 
-In a terminal, `pairlobby settings` opens the same kind of menu as `/settings` inside a room, for this device: your default name; defaults for rooms you create (reply mode, what `/invite` admits, guest access for local rooms, private online rooms, room and invite expiry); terminal preferences; and update checks. Arrows select, Enter edits and saves immediately, Escape closes. Each setting can also be set from the shell, for example `pairlobby settings default-reply-mode parallel`, `pairlobby settings default-invites observer` or `pairlobby settings default-private-online on`; `--json` prints them all. New-room defaults are applied right after `create`; if a relay is too old for one, the room is still created and the CLI says which default was not applied. `create online --public` overrides a private-by-default setting.
+In a terminal, `pairlobby settings` opens the same kind of menu as `/settings` inside a room, for this device: your default name; defaults for rooms you create (reply mode, what `/invite` admits, guest access for local rooms, private online rooms, room and invite expiry); terminal preferences; update checks; and whether other devices may use this device's relay (**Network**, see [Other devices on your network](#other-devices-on-your-network)). Arrows select, Enter edits and saves immediately, Escape closes. Each setting can also be set from the shell, for example `pairlobby settings default-reply-mode parallel`, `pairlobby settings default-invites observer` or `pairlobby settings default-private-online on`; `--json` prints them all. New-room defaults are applied right after `create`; if a relay is too old for one, the room is still created and the CLI says which default was not applied. `create online --public` overrides a private-by-default setting.
 
 `pairlobby settings auto-close idle:2h` (or `age:7d`, `agents-and-guests-left`, `off`) makes rooms you create close themselves; the policy is stored in each room, so it applies while your terminal is off. It does not change existing rooms by itself: use **Apply auto-close to my rooms** in the menu, or add `--apply-existing` in the shell, to set it on every saved room this device owns or administers. Each room is reported as updated, unchanged, skipped (no owner/admin access, not open, or an older relay), unreachable or rejected.
 

@@ -65,11 +65,16 @@ export interface JoinedRoom {
     room: RoomSnapshot;
 }
 
+/** A relay's answer to an invite probe: it issued a matching code, it did not, it predates probes, or it could not be asked. */
+export type InviteProbeResult = 'known' | 'unknown' | 'unsupported' | 'unreachable';
+
 export type ServerShareInfo = {
     /** Addresses other devices can join through; empty when the server only listens on the device running it. */
     shareUrls: string[];
     /** False when the server does not answer at all: a hosted or durable relay rather than `pairlobby serve`. */
     reported: boolean;
+    /** True when a device on the same network or tailnet can find this server from an invite code alone. */
+    discoverable: boolean;
 };
 
 export class PairLobbyClient {
@@ -117,14 +122,39 @@ export class PairLobbyClient {
         return {roomId: body.roomId, participantId: body.participantId, participantCredential, role: body.role, room: body.room};
     }
 
+    /**
+     * Asks whether this server issued an invite whose digest starts with `probe`
+     * (see `inviteProbe`), without sending the code. Never throws: a device looking
+     * for the right relay asks several, and most will not be it.
+     */
+    async probeInvite(probe: string, timeoutMs = 1500): Promise<InviteProbeResult> {
+        let response: Response;
+        try {
+            response = await fetch(`${this.serverUrl}/v1/invites/probe?prefix=${encodeURIComponent(probe)}`, {headers: {[PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)}, redirect: 'error', signal: AbortSignal.timeout(timeoutMs)});
+        } catch {
+            return 'unreachable';
+        }
+        if (response.status === 404) {
+            return 'unsupported';
+        }
+        if (!response.ok) {
+            return 'unreachable';
+        }
+        try {
+            return ((await response.json()) as {known?: unknown}).known === true ? 'known' : 'unknown';
+        } catch {
+            return 'unreachable';
+        }
+    }
+
     /** Older servers and hosted relays do not answer this, which means they have nothing extra to share. */
     async serverInfo(): Promise<ServerShareInfo> {
         try {
             const info = await this.call<Partial<ServerShareInfo>>('GET', '/v1/server', null);
-            return {shareUrls: Array.isArray(info.shareUrls) ? info.shareUrls.filter((url) => typeof url === 'string') : [], reported: true};
+            return {shareUrls: Array.isArray(info.shareUrls) ? info.shareUrls.filter((url) => typeof url === 'string') : [], reported: true, discoverable: info.discoverable === true};
         } catch (error) {
             if (error instanceof ProtocolError && error.code === 'invalid_request') {
-                return {shareUrls: [], reported: false};
+                return {shareUrls: [], reported: false, discoverable: false};
             }
             throw error;
         }

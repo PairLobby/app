@@ -14,9 +14,11 @@
   "dependencies": {
     "@pairlobby/protocol": "*",
     "@pairlobby/room-core": "*",
-    "@pairlobby/server-core": "*"
+    "@pairlobby/server-core": "*",
+    "multicast-dns": "7.2.5"
   },
   "devDependencies": {
-    "@pairlobby/fixtures": "*"
+    "@pairlobby/fixtures": "*",
+    "@types/multicast-dns": "7.2.4"
   }
 }
