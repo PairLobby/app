@@ -10,11 +10,11 @@ import type {RoomPanelPage} from './room-panel.js';
 import {plainCell} from './agent-roster.js';
 import {receiverConfiguration, startReceiver, stopReceiver} from './receiver.js';
 import {copyToClipboard} from './clipboard.js';
+import {createTerminalProgram} from './terminal-program.js';
 
 export type RoomBrowserSelection = {roomId: string; sessionId: string};
 export type RoomBrowserOptions = {sort: ListSort; roomId?: string | undefined; sessionId?: string | undefined; notice?: string | undefined};
 type BrowserKey = Key & {sequence?: string};
-type BrowserProgramOptions = {extended: boolean; debug: boolean};
 type BrowserMouse = blessed.Widgets.Events.IMouseEventArg & {button?: string};
 
 /** A standalone room/session navigator. Only explicit, confirmed actions write to a room. */
@@ -41,8 +41,7 @@ export class RoomBrowser {
     private initialSessionId: string | undefined;
 
     constructor(private readonly store: LocalStore, private readonly options: RoomBrowserOptions) {
-        const program: BrowserProgramOptions = {extended: false, debug: false};
-        this.screen = blessed.screen({program: blessed.program(program), smartCSR: true, fullUnicode: true, title: 'PairLobby rooms', warnings: false});
+        this.screen = blessed.screen({program: createTerminalProgram(), smartCSR: true, fullUnicode: true, title: 'PairLobby rooms', warnings: false});
         this.surface = blessed.box({parent: this.screen, top: 0, left: 0, right: 0, bottom: 0});
         this.roomId = options.roomId;
         this.initialSessionId = options.sessionId;

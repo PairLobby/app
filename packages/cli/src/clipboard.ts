@@ -33,3 +33,37 @@ export async function copyToClipboard(value: string): Promise<string> {
     process.stdout.write(process.env['TMUX'] ? `\x1bPtmux;${sequence.replaceAll('\x1b', '\x1b\x1b')}\x1b\\` : sequence);
     return 'Copy request sent to terminal (requires clipboard support)';
 }
+
+function readCommand(command: string, args: string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const child = spawn(command, args, {stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true});
+        const chunks: Buffer[] = [];
+        const timeout = setTimeout(() => { child.kill(); reject(new Error('Clipboard command timed out')); }, 2000);
+        child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+        child.on('error', (error) => { clearTimeout(timeout); reject(error); });
+        child.on('close', (code) => {
+            clearTimeout(timeout);
+            code === 0 ? resolve(Buffer.concat(chunks).toString('utf8')) : reject(new Error('Clipboard command failed'));
+        });
+    });
+}
+
+/** The clipboard's text, or an empty string when no backend can read it. */
+export async function readClipboard(): Promise<string> {
+    const commands: [string, string[]][] = process.platform === 'darwin' ? [['pbpaste', []]] : process.platform === 'win32'
+        ? [['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '[Console]::OutputEncoding = [Text.Encoding]::UTF8; [Console]::Out.Write((Get-Clipboard -Raw))']]]
+        : [['wl-paste', ['--no-newline']], ['xclip', ['-selection', 'clipboard', '-o']], ['xsel', ['--clipboard', '--output']]];
+    for (const [command, args] of commands) {
+        try {
+            return await readCommand(command, args);
+        } catch {
+            // Try the next available backend.
+        }
+    }
+    return '';
+}
+
+/** Pasted text as one composer line: line breaks become spaces and control characters are dropped. */
+export function pasteLine(value: string): string {
+    return value.replace(/\r\n?|\n/g, ' ').replace(/[\u0000-\u001f\u007f]/g, '').trimEnd();
+}

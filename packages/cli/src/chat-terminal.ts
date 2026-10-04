@@ -13,6 +13,8 @@ import type {AgentRoster} from './agent-roster.js';
 import {RoomPanel} from './room-panel.js';
 import type {RoomPanelPage} from './room-panel.js';
 import {applyPopupLayout, fitPopup, visibleMessageRow} from './terminal-layout.js';
+import {pasteLine, readClipboard} from './clipboard.js';
+import {createTerminalProgram} from './terminal-program.js';
 import {statusTable} from './status-table.js';
 import type {StatusRow} from './status-table.js';
 import {agentActivities, activitySummary} from './agent-activity.js';
@@ -22,16 +24,8 @@ type ChatTerminalOptions = {names: Map<string, string>; participantId: string; f
 type TranscriptEntry = {text: string; event?: RoomEvent; alertId?: string};
 export type RequestAlert = {requestId: string; text: string};
 type ScreenKey = Key & {full?: string};
-type TerminalProgramOptions = {extended: boolean; debug: boolean};
 type MessageLayout = {event: RoomEvent; content: blessed.Widgets.TextElement; normalText: string; highlighted: boolean; top: number; height: number; selected: boolean; receipt?: blessed.Widgets.BoxElement; working?: blessed.Widgets.BoxElement};
 type ScrollBody = blessed.Widgets.BoxElement & {childBase: number};
-
-function createTerminalProgram(): blessed.BlessedProgram {
-    // Blessed's legacy compiler cannot parse some modern extended capabilities
-    // (e.g. Setulc). Standard terminfo supplies all capabilities used by this UI.
-    const options: TerminalProgramOptions = {extended: false, debug: false};
-    return blessed.program(options);
-}
 
 class SilentOutput extends Writable {
     isTTY = true;
@@ -189,6 +183,12 @@ export class ChatTerminal {
                 const bounds = element?.lpos;
                 return Boolean(element?.visible && bounds && event.x >= bounds.xi && event.x < bounds.xl && event.y >= bounds.yi && event.y < bounds.yl);
             };
+            if (event.action === 'mousedown' && (event as {button?: string}).button === 'right' && process.platform === 'win32') {
+                // Mouse reporting takes the right click away from the Windows
+                // console, which would otherwise paste; do it for the console.
+                void this.pasteClipboard();
+                return;
+            }
             if (event.action === 'mousemove' && !this.pinned) {
                 // Scrolling moves an existing Seen element. Blessed may still
                 // consider it hovered, so mouseover alone is insufficient.
@@ -222,6 +222,17 @@ export class ChatTerminal {
             this.roomPanel.render();
         }));
         this.screen.program.enableMouse();
+        this.renderInput();
+    }
+
+    private async pasteClipboard(): Promise<void> {
+        const text = pasteLine(await readClipboard());
+        if (!text || this.closed || this.suspended || this.selecting || this.agentTable.visible || this.roomPanel.visible) {
+            return;
+        }
+        this.input.write(text);
+        this.syncReply();
+        this.inputChanged?.();
         this.renderInput();
     }
 
