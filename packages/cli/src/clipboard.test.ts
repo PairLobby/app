@@ -39,3 +39,11 @@ test('tmux clipboard passthrough escapes inner escape characters', async () => {
     await copyToClipboard('hello');
     expect(write).toHaveBeenCalledWith('\x1bPtmux;\x1b\x1b]52;c;aGVsbG8=\x07\x1b\\');
 });
+
+test('pasted text becomes one composer line that cannot submit or inject control keys', async () => {
+    const {pasteLine} = await import('./clipboard.js');
+    expect(pasteLine('one\r\ntwo\nthree\r\n')).toBe('one two three');
+    expect(pasteLine('a\tb\u001b[31mc\u007f')).toBe('ab[31mc');
+    expect(pasteLine('héllo Ω')).toBe('héllo Ω');
+    expect(pasteLine('\n')).toBe('');
+});
