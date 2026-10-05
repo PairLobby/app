@@ -1,11 +1,12 @@
 import {completeAgentCommand} from './spawn-options.js';
 import {commonPrefix, renderSuggestions} from './mentions.js';
 
-export const CHAT_COMMANDS = ['/claude', '/codex', '/qwen', '/spawn', '/agents', '/agent', '/status', '/settings', '/turns', '/to', '/seen', '/working', '/select', '/requests', '/reply', '/who', '/name', '/invite', '/lock', '/unlock', '/kick', '/mute', '/unmute', '/expiry', '/interrupt', '/pause', '/resume', '/help', '/quit', '/exit'];
+export const CHAT_COMMANDS = ['/claude', '/codex', '/qwen', '/spawn', '/agents', '/agent', '/status', '/settings', '/turns', '/to', '/seen', '/working', '/select', '/requests', '/reply', '/who', '/name', '/invite', '/invites', '/lock', '/unlock', '/kick', '/mute', '/unmute', '/expiry', '/interrupt', '/pause', '/resume', '/help', '/quit', '/exit'];
 const SUBCOMMANDS: Record<string, string[]> = {
     '/agent': ['start', 'stop'],
     '/turns': ['sequential', 'parallel', 'skip', 'cancel'],
-    '/invite': ['as', 'member', 'observer']
+    '/invite': ['as', 'member', 'observer'],
+    '/invites': ['revoke']
 };
 
 /** Readline supplies the text before the cursor; it preserves the suffix itself. */

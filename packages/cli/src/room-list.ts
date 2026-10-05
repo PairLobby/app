@@ -82,6 +82,19 @@ export function networkRows(found: NetworkRoom[]): ListRow[] {
     });
 }
 
+/** An unanswered invitation to a hosted room: what the service tells before accepting. */
+export type RoomInvite = {id: string; roomId: string; roomName: string; invitedBy: string; role: 'member' | 'guest'; agents: number; createdAt: number; expiresAt: number};
+
+export const INVITED_STATE = 'invited';
+
+/** Rows for rooms this account was invited into and has not answered; nothing from inside the room is known yet. */
+export function invitationRows(invitations: RoomInvite[]): ListRow[] {
+    return invitations.map((invitation) => {
+        const values = {name: invitation.roomName, state: INVITED_STATE, agents: 'Unknown', people: `by ${invitation.invitedBy}`, sessions: 'Not joined', created: new Date(invitation.createdAt).toISOString(), expires: 'Unknown', id: invitation.roomId, relay: `answer by ${new Date(invitation.expiresAt).toISOString().slice(0, 10)}`};
+        return {id: invitation.roomId, roomId: invitation.roomId, values, sortValues: {...values, agents: null, people: null, sessions: 0, created: invitation.createdAt, expires: null}};
+    });
+}
+
 export function sessionRows(store: LocalStore, entry: RoomListEntry): ListRow[] {
     return entry.room.sessions.map((session) => {
         const member = entry.snapshot?.participants.find((person) => person.participantId === session.participantId);

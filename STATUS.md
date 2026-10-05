@@ -1,6 +1,6 @@
 # Where PairLobby is
 
-Updated 2026-10-01. Local CLI version: **0.4.0**. This describes the current checkout and locally installed build, not a guarantee that public downloads or production services contain the same changes.
+Updated 2026-10-05, for the release after **0.9.2**. `pairlobby --version` says what a device runs, and [the releases page](https://github.com/PairLobby/app/releases) what is published. This describes the current checkout, not a guarantee that a given download or the hosted service contains the same changes: the website installers still pin an old build, so install from a release archive or a checkout.
 
 ## What works
 
@@ -10,13 +10,20 @@ Updated 2026-10-01. Local CLI version: **0.4.0**. This describes the current che
 - Durable execution/outbox state, serial per-agent dispatch, duplicate suppression, and visible failures instead of blindly replaying uncertain work.
 - Per-message action stages, explicit no-action/declined decisions, stage-specific failures, and author-controlled linking of existing answers to recover unresolved requests.
 - Human profiles, room-only `/name`, saved human rejoining, and a terminal rejoin command printed on exit.
-- Direct/multiple mentions, untagged human chat as `@all`, room-wide sequential turns, parallel work, pass, skip, and cancellation fencing.
+- Direct/multiple mentions, untagged human chat as `@all`, room-wide sequential turns, parallel work, pass, skip, and cancellation fencing. Rooms of only people work too: with no agent to ask, untagged messages are posted to the room.
 - Reply selection and quotes, separate transport Received and explicit model Read receipts, separate explicit Working declarations, provider animations, and native terminal text selection through F4 or `/select`.
 - Human-local spawning through `/claude`, `/codex`, `/qwen`, `/spawn`, and `pairlobby spawn`. Includes model/name/workdir, supported Codex/Claude effort, separate identities, startup recovery, and local start/stop controls.
 - `/agents`: a table of all agents currently in the room, with Origin, known model/conversation/invite metadata, and the last retained sent-message timestamp. Double-click/Enter copies complete cell values; navigation, refresh, paging, resizing, and draft-preserving close are covered.
-- Device-local room discovery through `pairlobby find`; account-wide and network discovery remain planned.
+- Device-local room discovery through `pairlobby find`, and the account's hosted rooms through `pairlobby find online`.
+- Other devices without an account: `pairlobby settings network-sharing tailscale|lan` shares this device's relay; `pairlobby join <code>` finds the relay that issued a code on the local network or tailnet; `create --open-local` lets anyone there join by room name; the room list shows rooms open on the network.
+- Hosted rooms across accounts: `/invite @handle`, `/invites`, `pairlobby invitations` with accept and decline, and `pairlobby profile --username`. Answering an invitation is for a person; agents are refused. This needs the hosted service's matching release.
+- `/interrupt` and `pairlobby interrupt` stop one agent's current task, hold its queue, and report an acknowledged outcome.
+- Auto-close per room (idle, age, or once agents and guests have left), with a device default and `/settings` row.
+- Browser-approved terminal login with per-terminal revocable tokens; update checks and installs from GitHub releases; automatic releases on merge.
+- Interactive `pairlobby settings` for this device and `/settings` for a room.
+- A second relay implementation on Durable Objects (`packages/durable-runtime`) that runs on Celld or Cloudflare and passes the same store contracts.
 
-The latest full local run recorded **421 passing tests** (2026-09-30), including real MCP/HTTP reply-subscription checks. Spawning/provider-option tests use deterministic provider fixtures. Earlier real Codex and Claude checks, and Qwen's real-CLI/loopback-provider check, are historical evidence described in the [capability matrix](integrations/README.md#capability-evidence). They do not certify new live-provider behavior, every terminal host, overnight idle, or production load.
+The latest full local run recorded **730 passing tests** (2026-10-05), including real MCP/HTTP reply-subscription checks, plus terminal tests driven through a real PTY. Spawning/provider-option tests use deterministic provider fixtures. Earlier real Codex and Claude checks, and Qwen's real-CLI/loopback-provider check, are historical evidence described in the [capability matrix](integrations/README.md#capability-evidence). They do not certify new live-provider behavior, every terminal host, overnight idle, or production load.
 
 ## Read first
 
@@ -25,6 +32,7 @@ The latest full local run recorded **421 passing tests** (2026-09-30), including
 - [Agent table and copying](README.md#agent-table-and-cell-copying).
 - [Lifecycle and spawn recovery](README.md#agent-lifecycle-and-spawn-recovery).
 - [Group conversations](README.md#multiple-agents-and-speaking-turns).
+- [Other devices on your network](README.md#other-devices-on-your-network) and [inviting people by @handle](README.md#inviting-people-by-handle).
 - [Runtime setup/capabilities](integrations/README.md) and [validation procedures](integrations/SPIKE.md).
 
 These tracked guides are the published references. Workspace `docs/` and `.docs/` are local-only planning/diagnostic material and may be absent from a clone.
@@ -43,7 +51,7 @@ These tracked guides are the published references. Workspace `docs/` and `.docs/
 | Agent table | Snapshot of all currently joined agents. Private remote or unrecorded historical metadata is labelled unavailable. Origin does not identify the physical device. |
 | Clipboard | Native OS tools when available; terminal clipboard fallback reports a request, not confirmed success. Native clipboard behavior on every OS/host is not certified by fixture tests. |
 | Control | Listing every agent does not grant permission to start/stop agents created by another human session. |
-| Pause/interruption | Pause prevents later dispatch; stop ends a receiver. Neither guarantees every running tool descendant stopped. `/interrupt` remains planned. |
+| Pause/interruption | Pause prevents later dispatch; stop ends a receiver; `/interrupt` cancels the current turn and reports what the runtime acknowledged. None guarantees every running tool descendant stopped, and `/interrupt` is not verified against live inference on every runtime. |
 | Recovery | Spawn retries reuse their saved operation/identity; uncertain inference jobs are not automatically replayed. |
 | Restart | Receivers survive terminal closure. Automatic receiver restart after reboot is not implemented. |
 | Delegation | An activated native Claude channel can notify the same conversation of an explicitly watched outgoing reply. Managed-receiver task suspension/resumption remains planned. Reply notifications replay until handled; consumers must avoid repeating side effects. |
@@ -51,7 +59,10 @@ These tracked guides are the published references. Workspace `docs/` and `.docs/
 
 ## Remaining work and known limits
 
-- Account-wide/network room discovery, finer-grained command permissions/presets, model metadata sharing/name-hover details, runtime model completion, and Qwen effort mapping remain follow-ups.
+- Finer-grained command permissions/presets, cross-team account discovery with verified presence, model metadata sharing/name-hover details, runtime model completion, and Qwen effort mapping remain follow-ups.
+- Invitations by email, contacts, organizations, and the website's handle and invitation pages are not built. Inviting by handle is for hosted rooms only.
+- Sharing a relay with `network-sharing lan` is plain HTTP; `tailscale` relies on Tailscale's encryption. Finding relays on the local network needs the macOS Local Network permission for the terminal app, and tailnet discovery only tries port 8790. None of this has been exercised across more than two real devices.
+- The Durable Object relay speaks HTTP only and is not qualified on a multi-node Celld fleet.
 - Native graphics in actual iTerm2/Ghostty windows and broader Windows/Warp terminal support still need validation; portable character output and protocol/PTY paths have tests.
 - Receiver descendants, approval forwarding, native Claude channel acceptance, hosted receiver end-to-end/reconnect/load checks, and overnight idle need additional testing.
 - Members may invite other members; invitations never grant controller privileges. Room text cannot broaden runtime permissions.

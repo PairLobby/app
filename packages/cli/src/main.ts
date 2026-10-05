@@ -26,7 +26,8 @@ import {pickExpiry} from './picker.js';
 import {DEFAULT_LOCAL_SERVER, DEFAULT_RELAY_PORT, UsageError, controllerCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
 import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
-import {accountToken, isOnlineKey, loginOnline, logoutOnline, matchOnlineRoom, onlineAccount, onlineOrigin, onlineRooms, resolveOnlineKey} from './online.js';
+import {acceptInvitation, accountToken, declineInvitation, isOnlineKey, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineOrigin, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
+import type {ReceivedInvitation} from './online.js';
 import {receiverStatus, runReceiver, startReceiver, stopReceiver} from './receiver.js';
 import type {ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
@@ -110,6 +111,7 @@ const OPTIONS = {
     host: {type: 'string'},
     lan: {type: 'boolean'},
     tailscale: {type: 'boolean'},
+    username: {type: 'string'},
     'open-local': {type: 'boolean'},
     token: {type: 'boolean'},
     yes: {type: 'boolean'},
@@ -150,7 +152,11 @@ const HELP = `pairlobby
                                     join a room served by another device; a bare name or address means port 8790
   pairlobby join online <key>       join a hosted room without a URL or room ID
   pairlobby join online <room>      join one of your account's rooms from any logged-in device
-  pairlobby find online [--json]    list the rooms your account owns or is allowed into
+  pairlobby find online [--json]    list the rooms your account owns, is allowed into, or was invited to
+  pairlobby invitations [--json]    invitations to hosted rooms that you have not answered
+  pairlobby invitations accept <room>   accept one (a person only), then: pairlobby join online <room>
+  pairlobby invitations decline <room>
+  pairlobby profile --username <handle>  choose the handle others invite you by: /invite @handle
   pairlobby join <code> --runtime codex|claude|qwen
                                     join as a managed agent; receive automatically
   pairlobby receiver status|start|stop
@@ -398,6 +404,8 @@ async function main(argv: string[]): Promise<number> {
             return sessionInfo(store, values);
         case 'profile':
             return profileCommand(store, values);
+        case 'invitations':
+            return invitationsCommand(store, values, positionals[1], positionals[2]);
         case 'settings':
             return settingsCommand(store, values, positionals[1], positionals[2]);
         case 'forget':
@@ -448,6 +456,18 @@ function flag(values: Values, key: keyof typeof OPTIONS): boolean {
  * an unreachable relay is reported as unreachable rather than silently shown
  * with stale local numbers.
  */
+/** Invitations in the room list, for a device that is logged in. The list asks in the background and shows none on any failure. */
+function listedInvitations(store: LocalStore): RoomBrowserOptions['invitations'] {
+    try {
+        if (!accountToken(store)) {
+            return undefined;
+        }
+    } catch {
+        return undefined;
+    }
+    return {list: () => receivedInvitations(store), decline: (id) => declineInvitation(store, id)};
+}
+
 /** The room list's search for rooms open on the network, unless the device setting or PAIRLOBBY_NO_NETWORK_SEARCH turns it off. */
 function networkRoomSearch(store: LocalStore): RoomBrowserOptions['discover'] {
     if (process.env['PAIRLOBBY_NO_NETWORK_SEARCH'] || !store.settings().networkRooms) {
@@ -469,16 +489,19 @@ async function listRooms(store: LocalStore, values: Values): Promise<number> {
         let sessionId: string | undefined;
         let notice = '';
         while (true) {
-            const selection = await new RoomBrowser(store, {sort, roomId, sessionId, notice, discover: networkRoomSearch(store)}).run();
+            const selection = await new RoomBrowser(store, {sort, roomId, sessionId, notice, discover: networkRoomSearch(store), invitations: listedInvitations(store)}).run();
             if (!selection) {
                 return 0;
             }
             roomId = selection.roomId;
             sessionId = 'sessionId' in selection ? selection.sessionId : undefined;
             notice = '';
-            // A room found on the network is joined first; joining then enters its chat.
-            const command = 'joinAt' in selection ? ['join', 'local', roomId, '--server', selection.joinAt, '--human'] : ['chat', '--human', '--room', roomId, '--session', sessionId!];
+            // A room found on the network is joined first, and an invitation accepted first; joining then enters the chat.
+            const command = 'joinAt' in selection ? ['join', 'local', roomId, '--server', selection.joinAt, '--human'] : 'invitationId' in selection ? ['join', 'online', roomId, '--human'] : ['chat', '--human', '--room', roomId, '--session', sessionId!];
             try {
+                if ('invitationId' in selection) {
+                    await acceptInvitation(store, selection.invitationId);
+                }
                 // Chat deliberately exits its process on /quit. Give it the
                 // terminal in a child so quitting returns to this navigator.
                 notice = await new Promise<string>((resolve, reject) => {
@@ -546,7 +569,7 @@ async function findOnline(store: LocalStore, values: Values): Promise<number> {
     for (const room of rooms) {
         const people = room.participants.map((participant) => `${participant.displayName}${participant.kind === 'agent' ? ' (agent)' : ''}`).join(', ') || 'nobody joined';
         const state = room.lifecycle === 'open' ? '' : ` · ${room.lifecycle}`;
-        out(`${room.name}  ${room.roomId}${room.owner ? ' · yours' : ''}${room.private ? ' · private' : ''}${state}`);
+        out(`${room.name}  ${room.roomId}${room.owner ? ' · yours' : ''}${room.shared ? ' · shared with you' : ''}${room.private ? ' · private' : ''}${state}`);
         out(`  ${people}`);
     }
     out('');
@@ -886,8 +909,77 @@ function validatedName(name: string): string {
     return parsed.data;
 }
 
-/** Shows or sets this device's default identity. */
-function profileCommand(store: LocalStore, values: Values): number {
+function invitationTerms(invitation: ReceivedInvitation): string {
+    const agents = invitation.agents === 0 ? 'no agents' : `may bring ${invitation.agents} agent${invitation.agents === 1 ? '' : 's'}`;
+    return `${invitation.role === 'guest' ? 'read-only observer' : 'member'}, ${agents}`;
+}
+
+/**
+ * Invitations this account received: list them, accept one, or decline one.
+ * Answering is for a person. An agent may list them and tell its person, but
+ * joining a room on someone's say-so is not an agent's decision.
+ */
+async function invitationsCommand(store: LocalStore, values: Values, action?: string, reference?: string): Promise<number> {
+    if (action === undefined) {
+        const invitations = await receivedInvitations(store);
+        if (flag(values, 'json')) {
+            json({count: invitations.length, invitations});
+            return 0;
+        }
+        if (invitations.length === 0) {
+            out('No invitations waiting.');
+            return 0;
+        }
+        for (const invitation of invitations) {
+            out(`${invitation.roomName}  ${invitation.roomId}`);
+            out(`  invited by ${invitation.invitedBy} · ${invitationTerms(invitation)} · expires ${new Date(invitation.expiresAt).toLocaleDateString()}`);
+        }
+        out('');
+        out('Accept:  pairlobby invitations accept <room name or id>');
+        out('Decline: pairlobby invitations decline <room name or id>');
+        return 0;
+    }
+    if (!['accept', 'decline'].includes(action) || !reference) {
+        throw new UsageError('pairlobby invitations, pairlobby invitations accept <room>, or pairlobby invitations decline <room>');
+    }
+    if (detectRuntime().runtime !== undefined && !flag(values, 'human')) {
+        throw new UsageError('An invitation is answered by a person, not an agent. Tell your person about it; they run this in their own terminal (or add --human if a person is typing here).');
+    }
+    const invitation = matchInvitation(await receivedInvitations(store), reference);
+    if (action === 'decline') {
+        await declineInvitation(store, invitation.id);
+        if (flag(values, 'json')) {
+            json({roomId: invitation.roomId, declined: true});
+            return 0;
+        }
+        out(`Declined the invitation to ${invitation.roomName}.`);
+        return 0;
+    }
+    const accepted = await acceptInvitation(store, invitation.id);
+    if (flag(values, 'json')) {
+        json({...accepted, accepted: true});
+        return 0;
+    }
+    out(`Accepted. ${accepted.roomName} is now one of your account's rooms${accepted.role === 'guest' ? ', as a read-only observer' : ''}.`);
+    out('');
+    out(`  pairlobby join online ${accepted.roomId}                      # your terminal`);
+    if (accepted.role !== 'guest' && invitation.agents > 0) {
+        out(`  pairlobby join online ${accepted.roomId} --runtime claude     # an agent, up to ${invitation.agents} at once`);
+    }
+    return 0;
+}
+
+/** Shows or sets this device's default identity, and with --username the account's handle. */
+async function profileCommand(store: LocalStore, values: Values): Promise<number> {
+    if (str(values, 'username') !== undefined) {
+        const handle = await setHandle(store, str(values, 'username')!);
+        if (flag(values, 'json')) {
+            json({handle});
+            return 0;
+        }
+        out(`Your handle is @${handle}. Room owners invite you with /invite @${handle}.`);
+        return 0;
+    }
     if (flag(values, 'clear')) {
         store.clearProfile();
         note('profile cleared');
@@ -1121,7 +1213,8 @@ async function joinRoom(store: LocalStore, values: Values, code?: string, online
         return joinLocalRoom(store, values, code);
     }
     // Online, a dash-grouped key is an invite; anything else names one of the account's own rooms.
-    const accountRoom = online && !isOnlineKey(code) ? await onlineRooms(store).then(({server, rooms}) => ({server, room: matchOnlineRoom(rooms, code)})) : null;
+    // A room someone invited this account into lives on their relay, so each room names its own.
+    const accountRoom = online && !isOnlineKey(code) ? await onlineRooms(store).then(({rooms}) => matchOnlineRoom(rooms, code)).then((room) => ({server: room.server, room})) : null;
     const serverUrl = accountRoom ? accountRoom.server : online ? await resolveOnlineKey(store, code) : (link?.serverUrl ?? (namesNoRelay(store, values) && !code.startsWith('rm_') ? await discoverRelay(code) : resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')})));
     const identity = identityFrom(store, values, 'agent');
     const token = new URL(serverUrl).origin === onlineOrigin() ? accountToken(store) : undefined;

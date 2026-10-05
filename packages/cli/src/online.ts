@@ -19,8 +19,10 @@ export function onlineOrigin(): string {
 export function accountToken(store: LocalStore, origin = onlineOrigin()) {
     return process.env['PAIRLOBBY_ACCOUNT_TOKEN'] ?? store.credential('online-account', origin);
 }
-async function request<T>(path: string, token?: string): Promise<T> {
-    const response = await fetch(onlineOrigin() + path, {headers: token ? {'x-pairlobby-account-token': token} : {}, redirect: 'error', signal: AbortSignal.timeout(15000)});
+type RequestBody = {method: 'POST' | 'PUT'; body: unknown};
+
+async function request<T>(path: string, token?: string, send?: RequestBody): Promise<T> {
+    const response = await fetch(onlineOrigin() + path, {...(send ? {method: send.method, body: JSON.stringify(send.body)} : {}), headers: {...(token ? {'x-pairlobby-account-token': token} : {}), ...(send ? {'content-type': 'application/json'} : {})}, redirect: 'error', signal: AbortSignal.timeout(15000)});
     const data = (await response.json()) as {error?: {message?: string}};
     if (!response.ok) {
         throw new UsageError(data.error?.message ?? 'Online service unavailable');
@@ -28,9 +30,57 @@ async function request<T>(path: string, token?: string): Promise<T> {
     return data as T;
 }
 export async function onlineAccount(store: LocalStore) {
-    const result = await request<{email: string; userId: string; server: string}>('/api/online/account', accountToken(store));
+    const result = await request<{email: string; userId: string; server: string; handle?: string | null}>('/api/online/account', accountToken(store));
     validateRelay(result.server);
     return result;
+}
+
+function requireToken(store: LocalStore, purpose: string): string {
+    const token = accountToken(store);
+    if (!token) {
+        throw new UsageError(`Run pairlobby login first to ${purpose}`);
+    }
+    return token;
+}
+
+/** Sets this account's handle, the name others invite it by. The service enforces the rules and answers with the stored form. */
+export async function setHandle(store: LocalStore, handle: string): Promise<string> {
+    return (await request<{handle: string}>('/api/online/handle', requireToken(store, 'choose a handle'), {method: 'PUT', body: {handle}})).handle;
+}
+
+/** An invitation this account received and has not answered. `guest` is a read-only observer. */
+export type ReceivedInvitation = {id: string; roomId: string; roomName: string; invitedBy: string; role: 'member' | 'guest'; agents: number; createdAt: number; expiresAt: number};
+
+export async function receivedInvitations(store: LocalStore): Promise<ReceivedInvitation[]> {
+    return (await request<{invitations: ReceivedInvitation[]}>('/api/online/invitations', requireToken(store, 'see your invitations'))).invitations;
+}
+
+export type AcceptedInvitation = {roomId: string; roomName: string; role: 'member' | 'guest'; server: string};
+
+/** Accepts an invitation, which is what puts this account on the room's allowlist. Joining is a separate step. */
+export async function acceptInvitation(store: LocalStore, id: string): Promise<AcceptedInvitation> {
+    const result = await request<AcceptedInvitation>(`/api/online/invitations/${id}/accept`, requireToken(store, 'accept an invitation'), {method: 'POST', body: {}});
+    return {...result, server: validateRelay(result.server)};
+}
+
+export async function declineInvitation(store: LocalStore, id: string): Promise<void> {
+    await request(`/api/online/invitations/${id}/decline`, requireToken(store, 'decline an invitation'), {method: 'POST', body: {}});
+}
+
+/** Picks one invitation by its id, room id, or room name, and says so when a name is shared. */
+export function matchInvitation(invitations: ReceivedInvitation[], reference: string): ReceivedInvitation {
+    const exact = invitations.find((invitation) => invitation.id === reference || invitation.roomId === reference);
+    if (exact) {
+        return exact;
+    }
+    const byName = invitations.filter((invitation) => invitation.roomName.toLowerCase() === reference.toLowerCase());
+    if (byName.length === 1) {
+        return byName[0]!;
+    }
+    if (byName.length > 1) {
+        throw new UsageError(`Several invitations are to rooms called "${reference}"; pass a room id: ${byName.map((invitation) => invitation.roomId).join(', ')}`);
+    }
+    throw new UsageError(`No unanswered invitation to "${reference}"; run pairlobby invitations to list them`);
 }
 export type OnlineRoom = {
     roomId: string;
@@ -42,6 +92,10 @@ export type OnlineRoom = {
     owner: boolean;
     participants: OnlineRoomParticipant[];
     latestSeq: number;
+    /** The relay this room lives on. A room someone invited you into is on their relay, not yours. */
+    server: string;
+    /** True for a room in someone else's workspace that this account accepted an invitation to. */
+    shared?: boolean;
 };
 
 type OnlineRoomParticipant = {displayName: string; kind: string};
@@ -50,12 +104,11 @@ export type OnlineRooms = {server: string; rooms: OnlineRoom[]};
 
 /** Rooms this account owns or is allowed into, from whichever device asks. */
 export async function onlineRooms(store: LocalStore): Promise<OnlineRooms> {
-    const token = accountToken(store);
-    if (!token) {
-        throw new UsageError('Run pairlobby login first to see your account rooms');
-    }
-    const result = await request<OnlineRooms>('/api/online/rooms', token);
-    return {server: validateRelay(result.server), rooms: result.rooms};
+    const result = await request<{server: string; rooms: Omit<OnlineRoom, 'server'>[]; shared?: OnlineRoom[]}>('/api/online/rooms', requireToken(store, 'see your account rooms'));
+    const server = validateRelay(result.server);
+    // A service from before invitations sends no shared rooms.
+    const shared = (result.shared ?? []).map((room) => ({...room, server: validateRelay(room.server), shared: true}));
+    return {server, rooms: [...result.rooms.map((room) => ({...room, server})), ...shared]};
 }
 
 /** An online key is dash-grouped, like ABCD-EFGH-JKMN; anything else names a room. */

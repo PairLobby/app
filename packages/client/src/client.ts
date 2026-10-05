@@ -66,6 +66,9 @@ export interface JoinedRoom {
     room: RoomSnapshot;
 }
 
+/** An invitation to a hosted room, as its owner and admins see it. `guest` is a read-only observer. */
+export type RoomInvitation = {id: string; handle: string; role: 'member' | 'guest'; agents: number; state: 'pending' | 'accepted'; createdAt: number; expiresAt: number};
+
 /** A relay's answer to an invite probe: it issued a matching code, it did not, it predates probes, or it could not be asked. */
 export type InviteProbeResult = 'known' | 'unknown' | 'unsupported' | 'unreachable';
 
@@ -375,6 +378,25 @@ export class PairLobbyClient {
         }
     }
 
+    /**
+     * Invites an account to a hosted room by its handle. The room credential must be
+     * the owner's or an admin's, and this client needs the inviter's account token:
+     * the person invited is told who asked.
+     */
+    async inviteAccount(roomId: string, credential: string, handle: string, role: 'member' | 'observer' = 'member'): Promise<RoomInvitation> {
+        return (await this.call<{invitation: RoomInvitation}>('POST', `/v1/rooms/${roomId}/invitations`, credential, {handle, role})).invitation;
+    }
+
+    /** A hosted room's unanswered and accepted invitations, newest first. */
+    async roomInvitations(roomId: string, credential: string): Promise<RoomInvitation[]> {
+        return (await this.call<{invitations: RoomInvitation[]}>('GET', `/v1/rooms/${roomId}/invitations`, credential)).invitations;
+    }
+
+    /** Withdraws an invitation nobody has answered yet. */
+    async revokeInvitation(roomId: string, credential: string, invitationId: string): Promise<void> {
+        await this.call('DELETE', `/v1/rooms/${roomId}/invitations/${invitationId}`, credential);
+    }
+
     setLocalJoin(roomId: string, credential: string, localJoin: boolean): Promise<RoomEventResult> {
         return this.call('POST', `/v1/rooms/${roomId}/local-access`, credential, {localJoin});
     }
@@ -494,7 +516,7 @@ export class PairLobbyClient {
         if (credential) {
             headers.set('authorization', `Bearer ${credential}`);
         }
-        if (this.accountToken && method === 'POST' && (path === '/v1/rooms' || path === '/v1/invites/redeem' || path.endsWith('/account-join'))) {
+        if (this.accountToken && method === 'POST' && (path === '/v1/rooms' || path === '/v1/invites/redeem' || path.endsWith('/account-join') || path.endsWith('/invitations'))) {
             headers.set('x-pairlobby-account-token', this.accountToken);
         }
         if (body !== undefined) {
