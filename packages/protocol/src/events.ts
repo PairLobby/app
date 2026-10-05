@@ -84,6 +84,13 @@ const roomExpiryChangedPayload = z.object({expiresAt: z.number().int().nonnegati
 /** `inviteRole` is present only when the invitation default changed; older clients ignore it. */
 const roomAccessChangedPayload = z.object({joinPolicy: z.enum(['invite_only', 'open_to_guests']), inviteRole: z.enum(['member', 'guest']).optional()});
 
+/**
+ * An account was asked into the room by its handle, or that invitation was withdrawn.
+ * Only a relay with accounts records these; the person's later arrival is an ordinary join.
+ */
+const roomInvitationChangedPayload = z.object({handle: z.string().min(1).max(64), state: z.enum(['invited', 'withdrawn']), role: z.enum(['member', 'guest']).optional(), agents: z.number().int().nonnegative().optional()});
+export type RoomInvitationChange = z.infer<typeof roomInvitationChangedPayload>;
+
 /** Event types a client may submit. Membership and control events are server-authored. */
 export const CLIENT_EVENT_TYPES = ['message', 'message.received', 'message.delivery_failed', 'handover.offered', 'handover.accepted', 'handover.declined', 'control.ack'] as const;
 
@@ -118,6 +125,7 @@ export const EventBody = z.discriminatedUnion('type', [
     z.object({type: z.literal('room.expiry_changed'), payload: roomExpiryChangedPayload}),
     z.object({type: z.literal('room.access_changed'), payload: roomAccessChangedPayload}),
     z.object({type: z.literal('room.local_join_changed'), payload: z.object({localJoin: z.boolean()})}),
+    z.object({type: z.literal('room.invitation_changed'), payload: roomInvitationChangedPayload}),
     z.object({type: z.literal('room.lock_changed'), payload: z.object({locked: z.boolean()})}),
     z.object({type: z.literal('participant.mute_changed'), payload: z.object({participantId: ParticipantId, muted: z.boolean()})}),
     z.object({type: z.literal('participant.role_changed'), payload: z.object({participantId: ParticipantId, role: ParticipantRole, previousRole: ParticipantRole})}),

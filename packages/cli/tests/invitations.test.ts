@@ -10,6 +10,7 @@ import {startServer} from '@pairlobby/local-server';
 import type {RunningServer} from '@pairlobby/local-server';
 
 import {runRoomCommand} from '../src/chat-commands.js';
+import {readInvitationNotice} from '../src/invitation-notice.js';
 import {startFakeAccountService} from './fake-account-service.js';
 import type {FakeAccountService} from './fake-account-service.js';
 
@@ -55,6 +56,7 @@ test('test_a_person_lists_declines_and_accepts_invitations_then_joins_the_shared
 
     const listed = await cli(['invitations']);
     expect(listed.stdout).toContain('Design review');
+    expect(readInvitationNotice(new LocalStore(join(directory, 'device'))).waiting.map((entry) => entry.roomName)).toEqual(['Design review', 'Other room']);
     expect(listed.stdout).toMatch(/invited by @maria · member, may bring 1 agent · expires/);
     expect(JSON.parse((await cli(['invitations', '--json'])).stdout)).toMatchObject({count: 2});
 
@@ -68,6 +70,8 @@ test('test_a_person_lists_declines_and_accepts_invitations_then_joins_the_shared
     expect(accepted.stdout).toContain("Accepted. Design review is now one of your account's rooms.");
     expect(accepted.stdout).toContain(`pairlobby join online ${owner.roomId}`);
     expect((await cli(['invitations'])).stdout).toContain('No invitations waiting.');
+    // Listing and answering keep the saved reminder current, so it never nags about something already answered.
+    expect(readInvitationNotice(new LocalStore(join(directory, 'device'))).waiting).toEqual([]);
 
     expect((await cli(['find', 'online'])).stdout).toMatch(/Design review {2}rm_\S+ · shared with you/);
     const joined = JSON.parse((await cli(['join', 'online', 'Design review', '--human', '--as', 'hugo', '--json'])).stdout) as {roomId: string; serverUrl: string; role: string};

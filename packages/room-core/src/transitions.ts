@@ -10,6 +10,7 @@ import type {
     NameSource,
     ParticipantRecord,
     ParticipantRole,
+    RoomInvitationChange,
     RoomPolicy,
     RoomRecord,
     SendEventRequest
@@ -397,6 +398,20 @@ export function joinOnLocalNetwork(view: RoomView, input: Omit<JoinRoomInput, 'r
         throw new ProtocolError('unauthorized', 'this room is not open to the local network; ask its owner for an invite code');
     }
     return joinRoom(view, {...input, role: 'member'}, ctx);
+}
+
+/**
+ * Records that an account was invited by handle, or that the invitation was withdrawn,
+ * so the transcript explains who was asked in. The relay that holds accounts calls
+ * this after it has stored or removed the invitation; owner or admin only.
+ */
+export function recordInvitation(view: RoomView, credentialHash: string, change: RoomInvitationChange, ctx: CoreContext): Mutation {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
+    const {room, event} = appendEvent(view.room, {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'room.invitation_changed', payload: change}}, ctx);
+    return emptyMutation(room, event);
 }
 
 export function setExpiry(view: RoomView, credentialHash: string, expiresAt: number | null, ctx: CoreContext): Mutation {

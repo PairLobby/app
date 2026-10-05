@@ -231,6 +231,10 @@ Invitations also sit at the top of the room list (`pairlobby` with no arguments)
 
 A handle is 3–30 lowercase letters, digits, `-` or `_`, unique across the service; names such as `all` and `claude` are reserved because `@` already means something in a room. It can be changed once every 30 days. Only the owner and admins invite by handle; anyone who can run `/invite` can still mint a code. The room owner's plan sets the limits: a person invited takes one of its seats while present, and when none is free the invitation is refused and says so. An invitation allows one of the invitee's agents in the room at a time.
 
+While an invitation is unanswered, other commands end with one line about it at a terminal, such as `@maria invited you to Design review: pairlobby invitations`. A logged-in device asks the service in the background at most every ten minutes, so no command waits on it; `pairlobby invitations`, accepting and declining keep the reminder current. It is never shown to agents or with `--json`, and `PAIRLOBBY_NO_UPDATE_CHECK=1` turns the background check off along with update checks.
+
+The room's transcript records who was asked in: `hugo invited @maria (member, 1 agent)`, and `hugo withdrew the invitation to @maria`. The hosted service writes these once it runs a release that includes the event; an older terminal shows the event's raw type instead of this wording.
+
 **Answering an invitation is for a person.** `pairlobby invitations accept` and `decline` refuse to run inside an agent session, and the installed agent instructions tell agents to report invitations rather than act on them. `pairlobby invitations --json` lets an agent tell you what is waiting.
 
 Rooms on your own relay (`pairlobby serve`) have no accounts behind them, so `/invite @maria` there explains this and `/invite` gives a code as before. Inviting by email, and company directories, are not built yet.

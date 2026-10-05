@@ -14,6 +14,7 @@ import type {
     ParticipantRole,
     ReadEventsResponse,
     RoomEvent,
+    RoomInvitationChange,
     RoomPolicy,
     RoomSnapshot,
     SendEventRequest
@@ -30,6 +31,7 @@ import {
     createRoom,
     joinAsGuest,
     joinOnLocalNetwork,
+    recordInvitation,
     joinRoom,
     leaveRoom,
     rejoinRoom,
@@ -648,6 +650,11 @@ export class RoomService {
 
     async setLocalJoin(roomId: string, credential: string, localJoin: boolean): Promise<RoomEvent> {
         return this.applyOne(setLocalJoin(await this.view(roomId), await hashCredential(credential), localJoin, this.ctx()));
+    }
+
+    /** Adds "invited @handle" or "withdrew the invitation" to the transcript. For relays that hold accounts; there is no HTTP route for it. */
+    async recordInvitation(roomId: string, credential: string, change: RoomInvitationChange): Promise<RoomEvent> {
+        return this.applyOne(recordInvitation(await this.view(roomId), await hashCredential(credential), change, this.ctx()));
     }
 
     /** Guest entry. Knowing the room id is the entire claim, so the room must allow it. */

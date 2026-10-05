@@ -32,6 +32,7 @@ import {receiverStatus, runReceiver, startReceiver, stopReceiver} from './receiv
 import type {ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
 import {discoverableNote, joinCommand, localOnlyNote, parseJoinLink, shareTarget} from './share.js';
+import {invitationNotice, rememberInvitations, scheduleInvitationCheck} from './invitation-notice.js';
 import {DEFAULT_LOCAL_ROOMS, findLocalRoom, findRelayForInvite, listLocalRooms} from './relay-discovery.js';
 import {routeForRoom} from './mentions.js';
 import type {RoutedChatMessage} from './mentions.js';
@@ -248,6 +249,7 @@ async function main(argv: string[]): Promise<number> {
     }
     const store = new LocalStore();
     scheduleBackgroundCheck(store, command);
+    scheduleInvitationCheck(store, command);
 
     switch (command) {
         case 'receiver-tools':
@@ -465,7 +467,14 @@ function listedInvitations(store: LocalStore): RoomBrowserOptions['invitations']
     } catch {
         return undefined;
     }
-    return {list: () => receivedInvitations(store), decline: (id) => declineInvitation(store, id)};
+    return {
+        list: async () => {
+            const invitations = await receivedInvitations(store);
+            rememberInvitations(store, invitations);
+            return invitations;
+        },
+        decline: (id) => declineInvitation(store, id),
+    };
 }
 
 /** The room list's search for rooms open on the network, unless the device setting or PAIRLOBBY_NO_NETWORK_SEARCH turns it off. */
@@ -922,6 +931,11 @@ function invitationTerms(invitation: ReceivedInvitation): string {
 async function invitationsCommand(store: LocalStore, values: Values, action?: string, reference?: string): Promise<number> {
     if (action === undefined) {
         const invitations = await receivedInvitations(store);
+        rememberInvitations(store, invitations);
+        // The detached half of the reminder: the list is saved, and nothing is printed.
+        if (flag(values, 'background')) {
+            return 0;
+        }
         if (flag(values, 'json')) {
             json({count: invitations.length, invitations});
             return 0;
@@ -945,9 +959,13 @@ async function invitationsCommand(store: LocalStore, values: Values, action?: st
     if (detectRuntime().runtime !== undefined && !flag(values, 'human')) {
         throw new UsageError('An invitation is answered by a person, not an agent. Tell your person about it; they run this in their own terminal (or add --human if a person is typing here).');
     }
-    const invitation = matchInvitation(await receivedInvitations(store), reference);
+    const received = await receivedInvitations(store);
+    const invitation = matchInvitation(received, reference);
+    // Once it is answered, either way, it is no longer waiting.
+    const answered = () => rememberInvitations(store, received.filter((candidate) => candidate.id !== invitation.id));
     if (action === 'decline') {
         await declineInvitation(store, invitation.id);
+        answered();
         if (flag(values, 'json')) {
             json({roomId: invitation.roomId, declined: true});
             return 0;
@@ -956,6 +974,7 @@ async function invitationsCommand(store: LocalStore, values: Values, action?: st
         return 0;
     }
     const accepted = await acceptInvitation(store, invitation.id);
+    answered();
     if (flag(values, 'json')) {
         json({...accepted, accepted: true});
         return 0;
@@ -2204,9 +2223,14 @@ function remindAboutUpdate(argv: string[]): void {
         return;
     }
     try {
-        const notice = updateNotice(new LocalStore());
+        const store = new LocalStore();
+        const notice = updateNotice(store);
         if (notice) {
             note(notice);
+        }
+        const invited = argv[0] === 'invitations' ? null : invitationNotice(store);
+        if (invited) {
+            note(invited);
         }
     } catch {
         // A reminder is never worth an error.
