@@ -69,6 +69,19 @@ export function roomRows(entries: RoomListEntry[]): ListRow[] {
     });
 }
 
+/** A room found on the network and open to it, which this device has not joined. */
+export type NetworkRoom = {url: string; label: string; room: {roomId: string; name: string; createdAt: number; participantCount: number}};
+
+export const NETWORK_STATE = 'on network';
+
+/** Rows for rooms not saved here: the relay tells only a name, an age and a head count before joining. */
+export function networkRows(found: NetworkRoom[]): ListRow[] {
+    return found.map(({url, label, room}) => {
+        const values = {name: room.name, state: NETWORK_STATE, agents: 'Unknown', people: `${room.participantCount} in room`, sessions: 'Not joined', created: new Date(room.createdAt).toISOString(), expires: 'Unknown', id: room.roomId, relay: label === url || label === 'local network' ? url : `${url} (${label})`};
+        return {id: room.roomId, roomId: room.roomId, values, sortValues: {...values, agents: null, people: room.participantCount, sessions: 0, created: room.createdAt, expires: null}};
+    });
+}
+
 export function sessionRows(store: LocalStore, entry: RoomListEntry): ListRow[] {
     return entry.room.sessions.map((session) => {
         const member = entry.snapshot?.participants.find((person) => person.participantId === session.participantId);

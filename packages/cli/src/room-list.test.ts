@@ -70,3 +70,11 @@ test('missing credentials and unreachable rooms are unknown, never zero-member e
         rmSync(directory, {recursive: true, force: true});
     }
 });
+
+test('network rooms are listed as not joined, with only what the relay tells before joining', async () => {
+    const {networkRows} = await import('./room-list.js');
+    const [row] = networkRows([{url: 'http://100.111.208.123:8790', label: 'desktop', room: {roomId: 'rm_A', name: 'tower-test', createdAt: 0, participantCount: 3}}]);
+    expect(row).toMatchObject({id: 'rm_A', roomId: 'rm_A'});
+    expect(row!.values).toMatchObject({name: 'tower-test', state: 'on network', people: '3 in room', sessions: 'Not joined', relay: 'http://100.111.208.123:8790 (desktop)'});
+    expect(row!.sessionId).toBeUndefined();
+});

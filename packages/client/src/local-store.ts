@@ -90,6 +90,8 @@ export interface Settings {
     defaultAutoClose: string;
     /** Which other devices this device's relay (`pairlobby serve`) accepts: none, Tailscale peers, or the local network. */
     relayNetwork: 'off' | 'tailscale' | 'lan';
+    /** Show rooms open to the local network or tailnet in the room list, which searches the network on each refresh. */
+    networkRooms: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -106,6 +108,7 @@ export const DEFAULT_SETTINGS: Settings = {
     defaultPrivateOnline: false,
     defaultAutoClose: 'off',
     relayNetwork: 'off',
+    networkRooms: true,
 };
 
 export function dataDirectory(): string {

@@ -35,6 +35,7 @@ export const SETTING_KEYS: Record<string, SettingDefinition> = {
     'update-check': {field: 'updateCheck', kind: 'boolean', label: 'Check for updates', section: 'Updates', help: 'check GitHub for a new PairLobby release once a day'},
     'auto-update': {field: 'autoUpdate', kind: 'boolean', label: 'Install updates automatically', section: 'Updates', help: 'install new releases in the background (needs update-check)'},
     'network-sharing': {field: 'relayNetwork', kind: 'choice', label: 'Share this device\'s relay', section: 'Network', help: 'which other devices may join rooms on this device\'s relay: off, tailscale or lan; restart the relay to apply', choices: [{label: 'Off — only this device', value: 'off'}, {label: 'Tailscale — your devices on your tailnet, encrypted', value: 'tailscale'}, {label: 'Local network — any device on this Wi-Fi or LAN, unencrypted', value: 'lan'}]},
+    'network-rooms': {field: 'networkRooms', kind: 'boolean', label: 'Show rooms on my network', section: 'Network', help: 'list rooms open to the local network or tailnet beside your own; searches the network when the room list refreshes'},
 };
 
 /** Printed after network-sharing changes: a running relay keeps the setting it started with. */

@@ -361,9 +361,10 @@ export class PairLobbyClient {
      * cannot be reached, predates local joins, or does not count this device as local.
      * Never throws: a device looking for a room asks several relays.
      */
-    async localRooms(name: string, timeoutMs = 1500): Promise<LocalRoom[] | null> {
+    async localRooms(name?: string, timeoutMs = 1500): Promise<LocalRoom[] | null> {
         try {
-            const response = await fetch(`${this.serverUrl}/v1/rooms/local?name=${encodeURIComponent(name)}`, {headers: {[PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)}, redirect: 'error', signal: AbortSignal.timeout(timeoutMs)});
+            // Without a name the relay lists them all; one that predates listing answers 400, hence null.
+            const response = await fetch(`${this.serverUrl}/v1/rooms/local${name === undefined ? '' : `?name=${encodeURIComponent(name)}`}`, {headers: {[PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)}, redirect: 'error', signal: AbortSignal.timeout(timeoutMs)});
             if (!response.ok) {
                 return null;
             }

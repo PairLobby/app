@@ -31,7 +31,7 @@ import {receiverStatus, runReceiver, startReceiver, stopReceiver} from './receiv
 import type {ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
 import {discoverableNote, joinCommand, localOnlyNote, parseJoinLink, shareTarget} from './share.js';
-import {findLocalRoom, findRelayForInvite} from './relay-discovery.js';
+import {DEFAULT_LOCAL_ROOMS, findLocalRoom, findRelayForInvite, listLocalRooms} from './relay-discovery.js';
 import {routeForRoom} from './mentions.js';
 import type {RoutedChatMessage} from './mentions.js';
 import {tailscaleNames, tailscaleView} from './tailscale.js';
@@ -46,6 +46,7 @@ import {formatTurnQueue, runTurnCommand} from './turn-commands.js';
 import {spawnAgent, formatSpawnResult} from './spawn-agent.js';
 import {parseSpawnOptions, SPAWN_HELP} from './spawn-options.js';
 import {RoomBrowser} from './room-browser.js';
+import type {RoomBrowserOptions} from './room-browser.js';
 import {ROOM_COLUMNS, loadRoomList, roomListJson, roomRows, sortListRows} from './room-list.js';
 import {waitForReply} from './reply-wait.js';
 import {suspendedReplyParents} from './reply-watches.js';
@@ -125,7 +126,7 @@ const OPTIONS = {
 
 const HELP = `pairlobby
 
-  pairlobby, pairlobby list          interactive room/session table in a terminal
+  pairlobby, pairlobby list          interactive room/session table in a terminal; also lists rooms open on your network
   pairlobby list --json              JSON snapshot (no interactive UI)
   pairlobby list --sort name --desc  sort rooms; S or click a header in the table
   pairlobby find [--active] --json   ping known rooms; members, dates and latest message
@@ -447,6 +448,16 @@ function flag(values: Values, key: keyof typeof OPTIONS): boolean {
  * an unreachable relay is reported as unreachable rather than silently shown
  * with stale local numbers.
  */
+/** The room list's search for rooms open on the network, unless the device setting or PAIRLOBBY_NO_NETWORK_SEARCH turns it off. */
+function networkRoomSearch(store: LocalStore): RoomBrowserOptions['discover'] {
+    if (process.env['PAIRLOBBY_NO_NETWORK_SEARCH'] || !store.settings().networkRooms) {
+        return undefined;
+    }
+    // "This device's relay" is the one its commands use by default, which PAIRLOBBY_SERVER or the profile may name.
+    const deps = {...DEFAULT_LOCAL_ROOMS, local: resolveServer({server: store.profile().server})};
+    return (known, signal) => listLocalRooms(known, deps, signal);
+}
+
 async function listRooms(store: LocalStore, values: Values): Promise<number> {
     const key = str(values, 'sort') ?? 'name';
     if (!ROOM_COLUMNS.some((column) => column.key === key)) {
@@ -458,18 +469,20 @@ async function listRooms(store: LocalStore, values: Values): Promise<number> {
         let sessionId: string | undefined;
         let notice = '';
         while (true) {
-            const selection = await new RoomBrowser(store, {sort, roomId, sessionId, notice}).run();
+            const selection = await new RoomBrowser(store, {sort, roomId, sessionId, notice, discover: networkRoomSearch(store)}).run();
             if (!selection) {
                 return 0;
             }
             roomId = selection.roomId;
-            sessionId = selection.sessionId;
+            sessionId = 'sessionId' in selection ? selection.sessionId : undefined;
             notice = '';
+            // A room found on the network is joined first; joining then enters its chat.
+            const command = 'joinAt' in selection ? ['join', 'local', roomId, '--server', selection.joinAt, '--human'] : ['chat', '--human', '--room', roomId, '--session', sessionId!];
             try {
                 // Chat deliberately exits its process on /quit. Give it the
                 // terminal in a child so quitting returns to this navigator.
                 notice = await new Promise<string>((resolve, reject) => {
-                    const child = spawn(process.execPath, [process.argv[1]!, 'chat', '--human', '--room', roomId!, '--session', sessionId!], {stdio: ['inherit', 'inherit', 'pipe']});
+                    const child = spawn(process.execPath, [process.argv[1]!, ...command], {stdio: ['inherit', 'inherit', 'pipe']});
                     let error = '';
                     child.stderr.on('data', (chunk: Buffer) => { error = (error + chunk.toString()).slice(-4000); });
                     child.once('error', reject);

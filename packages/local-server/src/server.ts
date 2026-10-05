@@ -69,7 +69,7 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
     // Where each request's connection came from, read off the socket: no header can claim it.
     const peerAddresses = new WeakMap<Request, string>();
     const peerIsLocal = (request: Request) => isLocalNetworkAddress(peerAddresses.get(request) ?? '');
-    const localRooms = async (name: string) => store.localJoinRooms(name);
+    const localRooms = async (name?: string) => store.localJoinRooms(name);
     const route = createRouter({service, allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo, inviteProbe, peerIsLocal, localRooms});
 
     // One local relay owns this store. Serialize mutating requests so two

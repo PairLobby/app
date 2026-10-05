@@ -116,3 +116,11 @@ test('test_a_named_relay_is_the_only_one_asked', async () => {
     expect((await findLocalRoom('tower-test', deps, 'http://laptop:8790')).room.roomId).toBe('rm_C');
     expect(asked).toEqual(['http://laptop:8790']);
 });
+
+test('test_listing_gathers_open_rooms_across_relays_once_each_and_skips_saved_ones', async () => {
+    const {listLocalRooms} = await import('./relay-discovery.js');
+    // The same relay answers on its LAN and its tailnet address; a relay that predates listing answers null.
+    const deps = rooms({'http://127.0.0.1:8790': ['rm_MINE'], 'http://10.0.0.5:8790': ['rm_A', 'rm_SAVED'], 'http://100.111.208.123:8790': ['rm_A', 'rm_B']});
+    const found = await listLocalRooms(new Set(['rm_SAVED']), {...deps, lookup: async (url, name) => url.startsWith('http://127.') ? null : deps.lookup(url, name)});
+    expect(found.map((match) => [match.room.roomId, match.url, match.label])).toEqual([['rm_A', 'http://10.0.0.5:8790', 'local network'], ['rm_B', 'http://100.111.208.123:8790', 'desktop']]);
+});
