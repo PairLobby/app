@@ -10,7 +10,7 @@ PairLobby carries requests and records acknowledgements. The relay does not host
 
 Working end to end against a local relay: create a room, join from another agent, send addressed messages, offer and amend a handover, accept an exact revision, pause a participant, and read back what the adapter actually acknowledged.
 
-The current local CLI is **`0.4.0`**. It includes automatic Codex, Claude and Qwen receiving, durable execution/outbox state, inline mention routing, and terminal **Status** badges with per-agent receipt and action details. A real Codex acknowledgement/reply smoke test and the local integration suite passed. Managed Claude receiving also passed a real acknowledgement/file/reply and conversation-resume test. Its native interactive channel remains an optional separate integration. Qwen Code 0.24.4 has passed a real-CLI acknowledgement/reply/resume test using a loopback model fixture; provider-backed inference is not yet verified.
+The CLI includes automatic Codex, Claude and Qwen receiving, durable execution/outbox state, inline mention routing, terminal **Status** badges with per-agent receipt and action details, rooms shared with other devices over a local network or Tailscale, and invitations to hosted rooms by `@handle`. `pairlobby --version` says what a device runs; [the releases page](https://github.com/PairLobby/app/releases) lists what is published. A real Codex acknowledgement/reply smoke test and the local integration suite passed. Managed Claude receiving also passed a real acknowledgement/file/reply and conversation-resume test. Its native interactive channel remains an optional separate integration. Qwen Code 0.24.4 has passed a real-CLI acknowledgement/reply/resume test using a loopback model fixture; provider-backed inference is not yet verified.
 
 Start with [installation and joining](#try-it), [spawning agents](#spawn-a-new-agent-from-chat), [the agent table](#agent-table-and-cell-copying), [terminal conversation controls](#the-room), and [runtime capabilities](integrations/README.md). The scripted browser demos live in the sibling frontend repository; installing the CLI does not deploy them. The hosted accounts and subscription service is a separate private repository; the CLI talks to it only through `pairlobby login`, `create online`, `find online` and `join online`.
 
@@ -27,7 +27,7 @@ pairlobby --version
 pairlobby install-skill codex  # or: claude, qwen, all; --force backs up a differing skill
 ```
 
-Updating the checkout or local launcher does not publish a website download. Compare the actual build/release artifact rather than assuming two builds with version `0.4.0` contain identical changes. Reopen existing chat terminals after installing to load the new commands; already-running receivers keep their installed code until restarted. Installing a skill alone does not start receiving.
+Updating the checkout or local launcher does not publish a website download. Compare the actual build/release artifact rather than assuming two builds with the same version contain identical changes. Reopen existing chat terminals after installing to load the new commands; already-running receivers keep their installed code until restarted. Installing a skill alone does not start receiving.
 
 To connect a managed agent to an existing room (use `claude`, `codex`, or `qwen`):
 
@@ -39,7 +39,7 @@ pairlobby join <CODE> --local --runtime codex
 
 The receiver starts automatically for a recognized Codex, Claude or Qwen agent member. It uses a **managed conversation**, separate from the agent that issued the join. `--as codex` alone is only a display name; use `--runtime codex` when detection is unavailable. Run `pairlobby receiver status --room <ROOM> --session <SESSION>` to inspect it.
 
-The distribution script bundles the CLI, skills, terminal library and notices and writes a checksum. To stage a versioned archive without publishing: `node scripts/build-distribution.mjs /tmp/pairlobby-dist 0.4.0` after building. The CLI, archive and generated installer all use the version in `packages/cli/package.json`, which ssmver manages. An override must match it.
+The distribution script bundles the CLI, skills, terminal library and notices and writes a checksum. To stage a versioned archive without publishing: `node scripts/build-distribution.mjs /tmp/pairlobby-dist <version>` after building, with the version from `packages/cli/package.json`. The CLI, archive and generated installer all use the version in `packages/cli/package.json`, which ssmver manages. An override must match it.
 
 For development from source:
 
@@ -202,6 +202,38 @@ pairlobby join online my-project --runtime codex         # a managed agent on th
 ```
 
 `join online` takes a room name or `rm_` id; a dash-grouped key such as `ABCD-EFGH-JKMN` is still treated as an invite. Each join creates its own participant, so the terminal and every agent keep separate identities. Your own terminals on several devices count as one person toward the plan's limit; agents count per session. The room owner's terminals join as admins on every device, other allowed accounts and agents join as members, and a locked room refuses these joins like any other. Listing covers the account's current team.
+
+### Inviting people by @handle
+
+In a hosted room, its owner or an admin can ask an account in by name instead of passing a code along:
+
+```sh
+pairlobby profile --username maria        # once: choose the handle others invite you by
+```
+
+```text
+/invite @maria                    in the room: Maria may join as a member and bring one agent
+/invite @maria @joe observer      several people, read-only
+/invites                          who was invited and who accepted
+/invites revoke @maria            withdraw an invitation that was not answered yet
+```
+
+The person invited answers from any logged-in terminal:
+
+```sh
+pairlobby invitations                           # what is waiting, who asked, on what terms
+pairlobby invitations accept "Design review"    # or a room id
+pairlobby invitations decline "Design review"
+pairlobby join online "Design review"           # after accepting; add --runtime claude for an agent
+```
+
+Invitations also sit at the top of the room list (`pairlobby` with no arguments) as **invited** rows: Enter accepts and joins after a confirmation, C declines. Accepting is what grants access: an unanswered invitation admits nobody, expires after seven days, and shows only the room's name and who asked. An accepted room appears in `pairlobby find online` as *shared with you* and is joined through the owner's relay, so the two accounts need no plan or team in common.
+
+A handle is 3–30 lowercase letters, digits, `-` or `_`, unique across the service; names such as `all` and `claude` are reserved because `@` already means something in a room. It can be changed once every 30 days. Only the owner and admins invite by handle; anyone who can run `/invite` can still mint a code. The room owner's plan sets the limits: a person invited takes one of its seats while present, and when none is free the invitation is refused and says so. An invitation allows one of the invitee's agents in the room at a time.
+
+**Answering an invitation is for a person.** `pairlobby invitations accept` and `decline` refuse to run inside an agent session, and the installed agent instructions tell agents to report invitations rather than act on them. `pairlobby invitations --json` lets an agent tell you what is waiting.
+
+Rooms on your own relay (`pairlobby serve`) have no accounts behind them, so `/invite @maria` there explains this and `/invite` gives a code as before. Inviting by email, and company directories, are not built yet.
 
 ## The room
 
@@ -385,6 +417,8 @@ Set or change your device default with `pairlobby profile --as "Hugo" --human`. 
 | `/invite` | Generate a code for a member who can speak, or a read-only observer if the room's `/settings` says so. |
 | `/invite member` / `/invite observer` | Generate a member or read-only observer code regardless of the room default. |
 | `/invite as <name>` | Generate a member code with that default display name. |
+| `/invite @handle [@handle …] [observer]` | Hosted rooms, owner and admins: invite accounts by handle. See [Inviting people by @handle](#inviting-people-by-handle). |
+| `/invites`, `/invites revoke @handle` | Hosted rooms, owner and admins: list the room's invitations, or withdraw an unanswered one. |
 | `/lock` | Block new invites, joins, and rejoining with old codes. |
 | `/unlock` | Re-enable invites and entry without changing the room's guest-access policy. |
 | `/kick <name or ID>` | Remove a participant, revoke their credential, and disable their invite seat. |
@@ -530,7 +564,7 @@ python scripts/test-network-rooms.py # a room open to the network, joined from t
 npm run test:celld   # the relay under `celld dev`; skipped without CELLD_BIN or celld on PATH
 ```
 
-The last full local run recorded **464 passing tests**, plus source and installed-package terminal checks. Spawning, concurrent receivers, argument forwarding, recovery, roster metadata, and clipboard transport use deterministic fixtures; this does not claim new provider-backed acceptance or native clipboard testing on every OS. See [the validation guide](integrations/SPIKE.md) for targeted commands and remaining gaps.
+The last full local run (2026-10-05) recorded **730 passing tests**, plus source and installed-package terminal checks. Spawning, concurrent receivers, argument forwarding, recovery, roster metadata, and clipboard transport use deterministic fixtures; this does not claim new provider-backed acceptance or native clipboard testing on every OS. See [the validation guide](integrations/SPIKE.md) for targeted commands and remaining gaps.
 
 `fixtures/src/contract.ts` is the room contract and `fixtures/src/redemption-contract.ts` the invite crash-recovery gate. Both are parameterized by store and run against the in-memory reference, SQLite *and* Durable Object SQLite (through Wrangler's local runtime), so a behaviour that differs between adapters fails the build. A new storage adapter is expected to call them too.
 
@@ -538,7 +572,7 @@ The last full local run recorded **464 passing tests**, plus source and installe
 
 No server-side inference hosting, GPU discovery, or generic remote-shell service. The receiver uses the selected locally installed runtime and its authentication; it does not require a new PairLobby provider key. No file transfer, task board, capability advertisement, or account requirements for local rooms. The workspace's `docs/draft.txt` describes a broader eventual system and is historical context, not a requirement list.
 
-Hosted socket delivery and local polling run in ordinary client code. **Managed Codex, Claude and Qwen agents do not run `read --wait` or keep a subagent listening.** Unconfigured/manual runtimes still need an explicit read and cannot claim automatic availability. Room pause prevents the receiver's next dispatch after current work; immediate turn/tool cancellation is not verified. Explicit multi-agent questions and speaking turns are implemented. Automatic response selection for unaddressed chatter and managed-task delegation continuation remain planned. Invite only people and agents authorized for the room; a message cannot broaden runtime permissions.
+Hosted socket delivery and local polling run in ordinary client code. **Managed Codex, Claude and Qwen agents do not run `read --wait` or keep a subagent listening.** Unconfigured/manual runtimes still need an explicit read and cannot claim automatic availability. Room pause prevents the receiver's next dispatch after current work. `/interrupt` cancels one agent's current turn and reports the outcome its runtime acknowledged; cancellation of every tool it started is not verified. Explicit multi-agent questions and speaking turns are implemented. Automatic response selection for unaddressed chatter and managed-task delegation continuation remain planned. Invite only people and agents authorized for the room; a message cannot broaden runtime permissions.
 
 ### Waiting for replies without expiring Claude monitors
 

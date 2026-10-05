@@ -8,6 +8,8 @@ import {ProtocolError} from '@pairlobby/protocol';
 import {LocalStore, PairLobbyClient} from '@pairlobby/client';
 import type {RoomEntry, SessionEntry} from '@pairlobby/client';
 
+import {accountToken, onlineOrigin} from './online.js';
+
 type ServerOptions = {server?: string | undefined; local?: boolean | undefined};
 
 type RecipientParticipant = {participantId: string; displayName: string; revoked: boolean; left: boolean};
@@ -118,7 +120,21 @@ export function select(store: LocalStore, roomRef?: string, sessionRef?: string)
     if (!credential) {
         throw new UsageError(`no credential stored for session ${session.sessionId}; rejoin the room`);
     }
-    return {room, session, credential, client: new PairLobbyClient(room.serverUrl)};
+    return {room, session, credential, client: new PairLobbyClient(room.serverUrl, hostedAccountToken(store, room.serverUrl))};
+}
+
+/**
+ * The saved account login, for a room on the hosted service only. The client sends
+ * it on the few requests that act as an account, such as inviting someone by handle;
+ * it never goes to any other relay.
+ */
+export function hostedAccountToken(store: LocalStore, serverUrl: string): string | undefined {
+    try {
+        const server = new URL(serverUrl);
+        return server.pathname.startsWith('/relay/') && server.origin === onlineOrigin() ? accountToken(store) : undefined;
+    } catch {
+        return undefined;
+    }
 }
 
 export function controllerCredential(store: LocalStore, room: RoomEntry): string {

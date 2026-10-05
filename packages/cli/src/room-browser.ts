@@ -3,8 +3,8 @@ import type {Key} from 'node:readline';
 import {PairLobbyClient} from '@pairlobby/client';
 import type {LocalStore} from '@pairlobby/client';
 import type {RoomListEntry} from './render.js';
-import {NETWORK_STATE, ROOM_COLUMNS, SESSION_COLUMNS, closeListedRoom, leaveListedSession, loadRoomList, networkRows, roomRows, sessionRows, sortListRows} from './room-list.js';
-import type {ListColumn, ListRow, ListSort, NetworkRoom} from './room-list.js';
+import {INVITED_STATE, NETWORK_STATE, ROOM_COLUMNS, SESSION_COLUMNS, closeListedRoom, invitationRows, leaveListedSession, loadRoomList, networkRows, roomRows, sessionRows, sortListRows} from './room-list.js';
+import type {ListColumn, ListRow, ListSort, NetworkRoom, RoomInvite} from './room-list.js';
 import {RoomPanel} from './room-panel.js';
 import type {RoomPanelPage} from './room-panel.js';
 import {plainCell} from './agent-roster.js';
@@ -12,10 +12,12 @@ import {receiverConfiguration, startReceiver, stopReceiver} from './receiver.js'
 import {copyToClipboard} from './clipboard.js';
 import {createTerminalProgram} from './terminal-program.js';
 
-/** A saved session to open, or a room found on the network to join first. */
-export type RoomBrowserSelection = {roomId: string; sessionId: string} | {roomId: string; joinAt: string};
+/** A saved session to open, a room found on the network to join first, or an invitation to accept and then join. */
+export type RoomBrowserSelection = {roomId: string; sessionId: string} | {roomId: string; joinAt: string} | {roomId: string; invitationId: string};
+/** What the list can do about invitations: fetch the unanswered ones, and decline one. Accepting is left to the caller, which then joins. */
+export type RoomBrowserInvitations = {list: (signal: AbortSignal) => Promise<RoomInvite[]>; decline: (id: string) => Promise<void>};
 /** `discover` finds rooms open on the network; it must stop when its signal aborts. Absent, the list shows saved rooms only. */
-export type RoomBrowserOptions = {sort: ListSort; roomId?: string | undefined; sessionId?: string | undefined; notice?: string | undefined; discover?: ((known: ReadonlySet<string>, signal: AbortSignal) => Promise<NetworkRoom[]>) | undefined};
+export type RoomBrowserOptions = {sort: ListSort; roomId?: string | undefined; sessionId?: string | undefined; notice?: string | undefined; discover?: ((known: ReadonlySet<string>, signal: AbortSignal) => Promise<NetworkRoom[]>) | undefined; invitations?: RoomBrowserInvitations | undefined};
 type BrowserKey = Key & {sequence?: string};
 type BrowserMouse = blessed.Widgets.Events.IMouseEventArg & {button?: string};
 
@@ -27,6 +29,7 @@ export class RoomBrowser {
     private cells: blessed.Widgets.BoxElement[] = [];
     private entries: RoomListEntry[] = [];
     private network: NetworkRoom[] = [];
+    private invited: RoomInvite[] = [];
     private join: RoomBrowserSelection | undefined;
     private rows: ListRow[] = [];
     private roomId: string | undefined;
@@ -168,8 +171,12 @@ export class RoomBrowser {
             this.note = notice || 'Snapshot updated. Listing does not join rooms or start agents.';
             this.loading = false;
             this.rebuildRows(selected);
+            this.invited = this.invited.filter((invitation) => !entries.some((entry) => entry.room.roomId === invitation.roomId));
             if (this.options.discover) {
                 void this.discover(request);
+            }
+            if (this.options.invitations) {
+                void this.loadInvitations(request);
             }
         } catch (error) {
             if (!this.closed && this.request === request) {
@@ -197,13 +204,31 @@ export class RoomBrowser {
         }
     }
 
+    /** Asks the account service after the saved rooms are shown; a device that is not logged in simply has none. */
+    private async loadInvitations(request: AbortController): Promise<void> {
+        let invited: RoomInvite[];
+        try {
+            invited = await this.options.invitations!.list(request.signal);
+        } catch {
+            return;
+        }
+        if (this.closed || this.request !== request) {
+            return;
+        }
+        this.invited = invited.filter((invitation) => !this.entries.some((entry) => entry.room.roomId === invitation.roomId));
+        if (!this.roomId && !this.details.visible) {
+            this.rebuildRows(this.rows[this.selected]?.id);
+        }
+    }
+
     private rebuildRows(selectedId?: string): void {
         const room = this.entries.find((entry) => entry.room.roomId === this.roomId);
         if (this.roomId && !room) {
             this.roomId = undefined;
             this.column = this.firstColumn = 0;
         }
-        this.rows = sortListRows(room && this.roomId ? sessionRows(this.store, room) : [...roomRows(this.entries), ...networkRows(this.network)], this.sort());
+        // Invitations wait for an answer, so they stay on top whatever the sort.
+        this.rows = room && this.roomId ? sortListRows(sessionRows(this.store, room), this.sort()) : [...sortListRows(invitationRows(this.invited), this.sort()), ...sortListRows([...roomRows(this.entries), ...networkRows(this.network)], this.sort())];
         this.selected = selectedId ? Math.max(0, this.rows.findIndex((row) => row.id === selectedId)) : Math.max(0, Math.min(this.selected, this.rows.length - 1));
         this.render();
     }
@@ -225,7 +250,10 @@ export class RoomBrowser {
             return;
         }
         const found = this.roomId ? undefined : this.network.find((candidate) => candidate.room.roomId === row.roomId);
-        if (found) {
+        const invitation = this.roomId || row.values['state'] !== INVITED_STATE ? undefined : this.invited.find((candidate) => candidate.roomId === row.roomId);
+        if (invitation) {
+            this.confirmAccept(invitation);
+        } else if (found) {
             this.confirmJoin(found);
         } else if (!this.roomId) {
             this.roomId = row.roomId;
@@ -249,9 +277,34 @@ export class RoomBrowser {
         this.details.key(undefined, {name: 'enter'});
     }
 
+    /** Accepting gives this account access and joining announces it, so both happen only after a yes. */
+    private confirmAccept(invitation: RoomInvite): void {
+        const terms = invitation.role === 'guest' ? 'a read-only observer' : 'a member';
+        const page: RoomPanelPage = {id: 'accept-invitation', closeOnCancel: true, title: 'Accept invitation', note: `${invitation.roomName} (${invitation.roomId}), invited by ${invitation.invitedBy}`, reload: async () => page, rows: [{id: 'confirm', label: 'Accept and join', value: invitation.roomName, section: 'Confirmation', action: {kind: 'command', closeAfterSave: true, confirm: `Accept ${invitation.invitedBy}'s invitation to ${invitation.roomName} and join as ${terms}? Everyone in the room will see you join.`, run: async () => {
+            this.join = {roomId: invitation.roomId, invitationId: invitation.id};
+        }}}]};
+        this.details.show(page);
+        this.details.key(undefined, {name: 'enter'});
+    }
+
+    private confirmDecline(invitation: RoomInvite): void {
+        const page: RoomPanelPage = {id: 'decline-invitation', closeOnCancel: true, title: 'Decline invitation', note: `${invitation.roomName} (${invitation.roomId}), invited by ${invitation.invitedBy}`, reload: async () => page, rows: [{id: 'confirm', label: 'Decline', value: invitation.roomName, section: 'Confirmation', action: {kind: 'command', closeAfterSave: true, confirm: `Decline ${invitation.invitedBy}'s invitation to ${invitation.roomName}? They are not told; they can invite you again.`, run: async () => {
+            await this.options.invitations!.decline(invitation.id);
+            this.invited = this.invited.filter((candidate) => candidate.id !== invitation.id);
+            this.actionNotice = `Declined the invitation to ${invitation.roomName}.`;
+        }}}]};
+        this.details.show(page);
+        this.details.key(undefined, {name: 'enter'});
+    }
+
     private confirmClose(): void {
         const row = this.rows[this.selected];
         if (!row) {
+            return;
+        }
+        const invitation = this.roomId || row.values['state'] !== INVITED_STATE ? undefined : this.invited.find((candidate) => candidate.roomId === row.roomId);
+        if (invitation) {
+            this.confirmDecline(invitation);
             return;
         }
         if (row.values['state'] === NETWORK_STATE) {
@@ -372,7 +425,7 @@ export class RoomBrowser {
         const room = this.entries.find((entry) => entry.room.roomId === this.roomId);
         const title = this.roomId ? `Local sessions — ${room?.snapshot?.name ?? room?.room.name ?? this.roomId}` : 'PairLobby rooms';
         this.cell(0, 1, width, `${title} (${this.rows.length}) · sort: ${this.sort().key} ${this.sort().descending ? 'descending' : 'ascending'}`);
-        this.cell(1, 1, width, '↑/↓ rows · ←/→/Tab columns · S/header sort · Enter open or join · R refresh');
+        this.cell(1, 1, width, '↑/↓ rows · ←/→/Tab columns · S/header sort · Enter open, join or accept · R refresh');
         this.cell(2, 1, width, 'C close room/session · I session details · Y copy cell · Esc back · Q quit');
         if (height < 10 || width < 28) {
             this.cell(2, 1, width, 'Enlarge terminal · Q quits');

@@ -78,3 +78,11 @@ test('network rooms are listed as not joined, with only what the relay tells bef
     expect(row!.values).toMatchObject({name: 'tower-test', state: 'on network', people: '3 in room', sessions: 'Not joined', relay: 'http://100.111.208.123:8790 (desktop)'});
     expect(row!.sessionId).toBeUndefined();
 });
+
+test('invitations are listed as invited, with who asked and nothing from inside the room', async () => {
+    const {invitationRows} = await import('./room-list.js');
+    const [row] = invitationRows([{id: 'i1', roomId: 'rm_A', roomName: 'Design review', invitedBy: '@maria', role: 'member', agents: 1, createdAt: 0, expiresAt: Date.UTC(2026, 9, 12)}]);
+    expect(row).toMatchObject({id: 'rm_A', roomId: 'rm_A'});
+    expect(row!.values).toMatchObject({name: 'Design review', state: 'invited', people: 'by @maria', sessions: 'Not joined', agents: 'Unknown', relay: 'answer by 2026-10-12'});
+    expect(row!.sessionId).toBeUndefined();
+});

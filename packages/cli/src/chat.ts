@@ -79,6 +79,8 @@ const HELP = `  <message>          address all eligible agents (same as @all)
   /invite member     create an invite for a member who can speak
   /invite observer   create a read-only observer invite
   /invite as <name>  create a member invite with a default name
+  /invite @handle    hosted rooms: ask an account in by its handle (add observer for read-only); owner and admins
+  /invites           hosted rooms: who was invited by handle; /invites revoke @handle withdraws one
   /lock              block joining, rejoining, and new invites (owner)
   /unlock            allow joining and invitations again (owner)
   /kick <name>       remove a participant and disable their invite (owner)
