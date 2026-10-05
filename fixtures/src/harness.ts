@@ -2,7 +2,7 @@
 //! contract suite can be run against every adapter.
 
 import {newCredential} from '@pairlobby/protocol';
-import type {ParticipantRole, RoomEvent, RoomPolicy, RoomSnapshot, SendEventRequest} from '@pairlobby/protocol';
+import type {ParticipantRole, RoomEvent, RoomInvitationChange, RoomPolicy, RoomSnapshot, SendEventRequest} from '@pairlobby/protocol';
 import {RoomService} from '@pairlobby/server-core';
 import type {Identity, RoomStore} from '@pairlobby/server-core';
 
@@ -119,6 +119,10 @@ export class RoomHarness {
 
     async joinAsGuest(identity: Identity, participantCredential: string) {
         return this.service.joinAsGuest(this.roomId, {...identity, participantCredential});
+    }
+
+    async recordInvitation(credential: string, change: RoomInvitationChange): Promise<RoomEvent> {
+        return this.service.recordInvitation(this.roomId, credential, change);
     }
 
     async setLocalJoin(credential: string, localJoin: boolean): Promise<RoomEvent> {

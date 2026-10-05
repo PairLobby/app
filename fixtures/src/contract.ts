@@ -212,6 +212,31 @@ export function runRoomContract(label: string, makeStore: StoreFactory): void {
             });
         });
 
+        describe('invitations by handle', () => {
+            let server: RoomHarness;
+            let alice: FakeAgent;
+            let controller: string;
+
+            beforeEach(async () => {
+                server = track(new RoomHarness(makeStore()));
+                alice = new FakeAgent(server, 'claude');
+                controller = (await alice.create('invited-room')).controllerCredential;
+            });
+
+            test('test_inviting_and_withdrawing_by_handle_are_recorded_for_the_room', async () => {
+                const invited = await server.recordInvitation(controller, {handle: 'maria', state: 'invited', role: 'guest', agents: 1});
+                await server.recordInvitation(controller, {handle: 'maria', state: 'withdrawn'});
+                const recorded = (await server.read(alice.credential, 0)).events.filter((event) => event.type === 'room.invitation_changed');
+                expect(recorded.map((event) => event.type === 'room.invitation_changed' && event.payload)).toEqual([{handle: 'maria', state: 'invited', role: 'guest', agents: 1}, {handle: 'maria', state: 'withdrawn'}]);
+                expect(recorded[0]!.eventId).toBe(invited.eventId);
+            });
+
+            test('test_only_an_owner_or_admin_records_an_invitation', async () => {
+                await expectError('unauthorized', () => server.recordInvitation(alice.credential, {handle: 'maria', state: 'invited'}));
+                expect((await server.read(alice.credential, 0)).events.some((event) => event.type === 'room.invitation_changed')).toBe(false);
+            });
+        });
+
         describe('local network join', () => {
             let server: RoomHarness;
             let alice: FakeAgent;

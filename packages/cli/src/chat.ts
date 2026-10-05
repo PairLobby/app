@@ -22,6 +22,7 @@ import {commandHint, completeChatCommand} from './chat-completion.js';
 import {settingsPage, statusPage} from './room-settings.js';
 import {describeAutoClose, describeCloseReason} from './auto-close.js';
 import {loadAgentRoster} from './agent-roster.js';
+import {invitationTerms} from './render.js';
 
 type ParticipantMatch = {id: string; name: string} | null;
 
@@ -730,6 +731,8 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
                 return event.payload.inviteRole === 'guest' ? `${sender} made new invitations read-only` : `${sender} made new invitations admit members who can speak`;
             }
             return event.payload.joinPolicy === 'open_to_guests' ? `${sender} opened the room to read-only guests` : `${sender} made the room invite only`;
+        case 'room.invitation_changed':
+            return event.payload.state === 'withdrawn' ? `${sender} withdrew the invitation to @${event.payload.handle}` : `${sender} invited @${event.payload.handle}${invitationTerms(event.payload)}`;
         case 'room.local_join_changed':
             return event.payload.localJoin ? `${sender} let anyone on the local network join by name` : `${sender} turned off joining by name on the local network`;
         case 'message.delivery_failed':
