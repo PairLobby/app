@@ -315,7 +315,10 @@ export class RoomService {
 
     async send(roomId: string, credential: string, request: SendEventRequest): Promise<SentEventResult> {
         const view = await this.view(roomId);
-        const actor = authenticate(view, await hashCredential(credential), this.now());
+        // One clock reading for the whole operation: the request record and the event it
+        // produces must carry the same time, or a client comparing them sees one as stale.
+        const now = this.now();
+        const actor = authenticate(view, await hashCredential(credential), now);
         const participantId = actor.kind === 'participant' ? actor.participant.participantId : undefined;
         const group = request.recipientIds !== undefined || request.allRecipients === true;
         if (group && (request.type !== 'message' || request.replyTo || request.recipientId || (request.recipientIds && request.allRecipients))) {
@@ -378,7 +381,7 @@ export class RoomService {
                 throw new ProtocolError('unauthorized', 'a sender cannot acknowledge their own message');
             }
             if (target?.to === participant.participantId) {
-                updates.push({...target, receivedAt: target.receivedAt ?? this.now(), ...(request.payload.stage === 'read' ? {readAt: target.readAt ?? this.now()} : {})});
+                updates.push({...target, receivedAt: target.receivedAt ?? now, ...(request.payload.stage === 'read' ? {readAt: target.readAt ?? now} : {})});
             }
             const action = request.payload.action;
             if (action) {
@@ -392,7 +395,7 @@ export class RoomService {
                     throw new ProtocolError('invalid_request', 'This action needs a reason.');
                 }
                 if (target?.to === participant.participantId && !target.requiresReply && target.action === action && target.actionReason === request.payload.reason && ['no_action', 'declined'].includes(action)) {
-                    updates[0] = {...target, readAt: target.readAt ?? this.now()};
+                    updates[0] = {...target, readAt: target.readAt ?? now};
                 } else if (target?.to === participant.participantId && (target.requiresReply || target.responseEventId || target.action || target.turnRequired)) {
                     assertCanWrite(actor);
                     if (target.responseEventId || !target.requiresReply) {
@@ -405,12 +408,12 @@ export class RoomService {
                             throw new ProtocolError('invalid_request', 'Link an existing unthreaded answer authored by this recipient after the request.');
                         }
                         if (target.turnRequired && !target.failureAt) {
-                            assertTurn(target, request.turnToken, this.now());
+                            assertTurn(target, request.turnToken, now);
                         }
                         if (['cancelled', 'skipped', 'passed'].includes(target.turnStatus ?? '')) {
                             throw new ProtocolError('invalid_request', 'A cancelled or skipped request cannot be completed by a late answer.');
                         }
-                        updates[0] = {...updates[0]!, responseEventId: answer.eventId, responseText: answer.payload.text, respondedAt: this.now(), action, actionAt: this.now(), ...(target.turnRequired ? {turnStatus: 'answered'} : {})};
+                        updates[0] = {...updates[0]!, responseEventId: answer.eventId, responseText: answer.payload.text, respondedAt: now, action, actionAt: now, ...(target.turnRequired ? {turnStatus: 'answered'} : {})};
                         // Reclassify the standalone answer: it must not leave a reverse
                         // "please reply" obligation on the original asker.
                         const reverse = await this.store.messageRequest(roomId, answer.eventId);
@@ -421,14 +424,14 @@ export class RoomService {
                         if (target.failureAt) {
                             throw new ProtocolError('invalid_request', 'This attempt failed. Link a completed answer explicitly instead of restarting it through status.');
                         }
-                        assertTurn(target, request.turnToken, this.now());
+                        assertTurn(target, request.turnToken, now);
                         const terminal = action === 'no_action' || action === 'declined';
-                        updates[0] = {...updates[0]!, action, actionAt: this.now(), actionReason: request.payload.reason ?? '', ...(terminal ? {requiresReply: false, ...(target.turnRequired ? {turnStatus: 'passed'} : {})} : {})};
+                        updates[0] = {...updates[0]!, action, actionAt: now, actionReason: request.payload.reason ?? '', ...(terminal ? {requiresReply: false, ...(target.turnRequired ? {turnStatus: 'passed'} : {})} : {})};
                     }
                 } else if (action !== 'no_action') {
                     throw new ProtocolError('unauthorized', 'Only the addressed recipient may change the action for this request.');
                 } else if (target?.to === participant.participantId) {
-                    updates[0] = {...updates[0]!, action, actionAt: this.now(), actionReason: request.payload.reason!};
+                    updates[0] = {...updates[0]!, action, actionAt: now, actionReason: request.payload.reason!};
                 }
             } else if (request.payload.responseEventId) {
                 throw new ProtocolError('invalid_request', 'A linked answer requires the done action.');
@@ -442,12 +445,12 @@ export class RoomService {
             if (participantId !== target.to) {
                 throw new ProtocolError('unauthorized', 'only the addressed recipient may answer this message');
             }
-            assertTurn(target, request.turnToken, this.now());
+            assertTurn(target, request.turnToken, now);
             if (request.type === 'message.delivery_failed') {
                 if (target.responseEventId || !target.requiresReply) {
                     throw new ProtocolError('invalid_request', 'this request is already finished');
                 }
-                updates.push({...target, failureAt: this.now(), failureReason: request.payload.reason, ...(request.payload.stage ? {failureStage: request.payload.stage} : {}), ...(target.turnRequired ? {turnStatus: 'failed' as const} : {})});
+                updates.push({...target, failureAt: now, failureReason: request.payload.reason, ...(request.payload.stage ? {failureStage: request.payload.stage} : {}), ...(target.turnRequired ? {turnStatus: 'failed' as const} : {})});
             } else {
                 if (request.recipientId !== target.from) {
                     throw new ProtocolError('invalid_request', 'a reply must be addressed to the original sender');
@@ -459,7 +462,7 @@ export class RoomService {
                     throw new ProtocolError('invalid_request', 'acknowledge the request before replying');
                 }
                 replyTarget = target;
-                updates.push({...target, progressAt: request.payload.responseStage === 'progress' ? this.now() : target.progressAt});
+                updates.push({...target, progressAt: request.payload.responseStage === 'progress' ? now : target.progressAt});
             }
         } else if (request.type === 'message' && request.payload.responseStage) {
             throw new ProtocolError('invalid_request', 'responseStage requires replyTo');
@@ -471,7 +474,7 @@ export class RoomService {
             }
         }
         const outgoing = replyTarget?.conversationId ? {...request, replyTo: replyTarget.conversationId} : request;
-        const mutation = sendEvent(view, await hashCredential(credential), outgoing, this.ctx());
+        const mutation = sendEvent(view, await hashCredential(credential), outgoing, {now, newEventId: () => newId('event')});
         if (group) {
             mutation.appendEvent.recipientIds = recipients;
             mutation.appendEvent.allRecipients = request.allRecipients === true;
@@ -480,13 +483,13 @@ export class RoomService {
             }
         }
         if (replyTarget && request.type === 'message' && request.payload.responseStage !== 'progress') {
-            updates[0] = {...replyTarget, responseEventId: mutation.appendEvent.eventId, respondedAt: this.now(), responseText: request.payload.text, action: 'done', actionAt: this.now(), ...(replyTarget.turnRequired ? {turnStatus: 'answered' as const} : {})};
+            updates[0] = {...replyTarget, responseEventId: mutation.appendEvent.eventId, respondedAt: now, responseText: request.payload.text, action: 'done', actionAt: now, ...(replyTarget.turnRequired ? {turnStatus: 'answered' as const} : {})};
         }
         if (updates.some((entry) => entry.turnRequired) && (request.type !== 'message.received' || request.payload.action)) {
             const revision = view.room.turnRevision ?? 0;
             mutation.expectedTurnRevision = revision;
             mutation.room.turnRevision = revision + 1;
-            mutation.room.turnChangedAt = this.now();
+            mutation.room.turnChangedAt = now;
             for (const entry of updates) {
                 entry.turnRevision = revision + 1;
             }

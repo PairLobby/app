@@ -31,7 +31,7 @@ test('installed CLI reports Read separately and retries an explicit answer link 
         const ask = await api.send(room.roomId, room.participantCredential, {type: 'message', recipientId: agent.participantId, payload: {text: 'Please review', priority: 'normal'}, idempotencyKey: newId('event')});
         const watcher = spawn(process.execPath, [process.env['PAIRLOBBY_TEST_CLI'] ?? resolve('packages/cli/dist/main.js'), 'watch', '--room', room.roomId, '--session', sessionId, '--after', String(ask.event.seq - 1), '--json'], {env: {...process.env, PAIRLOBBY_DATA_DIR: local.directory}, stdio: 'ignore'});
         try {
-            await vi.waitFor(async () => expect((await api.request(room.roomId, room.participantCredential, ask.event.eventId)).receivedAt).not.toBeNull(), {timeout: 5000});
+            await vi.waitFor(async () => expect((await api.request(room.roomId, room.participantCredential, ask.event.eventId)).receivedAt).not.toBeNull(), {timeout: 20_000});
         } finally {
             const stopped = new Promise<void>((done) => watcher.once('close', () => done()));
             watcher.kill('SIGTERM');
@@ -51,6 +51,33 @@ test('installed CLI reports Read separately and retries an explicit answer link 
         await relay.close();
         rmSync(directory, {recursive: true, force: true});
     }
+    // Five CLI processes and a watcher: the default five seconds is not enough on a busy runner.
+}, 60_000);
+
+test('a request and the event that changed it carry one timestamp, so the newest state wins in the receipt view', async () => {
+    // A clock that advances on every reading stands in for a loaded machine, where two readings in one operation differ.
+    let tick = 1_700_000_000_000;
+    const service = new RoomService(new MemoryStore(), () => tick++);
+    const owner = newCredential('controller');
+    const sender = newCredential('participant');
+    const receiver = newCredential('participant');
+    const room = await service.createRoom({name: 'clock', displayName: 'owner', kind: 'human', controllerCredential: owner, participantCredential: sender});
+    const agent = await service.redeemInvite({code: (await service.mintInvite(room.roomId, owner, 'member')).code, displayName: 'worker', kind: 'agent', participantCredential: receiver, attemptId: newId('attempt')});
+    const ask = await service.send(room.roomId, sender, {type: 'message', payload: {text: 'Do this', priority: 'normal'}, recipientId: agent.participantId, idempotencyKey: newId('event')});
+    const id = ask.event.eventId;
+    const working = await service.send(room.roomId, receiver, {type: 'message.received', payload: {eventId: id, stage: 'read', action: 'working'}, idempotencyKey: newId('event')});
+    expect(await service.request(room.roomId, sender, id)).toMatchObject({readAt: working.event.at, actionAt: working.event.at});
+    await service.send(room.roomId, receiver, {type: 'message.delivery_failed', payload: {eventId: id, reason: 'Process exited', stage: 'execution'}, idempotencyKey: newId('event')});
+    const answer = await service.send(room.roomId, receiver, {type: 'message', payload: {text: 'Answer', priority: 'normal'}, recipientId: room.participantId, idempotencyKey: newId('event')});
+    const done = await service.send(room.roomId, receiver, {type: 'message.received', payload: {eventId: id, stage: 'read', action: 'done', responseEventId: answer.event.eventId}, idempotencyKey: newId('event')});
+    const recovered = await service.request(room.roomId, sender, id);
+    expect(recovered).toMatchObject({actionAt: done.event.at, respondedAt: done.event.at});
+    const view = new ReceiptView();
+    for (const event of (await service.read(room.roomId, sender, 0, 500)).events) {
+        view.observe(event);
+    }
+    view.observeRequest(recovered);
+    expect(view.forParticipant(id, agent.participantId).action).toBe('Done · recovered');
 });
 
 test.each(['memory', 'sqlite'])('%s preserves independent received/read/actions and recovers an interrupted request with an explicit link', async (backend) => {
