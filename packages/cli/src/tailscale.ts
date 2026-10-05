@@ -38,9 +38,9 @@ function binaries(): string[] {
     return ['tailscale', ...(INSTALLED[process.platform] ?? []).filter((path) => existsSync(path))];
 }
 
-function run(binary: string, timeoutMs: number): Promise<string> {
+function run(binary: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {
     return new Promise((resolve, reject) => {
-        execFile(binary, ['status', '--json'], {timeout: timeoutMs, windowsHide: true, maxBuffer: 8 * 1024 * 1024}, (error, stdout) => {
+        execFile(binary, ['status', '--json'], {timeout: timeoutMs, windowsHide: true, maxBuffer: 8 * 1024 * 1024, ...(signal ? {signal} : {})}, (error, stdout) => {
             if (error) {
                 reject(error);
                 return;
@@ -70,10 +70,13 @@ export function parseTailscaleStatus(text: string): TailscaleView | null {
     return {self: device(status.Self), peers: Object.values(status.Peer ?? {}).map(device)};
 }
 
-export async function tailscaleView(timeoutMs = 2000): Promise<TailscaleView | null> {
+export async function tailscaleView(timeoutMs = 2000, signal?: AbortSignal): Promise<TailscaleView | null> {
     for (const binary of binaries()) {
+        if (signal?.aborted) {
+            return null;
+        }
         try {
-            return parseTailscaleStatus(await run(binary, timeoutMs));
+            return parseTailscaleStatus(await run(binary, timeoutMs, signal));
         } catch {
             // Not installed under this name, not running, or too slow: try the next.
         }

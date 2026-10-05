@@ -11,11 +11,11 @@ import {plainCell} from './agent-roster.js';
 import {receiverConfiguration, startReceiver, stopReceiver} from './receiver.js';
 import {copyToClipboard} from './clipboard.js';
 import {createTerminalProgram} from './terminal-program.js';
-import {listLocalRooms} from './relay-discovery.js';
 
 /** A saved session to open, or a room found on the network to join first. */
 export type RoomBrowserSelection = {roomId: string; sessionId: string} | {roomId: string; joinAt: string};
-export type RoomBrowserOptions = {sort: ListSort; roomId?: string | undefined; sessionId?: string | undefined; notice?: string | undefined; discover?: (known: ReadonlySet<string>) => Promise<NetworkRoom[]>};
+/** `discover` finds rooms open on the network; it must stop when its signal aborts. Absent, the list shows saved rooms only. */
+export type RoomBrowserOptions = {sort: ListSort; roomId?: string | undefined; sessionId?: string | undefined; notice?: string | undefined; discover?: ((known: ReadonlySet<string>, signal: AbortSignal) => Promise<NetworkRoom[]>) | undefined};
 type BrowserKey = Key & {sequence?: string};
 type BrowserMouse = blessed.Widgets.Events.IMouseEventArg & {button?: string};
 
@@ -168,7 +168,9 @@ export class RoomBrowser {
             this.note = notice || 'Snapshot updated. Listing does not join rooms or start agents.';
             this.loading = false;
             this.rebuildRows(selected);
-            void this.discover(request);
+            if (this.options.discover) {
+                void this.discover(request);
+            }
         } catch (error) {
             if (!this.closed && this.request === request) {
                 this.loading = false;
@@ -182,7 +184,7 @@ export class RoomBrowser {
     private async discover(request: AbortController): Promise<void> {
         let found: NetworkRoom[];
         try {
-            found = await (this.options.discover ?? listLocalRooms)(new Set(this.entries.map((entry) => entry.room.roomId)));
+            found = await this.options.discover!(new Set(this.entries.map((entry) => entry.room.roomId)), request.signal);
         } catch {
             return;
         }

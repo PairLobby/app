@@ -95,8 +95,12 @@ export function advertiseRelay(port: number): () => void {
 }
 
 /** Relay addresses announced on the local network within `timeoutMs`, as `http://ip:port` URLs. */
-export function browseRelays(timeoutMs = 1500): Promise<string[]> {
+export function browseRelays(timeoutMs = 1500, signal?: AbortSignal): Promise<string[]> {
     return new Promise((resolve) => {
+        if (signal?.aborted) {
+            resolve([]);
+            return;
+        }
         let mdns: ReturnType<typeof makeMdns>;
         try {
             mdns = makeMdns();
@@ -124,10 +128,14 @@ export function browseRelays(timeoutMs = 1500): Promise<string[]> {
         const finish = () => {
             if (!done) {
                 done = true;
+                clearTimeout(deadline);
+                signal?.removeEventListener('abort', finish);
                 mdns.destroy();
                 resolve([...found]);
             }
         };
+        const deadline = setTimeout(finish, timeoutMs);
+        signal?.addEventListener('abort', finish, {once: true});
         // macOS refuses multicast (EHOSTUNREACH) to an app without the Local Network
         // permission; nothing can answer then, so stop waiting.
         const ask = () => mdns.query({questions: [{name: RELAY_SERVICE, type: 'PTR'}]}, (error) => {
@@ -142,6 +150,5 @@ export function browseRelays(timeoutMs = 1500): Promise<string[]> {
                 ask();
             }
         }, Math.min(400, timeoutMs / 2)).unref();
-        setTimeout(finish, timeoutMs).unref();
     });
 }

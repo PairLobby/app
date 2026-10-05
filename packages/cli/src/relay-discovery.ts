@@ -9,11 +9,12 @@
 //! goes only to the one relay that recognizes it; when several claim it, nothing is
 //! sent and the person picks with --server.
 
-import {PairLobbyClient, type InviteProbeResult} from '@pairlobby/client';
+import type {InviteProbeResult} from '@pairlobby/client';
 import {inviteProbe, normalizeInviteCode} from '@pairlobby/protocol';
 import type {LocalRoom} from '@pairlobby/protocol';
 
 import {DEFAULT_LOCAL_SERVER, DEFAULT_RELAY_PORT, UsageError} from './context.js';
+import {probeRelayForInvite, relayLocalRooms} from './relay-probe.js';
 import {tailscaleView} from './tailscale.js';
 
 export type RelayCandidate = {
@@ -22,31 +23,32 @@ export type RelayCandidate = {
     label: string;
 };
 
+/** Every source takes an optional signal: aborting it abandons the search without waiting on the network. */
 export type DiscoveryDeps = {
     local: string;
     /** Relays announced on the local network. */
-    lan: () => Promise<RelayCandidate[]>;
+    lan: (signal?: AbortSignal) => Promise<RelayCandidate[]>;
     /** Relays that may be listening on tailnet devices. */
-    tailnet: () => Promise<RelayCandidate[]>;
-    probe: (url: string, probe: string) => Promise<InviteProbeResult>;
+    tailnet: (signal?: AbortSignal) => Promise<RelayCandidate[]>;
+    probe: (url: string, probe: string, signal?: AbortSignal) => Promise<InviteProbeResult>;
 };
 
 export const DEFAULT_DISCOVERY: DiscoveryDeps = {
     local: DEFAULT_LOCAL_SERVER,
-    lan: async () => {
+    lan: async (signal) => {
         // Loaded on demand like `serve` does, so ordinary commands never load the relay's SQLite.
         const {browseRelays} = await import('@pairlobby/local-server');
-        return (await browseRelays(1500)).map((url) => ({url, label: 'local network'}));
+        return (await browseRelays(1500, signal)).map((url) => ({url, label: 'local network'}));
     },
-    tailnet: async () => {
-        const view = await tailscaleView();
+    tailnet: async (signal) => {
+        const view = await tailscaleView(2000, signal);
         if (!view) {
             return [];
         }
         // IPv4 only: a bracketed IPv6 URL works too, but one address per device is enough.
         return view.peers.filter((peer) => peer.online).flatMap((peer) => peer.addresses.filter((address) => address.includes('.')).slice(0, 1).map((address) => ({url: `http://${address}:${DEFAULT_RELAY_PORT}`, label: peer.name})));
     },
-    probe: (url, probe) => new PairLobbyClient(url).probeInvite(probe),
+    probe: probeRelayForInvite,
 };
 
 /** The relay that issued `code`, or a UsageError that says what was searched. */
@@ -83,7 +85,7 @@ export type LocalRoomMatch = RelayCandidate & {room: LocalRoom};
 
 export type LocalRoomDeps = Omit<DiscoveryDeps, 'probe'> & {
     /** Rooms open to the local network on one relay with this name; null when it cannot say. */
-    lookup: (url: string, name?: string) => Promise<LocalRoom[] | null>;
+    lookup: (url: string, name?: string, signal?: AbortSignal) => Promise<LocalRoom[] | null>;
 };
 
 /**
@@ -91,10 +93,10 @@ export type LocalRoomDeps = Omit<DiscoveryDeps, 'probe'> & {
  * room list. A relay reached by two addresses reports a room once; `known` leaves
  * out rooms already saved here. Relays that predate listing are skipped.
  */
-export async function listLocalRooms(known: ReadonlySet<string> = new Set(), deps: LocalRoomDeps = DEFAULT_LOCAL_ROOMS): Promise<LocalRoomMatch[]> {
-    const candidates = [{url: deps.local, label: 'this device'}, ...(await Promise.all([deps.lan(), deps.tailnet()])).flat()];
+export async function listLocalRooms(known: ReadonlySet<string> = new Set(), deps: LocalRoomDeps = DEFAULT_LOCAL_ROOMS, signal?: AbortSignal): Promise<LocalRoomMatch[]> {
+    const candidates = [{url: deps.local, label: 'this device'}, ...(await Promise.all([deps.lan(signal), deps.tailnet(signal)])).flat()];
     const unique = [...new Map(candidates.map((candidate) => [candidate.url, candidate])).values()];
-    const answers = await Promise.all(unique.map(async (candidate) => ({...candidate, rooms: await deps.lookup(candidate.url)})));
+    const answers = await Promise.all(unique.map(async (candidate) => ({...candidate, rooms: await deps.lookup(candidate.url, undefined, signal)})));
     const found = new Map<string, LocalRoomMatch>();
     for (const answer of answers) {
         for (const room of answer.rooms ?? []) {
@@ -110,7 +112,7 @@ export const DEFAULT_LOCAL_ROOMS: LocalRoomDeps = {
     local: DEFAULT_DISCOVERY.local,
     lan: DEFAULT_DISCOVERY.lan,
     tailnet: DEFAULT_DISCOVERY.tailnet,
-    lookup: (url, name) => new PairLobbyClient(url).localRooms(name),
+    lookup: relayLocalRooms,
 };
 
 /**

@@ -5,7 +5,7 @@ cli = ['node', os.environ.get('PAIRLOBBY_TEST_CLI', os.path.abspath('packages/cl
 with tempfile.TemporaryDirectory(prefix='pairlobby-room-browser-') as directory:
     shutil.copyfile('scripts/fixtures/codex-receiver.mjs', directory+'/codex')
     os.chmod(directory+'/codex', 0o755)
-    env = {**os.environ, 'PAIRLOBBY_DATA_DIR': directory+'/device', 'PAIRLOBBY_ROOM': '', 'PAIRLOBBY_SESSION': '', 'CODEX_THREAD_ID': '', 'CODEX_SESSION_ID': '', 'CLAUDE_CODE_SESSION_ID': '', 'TERM': 'xterm-256color', 'PAIRLOBBY_GRAPHICS': 'cells', 'PATH': directory+os.pathsep+os.environ['PATH'], 'PAIRLOBBY_TEST_RECORD': directory+'/calls'}
+    env = {**os.environ, 'PAIRLOBBY_DATA_DIR': directory+'/device', 'PAIRLOBBY_ROOM': '', 'PAIRLOBBY_SESSION': '', 'CODEX_THREAD_ID': '', 'CODEX_SESSION_ID': '', 'CLAUDE_CODE_SESSION_ID': '', 'TERM': 'xterm-256color', 'PAIRLOBBY_GRAPHICS': 'cells', 'PATH': directory+os.pathsep+os.environ['PATH'], 'PAIRLOBBY_TEST_RECORD': directory+'/calls', 'PAIRLOBBY_NO_NETWORK_SEARCH': '1'}
     relay = subprocess.Popen(cli+['serve', '--port', '0', '--data-dir', directory+'/relay'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=env)
     terminal = None
     master = None
