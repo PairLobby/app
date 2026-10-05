@@ -3,17 +3,19 @@ import type {Key} from 'node:readline';
 import {PairLobbyClient} from '@pairlobby/client';
 import type {LocalStore} from '@pairlobby/client';
 import type {RoomListEntry} from './render.js';
-import {ROOM_COLUMNS, SESSION_COLUMNS, closeListedRoom, leaveListedSession, loadRoomList, roomRows, sessionRows, sortListRows} from './room-list.js';
-import type {ListColumn, ListRow, ListSort} from './room-list.js';
+import {NETWORK_STATE, ROOM_COLUMNS, SESSION_COLUMNS, closeListedRoom, leaveListedSession, loadRoomList, networkRows, roomRows, sessionRows, sortListRows} from './room-list.js';
+import type {ListColumn, ListRow, ListSort, NetworkRoom} from './room-list.js';
 import {RoomPanel} from './room-panel.js';
 import type {RoomPanelPage} from './room-panel.js';
 import {plainCell} from './agent-roster.js';
 import {receiverConfiguration, startReceiver, stopReceiver} from './receiver.js';
 import {copyToClipboard} from './clipboard.js';
 import {createTerminalProgram} from './terminal-program.js';
+import {listLocalRooms} from './relay-discovery.js';
 
-export type RoomBrowserSelection = {roomId: string; sessionId: string};
-export type RoomBrowserOptions = {sort: ListSort; roomId?: string | undefined; sessionId?: string | undefined; notice?: string | undefined};
+/** A saved session to open, or a room found on the network to join first. */
+export type RoomBrowserSelection = {roomId: string; sessionId: string} | {roomId: string; joinAt: string};
+export type RoomBrowserOptions = {sort: ListSort; roomId?: string | undefined; sessionId?: string | undefined; notice?: string | undefined; discover?: (known: ReadonlySet<string>) => Promise<NetworkRoom[]>};
 type BrowserKey = Key & {sequence?: string};
 type BrowserMouse = blessed.Widgets.Events.IMouseEventArg & {button?: string};
 
@@ -24,6 +26,8 @@ export class RoomBrowser {
     private details: RoomPanel;
     private cells: blessed.Widgets.BoxElement[] = [];
     private entries: RoomListEntry[] = [];
+    private network: NetworkRoom[] = [];
+    private join: RoomBrowserSelection | undefined;
     private rows: ListRow[] = [];
     private roomId: string | undefined;
     private selected = 0;
@@ -46,7 +50,14 @@ export class RoomBrowser {
         this.roomId = options.roomId;
         this.initialSessionId = options.sessionId;
         this.roomSort = options.sort;
-        this.details = new RoomPanel({screen: this.screen, close: () => { void this.refresh(this.actionNotice); this.actionNotice = ''; }});
+        this.details = new RoomPanel({screen: this.screen, close: () => {
+            if (this.join) {
+                this.close(this.join);
+                return;
+            }
+            void this.refresh(this.actionNotice);
+            this.actionNotice = '';
+        }});
         this.screen.on('keypress', (character: string, key: BrowserKey) => this.key(character, key));
         this.screen.on('resize', () => this.details.visible ? this.details.render() : this.render());
         this.screen.program.enableMouse();
@@ -153,9 +164,11 @@ export class RoomBrowser {
                 return;
             }
             this.entries = entries;
+            this.network = this.network.filter((found) => !entries.some((entry) => entry.room.roomId === found.room.roomId));
             this.note = notice || 'Snapshot updated. Listing does not join rooms or start agents.';
             this.loading = false;
             this.rebuildRows(selected);
+            void this.discover(request);
         } catch (error) {
             if (!this.closed && this.request === request) {
                 this.loading = false;
@@ -165,13 +178,30 @@ export class RoomBrowser {
         }
     }
 
+    /** Looks for rooms open to the network after the saved ones are shown, so the list never waits on it. */
+    private async discover(request: AbortController): Promise<void> {
+        let found: NetworkRoom[];
+        try {
+            found = await (this.options.discover ?? listLocalRooms)(new Set(this.entries.map((entry) => entry.room.roomId)));
+        } catch {
+            return;
+        }
+        if (this.closed || this.request !== request) {
+            return;
+        }
+        this.network = found;
+        if (!this.roomId && !this.details.visible) {
+            this.rebuildRows(this.rows[this.selected]?.id);
+        }
+    }
+
     private rebuildRows(selectedId?: string): void {
         const room = this.entries.find((entry) => entry.room.roomId === this.roomId);
         if (this.roomId && !room) {
             this.roomId = undefined;
             this.column = this.firstColumn = 0;
         }
-        this.rows = sortListRows(room && this.roomId ? sessionRows(this.store, room) : roomRows(this.entries), this.sort());
+        this.rows = sortListRows(room && this.roomId ? sessionRows(this.store, room) : [...roomRows(this.entries), ...networkRows(this.network)], this.sort());
         this.selected = selectedId ? Math.max(0, this.rows.findIndex((row) => row.id === selectedId)) : Math.max(0, Math.min(this.selected, this.rows.length - 1));
         this.render();
     }
@@ -192,7 +222,10 @@ export class RoomBrowser {
         if (!row) {
             return;
         }
-        if (!this.roomId) {
+        const found = this.roomId ? undefined : this.network.find((candidate) => candidate.room.roomId === row.roomId);
+        if (found) {
+            this.confirmJoin(found);
+        } else if (!this.roomId) {
             this.roomId = row.roomId;
             this.selected = this.column = this.top = this.firstColumn = 0;
             this.note = 'Local saved sessions. Enter opens human chat; I inspects a session.';
@@ -204,9 +237,24 @@ export class RoomBrowser {
         }
     }
 
+    /** Joining writes to the room, so it is confirmed like every other action here. */
+    private confirmJoin(found: NetworkRoom): void {
+        const {room, url} = found;
+        const page: RoomPanelPage = {id: 'join-network-room', closeOnCancel: true, title: 'Join room on the network', note: `${room.name} (${room.roomId}) at ${url}`, reload: async () => page, rows: [{id: 'confirm', label: 'Join room', value: room.name, section: 'Confirmation', action: {kind: 'command', closeAfterSave: true, confirm: `Join ${room.name} at ${url} as a member? Everyone in the room will see you join, and it stays in this list afterwards.`, run: async () => {
+            this.join = {roomId: room.roomId, joinAt: url};
+        }}}]};
+        this.details.show(page);
+        this.details.key(undefined, {name: 'enter'});
+    }
+
     private confirmClose(): void {
         const row = this.rows[this.selected];
         if (!row) {
+            return;
+        }
+        if (row.values['state'] === NETWORK_STATE) {
+            this.note = 'This room is not joined yet. Enter joins it.';
+            this.render();
             return;
         }
         const session = Boolean(this.roomId);
@@ -322,7 +370,7 @@ export class RoomBrowser {
         const room = this.entries.find((entry) => entry.room.roomId === this.roomId);
         const title = this.roomId ? `Local sessions — ${room?.snapshot?.name ?? room?.room.name ?? this.roomId}` : 'PairLobby rooms';
         this.cell(0, 1, width, `${title} (${this.rows.length}) · sort: ${this.sort().key} ${this.sort().descending ? 'descending' : 'ascending'}`);
-        this.cell(1, 1, width, '↑/↓ rows · ←/→/Tab columns · S/header sort · Enter open · R refresh');
+        this.cell(1, 1, width, '↑/↓ rows · ←/→/Tab columns · S/header sort · Enter open or join · R refresh');
         this.cell(2, 1, width, 'C close room/session · I session details · Y copy cell · Esc back · Q quit');
         if (height < 10 || width < 28) {
             this.cell(2, 1, width, 'Enlarge terminal · Q quits');

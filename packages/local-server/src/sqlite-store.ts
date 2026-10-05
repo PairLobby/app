@@ -138,9 +138,12 @@ export class SqliteRoomStore implements RoomStore {
         return row ? (JSON.parse(row.body) as InviteRecord) : null;
     }
 
-    /** Open, unexpired rooms that allow local joins and are named `name`, ignoring case. */
-    localJoinRooms(name: string, now = Date.now()): LocalRoom[] {
-        const rows = this.db.prepare("SELECT room_id, body FROM rooms WHERE json_extract(body, '$.policy.localJoin') = 1 AND json_extract(body, '$.lifecycle') = 'open' AND lower(json_extract(body, '$.name')) = lower(?)").all(name) as {room_id: string; body: string}[];
+    /** Open, unexpired rooms that allow local joins: those named `name`, ignoring case, or without a name the newest 50. */
+    localJoinRooms(name?: string, now = Date.now()): LocalRoom[] {
+        const open = "SELECT room_id, body FROM rooms WHERE json_extract(body, '$.policy.localJoin') = 1 AND json_extract(body, '$.lifecycle') = 'open'";
+        const rows = (name === undefined
+            ? this.db.prepare(`${open} ORDER BY json_extract(body, '$.createdAt') DESC LIMIT 50`).all()
+            : this.db.prepare(`${open} AND lower(json_extract(body, '$.name')) = lower(?)`).all(name)) as {room_id: string; body: string}[];
         const count = this.db.prepare("SELECT count(*) AS active FROM participants WHERE room_id = ? AND json_extract(body, '$.revokedAt') IS NULL AND json_extract(body, '$.leftAt') IS NULL");
         return rows.map((row) => JSON.parse(row.body) as RoomRecord).filter((room) => room.expiresAt === null || room.expiresAt > now).map((room) => ({roomId: room.roomId, name: room.name, createdAt: room.createdAt, participantCount: Number((count.get(room.roomId) as {active: number}).active)}));
     }

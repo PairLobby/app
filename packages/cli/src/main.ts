@@ -463,13 +463,15 @@ async function listRooms(store: LocalStore, values: Values): Promise<number> {
                 return 0;
             }
             roomId = selection.roomId;
-            sessionId = selection.sessionId;
+            sessionId = 'sessionId' in selection ? selection.sessionId : undefined;
             notice = '';
+            // A room found on the network is joined first; joining then enters its chat.
+            const command = 'joinAt' in selection ? ['join', 'local', roomId, '--server', selection.joinAt, '--human'] : ['chat', '--human', '--room', roomId, '--session', sessionId!];
             try {
                 // Chat deliberately exits its process on /quit. Give it the
                 // terminal in a child so quitting returns to this navigator.
                 notice = await new Promise<string>((resolve, reject) => {
-                    const child = spawn(process.execPath, [process.argv[1]!, 'chat', '--human', '--room', roomId!, '--session', sessionId!], {stdio: ['inherit', 'inherit', 'pipe']});
+                    const child = spawn(process.execPath, [process.argv[1]!, ...command], {stdio: ['inherit', 'inherit', 'pipe']});
                     let error = '';
                     child.stderr.on('data', (chunk: Buffer) => { error = (error + chunk.toString()).slice(-4000); });
                     child.once('error', reject);

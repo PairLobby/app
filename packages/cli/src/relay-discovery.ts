@@ -83,8 +83,28 @@ export type LocalRoomMatch = RelayCandidate & {room: LocalRoom};
 
 export type LocalRoomDeps = Omit<DiscoveryDeps, 'probe'> & {
     /** Rooms open to the local network on one relay with this name; null when it cannot say. */
-    lookup: (url: string, name: string) => Promise<LocalRoom[] | null>;
+    lookup: (url: string, name?: string) => Promise<LocalRoom[] | null>;
 };
+
+/**
+ * Every room open to the local network on the relays this device can see, for the
+ * room list. A relay reached by two addresses reports a room once; `known` leaves
+ * out rooms already saved here. Relays that predate listing are skipped.
+ */
+export async function listLocalRooms(known: ReadonlySet<string> = new Set(), deps: LocalRoomDeps = DEFAULT_LOCAL_ROOMS): Promise<LocalRoomMatch[]> {
+    const candidates = [{url: deps.local, label: 'this device'}, ...(await Promise.all([deps.lan(), deps.tailnet()])).flat()];
+    const unique = [...new Map(candidates.map((candidate) => [candidate.url, candidate])).values()];
+    const answers = await Promise.all(unique.map(async (candidate) => ({...candidate, rooms: await deps.lookup(candidate.url)})));
+    const found = new Map<string, LocalRoomMatch>();
+    for (const answer of answers) {
+        for (const room of answer.rooms ?? []) {
+            if (!known.has(room.roomId) && !found.has(room.roomId)) {
+                found.set(room.roomId, {url: answer.url, label: answer.label, room});
+            }
+        }
+    }
+    return [...found.values()];
+}
 
 export const DEFAULT_LOCAL_ROOMS: LocalRoomDeps = {
     local: DEFAULT_DISCOVERY.local,

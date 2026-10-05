@@ -58,8 +58,8 @@ export interface RouterOptions {
      * means never, so joining by name is refused.
      */
     peerIsLocal?: (request: Request) => boolean;
-    /** Open rooms that allow local joins, matching a name; answers `GET /v1/rooms/local?name=`. */
-    localRooms?: (name: string) => Promise<LocalRoom[]>;
+    /** Open rooms that allow local joins, matching a name or all of them; answers `GET /v1/rooms/local[?name=]`. */
+    localRooms?: (name?: string) => Promise<LocalRoom[]>;
 }
 
 export interface ServerInfo {
@@ -126,6 +126,10 @@ async function routeLocal(request: Request, options: RouterOptions): Promise<Res
         return errorResponse('unauthorized', NOT_LOCAL, 401);
     }
     if (lookup) {
+        // No name at all lists every room open to the local network, for the room list.
+        if (!url.searchParams.has('name')) {
+            return json({rooms: await options.localRooms!()});
+        }
         const name = (url.searchParams.get('name') ?? '').trim();
         if (name.length === 0 || name.length > 64) {
             return errorResponse('invalid_request', 'name must be 1–64 characters', 400);
