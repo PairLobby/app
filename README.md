@@ -572,6 +572,16 @@ The last full local run (2026-10-05) recorded **730 passing tests**, plus source
 
 `fixtures/src/contract.ts` is the room contract and `fixtures/src/redemption-contract.ts` the invite crash-recovery gate. Both are parameterized by store and run against the in-memory reference, SQLite *and* Durable Object SQLite (through Wrangler's local runtime), so a behaviour that differs between adapters fails the build. A new storage adapter is expected to call them too.
 
+## License
+
+PairLobby is source-available under the [Elastic License 2.0](LICENSE). You may use, copy, modify and distribute it, including inside a company and on your own relay, free of charge. Three things are not allowed: offering it to others as a hosted or managed service that gives them a substantial part of its features, getting around any license key functionality, and removing or obscuring its license and copyright notices. The [license text](LICENSE) is what governs; this paragraph is a summary.
+
+That makes it not "open source" in the OSI's sense, which does not permit a restriction on offering software as a service. The same license covers every package here, the packaged CLI, and the `@pairlobby/*` packages on npm. Third-party components keep their own licenses, listed in `THIRD_PARTY_NOTICES.txt` in the packaged CLI.
+
+### Publishing the shared packages
+
+Other repositories depend on `@pairlobby/protocol`, `room-core`, `server-core`, `client` and `fixtures` from npm. `npm run publish:packages` builds them and shows what would be published; `-- --pack <dir>` writes the exact tarballs to inspect or install; `-- --publish` publishes them in dependency order at the current version, which needs an npm login with rights to the `@pairlobby` scope. The `package.json` files in this repository stay `private` with `*` ranges for the workspace: the script stages a copy of each with internal dependencies pinned to the exact version, built output only (compiled tests left out), and the license beside it. `fixtures` holds the store contract suites and expects the consumer's own `vitest`.
+
 ## What is deliberately not here
 
 No server-side inference hosting, GPU discovery, or generic remote-shell service. The receiver uses the selected locally installed runtime and its authentication; it does not require a new PairLobby provider key. No file transfer, task board, capability advertisement, or account requirements for local rooms. The workspace's `docs/draft.txt` describes a broader eventual system and is historical context, not a requirement list.
