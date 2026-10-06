@@ -101,6 +101,7 @@ test('test_checks_are_cached_for_a_day_unless_forced', async () => {
 });
 
 test('test_interactive_startup_checks_every_time_instead_of_using_the_daily_cache', async () => {
+    vi.stubEnv('CI', '');
     const store = new LocalStore(join(directory, 'interactive'));
     const fetcher = vi.fn().mockImplementation(async () => githubRelease('9.0.0'));
     vi.stubGlobal('fetch', fetcher);

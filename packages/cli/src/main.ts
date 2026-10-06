@@ -13,7 +13,7 @@ import {userInfo} from 'node:os';
 import {parseArgs} from 'node:util';
 
 import {LocalStore, PairLobbyClient, openRequests, owedByMe, unreceipted} from '@pairlobby/client';
-import type {JoinedRoom, Settings} from '@pairlobby/client';
+import type {JoinedRoom, RoomEntry, Settings} from '@pairlobby/client';
 import {ParticipantName, ProtocolError, requestState, newId, normalizeInviteCode, MessageAction} from '@pairlobby/protocol';
 import type {AdapterCapabilities} from '@pairlobby/protocol';
 
@@ -24,6 +24,7 @@ import {chooseHumanSession, selectHumanSession} from './human-session.js';
 import {WhenError, formatDuration, parseDuration, parseExpiry} from './when.js';
 import {pickExpiry} from './picker.js';
 import {DEFAULT_LOCAL_SERVER, DEFAULT_RELAY_PORT, UsageError, controllerCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
+import type {Selection} from './context.js';
 import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
 import {acceptInvitation, accountToken, declineInvitation, isOnlineKey, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineOrigin, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
@@ -494,6 +495,29 @@ function networkRoomSearch(store: LocalStore): RoomBrowserOptions['discover'] {
     return (known, signal) => listLocalRooms(known, deps, signal);
 }
 
+/** Selects this person's saved seat, or creates one through another saved local membership. */
+async function humanSessionForRoomList(store: LocalStore, room: RoomEntry): Promise<Selection> {
+    if (room.sessions.some((session) => session.kind === 'human')) {
+        return selectHumanSession(store, room, chooseHumanSession);
+    }
+    const inviterCredential = store.credential(room.roomId, 'controller') ?? room.sessions.map((session) => store.credential(room.roomId, session.sessionId)).find((credential) => Boolean(credential));
+    if (!inviterCredential) {
+        throw new UsageError('No saved human membership or inviting membership is available on this device. Join with an invite using --human first.');
+    }
+    const values = {human: true} as Values;
+    const identity = identityFrom(store, values, 'human');
+    const client = new PairLobbyClient(room.serverUrl);
+    try {
+        const invite = await client.mintInvite(room.roomId, inviterCredential, 'member', false);
+        const joined = await client.redeemInvite(invite.code, identity, undefined, false);
+        saveJoinedMembership(store, values, joined, room.serverUrl, identity);
+        store.rememberHumanSession(room.roomId, identity.sessionId);
+        return select(store, room.roomId, identity.sessionId);
+    } finally {
+        client.closeLive();
+    }
+}
+
 async function listRooms(store: LocalStore, values: Values): Promise<number> {
     const key = str(values, 'sort') ?? 'name';
     if (!ROOM_COLUMNS.some((column) => column.key === key)) {
@@ -524,7 +548,7 @@ async function listRooms(store: LocalStore, values: Values): Promise<number> {
                 } else if ('invitationId' in selection) {
                     command = ['join', 'online', selection.roomId, '--human'];
                 } else if ('openChat' in selection) {
-                    const actor = await selectHumanSession(store, resolveRoom(store, selection.roomId), chooseHumanSession);
+                    const actor = await humanSessionForRoomList(store, resolveRoom(store, selection.roomId));
                     command = ['chat', '--human', '--room', selection.roomId, '--session', actor.session.sessionId];
                 } else {
                     command = ['chat', '--human', '--room', selection.roomId, '--session', selection.sessionId];
@@ -1284,8 +1308,8 @@ async function joinLocalRoom(store: LocalStore, values: Values, reference: strin
     return finishJoin(store, values, joined, match.url, identity);
 }
 
-/** Saves a new membership on this device, starts its receiver when it has one, then enters or describes the room. */
-async function finishJoin(store: LocalStore, values: Values, joined: JoinedRoom, serverUrl: string, identity: LocalIdentity, code?: string): Promise<number> {
+/** Saves one successfully joined membership without deciding what the caller does next. */
+function saveJoinedMembership(store: LocalStore, values: Values, joined: JoinedRoom, serverUrl: string, identity: LocalIdentity, code?: string): void {
     identity.displayName = joined.room.participants.find((participant) => participant.participantId === joined.participantId)?.displayName ?? identity.displayName;
 
     store.upsertRoom({
@@ -1312,6 +1336,11 @@ async function finishJoin(store: LocalStore, values: Values, joined: JoinedRoom,
         cwd: process.cwd(),
         ...localDetail(values)
     });
+}
+
+/** Saves a new membership on this device, starts its receiver when it has one, then enters or describes the room. */
+async function finishJoin(store: LocalStore, values: Values, joined: JoinedRoom, serverUrl: string, identity: LocalIdentity, code?: string): Promise<number> {
+    saveJoinedMembership(store, values, joined, serverUrl, identity, code);
 
     const receiver = await enableReceiver(store, values, joined.roomId, identity.sessionId);
     if (flag(values, 'json')) {
