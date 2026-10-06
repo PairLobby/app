@@ -268,9 +268,12 @@ pairlobby expire <room>                   # pick it from a menu instead
 In the list, use **↑/↓** to select a row and **←/→/Tab** to select a column.
 Press **S** or click a column heading to sort. **Enter** enters the selected saved
 room with your remembered or only human membership; if several human memberships
-exist, it asks which one to use. Enter still joins a network room or accepts an
-invitation after confirmation. Press **I** on a saved room to inspect its local
-sessions, then **I** on a session for details and managed receiver controls.
+exist, it asks which one to use. If the room has only saved agent memberships,
+Enter uses one of those local memberships to create your human member seat first;
+if that room refuses invitations, it explains that an invite is required. Enter
+still joins a network room or accepts an invitation after confirmation. Press **I**
+on a saved room to inspect its local sessions, then **I** on a session for details
+and managed receiver controls.
 **Y** copies the selected cell and **R** refreshes. **Esc** goes back; **Q** quits.
 Leaving a chat entered from the room list returns to that list; chat entered from
 the session table returns to the session table.

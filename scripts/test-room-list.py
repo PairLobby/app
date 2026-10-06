@@ -16,6 +16,7 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-room-browser-') as directory:
         def run(*args): return json.loads(subprocess.check_output(cli+list(args)+['--json'], env=env, text=True, timeout=10))
         first = run('create', '--name', 'Room 2', '--human', '--as', 'Owner', '--server', server)
         second = run('create', '--name', 'Room 10', '--human', '--as', 'Zed', '--server', server)
+        agent_only = run('create', '--name', 'Room 20', '--agent', '--runtime', 'codex', '--as', 'Solo Agent', '--server', server)
         helper = run('join', first['invite']['code'], '--agent', '--runtime', 'codex', '--model', 'fixture-model', '--as', 'Helper', '--server', server)
         def state(room): return run('status', '--room', room['roomId'], '--session', room['sessionId'])
         # JSON stays machine-readable even when stdout is a terminal.
@@ -33,7 +34,7 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-room-browser-') as directory:
         assert process.returncode == 0, process.stderr.read().decode()
         assert b'\x1b' not in raw
         listed = json.loads(raw)
-        assert [room['name'] for room in listed['rooms']] == ['Room 10', 'Room 2']
+        assert [room['name'] for room in listed['rooms']] == ['Room 20', 'Room 10', 'Room 2']
         assert all(room['reachable'] for room in listed['rooms'])
         assert len(next(room for room in listed['rooms'] if room['roomId']==first['roomId'])['sessions']) == 2
         before = state(first)['latestSeq']
@@ -70,7 +71,7 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-room-browser-') as directory:
         assert 'Room 2' in screen.display[4], text()
         keys(b'\x1b[<0;3;4M\x1b[<0;3;4m')
         wait_for('name descending')
-        assert 'Room 10' in screen.display[4], text()
+        assert 'Room 20' in screen.display[4], text()
         keys(b's')
         wait_for('name ascending')
         choose('Room 2'); keys(b'i')
@@ -111,6 +112,10 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-room-browser-') as directory:
         choose('Zed'); keys(b'\r'); wait_for('registered in this room')
         keys(b'/quit\r'); wait_for('Local sessions')
         keys(b'\x1b'); wait_for('PairLobby rooms')
+        choose('Room 20'); keys(b'\r'); wait_for('registered in this room')
+        keys(b'/quit\r'); wait_for('PairLobby rooms')
+        saved = next(room for room in run('list')['rooms'] if room['roomId']==agent_only['roomId'])
+        assert sorted(session['kind'] for session in saved['sessions']) == ['agent', 'human'], saved
         choose('Room 2'); keys(b'c'); wait_for('Close room for everyone')
         keys(b'\x1b'); wait_for('PairLobby rooms')
         assert state(first)['lifecycle']=='open'
@@ -124,11 +129,13 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-room-browser-') as directory:
         keys(b'q')
         terminal.wait(timeout=5)
         assert terminal.returncode==0
-        print('PASS pure JSON in a TTY, natural sorting and clickable headers, Enter-to-chat, I session inspection, close cancellation, exact-session leave, repeated chat/rejoin/return, owner room close and narrow-screen navigation.')
+        print('PASS pure JSON in a TTY, natural sorting and clickable headers, Enter-to-chat including an agent-only room, I session inspection, close cancellation, exact-session leave, repeated chat/rejoin/return, owner room close and narrow-screen navigation.')
     finally:
         if terminal and terminal.poll() is None:
             terminal.kill(); terminal.wait(timeout=5)
         if master is not None: os.close(master)
         if helper:
             subprocess.run(cli+['receiver','stop','--room',first['roomId'],'--session',helper['sessionId'],'--json'], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        if 'agent_only' in locals():
+            subprocess.run(cli+['receiver','stop','--room',agent_only['roomId'],'--session',agent_only['sessionId'],'--json'], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         relay.terminate(); relay.wait(timeout=5)
