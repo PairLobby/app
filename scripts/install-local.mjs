@@ -33,14 +33,18 @@ try {
     execFileSync(process.execPath, [cli, '--help'], {stdio: 'pipe'});
     mkdirSync(dirname(launcher), {recursive: true});
     const backup = launcher + '.before-async';
-    if (existsSync(launcher) && !existsSync(backup)) {
+    const replaced = existsSync(launcher);
+    if (replaced && !existsSync(backup)) {
         copyFileSync(launcher, backup);
     }
     const staged = launcher + '.installing';
     writeFileSync(staged, `#!/bin/sh\n# PairLobby managed launcher\nexec ${quote(process.execPath)} ${quote(cli)} "$@"\n`, {mode: 0o755});
     chmodSync(staged, 0o755);
     renameSync(staged, launcher);
-    console.log(`Replaced: ${launcher}\nRelease: ${release}\nPrevious launcher: ${backup}`);
+    console.log(`${replaced ? 'Replaced' : 'Installed'}: ${launcher}\nRelease: ${release}${existsSync(backup) ? `\nPrevious launcher: ${backup}` : ''}`);
+    if (!(process.env.PATH ?? '').split(':').includes(dirname(launcher))) {
+        console.log(`\n${dirname(launcher)} is not on your PATH. Add it, then open a new terminal:\n  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.${(process.env.SHELL ?? '').endsWith('zsh') ? 'zshrc' : 'profile'}`);
+    }
 } finally {
     rmSync(work, {recursive: true, force: true});
 }

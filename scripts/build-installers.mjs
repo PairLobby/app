@@ -1,9 +1,7 @@
-import {copyFileSync,mkdirSync,readFileSync,writeFileSync} from 'node:fs';
+import {copyFileSync,mkdirSync} from 'node:fs';
 import {resolve,join} from 'node:path';
+// The installers carry no version: install.mjs asks GitHub for the latest release when
+// it runs. Copy them to the website again only when an installer itself changes.
 const output=resolve(process.argv[2]??'../frontend/public');mkdirSync(output,{recursive:true});
-const version=JSON.parse(readFileSync('packages/cli/package.json','utf8')).version;
-for(const file of ['install.sh','install.ps1'])copyFileSync(join('scripts/installers',file),join(output,file));
-const template=readFileSync('scripts/installers/install.mjs','utf8');
-if(!template.includes('__PAIRLOBBY_RELEASE_VERSION__'))throw new Error('Installer release marker is missing');
-writeFileSync(join(output,'install.mjs'),template.replaceAll('__PAIRLOBBY_RELEASE_VERSION__',version));
+for(const file of ['install.sh','install.ps1','install.mjs'])copyFileSync(join('scripts/installers',file),join(output,file));
 console.log(`Installers copied to ${output}`);

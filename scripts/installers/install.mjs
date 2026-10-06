@@ -56,13 +56,22 @@ if(values['skills-dir']&&['all','none'].includes(values.skills)) throw new Error
 const windows=platform()==='win32';
 const root=resolve(process.env.PAIRLOBBY_INSTALL_DIR??(windows?join(process.env.LOCALAPPDATA??homedir(),'PairLobby'):join(homedir(),'.local/share/pairlobby')));
 const bin=resolve(process.env.PAIRLOBBY_BIN_DIR??(windows?join(root,'bin'):join(homedir(),'.local/bin')));
-const base=process.env.PAIRLOBBY_DOWNLOAD_BASE??'https://pairlobby.com';
-const version='__PAIRLOBBY_RELEASE_VERSION__';
-if(!/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(version))throw new Error('Build the website installer with scripts/build-installers.mjs before running it.');
+const releases=(process.env.PAIRLOBBY_RELEASES??'https://github.com/PairLobby/app/releases').replace(/\/+$/,'');
+const versionPattern=/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/;
+// GitHub answers /releases/latest by redirecting to the newest release's tag, so this
+// installer carries no version of its own and never needs rebuilding for a release.
+async function latestVersion(){
+    const response=await fetch(releases+'/latest',{redirect:'manual',signal:AbortSignal.timeout(30000)});
+    const found=/\/tag\/v([^/?#]+)$/.exec(response.headers.get('location')??'');
+    if(!found||!versionPattern.test(found[1]))throw new Error('Could not find the latest PairLobby release. Try again, or set PAIRLOBBY_VERSION to install a specific one.');
+    return found[1];
+}
+const version=process.env.PAIRLOBBY_VERSION?process.env.PAIRLOBBY_VERSION.replace(/^v/,''):await latestVersion();
+if(!versionPattern.test(version))throw new Error('PAIRLOBBY_VERSION must look like 0.11.0.');
 const filename=`pairlobby-cli-${version}.tgz`;
 const target=join(bin,windows?'pairlobby.cmd':'pairlobby');
 if(existsSync(target)&&!readFileSync(target,'utf8').includes('PairLobby managed launcher'))throw new Error(`Refusing to overwrite an existing command: ${target}. Choose PAIRLOBBY_BIN_DIR.`);
-async function download(path){const response=await fetch(base+path,{redirect:'error',signal:AbortSignal.timeout(120000)});if(!response.ok)throw new Error(`Download failed: ${response.status}`);return Buffer.from(await response.arrayBuffer());}
+async function download(name){const response=await fetch(`${releases}/download/v${version}/${name}`,{signal:AbortSignal.timeout(120000)});if(!response.ok)throw new Error(`Download of PairLobby ${version} failed: ${response.status}`);return Buffer.from(await response.arrayBuffer());}
 mkdirSync(root,{recursive:true});const work=mkdtempSync(join(root,'.install-'));
 const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
 function isBundledSkill(content) {
@@ -75,8 +84,8 @@ function isBundledSkill(content) {
     });
 }
 try {
-    console.log('Downloading PairLobby…');
-    const [archive,sums]=await Promise.all([download('/downloads/'+filename),download('/downloads/'+filename+'.sha256')]);
+    console.log(`Downloading PairLobby ${version}…`);
+    const [archive,sums]=await Promise.all([download(filename),download(filename+'.sha256')]);
     const expected=sums.toString().trim().split(/\s+/)[0];
     if(!/^[a-f0-9]{64}$/.test(expected)||createHash('sha256').update(archive).digest('hex')!==expected)throw new Error('PairLobby download checksum failed.');
     const packed=join(work,'app.tgz');writeFileSync(packed,archive);

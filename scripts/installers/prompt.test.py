@@ -1,11 +1,13 @@
 """Exercise installer prompts with piped stdin and a real controlling terminal."""
 import errno
 import http.server
+import json
 import os
 from pathlib import Path
 import pty
 import select
 import shutil
+import subprocess
 import tempfile
 import multiprocessing
 import time
@@ -14,9 +16,14 @@ import unittest
 
 class PromptTests(unittest.TestCase):
     def test_prompt_choices_with_redirected_stdin(self):
-        public = Path(os.environ.get('PAIRLOBBY_TEST_INSTALLER_DIR', '../frontend/public')).resolve()
-        installer = public / 'install.mjs'
+        installer = Path('scripts/installers/install.mjs').resolve()
         node = shutil.which('node')
+        version = json.loads(Path('packages/cli/package.json').read_text())['version']
+        # Laid out like GitHub releases, packaged from this checkout (run `npm run build` first).
+        releases = tempfile.TemporaryDirectory(prefix='pairlobby-prompt-releases-')
+        self.addCleanup(releases.cleanup)
+        public = Path(releases.name)
+        subprocess.run([node, 'scripts/build-distribution.mjs', str(public / 'download' / f'v{version}'), version], check=True, capture_output=True)
 
         class Handler(http.server.SimpleHTTPRequestHandler):
             def __init__(self, *args, **kwargs):
@@ -35,7 +42,7 @@ class PromptTests(unittest.TestCase):
                     args = [node, str(installer)]
                     if agent:
                         args.extend(['--skills-dir', str(root / 'skills')])
-                    env = dict(os.environ, PAIRLOBBY_DOWNLOAD_BASE=f'http://127.0.0.1:{server.server_port}', PAIRLOBBY_INSTALL_DIR=str(root / 'app'), PAIRLOBBY_BIN_DIR=str(root / 'bin'), PAIRLOBBY_SKIP_PATH='1')
+                    env = dict(os.environ, PAIRLOBBY_RELEASES=f'http://127.0.0.1:{server.server_port}', PAIRLOBBY_VERSION=version, PAIRLOBBY_INSTALL_DIR=str(root / 'app'), PAIRLOBBY_BIN_DIR=str(root / 'bin'), PAIRLOBBY_SKIP_PATH='1')
                     child, terminal = pty.fork()
                     if child == 0:
                         # curl | sh gives the installer non-terminal stdin.
