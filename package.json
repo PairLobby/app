@@ -20,7 +20,6 @@
     "test": "tsc --build && node scripts/fix-bin.mjs && vitest run",
     "test:watch": "vitest",
     "test:async-local": "npm run build && python3 scripts/test-async-local.py",
-    "test:celld": "npm run build && node scripts/test-celld-relay.mjs",
     "publish:packages": "node scripts/publish-packages.mjs",
     "install:async-prototype": "npm run build && node scripts/install-async-prototype.mjs",
     "typecheck": "tsc --build --force",

@@ -1,12 +1,9 @@
 node_modules/
 dist/
 *.tsbuildinfo
-.wrangler/
 .dev.vars
 coverage/
 .DS_Store
 .vscode/
 .idea/
 .ssmver/
-.celld/
-dist-bundle/
