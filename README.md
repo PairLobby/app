@@ -180,16 +180,7 @@ On macOS, finding relays on the local network needs the **Local Network** permis
 
 ### A self-hosted relay on Durable Objects (Celld)
 
-`packages/durable-runtime` is the same accountless relay as `pairlobby serve`, written as a Worker with one Durable Object per room. It runs on [Celld](https://github.com/denoland/celld), Deno's self-hosted Durable Object runtime, and unchanged on Cloudflare. Its `wrangler.jsonc` uses only keys Celld accepts. From a built checkout:
-
-```sh
-cd packages/durable-runtime
-CELLD_ESBUILD=../../node_modules/.bin/esbuild celld dev --port 9876   # state stays in .celld/dev across restarts
-pairlobby create --name my-project --server http://127.0.0.1:9876
-pairlobby join <CODE> --server http://127.0.0.1:9876 --runtime codex
-```
-
-Celld bundles with esbuild and looks for it on `PATH`; `CELLD_ESBUILD` points it at the copy Wrangler installed. The CLI needs nothing Celld-specific. It polls the relay over HTTP, as it does a LAN relay. Each room's SQLite state and its auto-close alarm live in that room's object, and an invite code is claimed in a small directory object named by the code's digest, so two rooms can never hold one code. The relay refuses any request that carries a browser `Origin`, as the local relay does; `PAIRLOBBY_ALLOWED_HOSTS` (comma-separated) pins the `Host` values your ingress forwards. Traffic is whatever your ingress serves, so put TLS in front of anything beyond loopback. Multi-node Celld fleets are not yet qualified; see [the deployment plan](../docs/celld-deployment-architecture.md).
+The same accountless relay as `pairlobby serve`, written as a Worker with one Durable Object per room, lives in [PairLobby/durable-runtime](https://github.com/PairLobby/durable-runtime). It runs on Celld and on Cloudflare, and the CLI reaches it with `--server <url>` like any other relay.
 
 ### Your rooms on your other devices
 
@@ -548,7 +539,6 @@ packages/room-core/        authorization and state transitions, no network depen
 packages/server-core/      the storage contract and the room service every transport runs
 packages/local-server/     node:sqlite store and the local relay
 packages/client/           HTTP client and the per-device room registry
-packages/durable-runtime/  Durable Object room store and a standalone relay for Celld or Cloudflare
 packages/cli/              the command line
 fixtures/                  in-memory reference store, fake agents, the contract suite
 integrations/              runtime instructions and the capability matrix
@@ -565,12 +555,11 @@ python scripts/test-spawn-chat.py
 python scripts/test-agent-table.py
 python scripts/test-people-chat.py   # three people, no agent, through the real chat terminal
 python scripts/test-network-rooms.py # a room open to the network, joined from the room list
-npm run test:celld   # the relay under `celld dev`; skipped without CELLD_BIN or celld on PATH
 ```
 
-The last full local run (2026-10-05) recorded **730 passing tests**, plus source and installed-package terminal checks. Spawning, concurrent receivers, argument forwarding, recovery, roster metadata, and clipboard transport use deterministic fixtures; this does not claim new provider-backed acceptance or native clipboard testing on every OS. See [the validation guide](integrations/SPIKE.md) for targeted commands and remaining gaps.
+The last full local run (2026-10-06) recorded **596 passing tests**, plus source and installed-package terminal checks. Spawning, concurrent receivers, argument forwarding, recovery, roster metadata, and clipboard transport use deterministic fixtures; this does not claim new provider-backed acceptance or native clipboard testing on every OS. See [the validation guide](integrations/SPIKE.md) for targeted commands and remaining gaps.
 
-`fixtures/src/contract.ts` is the room contract and `fixtures/src/redemption-contract.ts` the invite crash-recovery gate. Both are parameterized by store and run against the in-memory reference, SQLite *and* Durable Object SQLite (through Wrangler's local runtime), so a behaviour that differs between adapters fails the build. A new storage adapter is expected to call them too.
+`fixtures/src/contract.ts` is the room contract and `fixtures/src/redemption-contract.ts` the invite crash-recovery gate. Both are parameterized by store and run against the in-memory reference and SQLite here, and against Durable Object SQLite in [durable-runtime](https://github.com/PairLobby/durable-runtime), so a behaviour that differs between adapters fails a build. A new storage adapter is expected to call them too.
 
 ## License
 
