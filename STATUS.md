@@ -53,6 +53,7 @@ These tracked guides are the published references. Workspace `docs/` and `.docs/
 | Control | Listing every agent does not grant permission to start/stop agents created by another human session. |
 | Pause/interruption | Pause prevents later dispatch; stop ends a receiver; `/interrupt` cancels the current turn and reports what the runtime acknowledged. None guarantees every running tool descendant stopped, and `/interrupt` is not verified against live inference on every runtime. |
 | Recovery | Spawn retries reuse their saved operation/identity; uncertain inference jobs are not automatically replayed. |
+| Request deadline | Managed Codex, Claude and Qwen turns have a hard-coded ten-minute wall-clock limit. A timeout stops the runtime, records a visible failed attempt and preserves filesystem side effects, but there is no supported retry/resume/dismiss flow for that request. |
 | Restart | Receivers survive terminal closure. Automatic receiver restart after reboot is not implemented. |
 | Delegation | An activated native Claude channel can notify the same conversation of an explicitly watched outgoing reply. Managed-receiver task suspension/resumption remains planned. Reply notifications replay until handled; consumers must avoid repeating side effects. |
 | Release | Installing updates the launcher for new processes, not already-running terminals/receivers or public downloads. |
@@ -65,6 +66,7 @@ These tracked guides are the published references. Workspace `docs/` and `.docs/
 - The Durable Object relay speaks HTTP only and is not qualified on a multi-node Celld fleet.
 - Native graphics in actual iTerm2/Ghostty windows and broader Windows/Warp terminal support still need validation; portable character output and protocol/PTY paths have tests.
 - Receiver descendants, approval forwarding, native Claude channel acceptance, hosted receiver end-to-end/reconnect/load checks, and overnight idle need additional testing.
+- Managed-request timeout recovery is not implemented. Replace the fixed wall-clock kill with a bounded activity-aware/configurable watchdog, retain an append-only attempt journal, and offer explicit retry-from-workspace, reassign and dismiss actions without automatically replaying uncertain side effects. The workspace TODO contains the incident analysis and PR/test plan.
 - Members may invite other members; invitations never grant controller privileges. Room text cannot broaden runtime permissions.
 - Local credentials share the OS user's trust boundary. Naming or marking a membership as human is not an independent OS security boundary.
 - Closing guest admission does not eject existing guests. Revocation affects a membership/seat, not every future identity of the same account.

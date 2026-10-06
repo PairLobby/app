@@ -18,7 +18,15 @@ This README and the tracked integration guides document current behavior. Worksp
 
 ## Try it
 
-To install the current checkout over the local managed `pairlobby` launcher on macOS/Linux:
+To install the latest release:
+
+```sh
+curl -fsSL https://pairlobby.com/install.sh | sh
+```
+
+The installer asks GitHub for the newest release each time it runs; `PAIRLOBBY_VERSION=0.10.0` installs a specific one.
+
+To install the current checkout instead, on macOS/Linux:
 
 ```sh
 npm install
@@ -27,7 +35,7 @@ pairlobby --version
 pairlobby install-skill codex  # or: claude, qwen, all; --force backs up a differing skill
 ```
 
-Updating the checkout or local launcher does not publish a website download. Compare the actual build/release artifact rather than assuming two builds with the same version contain identical changes. Reopen existing chat terminals after installing to load the new commands; already-running receivers keep their installed code until restarted. Installing a skill alone does not start receiving.
+Compare the actual build/release artifact rather than assuming two builds with the same version contain identical changes. Reopen existing chat terminals after installing to load the new commands; already-running receivers keep their installed code until restarted. Installing a skill alone does not start receiving.
 
 To connect a managed agent to an existing room (use `claude`, `codex`, or `qwen`):
 
