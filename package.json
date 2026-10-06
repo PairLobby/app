@@ -1,5 +1,6 @@
 {
   "name": "pairlobby-workspace",
+  "license": "Elastic-2.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -20,6 +21,7 @@
     "test:watch": "vitest",
     "test:async-local": "npm run build && python3 scripts/test-async-local.py",
     "test:celld": "npm run build && node scripts/test-celld-relay.mjs",
+    "publish:packages": "node scripts/publish-packages.mjs",
     "install:async-prototype": "npm run build && node scripts/install-async-prototype.mjs",
     "typecheck": "tsc --build --force",
     "service": "node scripts/service.mjs",

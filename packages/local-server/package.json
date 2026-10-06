@@ -1,6 +1,7 @@
 {
   "name": "@pairlobby/local-server",
   "version": "0.11.0",
+  "license": "Elastic-2.0",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",

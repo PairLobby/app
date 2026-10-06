@@ -1,6 +1,7 @@
 {
   "name": "@pairlobby/fixtures",
   "version": "0.11.0",
+  "license": "Elastic-2.0",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
@@ -15,5 +16,8 @@
     "@pairlobby/protocol": "*",
     "@pairlobby/room-core": "*",
     "@pairlobby/server-core": "*"
+  },
+  "peerDependencies": {
+    "vitest": ">=4.1.0"
   }
 }
