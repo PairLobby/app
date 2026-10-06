@@ -4,7 +4,13 @@
 //
 //   node scripts/publish-packages.mjs            # dry run: builds, stages and shows what would be published
 //   node scripts/publish-packages.mjs --pack DIR # write the exact tarballs to DIR, to inspect or install
+//   node scripts/publish-packages.mjs --missing  # list the packages npm does not have at this version, and stop
 //   node scripts/publish-packages.mjs --publish  # really publish, in dependency order
+//
+// The version is the one ssmver keeps in ssmver.toml and writes into every package.json
+// in lockstep. Nothing here chooses a version: a package that disagrees with ssmver.toml
+// stops the run. Publishing skips whatever npm already has, so a run that failed halfway
+// is finished by running it again, and the release workflow can call it on every merge.
 //
 // The package.json files in this repository stay `private` with `*` ranges, which is
 // what a workspace wants and makes an accidental `npm publish` impossible. This stages
@@ -21,11 +27,40 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // Dependency order: each package only depends on those before it.
 const PACKAGES = ['packages/protocol', 'packages/room-core', 'packages/server-core', 'packages/client', 'fixtures'];
 const publish = process.argv.includes('--publish');
+const listMissing = process.argv.includes('--missing');
 const packTo = process.argv.includes('--pack') ? resolve(process.argv[process.argv.indexOf('--pack') + 1] ?? '') : null;
-const version = JSON.parse(readFileSync(join(root, 'packages/cli/package.json'), 'utf8')).version;
+const version = ssmverVersion();
 
 function run(command, args, cwd) {
     return execFileSync(command, args, {cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit']});
+}
+
+function ssmverVersion() {
+    const found = /^version = "([^"]+)"$/m.exec(readFileSync(join(root, 'ssmver.toml'), 'utf8'));
+    if (!found) {
+        throw new Error('ssmver.toml has no version');
+    }
+    return found[1];
+}
+
+function readManifest(relativePath) {
+    const manifest = JSON.parse(readFileSync(join(root, relativePath, 'package.json'), 'utf8'));
+    if (manifest.version !== version) {
+        throw new Error(`${manifest.name} is at ${manifest.version}, ssmver.toml is at ${version}; let ssmver bump them together`);
+    }
+    return manifest;
+}
+
+/** Whether npm already has this package at this version. Anything but a clear "not found" is an error, not a no. */
+function isPublished(name) {
+    try {
+        return execFileSync('npm', ['view', `${name}@${version}`, 'version', '--registry', 'https://registry.npmjs.org'], {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']}).trim() === version;
+    } catch (error) {
+        if (String(error.stderr).includes('E404')) {
+            return false;
+        }
+        throw new Error(`could not ask npm about ${name}@${version}: ${String(error.stderr).trim()}`);
+    }
 }
 
 function copyBuilt(from, to) {
@@ -42,10 +77,7 @@ function copyBuilt(from, to) {
 
 function stage(relativePath, outRoot) {
     const source = join(root, relativePath);
-    const manifest = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8'));
-    if (manifest.version !== version) {
-        throw new Error(`${manifest.name} is at ${manifest.version}, the release is ${version}; run the version bump first`);
-    }
+    const manifest = readManifest(relativePath);
     if (!existsSync(join(source, 'dist'))) {
         throw new Error(`${relativePath} has no dist/; run npm run build`);
     }
@@ -76,15 +108,33 @@ function stage(relativePath, outRoot) {
     return {name: manifest.name, target};
 }
 
+if (listMissing) {
+    for (const relativePath of PACKAGES) {
+        const {name} = readManifest(relativePath);
+        if (!isPublished(name)) {
+            console.log(name);
+        }
+    }
+    process.exit(0);
+}
+
 console.log(`building ${version}`);
 run('npm', ['run', 'build', '--silent'], root);
 const outRoot = mkdtempSync(join(tmpdir(), 'pairlobby-publish-'));
+// A prerelease (0.12.0-beta.1) must not become what a plain `npm install` gets.
+const distTag = version.includes('-') ? 'next' : 'latest';
+let skipped = 0;
 try {
     for (const relativePath of PACKAGES) {
         const {name, target} = stage(relativePath, outRoot);
         if (publish) {
+            if (isPublished(name)) {
+                console.log(`${name}@${version} is already on npm; skipping`);
+                skipped += 1;
+                continue;
+            }
             console.log(`publishing ${name}@${version}`);
-            execFileSync('npm', ['publish', '--access', 'public'], {cwd: target, stdio: 'inherit'});
+            execFileSync('npm', ['publish', '--access', 'public', '--tag', distTag], {cwd: target, stdio: 'inherit'});
         } else if (packTo) {
             mkdirSync(packTo, {recursive: true});
             console.log(`packed ${run('npm', ['pack', '--pack-destination', packTo], target).trim()}`);
@@ -93,7 +143,7 @@ try {
             console.log(`would publish ${packed.name}@${packed.version}: ${packed.entryCount} files, ${(packed.unpackedSize / 1024).toFixed(0)} KiB unpacked`);
         }
     }
-    console.log(publish ? `published ${PACKAGES.length} packages at ${version}` : packTo ? `tarballs are in ${packTo}` : 'dry run only; add --publish to publish');
+    console.log(publish ? `published ${PACKAGES.length - skipped} packages at ${version}${skipped ? `, ${skipped} were already there` : ''}` : packTo ? `tarballs are in ${packTo}` : 'dry run only; add --publish to publish');
 } finally {
     rmSync(outRoot, {recursive: true, force: true});
 }

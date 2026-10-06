@@ -1,10 +1,14 @@
 name: Release
 
-# Every merge to master checks packages/cli/package.json, which ssmver bumps from
-# commit prefixes (feature: minor, fix: patch, release: major). When that version has
-# no GitHub release yet, this tests, builds and publishes it, creating the v<version>
-# tag on the merged commit.
-# Installed CLIs check this repository's latest release for updates.
+# Every merge to master reads the version ssmver keeps in ssmver.toml and bumps from
+# commit prefixes (feature: minor, fix: patch, release: major). Two things are published
+# at that version, each only when it is missing:
+#   - the GitHub release with the packaged CLI, tagged v<version> on the merged commit.
+#     Installed CLIs check this repository's latest release for updates.
+#   - the shared @pairlobby packages on npm (protocol, room-core, server-core, client,
+#     fixtures), which other repositories depend on. Needs the NPM_TOKEN secret.
+# A merge that does not bump the version (chore:) publishes nothing, unless an earlier
+# run left one of the two unfinished.
 on:
   push:
     branches: [master]
@@ -12,6 +16,8 @@ on:
 
 permissions:
   contents: write
+  # Lets npm record which commit and workflow built each package.
+  id-token: write
 
 concurrency:
   group: release
@@ -22,27 +28,41 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Find the version to release
+      - name: Find what is missing at this version
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version=$(node -p "require('./packages/cli/package.json').version")
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' ssmver.toml)
+          cli=$(node -p "require('./packages/cli/package.json').version")
+          if [ -z "$version" ] || [ "$version" != "$cli" ]; then
+            echo "::error::ssmver.toml is at '$version' but packages/cli/package.json is at '$cli'"
+            exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "v$version is already released; nothing to do."
+            echo "v$version is already released on GitHub."
             echo "publish=false" >> "$GITHUB_OUTPUT"
           else
             echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
+          missing=$(node scripts/publish-packages.mjs --missing)
+          if [ -z "$missing" ]; then
+            echo "Every shared package is already on npm at $version."
+            echo "npm=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Not on npm at $version:" $missing
+            echo "npm=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-node@v4
-        if: steps.version.outputs.publish == 'true'
+        if: steps.version.outputs.publish == 'true' || steps.version.outputs.npm == 'true'
         with:
           node-version: 22
           cache: npm
-      - if: steps.version.outputs.publish == 'true'
+          registry-url: https://registry.npmjs.org
+      - if: steps.version.outputs.publish == 'true' || steps.version.outputs.npm == 'true'
         run: npm ci
-      - if: steps.version.outputs.publish == 'true'
+      - if: steps.version.outputs.publish == 'true' || steps.version.outputs.npm == 'true'
         run: npm test
       - if: steps.version.outputs.publish == 'true'
         run: node scripts/build-distribution.mjs artifacts "${{ steps.version.outputs.version }}"
@@ -56,3 +76,14 @@ jobs:
           prerelease=""
           case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
           gh release create "v$VERSION" "artifacts/pairlobby-cli-$VERSION.tgz" "artifacts/pairlobby-cli-$VERSION.tgz.sha256" --target "$GITHUB_SHA" --title "PairLobby $VERSION" --generate-notes $prerelease
+      - name: Publish the shared packages to npm
+        if: steps.version.outputs.npm == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::The NPM_TOKEN secret is not set, so the @pairlobby packages were not published. Add it and re-run this workflow."
+            exit 1
+          fi
+          node scripts/publish-packages.mjs --publish
