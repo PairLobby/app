@@ -73,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-room-browser-') as directory:
         assert 'Room 10' in screen.display[4], text()
         keys(b's')
         wait_for('name ascending')
-        choose('Room 2'); keys(b'\r')
+        choose('Room 2'); keys(b'i')
         wait_for('Local sessions')
         choose('Helper'); keys(b'i')
         wait_for('Session — Helper')
@@ -101,7 +101,10 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-room-browser-') as directory:
         assert run('receiver', 'status', '--room', first['roomId'], '--session', helper['sessionId'])['state']=='stopped'
         assert not os.path.exists(directory+'/calls'), 'navigation and idle receiver lifecycle must not invoke a model'
         keys(b'\x1b'); wait_for('PairLobby rooms')
-        choose('Room 10'); keys(b'\r'); wait_for('Local sessions')
+        choose('Room 10'); keys(b'\r'); wait_for('registered in this room')
+        keys(b'/quit\r'); wait_for('PairLobby rooms')
+        assert 'Room 10' in selected(), text()
+        choose('Room 10'); keys(b'i'); wait_for('Local sessions')
         choose('Zed'); keys(b'\r'); wait_for('registered in this room')
         keys(b'/quit\r'); wait_for('Local sessions')
         assert 'Left' in text(), text()
@@ -121,7 +124,7 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-room-browser-') as directory:
         keys(b'q')
         terminal.wait(timeout=5)
         assert terminal.returncode==0
-        print('PASS pure JSON in a TTY, natural sorting and clickable headers, sessions/details, close cancellation, exact-session leave, repeated chat/rejoin/return, owner room close and narrow-screen navigation.')
+        print('PASS pure JSON in a TTY, natural sorting and clickable headers, Enter-to-chat, I session inspection, close cancellation, exact-session leave, repeated chat/rejoin/return, owner room close and narrow-screen navigation.')
     finally:
         if terminal and terminal.poll() is None:
             terminal.kill(); terminal.wait(timeout=5)

@@ -12,12 +12,12 @@ import {receiverConfiguration, startReceiver, stopReceiver} from './receiver.js'
 import {copyToClipboard} from './clipboard.js';
 import {createTerminalProgram} from './terminal-program.js';
 
-/** A saved session to open, a room found on the network to join first, or an invitation to accept and then join. */
-export type RoomBrowserSelection = {roomId: string; sessionId: string} | {roomId: string; joinAt: string} | {roomId: string; invitationId: string};
+/** A saved room or session to chat in, a network room to join, or an invitation to accept and join. */
+export type RoomBrowserSelection = {roomId: string; openChat: true} | {roomId: string; sessionId: string} | {roomId: string; joinAt: string} | {roomId: string; invitationId: string};
 /** What the list can do about invitations: fetch the unanswered ones, and decline one. Accepting is left to the caller, which then joins. */
 export type RoomBrowserInvitations = {list: (signal: AbortSignal) => Promise<RoomInvite[]>; decline: (id: string) => Promise<void>};
 /** `discover` finds rooms open on the network; it must stop when its signal aborts. Absent, the list shows saved rooms only. */
-export type RoomBrowserOptions = {sort: ListSort; roomId?: string | undefined; sessionId?: string | undefined; notice?: string | undefined; discover?: ((known: ReadonlySet<string>, signal: AbortSignal) => Promise<NetworkRoom[]>) | undefined; invitations?: RoomBrowserInvitations | undefined};
+export type RoomBrowserOptions = {sort: ListSort; roomId?: string | undefined; sessionId?: string | undefined; selectedRoomId?: string | undefined; notice?: string | undefined; discover?: ((known: ReadonlySet<string>, signal: AbortSignal) => Promise<NetworkRoom[]>) | undefined; invitations?: RoomBrowserInvitations | undefined};
 type BrowserKey = Key & {sequence?: string};
 type BrowserMouse = blessed.Widgets.Events.IMouseEventArg & {button?: string};
 
@@ -45,13 +45,17 @@ export class RoomBrowser {
     private actionNotice = '';
     private request: AbortController | undefined;
     private finish: ((selection: RoomBrowserSelection | undefined) => void) | undefined;
-    private initialSessionId: string | undefined;
+    private initialRowId: string | undefined;
 
     constructor(private readonly store: LocalStore, private readonly options: RoomBrowserOptions) {
+        // A preceding readline prompt (for example the update choice) pauses stdin
+        // when it closes. Blessed renders anyway but receives no keys unless the
+        // stream is resumed explicitly.
+        process.stdin.resume();
         this.screen = blessed.screen({program: createTerminalProgram(), smartCSR: true, fullUnicode: true, title: 'PairLobby rooms', warnings: false});
         this.surface = blessed.box({parent: this.screen, top: 0, left: 0, right: 0, bottom: 0});
         this.roomId = options.roomId;
-        this.initialSessionId = options.sessionId;
+        this.initialRowId = options.sessionId ?? options.selectedRoomId;
         this.roomSort = options.sort;
         this.details = new RoomPanel({screen: this.screen, close: () => {
             if (this.join) {
@@ -129,7 +133,7 @@ export class RoomBrowser {
             this.confirmClose();
             return;
         } else if (key.name === 'i') {
-            this.showSession();
+            this.inspectSelected();
             return;
         } else if (key.name === 'y') {
             const row = this.rows[this.selected];
@@ -156,8 +160,8 @@ export class RoomBrowser {
         this.request?.abort();
         const request = new AbortController();
         this.request = request;
-        const selected = this.rows[this.selected]?.id ?? this.initialSessionId;
-        this.initialSessionId = undefined;
+        const selected = this.rows[this.selected]?.id ?? this.initialRowId;
+        this.initialRowId = undefined;
         this.loading = true;
         this.note = 'Loading room snapshots…';
         this.render();
@@ -256,15 +260,42 @@ export class RoomBrowser {
         } else if (found) {
             this.confirmJoin(found);
         } else if (!this.roomId) {
-            this.roomId = row.roomId;
-            this.selected = this.column = this.top = this.firstColumn = 0;
-            this.note = 'Local saved sessions. Enter opens human chat; I inspects a session.';
-            this.rebuildRows();
+            this.close({roomId: row.roomId, openChat: true});
         } else if (row.values['kind'] === 'human' && row.values['state'] !== 'Removed' && this.entries.find((entry) => entry.room.roomId === row.roomId)?.snapshot?.lifecycle === 'open') {
             this.close({roomId: row.roomId, sessionId: row.sessionId!});
         } else {
             this.showSession();
         }
+    }
+
+    private inspectSelected(): void {
+        if (this.roomId) {
+            this.showSession();
+            return;
+        }
+        const row = this.rows[this.selected];
+        if (!row) {
+            return;
+        }
+        if (row.values['state'] === INVITED_STATE) {
+            this.note = 'Accept this invitation before inspecting local sessions.';
+            this.render();
+            return;
+        }
+        if (row.values['state'] === NETWORK_STATE) {
+            this.note = 'Join this room before inspecting local sessions.';
+            this.render();
+            return;
+        }
+        if (!this.entries.some((entry) => entry.room.roomId === row.roomId)) {
+            this.note = 'This saved room is not available to inspect.';
+            this.render();
+            return;
+        }
+        this.roomId = row.roomId;
+        this.selected = this.column = this.top = this.firstColumn = 0;
+        this.note = 'Local saved sessions. Enter opens human chat; I shows session details.';
+        this.rebuildRows();
     }
 
     /** Joining writes to the room, so it is confirmed like every other action here. */
@@ -425,8 +456,8 @@ export class RoomBrowser {
         const room = this.entries.find((entry) => entry.room.roomId === this.roomId);
         const title = this.roomId ? `Local sessions — ${room?.snapshot?.name ?? room?.room.name ?? this.roomId}` : 'PairLobby rooms';
         this.cell(0, 1, width, `${title} (${this.rows.length}) · sort: ${this.sort().key} ${this.sort().descending ? 'descending' : 'ascending'}`);
-        this.cell(1, 1, width, '↑/↓ rows · ←/→/Tab columns · S/header sort · Enter open, join or accept · R refresh');
-        this.cell(2, 1, width, 'C close room/session · I session details · Y copy cell · Esc back · Q quit');
+        this.cell(1, 1, width, '↑/↓ rows · ←/→/Tab columns · S/header sort · Enter chat/join/accept · R refresh');
+        this.cell(2, 1, width, 'I sessions/details · C close room/session · Y copy cell · Esc back · Q quit');
         if (height < 10 || width < 28) {
             this.cell(2, 1, width, 'Enlarge terminal · Q quits');
             this.screen.render();

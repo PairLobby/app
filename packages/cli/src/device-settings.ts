@@ -32,8 +32,8 @@ export const SETTING_KEYS: Record<string, SettingDefinition> = {
     'confirm-delete': {field: 'confirmDelete', kind: 'boolean', label: 'Confirm deletes', section: 'Terminal', help: 'ask before deleting a room'},
     'show-ids': {field: 'showIds', kind: 'boolean', label: 'Show IDs', section: 'Terminal', help: 'print ids next to names in the live room'},
     'poll-interval': {field: 'pollIntervalMs', kind: 'number', label: 'Poll interval (ms)', section: 'Terminal', help: 'milliseconds between live-room polls'},
-    'update-check': {field: 'updateCheck', kind: 'boolean', label: 'Check for updates', section: 'Updates', help: 'check GitHub for a new PairLobby release once a day'},
-    'auto-update': {field: 'autoUpdate', kind: 'boolean', label: 'Install updates automatically', section: 'Updates', help: 'install new releases in the background (needs update-check)'},
+    'update-check': {field: 'updateCheck', kind: 'boolean', label: 'Check for updates', section: 'Updates', help: 'check GitHub whenever an interactive room or chat opens; other commands check daily in the background'},
+    'auto-update': {field: 'autoUpdate', kind: 'boolean', label: 'Install updates automatically', section: 'Updates', help: 'install new releases without asking at interactive startup or in the background (needs update-check)'},
     'network-sharing': {field: 'relayNetwork', kind: 'choice', label: 'Share this device\'s relay', section: 'Network', help: 'which other devices may join rooms on this device\'s relay: off, tailscale or lan; restart the relay to apply', choices: [{label: 'Off — only this device', value: 'off'}, {label: 'Tailscale — your devices on your tailnet, encrypted', value: 'tailscale'}, {label: 'Local network — any device on this Wi-Fi or LAN, unencrypted', value: 'lan'}]},
     'network-rooms': {field: 'networkRooms', kind: 'boolean', label: 'Show rooms on my network', section: 'Network', help: 'list rooms open to the local network or tailnet beside your own; searches the network when the room list refreshes'},
 };

@@ -59,14 +59,14 @@ npm run serve                                 # leave this running
 
 ### Updates
 
-A PairLobby installed with the website installer checks this repository's [GitHub releases](https://github.com/PairLobby/app/releases) at most once a day, in the background, so no command waits for it. When a newer release exists, opening the room list or a chat asks once whether to install it, and other commands end with a one-line reminder; agents and `--json` output never see either.
+A PairLobby installed with the website installer checks this repository's [GitHub releases](https://github.com/PairLobby/app/releases) every time a person opens the interactive room list or a chat. When a newer release exists, choose **Update now**, **Not now** (ask again next time), or **Skip this version** (ask again only after a newer release). Other commands retain the at-most-daily background check and one-line reminder so scripts do not wait on the network; agents and `--json` output never see prompts.
 
 ```sh
 pairlobby update                     # check now and offer to install
 pairlobby update --check             # only report
 pairlobby update --yes               # install without asking
 pairlobby settings update-check off  # stop checking
-pairlobby settings auto-update on    # install new releases in the background
+pairlobby settings auto-update on    # install without asking at interactive startup or in the background
 ```
 
 An update downloads the release and its checksum, verifies both and the package version, unpacks into its own folder beside the current one, and then switches the `pairlobby` launcher. Running terminals and agent receivers keep the version they started with; restart receivers with `pairlobby receiver stop` and `start`. Agent skills are refreshed only if they still match a skill an earlier release installed. A CLI run from a checkout or `npm link` is not replaced; update it the way you installed it. Set `PAIRLOBBY_NO_UPDATE_CHECK=1` to disable checks for one environment; checks are also skipped when `CI` is set.
@@ -266,10 +266,14 @@ pairlobby expire <room>                   # pick it from a menu instead
 ```
 
 In the list, use **↑/↓** to select a row and **←/→/Tab** to select a column.
-Press **S** or click a column heading to sort, **Enter** to open a room's saved
-sessions or a human chat, **I** for session details and managed receiver controls,
-**Y** to copy the selected cell, and **R** to refresh. **Esc** goes back; **Q** quits.
-Leaving a chat returns to the session table.
+Press **S** or click a column heading to sort. **Enter** enters the selected saved
+room with your remembered or only human membership; if several human memberships
+exist, it asks which one to use. Enter still joins a network room or accepts an
+invitation after confirmation. Press **I** on a saved room to inspect its local
+sessions, then **I** on a session for details and managed receiver controls.
+**Y** copies the selected cell and **R** refreshes. **Esc** goes back; **Q** quits.
+Leaving a chat entered from the room list returns to that list; chat entered from
+the session table returns to the session table.
 
 **C** asks for confirmation before closing a room for everyone (owner/admin only)
 or leaving the selected local session and stopping its managed receiver. Saved
