@@ -41,8 +41,8 @@ import {VERSION} from './version.js';
 import {NETWORK_SHARING_RESTART, SETTING_KEYS, describeSettingValue, parseLifetime, parseSettingValue} from './device-settings.js';
 import {applyAutoCloseToRooms, parseAutoClose, summarizeBulk} from './auto-close.js';
 import {runSettingsMenu} from './settings-menu.js';
-import {checkForUpdate, installRelease, managedInstall, runBackgroundUpdate, scheduleBackgroundCheck, shouldOfferUpdate, updateNotice, writeUpdateState} from './updater.js';
-import type {LatestRelease} from './updater.js';
+import {checkForInteractiveUpdate, checkForUpdate, installRelease, managedInstall, parseUpdateChoice, runBackgroundUpdate, scheduleBackgroundCheck, shouldOfferUpdate, updateNotice, writeUpdateState} from './updater.js';
+import type {LatestRelease, UpdateCheck, UpdateChoice} from './updater.js';
 import {findRooms, formatFoundRooms} from './find.js';
 import {formatTurnQueue, runTurnCommand} from './turn-commands.js';
 import {spawnAgent, formatSpawnResult} from './spawn-agent.js';
@@ -248,7 +248,10 @@ async function main(argv: string[]): Promise<number> {
         return 0;
     }
     const store = new LocalStore();
-    scheduleBackgroundCheck(store, command);
+    const checksInteractively = ['rooms', 'list', 'chat'].includes(command) && !flag(values, 'json') && !flag(values, 'no-follow') && process.stdin.isTTY === true && process.stdout.isTTY === true;
+    if (!checksInteractively) {
+        scheduleBackgroundCheck(store, command);
+    }
     scheduleInvitationCheck(store, command);
 
     switch (command) {
@@ -273,7 +276,9 @@ async function main(argv: string[]): Promise<number> {
         }
         case 'rooms':
         case 'list':
-            await offerUpdate(store, values);
+            if (await offerUpdate(store, values)) {
+                return 0;
+            }
             return listRooms(store, values);
         case 'find':
             return positionals[1] === 'online' ? findOnline(store, values) : findCommand(store, values);
@@ -398,7 +403,9 @@ async function main(argv: string[]): Promise<number> {
         case 'link-answer':
             return messageStatusCommand(store, values, positionals[1], 'done', positionals[2]);
         case 'chat':
-            await offerUpdate(store, values);
+            if (await offerUpdate(store, values)) {
+                return 0;
+            }
             return chatRoom(store, values);
         case 'update':
             return updateCommand(store, values);
@@ -496,20 +503,31 @@ async function listRooms(store: LocalStore, values: Values): Promise<number> {
     if (isInteractive(values)) {
         let roomId: string | undefined;
         let sessionId: string | undefined;
+        let selectedRoomId: string | undefined;
         let notice = '';
         while (true) {
-            const selection = await new RoomBrowser(store, {sort, roomId, sessionId, notice, discover: networkRoomSearch(store), invitations: listedInvitations(store)}).run();
+            const selection = await new RoomBrowser(store, {sort, roomId, sessionId, selectedRoomId, notice, discover: networkRoomSearch(store), invitations: listedInvitations(store)}).run();
             if (!selection) {
                 return 0;
             }
-            roomId = selection.roomId;
+            selectedRoomId = selection.roomId;
+            roomId = 'sessionId' in selection ? selection.roomId : undefined;
             sessionId = 'sessionId' in selection ? selection.sessionId : undefined;
             notice = '';
-            // A room found on the network is joined first, and an invitation accepted first; joining then enters the chat.
-            const command = 'joinAt' in selection ? ['join', 'local', roomId, '--server', selection.joinAt, '--human'] : 'invitationId' in selection ? ['join', 'online', roomId, '--human'] : ['chat', '--human', '--room', roomId, '--session', sessionId!];
             try {
                 if ('invitationId' in selection) {
                     await acceptInvitation(store, selection.invitationId);
+                }
+                let command: string[];
+                if ('joinAt' in selection) {
+                    command = ['join', 'local', selection.roomId, '--server', selection.joinAt, '--human'];
+                } else if ('invitationId' in selection) {
+                    command = ['join', 'online', selection.roomId, '--human'];
+                } else if ('openChat' in selection) {
+                    const actor = await selectHumanSession(store, resolveRoom(store, selection.roomId), chooseHumanSession);
+                    command = ['chat', '--human', '--room', selection.roomId, '--session', actor.session.sessionId];
+                } else {
+                    command = ['chat', '--human', '--room', selection.roomId, '--session', selection.sessionId];
                 }
                 // Chat deliberately exits its process on /quit. Give it the
                 // terminal in a child so quitting returns to this navigator.
@@ -2043,15 +2061,23 @@ async function closeRoom(store: LocalStore, values: Values): Promise<number> {
     return 0;
 }
 
-/** Null when the terminal closed or Ctrl+C was pressed before an answer. */
-async function askYesNo(question: string): Promise<boolean | null> {
+async function askUpdateChoice(latest: LatestRelease): Promise<UpdateChoice> {
     const {createInterface} = await import('node:readline/promises');
+    out('  1. Update now');
+    out('  2. Not now — ask again next time');
+    out(`  3. Skip ${latest.version} — ask again for the next version`);
     const terminal = createInterface({input: process.stdin, output: process.stdout});
     try {
-        return ['y', 'yes'].includes((await terminal.question(question)).trim().toLowerCase());
+        while (true) {
+            const choice = parseUpdateChoice(await terminal.question('Choose [1/2/3] (default 2): '));
+            if (choice) {
+                return choice;
+            }
+            note('Choose 1 to update, 2 for not now, or 3 to skip this version.');
+        }
     } catch {
         process.stdout.write('\n');
-        return null;
+        return 'later';
     } finally {
         terminal.close();
     }
@@ -2064,32 +2090,61 @@ async function installUpdate(store: LocalStore, latest: LatestRelease): Promise<
         return false;
     }
     await installRelease(latest, install, {say: note});
-    writeUpdateState(store, {dismissed: latest.version, installed: null});
+    writeUpdateState(store, {skipped: latest.version, installed: null});
     out(`Installed PairLobby ${latest.version}. New terminals use it; running agent receivers keep their version until restarted with pairlobby receiver stop and start.`);
     return true;
 }
 
-/** Asks once per release before an interactive session; a declined version is not offered again. */
-async function offerUpdate(store: LocalStore, values: Values): Promise<void> {
+/** Freshly checks before an interactive session, then offers update, later or skip. */
+async function offerUpdate(store: LocalStore, values: Values): Promise<boolean> {
     if (flag(values, 'json') || flag(values, 'no-follow') || !process.stdin.isTTY || !process.stdout.isTTY) {
-        return;
+        return false;
+    }
+    if (!managedInstall()) {
+        return false;
+    }
+    let check: UpdateCheck;
+    try {
+        const result = await checkForInteractiveUpdate(store);
+        if (!result) {
+            return false;
+        }
+        check = result;
+    } catch (error) {
+        note(`Update check failed: ${error instanceof Error ? error.message : String(error)}. Continuing.`);
+        return false;
+    }
+    if (!check.available || !check.latest) {
+        return false;
+    }
+    if (store.settings().autoUpdate) {
+        try {
+            return await installUpdate(store, check.latest);
+        } catch (error) {
+            note(`Update failed: ${error instanceof Error ? error.message : String(error)}`);
+            return false;
+        }
     }
     const latest = shouldOfferUpdate(store);
-    if (!latest || !managedInstall()) {
-        return;
+    if (!latest) {
+        return false;
     }
-    const answer = await askYesNo(`PairLobby ${latest.version} is available (you have ${VERSION}). Update now? [y/N] `);
-    if (!answer) {
-        if (answer === false) {
-            writeUpdateState(store, {dismissed: latest.version});
-        }
-        note('Not updated. Run pairlobby update whenever you want it.');
-        return;
+    out(`PairLobby ${latest.version} is available (you have ${VERSION}).`);
+    const choice = await askUpdateChoice(latest);
+    if (choice === 'later') {
+        note('Not updated. You will be asked again next time.');
+        return false;
+    }
+    if (choice === 'skip') {
+        writeUpdateState(store, {skipped: latest.version});
+        note(`Skipping PairLobby ${latest.version}. You will be asked again when a newer version is released.`);
+        return false;
     }
     try {
-        await installUpdate(store, latest);
+        return await installUpdate(store, latest);
     } catch (error) {
         note(`Update failed: ${error instanceof Error ? error.message : String(error)}`);
+        return false;
     }
 }
 
@@ -2120,12 +2175,14 @@ async function updateCommand(store: LocalStore, values: Values): Promise<number>
             note('Run pairlobby update --yes to install it.');
             return 0;
         }
-        const answer = await askYesNo(`Install PairLobby ${check.latest.version} now? [y/N] `);
-        if (!answer) {
-            if (answer === false) {
-                writeUpdateState(store, {dismissed: check.latest.version});
-            }
-            out('Not updated.');
+        const choice = await askUpdateChoice(check.latest);
+        if (choice === 'later') {
+            out('Not updated. You will be asked again next time.');
+            return 0;
+        }
+        if (choice === 'skip') {
+            writeUpdateState(store, {skipped: check.latest.version});
+            out(`Skipping PairLobby ${check.latest.version}.`);
             return 0;
         }
     }

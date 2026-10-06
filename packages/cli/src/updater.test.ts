@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach, beforeEach, expect, test, vi} from 'vitest';
 import {LocalStore} from '@pairlobby/client';
-import {checkForUpdate, compareVersions, currentVersion, fetchLatestRelease, installRelease, managedInstall, readUpdateState, scheduleBackgroundCheck, shouldOfferUpdate, updateNotice, writeUpdateState} from './updater.js';
+import {checkForInteractiveUpdate, checkForUpdate, compareVersions, currentVersion, fetchLatestRelease, installRelease, managedInstall, parseUpdateChoice, readUpdateState, scheduleBackgroundCheck, shouldOfferUpdate, updateNotice, writeUpdateState} from './updater.js';
 import type {LatestRelease} from './updater.js';
 
 const API = 'http://127.0.0.1:9/repos/PairLobby/app';
@@ -62,6 +62,16 @@ test('test_versions_order_numerically_with_prereleases_first', () => {
     expect(compareVersions('0.3.0', '0.4.0')).toBe(-1);
 });
 
+test('test_update_choices_distinguish_later_from_skipping_a_version', () => {
+    expect(parseUpdateChoice('1')).toBe('update');
+    expect(parseUpdateChoice('yes')).toBe('update');
+    expect(parseUpdateChoice('')).toBe('later');
+    expect(parseUpdateChoice('not now')).toBe('later');
+    expect(parseUpdateChoice('3')).toBe('skip');
+    expect(parseUpdateChoice('skip')).toBe('skip');
+    expect(parseUpdateChoice('eventually')).toBeNull();
+});
+
 test('test_latest_release_needs_a_version_tag_and_both_assets', async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(githubRelease('9.0.0'));
     vi.stubGlobal('fetch', fetcher);
@@ -88,6 +98,19 @@ test('test_checks_are_cached_for_a_day_unless_forced', async () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
     writeUpdateState(store, {latest: latest(currentVersion())});
     expect((await checkForUpdate(store)).available).toBe(false);
+});
+
+test('test_interactive_startup_checks_every_time_instead_of_using_the_daily_cache', async () => {
+    const store = new LocalStore(join(directory, 'interactive'));
+    const fetcher = vi.fn().mockImplementation(async () => githubRelease('9.0.0'));
+    vi.stubGlobal('fetch', fetcher);
+    expect((await checkForInteractiveUpdate(store))?.available).toBe(true);
+    expect((await checkForInteractiveUpdate(store))?.available).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+
+    store.setSettings({updateCheck: false});
+    expect(await checkForInteractiveUpdate(store)).toBeNull();
+    expect(fetcher).toHaveBeenCalledTimes(2);
 });
 
 test('test_only_installer_layouts_count_as_managed', () => {
@@ -128,11 +151,11 @@ test('test_settings_decide_whether_to_check_offer_or_remind', () => {
     expect(shouldOfferUpdate(store)?.version).toBe('9.0.0');
     expect(updateNotice(store)).toContain('pairlobby update');
 
-    writeUpdateState(store, {dismissed: '9.0.0'});
+    writeUpdateState(store, {skipped: '9.0.0'});
     expect(shouldOfferUpdate(store)).toBeNull();
     expect(updateNotice(store)).toBeNull();
 
-    writeUpdateState(store, {dismissed: null});
+    writeUpdateState(store, {skipped: null});
     store.setSettings({autoUpdate: true});
     expect(shouldOfferUpdate(store)).toBeNull();
     writeUpdateState(store, {installed: '9.0.0'});
@@ -144,4 +167,14 @@ test('test_settings_decide_whether_to_check_offer_or_remind', () => {
     writeUpdateState(store, {checkedAt: 0});
     scheduleBackgroundCheck(store, 'rooms');
     expect(readUpdateState(store).checkedAt).toBe(0);
+});
+
+test('test_an_old_no_choice_is_not_migrated_into_an_explicit_skip', () => {
+    const store = new LocalStore(join(directory, 'legacy'));
+    mkdirSync(store.directory, {recursive: true});
+    writeFileSync(join(store.directory, 'update.json'), JSON.stringify({checkedAt: Date.now(), latest: latest('9.0.0'), dismissed: '9.0.0', installed: null, lastError: null}));
+    expect(readUpdateState(store).skipped).toBeNull();
+    expect(shouldOfferUpdate(store)?.version).toBe('9.0.0');
+    writeUpdateState(store, {lastError: null});
+    expect(readFileSync(join(store.directory, 'update.json'), 'utf8')).not.toContain('dismissed');
 });

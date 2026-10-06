@@ -1,11 +1,11 @@
 //! Updates from GitHub releases of PairLobby/app.
 //!
 //! A release publishes `pairlobby-cli-<version>.tgz` and its `.sha256`. Checking
-//! reads the latest release at most once a day, in a detached process so no
-//! command waits on the network. Installing mirrors the website installer: verify
-//! the checksum and package, unpack into its own `releases/` folder, then swap
-//! the launcher in one rename. Running terminals and receivers keep the version
-//! they started with; new ones use the update.
+//! checks synchronously before interactive room/chat startup, and otherwise at
+//! most once a day in a detached process. Installing mirrors the website installer:
+//! verify the checksum and package, unpack into its own `releases/` folder, then
+//! swap the launcher in one rename. Running terminals and receivers keep the
+//! version they started with; new ones use the update.
 
 import {execFileSync, spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
@@ -33,8 +33,8 @@ export type LatestRelease = {
 export type UpdateState = {
     checkedAt: number;
     latest: LatestRelease | null;
-    /** A version not to offer or mention again: declined when asked, or already installed. */
-    dismissed: string | null;
+    /** A version the person explicitly chose not to see again. */
+    skipped: string | null;
     /** A version installed in the background, reported once by the next command. */
     installed: string | null;
     lastError: string | null;
@@ -56,7 +56,9 @@ export type InstallOptions = {
     say?: (line: string) => void;
 };
 
-const EMPTY_STATE: UpdateState = {checkedAt: 0, latest: null, dismissed: null, installed: null, lastError: null};
+export type UpdateChoice = 'update' | 'later' | 'skip';
+
+const EMPTY_STATE: UpdateState = {checkedAt: 0, latest: null, skipped: null, installed: null, lastError: null};
 
 export function currentVersion(): string {
     return VERSION;
@@ -84,6 +86,21 @@ export function compareVersions(left: string, right: string): number {
         return a.prerelease === null ? 1 : -1;
     }
     return a.prerelease.localeCompare(b.prerelease, 'en', {numeric: true});
+}
+
+/** Three explicit outcomes: later is temporary; only skip persists for this version. */
+export function parseUpdateChoice(value: string): UpdateChoice | null {
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'u', 'update', 'y', 'yes'].includes(normalized)) {
+        return 'update';
+    }
+    if (['', '2', 'n', 'no', 'later', 'not now'].includes(normalized)) {
+        return 'later';
+    }
+    if (['3', 's', 'skip'].includes(normalized)) {
+        return 'skip';
+    }
+    return null;
 }
 
 function apiBase(): string {
@@ -135,7 +152,11 @@ function stateFile(store: LocalStore): string {
 
 export function readUpdateState(store: LocalStore): UpdateState {
     try {
-        return {...EMPTY_STATE, ...(JSON.parse(readFileSync(stateFile(store), 'utf8')) as Partial<UpdateState>)};
+        const saved = JSON.parse(readFileSync(stateFile(store), 'utf8')) as Partial<UpdateState> & {dismissed?: unknown};
+        // Older CLIs persisted an ordinary "No" as dismissed forever. Do not
+        // reinterpret that ambiguous state as the new explicit Skip choice.
+        delete saved.dismissed;
+        return {...EMPTY_STATE, ...saved};
     } catch {
         return {...EMPTY_STATE};
     }
@@ -164,6 +185,14 @@ export async function checkForUpdate(store: LocalStore, force = false): Promise<
         writeUpdateState(store, {checkedAt: Date.now(), lastError: error instanceof Error ? error.message : String(error)});
         throw error;
     }
+}
+
+/** Interactive room/chat startup always asks GitHub, bypassing the daily cache. */
+export async function checkForInteractiveUpdate(store: LocalStore): Promise<UpdateCheck | null> {
+    if (!store.settings().updateCheck || process.env['PAIRLOBBY_NO_UPDATE_CHECK'] === '1' || process.env['CI']) {
+        return null;
+    }
+    return checkForUpdate(store, true);
 }
 
 function isNewer(latest: LatestRelease | null): boolean {
@@ -373,17 +402,17 @@ export function updateNotice(store: LocalStore): string | null {
         writeUpdateState(store, {installed: null});
         return `PairLobby ${state.installed} was installed in the background; new terminals use it.`;
     }
-    if (!isNewer(state.latest) || state.dismissed === state.latest!.version) {
+    if (!isNewer(state.latest) || state.skipped === state.latest!.version) {
         return null;
     }
     return `PairLobby ${state.latest!.version} is available (you have ${currentVersion()}). Run: pairlobby update`;
 }
 
-/** Whether to ask now: a newer release this person has not already declined, and nothing installing it for them. */
+/** Whether to ask now: a newer release this person has not explicitly skipped, and nothing installing it for them. */
 export function shouldOfferUpdate(store: LocalStore): LatestRelease | null {
     const settings = store.settings();
     const state = readUpdateState(store);
-    if (!settings.updateCheck || settings.autoUpdate || !isNewer(state.latest) || state.dismissed === state.latest!.version) {
+    if (!settings.updateCheck || settings.autoUpdate || !isNewer(state.latest) || state.skipped === state.latest!.version) {
         return null;
     }
     return state.latest;

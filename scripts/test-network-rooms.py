@@ -78,8 +78,6 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-network-rooms-') as directory
         keys(b'\x1b[B\r')
         wait_for('registered in this room')
         keys(b'/quit\r')
-        wait_for('Local sessions')
-        keys(b'\x1b')
         wait_for('PairLobby rooms')
         pump(1)
         assert 'Open Door' in text() and 'on network' not in text(), text()
