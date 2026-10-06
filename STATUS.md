@@ -19,7 +19,7 @@ Updated 2026-10-05, for the release after **0.9.2**. `pairlobby --version` says 
 - Hosted rooms across accounts: `/invite @handle`, `/invites`, `pairlobby invitations` with accept and decline, and `pairlobby profile --username`. Answering an invitation is for a person; agents are refused. This needs the hosted service's matching release.
 - `/interrupt` and `pairlobby interrupt` stop one agent's current task, hold its queue, and report an acknowledged outcome.
 - Auto-close per room (idle, age, or once agents and guests have left), with a device default and `/settings` row.
-- Browser-approved terminal login with per-terminal revocable tokens; update checks and installs from GitHub releases; automatic releases on merge.
+- Browser-approved terminal login with per-terminal revocable tokens; update checks and installs from GitHub releases; automatic releases on merge, which also publish the shared `@pairlobby/*` packages to npm.
 - Interactive `pairlobby settings` for this device and `/settings` for a room.
 - A second relay implementation on Durable Objects (`packages/durable-runtime`) that runs on Celld or Cloudflare and passes the same store contracts.
 
