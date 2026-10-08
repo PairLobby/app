@@ -17,10 +17,12 @@ import type {
     RoomInvitationChange,
     RoomPolicy,
     RoomSnapshot,
+    ResolveRequestRequest,
     SendEventRequest
 } from '@pairlobby/protocol';
 import {
     assertRoomWritable,
+    appendEvent,
     assertRoomJoinable,
     assertCanWrite,
     assertCanAcknowledge,
@@ -48,6 +50,7 @@ import {
     setLocked,
     setMuted,
     setParticipantRole,
+    emptyMutation,
     toSnapshot
 } from '@pairlobby/room-core';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
@@ -64,6 +67,7 @@ type InviteDirectory = {
 type MintedInvite = {code: string; expiresAt: number | null; reusable: boolean};
 
 type SentEventResult = {event: RoomEvent; deduplicated: boolean};
+export type RequestResolutionResult = {event: RoomEvent; request: MessageRequest; deduplicated: boolean};
 
 type GuestJoinInput = Identity & {participantCredential: string};
 
@@ -372,7 +376,7 @@ export class RoomService {
             if (actor.kind !== 'participant' || (participantId !== recovered.from && actor.participant.role !== 'controller')) {
                 throw new ProtocolError('unauthorized', 'only the original sender or a room admin may retry a request');
             }
-            if (recovered.responseEventId || !recovered.requiresReply) {
+            if (recovered.responseEventId || (!recovered.requiresReply && recovered.resolution !== 'cancelled')) {
                 throw new ProtocolError('invalid_request', 'this request is already resolved');
             }
             if (!recovered.failureAt) {
@@ -611,6 +615,94 @@ export class RoomService {
             throw new ProtocolError('invalid_request', 'no such addressed delivery; use a recipient delivery ID for a group message');
         }
         return this.publicRequest(request);
+    }
+
+    /** Archives a failed request or fences unresolved work without ever claiming success. */
+    async resolveRequest(roomId: string, credential: string, eventId: string, input: ResolveRequestRequest): Promise<RequestResolutionResult> {
+        const outcome = input.action === 'dismiss' ? 'dismissed' : 'cancelled';
+        const key = `request-${outcome}-${eventId}`;
+        const requestDigest = stableStringify({eventId, outcome, reason: input.reason ?? null});
+        for (let attempt = 0; attempt < 4; attempt++) {
+            const view = await this.view(roomId);
+            const now = this.now();
+            const actor = authenticate(view, await hashCredential(credential), now);
+            assertRoomWritable(view, now);
+            const target = await this.store.messageRequest(roomId, eventId);
+            if (!target) {
+                throw new ProtocolError('invalid_request', 'no such addressed delivery; use a recipient delivery ID for a group message');
+            }
+            if (actor.kind === 'participant' && actor.participant.participantId !== target.from && actor.participant.role !== 'controller') {
+                throw new ProtocolError('unauthorized', 'only the original sender or a room admin may dismiss or cancel a request');
+            }
+            if (target.resolution) {
+                if (target.resolution !== outcome) {
+                    throw new ProtocolError('invalid_request', `this request was already ${target.resolution}`);
+                }
+                if ((target.resolutionReason ?? '') !== (input.reason ?? '')) {
+                    throw new ProtocolError('idempotency_conflict', 'this request resolution was already recorded with a different reason');
+                }
+                const event = target.resolutionEventId ? await this.store.eventById(roomId, target.resolutionEventId) : null;
+                if (!event) {
+                    throw new ProtocolError('cursor_gap', 'the request resolution event is no longer retained');
+                }
+                return {event, request: this.publicRequest(target), deduplicated: true};
+            }
+            if (target.responseEventId || !target.requiresReply) {
+                throw new ProtocolError('invalid_request', 'this request is already resolved');
+            }
+            if (target.recoveredByEventId) {
+                throw new ProtocolError('invalid_request', `this request is being recovered as ${target.recoveredByEventId}; resolve that current attempt instead`);
+            }
+            if (outcome === 'dismissed' && !target.failureAt) {
+                throw new ProtocolError('invalid_request', 'only a failed request can be dismissed; cancel unresolved work instead');
+            }
+            const saved = await this.store.idempotencyRecord(roomId, key);
+            if (saved) {
+                if (saved.requestDigest !== requestDigest) {
+                    throw new ProtocolError('idempotency_conflict', 'this request resolution was already recorded with a different reason');
+                }
+                const event = await this.store.eventBySeq(roomId, saved.seq);
+                const current = await this.store.messageRequest(roomId, eventId);
+                if (!event || !current) {
+                    throw new ProtocolError('cursor_gap', 'the request resolution is no longer retained');
+                }
+                return {event, request: this.publicRequest(current), deduplicated: true};
+            }
+            const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
+            const {room: appendedRoom, event} = appendEvent(view.room, {
+                senderId,
+                idempotencyKey: key,
+                recipientId: target.to,
+                replyTo: null,
+                body: {type: 'message.request_closed', payload: {eventId: target.eventId, outcome, ...(input.reason ? {reason: input.reason} : {})}}
+            }, {now, newEventId: () => newId('event')});
+            const resolutionBy = senderId ?? 'controller';
+            const updated: MessageRequest = {
+                ...target,
+                requiresReply: false,
+                resolution: outcome,
+                resolutionAt: now,
+                resolutionBy,
+                resolutionReason: input.reason ?? '',
+                resolutionEventId: event.eventId,
+                ...(outcome === 'cancelled' && !target.failureAt ? {failureAt: now, failureReason: input.reason ?? 'Cancelled by the sender or a room admin.'} : {}),
+                ...(target.turnRequired ? {turnStatus: 'cancelled' as const, turnToken: '', turnExpiresAt: 0} : {})
+            };
+            const revision = view.room.turnRevision ?? 0;
+            const room = target.turnRequired ? {...appendedRoom, turnRevision: revision + 1, turnChangedAt: now} : appendedRoom;
+            if (target.turnRequired) {
+                updated.turnRevision = revision + 1;
+            }
+            try {
+                await this.store.apply({...emptyMutation(room, event), ...(target.turnRequired ? {expectedTurnRevision: revision} : {}), upsertRequests: [updated]}, {key, requestDigest});
+                return {event, request: this.publicRequest(updated), deduplicated: false};
+            } catch (error) {
+                if (!(error instanceof ProtocolError) || !['server_unavailable', 'turn_conflict'].includes(error.code) || attempt === 3) {
+                    throw error;
+                }
+            }
+        }
+        throw new ProtocolError('server_unavailable', 'request resolution could not be committed');
     }
 
     async setLocked(roomId: string, credential: string, locked: boolean): Promise<RoomEvent> {

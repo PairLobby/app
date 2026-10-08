@@ -99,7 +99,8 @@ export const QUOTA_EXEMPT_EVENT_TYPES = [
     'room.invitation_changed',
     'message.received',
     'conversation.turn_changed',
-    'message.delivery_failed'
+    'message.delivery_failed',
+    'message.request_closed'
 ] as const;
 
 export function isQuotaExempt(eventType: string): boolean {

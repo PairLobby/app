@@ -15,7 +15,7 @@ import {parseArgs} from 'node:util';
 import {LocalStore, PairLobbyClient, openRequests, owedByMe, unreceipted} from '@pairlobby/client';
 import type {JoinedRoom, RoomEntry, Settings} from '@pairlobby/client';
 import {ParticipantName, ProtocolError, requestState, newId, normalizeInviteCode, MessageAction} from '@pairlobby/protocol';
-import type {AdapterCapabilities} from '@pairlobby/protocol';
+import type {AdapterCapabilities, MessageRequest} from '@pairlobby/protocol';
 
 import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
 import {detectRuntime, sameRuntime} from './runtime-detect.js';
@@ -51,7 +51,7 @@ import {parseSpawnOptions, SPAWN_HELP} from './spawn-options.js';
 import {RoomBrowser} from './room-browser.js';
 import type {RoomBrowserOptions} from './room-browser.js';
 import {ROOM_COLUMNS, loadRoomList, roomListJson, roomRows, sortListRows} from './room-list.js';
-import {recoverRequest} from './request-recovery.js';
+import {closeRequest, recoverRequest} from './request-recovery.js';
 import {waitForReply} from './reply-wait.js';
 import {suspendedReplyParents} from './reply-watches.js';
 
@@ -197,6 +197,10 @@ const HELP = `pairlobby
                                     workspace first, and its answer resolves the original
   pairlobby request reassign <request-id> --to <name>
                                     give a failed request to another participant
+  pairlobby request dismiss <request-id>
+                                    archive a failed request without claiming success
+  pairlobby request cancel <request-id>
+                                    fence unresolved work; a late answer cannot revive it
   pairlobby session                  this session's id and runtime conversation
   pairlobby profile --as <name> --human
                                      set defaults so plain "join <code>" works
@@ -1539,16 +1543,34 @@ async function messageStatusCommand(store: LocalStore, values: Values, eventId?:
 
 async function requestCommand(store: LocalStore, values: Values, action?: string, requestId?: string): Promise<number> {
     const to = str(values, 'to');
-    if ((action !== 'retry' && action !== 'reassign') || !requestId || (action === 'reassign') !== !!to) {
-        throw new UsageError('Use request retry <request-id>, or request reassign <request-id> --to <name>.');
+    const recovery = action === 'retry' || action === 'reassign';
+    const closing = action === 'dismiss' || action === 'cancel';
+    if ((!recovery && !closing) || !requestId || (action === 'reassign') !== !!to) {
+        throw new UsageError('Use request retry <request-id>, request reassign <request-id> --to <name>, request dismiss <request-id>, or request cancel <request-id>.');
     }
-    const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     try {
-        const recovery = await recoverRequest({client, roomId: room.roomId, credential}, requestId, to);
+        const request = await client.request(room.roomId, credential, requestId);
+        const authority = request.from === session.participantId || session.role === 'controller' ? credential : store.credential(room.roomId, 'controller') ?? credential;
+        if (closing) {
+            const disposition = await closeRequest({client, roomId: room.roomId, credential: authority}, requestId, action === 'dismiss' ? 'dismiss' : 'cancel', str(values, 'reason'));
+            if (flag(values, 'json')) {
+                json(disposition);
+            } else {
+                out(`${requestId} ${disposition.outcome}; no success was recorded.${disposition.reason ? ` ${disposition.reason}` : ''}`);
+            }
+            return 0;
+        }
+        const attempt = await recoverRequest({
+            client,
+            roomId: room.roomId,
+            credential: authority,
+            workspaceForParticipant: (participantId) => room.sessions.find((session) => session.participantId === participantId)?.cwd
+        }, requestId, to);
         if (flag(values, 'json')) {
-            json(recovery);
+            json(attempt);
         } else {
-            out(`Attempt ${recovery.attempt} of ${requestId} sent to ${recovery.toName} as ${recovery.requestId}. Its answer will resolve the original request.`);
+            out(`Attempt ${attempt.attempt} of ${requestId} sent to ${attempt.toName} as ${attempt.requestId}. Its answer will resolve the original request.`);
         }
         return 0;
     } finally {
@@ -1583,13 +1605,18 @@ async function replyMessage(store: LocalStore, values: Values, eventId: string |
     return 0;
 }
 async function requestStatus(store: LocalStore, values: Values): Promise<number> {
-    const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     const page = await client.requests(room.roomId, credential, Number(str(values, 'after') ?? 0));
-    const requests = page.requests.map((request) => ({...request, state: requestState(request)}));
+    const requests = page.requests.map((request) => ({...request, state: requestState(request), allowedActions: requestRecoveryActions(request, session.participantId, room.controls || session.role === 'controller')}));
     if (flag(values, 'json')) {
         json({requests, hasMore: page.hasMore});
     } else {
-        for (const request of requests) out(`${request.eventId}  ${request.state}  ${request.text.slice(0, 100)}`);
+        for (const request of requests) {
+            out(`${request.eventId}  ${request.state}  ${request.text.slice(0, 100)}`);
+            if (request.allowedActions.length) {
+                note(`  actions: ${request.allowedActions.join(', ')}`);
+            }
+        }
         if (!requests.length) {
             out('No unanswered requests.');
         }
@@ -1598,6 +1625,16 @@ async function requestStatus(store: LocalStore, values: Values): Promise<number>
         }
     }
     return 0;
+}
+
+function requestRecoveryActions(request: MessageRequest, participantId: string, canControl: boolean): string[] {
+    if ((request.from !== participantId && !canControl) || request.responseEventId || request.resolution || request.recoveredByEventId) {
+        return [];
+    }
+    if (request.failureAt) {
+        return ['retry', 'reassign', 'dismiss', 'cancel'];
+    }
+    return request.requiresReply ? ['cancel'] : [];
 }
 async function guardStop(store: LocalStore, values: Values): Promise<number> {
     let repeated = false;

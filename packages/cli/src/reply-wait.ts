@@ -5,7 +5,7 @@ import type {MessageRequest} from '@pairlobby/protocol';
 
 export type ReplyOutcome = {
     requestId: string;
-    state: 'pending' | 'answered' | 'passed' | 'no_action' | 'declined' | 'skipped' | 'cancelled' | 'failed' | 'unavailable';
+    state: 'pending' | 'answered' | 'passed' | 'no_action' | 'declined' | 'skipped' | 'cancelled' | 'dismissed' | 'failed' | 'unavailable';
     senderId: string;
     responseEventId: string | null;
     text: string | null;
@@ -30,6 +30,8 @@ export function replyOutcome(request: MessageRequest, participantId: string): Re
     let state: ReplyOutcome['state'] = 'pending';
     if (request.responseEventId) {
         state = 'answered';
+    } else if (request.resolution) {
+        state = request.resolution;
     } else if (request.action === 'no_action' || request.action === 'declined') {
         state = request.action;
     } else if (request.failureAt) {
@@ -39,7 +41,7 @@ export function replyOutcome(request: MessageRequest, participantId: string): Re
     } else if (!request.requiresReply) {
         throw new Error('This message does not require a reply. Wait for an addressed request, not a reply or room chatter.');
     }
-    return {requestId: request.eventId, state, senderId: request.to, responseEventId: request.responseEventId, text: state === 'answered' ? request.responseText ?? null : null, reason: state === 'failed' ? request.failureReason ?? 'The recipient reported a failure.' : state === 'no_action' || state === 'declined' ? request.actionReason ?? null : null};
+    return {requestId: request.eventId, state, senderId: request.to, responseEventId: request.responseEventId, text: state === 'answered' ? request.responseText ?? null : null, reason: state === 'failed' ? request.failureReason ?? 'The recipient reported a failure.' : state === 'dismissed' || state === 'cancelled' ? request.resolutionReason ?? null : state === 'no_action' || state === 'declined' ? request.actionReason ?? null : null};
 }
 
 export function retryableReplyError(error: unknown): boolean {

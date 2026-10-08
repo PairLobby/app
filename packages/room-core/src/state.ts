@@ -84,6 +84,7 @@ export function toSnapshot(view: RoomView): RoomSnapshot {
         messageReceiptScope: 'members',
         messageStagesSupported: true,
         requestRecoverySupported: true,
+        requestResolutionSupported: true,
         rejoinSupported: true,
         renameSelfSupported: true,
         inviteRoleSupported: true,

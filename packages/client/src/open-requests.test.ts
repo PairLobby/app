@@ -36,6 +36,22 @@ function receipt(from: string, eventId: string): RoomEvent {
         payload: {eventId}
     } as RoomEvent;
 }
+function requestClosed(from: string, eventId: string): RoomEvent {
+    seq += 1;
+    return {
+        protocolVersion: 1,
+        roomId: 'rm_x',
+        seq,
+        eventId: `ev_${seq}`,
+        senderId: from,
+        idempotencyKey: null,
+        recipientId: null,
+        replyTo: null,
+        at: 1000 * seq,
+        type: 'message.request_closed',
+        payload: {eventId, outcome: 'cancelled'}
+    } as RoomEvent;
+}
 
 describe('open requests', () => {
     test('test_an_addressed_message_with_no_answer_is_open', () => {
@@ -52,6 +68,11 @@ describe('open requests', () => {
     test('test_an_explicit_reply_closes_it', () => {
         const ask = message('codex', 'claude', 'write a joke');
         expect(openRequests([ask, message('claude', 'codex', 'done', ask.eventId)])).toHaveLength(0);
+    });
+
+    test('test_an_explicit_request_disposition_closes_the_legacy_projection', () => {
+        const ask = message('codex', 'claude', 'obsolete work');
+        expect(openRequests([ask, requestClosed('codex', ask.eventId)])).toHaveLength(0);
     });
 
     test('test_unthreaded_chatter_does_not_resolve_requests', () => {

@@ -162,6 +162,8 @@ export const RoomSnapshot = z.object({
     messageStagesSupported: z.boolean().optional(),
     /** The relay accepts a new attempt at a failed request and resolves the original when it is answered. */
     requestRecoverySupported: z.boolean().optional(),
+    /** The relay can dismiss failed requests and cancel unresolved work without claiming success. */
+    requestResolutionSupported: z.boolean().optional(),
     rejoinSupported: z.boolean().optional(),
     renameSelfSupported: z.boolean().optional(),
     adminRolesSupported: z.boolean().optional(),

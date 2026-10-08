@@ -38,6 +38,7 @@ export type MessageStatusOptions = {reason?: string; turnToken?: string; respons
 type HandoverRevisionResult = {revision: number; event: RoomEvent};
 
 export type InterruptResult = {revision: number; event: RoomEvent; fenced: string[]};
+export type RequestResolutionResult = {event: RoomEvent; request: MessageRequest; deduplicated: boolean};
 
 type RoomEventResult = {event: RoomEvent};
 
@@ -262,6 +263,9 @@ export class PairLobbyClient {
     }
     request(roomId: string, credential: string, eventId: string): Promise<MessageRequest> {
         return this.call('GET', `/v1/rooms/${roomId}/requests/${eventId}`, credential);
+    }
+    resolveRequest(roomId: string, credential: string, eventId: string, action: 'dismiss' | 'cancel', reason?: string): Promise<RequestResolutionResult> {
+        return this.call('POST', `/v1/rooms/${roomId}/requests/${eventId}/resolve`, credential, {action, ...(reason ? {reason} : {})});
     }
     async acknowledgeMessage(roomId: string, credential: string, eventId: string): Promise<void> {
         await this.call('POST', `/v1/rooms/${roomId}/requests/${eventId}/ack`, credential, {});

@@ -264,6 +264,8 @@ function describe(event: RoomEvent): string {
             return event.payload.localJoin ? 'anyone on the local network can now join by name' : 'joining by name on the local network is now off';
         case 'message.delivery_failed':
             return `${failureLabel(event.payload.stage)} for ${event.payload.eventId}: ${event.payload.reason} (failed attempt)`;
+        case 'message.request_closed':
+            return `${event.payload.outcome === 'dismissed' ? 'dismissed failed request' : 'cancelled request'} ${event.payload.eventId}${event.payload.reason ? `: ${event.payload.reason}` : ''}`;
         case 'message.received':
             return `${event.payload.stage === 'read' ? 'read' : 'received'} ${event.payload.eventId}${event.payload.action ? ` · ${event.payload.action.replaceAll('_', ' ')}` : ''}`;
         case 'conversation.turn_changed':

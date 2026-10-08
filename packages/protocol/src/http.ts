@@ -24,6 +24,7 @@ export const ROUTES = {
     renewTurn: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/renew'},
     declareWorking: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/working'},
     passTurn: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/pass'},
+    resolveRequest: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/resolve'},
     readEvents: {method: 'GET', path: '/v1/rooms/:roomId/events'},
     sendEvent: {method: 'POST', path: '/v1/rooms/:roomId/events'},
     connectTicket: {method: 'POST', path: '/v1/rooms/:roomId/connect-ticket'},
@@ -114,6 +115,8 @@ export const TurnClaimRequest = z.object({claimId: z.string().min(16).max(128)})
 export const TurnTokenRequest = z.object({token: z.string().min(16).max(128)});
 export const TurnModeRequest = z.object({mode: z.enum(['sequential', 'parallel'])});
 export const TurnActionRequest = z.object({action: z.enum(['skip', 'cancel']), requestId: EventId.optional(), participantId: ParticipantId.optional()});
+export const ResolveRequestRequest = z.object({action: z.enum(['dismiss', 'cancel']), reason: z.string().trim().min(1).max(1024).optional()});
+export type ResolveRequestRequest = z.infer<typeof ResolveRequestRequest>;
 
 export const CreateInviteRequest = z.object({
     defaultName: z.string().trim().min(1).max(64).optional(),

@@ -21,7 +21,7 @@ import type {ManagedDeadlinePolicy, ManagedDeadlineSnapshot} from './managed-dea
 import {ReceiverAttemptJournal, initializeReceiverDatabase, localDeviceId} from './receiver-attempt-journal.js';
 import type {AttemptTerminal, AttemptTerminalKind} from './receiver-attempt-journal.js';
 
-export type ReceiverStatus = {pid: number; state: string; runtime: string; threadId?: string; model?: string; eventId?: string; detail?: string; receiptError?: string; usage?: unknown; idleTimeoutMs?: number; absoluteTimeoutMs?: number; requestStartedAt?: number | null; lastActivityAt?: number | null; idleDeadlineAt?: number | null; absoluteDeadlineAt?: number | null};
+export type ReceiverStatus = {pid: number; state: string; runtime: string; threadId?: string; model?: string; eventId?: string; attempt?: number | null; attemptId?: string | null; detail?: string; receiptError?: string; usage?: unknown; idleTimeoutMs?: number; absoluteTimeoutMs?: number; requestStartedAt?: number | null; lastActivityAt?: number | null; idleDeadlineAt?: number | null; absoluteDeadlineAt?: number | null; idleRemainingMs?: number | null; absoluteRemainingMs?: number | null};
 export type ReceiverStartOptions = {model?: string; workdir?: string; effort?: string; executable?: string; idleTimeoutMs?: number; absoluteTimeoutMs?: number};
 type Job = {event_id: string; phase: string; acknowledged: number; answer: string | null; failure: string | null; attempt_id: string | null};
 type ReceiverConfiguration = {runtime: ReceiverRuntimeName; cwd: string; model?: string; effort?: string; executable?: string; idleTimeoutMs: number; absoluteTimeoutMs: number};
@@ -81,10 +81,12 @@ export function receiverStatus(store: LocalStore, sessionId: string): ReceiverSt
     const location = paths(store, sessionId);
     try {
         const status = JSON.parse(readFileSync(location.status, 'utf8')) as ReceiverStatus;
+        const now = Date.now();
+        const withRemaining = {...status, idleRemainingMs: status.idleDeadlineAt ? Math.max(0, status.idleDeadlineAt - now) : null, absoluteRemainingMs: status.absoluteDeadlineAt ? Math.max(0, status.absoluteDeadlineAt - now) : null};
         if (!alive(status.pid) || !existsSync(location.lock) || Number(readFileSync(location.lock, 'utf8')) !== status.pid) {
-            return {...status, state: status.state === 'stopped' ? 'stopped' : 'offline'};
+            return {...withRemaining, state: status.state === 'stopped' ? 'stopped' : 'offline'};
         }
-        return status;
+        return withRemaining;
     } catch {
         return null;
     }
@@ -210,8 +212,12 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
     initializeReceiverDatabase(database);
     const attemptJournal = new ReceiverAttemptJournal(database);
     const restartFailure = 'Receiver restarted during execution. Outcome is uncertain; not automatically rerun.';
+    const runningJobs = Number(database.prepare("SELECT COUNT(*) AS count FROM jobs WHERE phase='running'").get()?.['count'] ?? 0);
     attemptJournal.crashRunningJobs(restartFailure);
     database.prepare("UPDATE jobs SET phase='failed', failure=? WHERE phase='running'").run(restartFailure);
+    if (runningJobs) {
+        database.prepare("DELETE FROM metadata WHERE key='thread'").run();
+    }
     const ownerDeviceId = localDeviceId(store.directory);
     const savedThread = database.prepare("SELECT value FROM metadata WHERE key='thread'").get() as {value: string} | undefined;
     const savedModel = database.prepare("SELECT value FROM metadata WHERE key='model'").get() as {value: string} | undefined;
@@ -219,7 +225,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
     if (recoveredModel && savedModel?.value !== recoveredModel) {
         database.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('model',?)").run(recoveredModel);
     }
-    let state: ReceiverStatus = {pid: process.pid, state: 'starting', runtime: config.runtime, idleTimeoutMs: config.idleTimeoutMs, absoluteTimeoutMs: config.absoluteTimeoutMs, requestStartedAt: null, lastActivityAt: null, idleDeadlineAt: null, absoluteDeadlineAt: null, ...(savedThread ? {threadId: savedThread.value} : {}), ...(recoveredModel ? {model: recoveredModel} : {})};
+    let state: ReceiverStatus = {pid: process.pid, state: 'starting', runtime: config.runtime, idleTimeoutMs: config.idleTimeoutMs, absoluteTimeoutMs: config.absoluteTimeoutMs, attempt: null, attemptId: null, requestStartedAt: null, lastActivityAt: null, idleDeadlineAt: null, absoluteDeadlineAt: null, ...(savedThread ? {threadId: savedThread.value} : {}), ...(recoveredModel ? {model: recoveredModel} : {})};
     const status = (update: Partial<ReceiverStatus>) => {
         const next = {...state, ...update};
         if (JSON.stringify(next) !== JSON.stringify(state) || !existsSync(location.status)) {
@@ -250,6 +256,10 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
 
     function saveValue(key: string, value: string): void {
         database.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES (?,?)').run(key, value);
+    }
+
+    function deleteValue(key: string): void {
+        database.prepare('DELETE FROM metadata WHERE key=?').run(key);
     }
 
     /** Reports what an interrupt really stopped. The revision makes a retry or a late report harmless. */
@@ -353,6 +363,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         let leaseFailure: Error | undefined;
         let interrupting: Promise<void> | undefined;
         let interruptOutcome: InterruptOutcome | undefined;
+        let requestCancelled = false;
         let watching = true;
         let renewing = false;
         let renewal: Promise<void> = Promise.resolve();
@@ -402,7 +413,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
             database.exec('ROLLBACK');
             throw error;
         }
-        status({state: 'working', eventId: request.eventId, detail: ''});
+        status({state: 'working', eventId: request.eventId, attempt: current.attempt ?? 1, attemptId, detail: ''});
         let lastStatusActivityWrite = 0;
         let lastJournalActivityWrite = startedAt;
         let lastJournalActivityAt = startedAt;
@@ -456,10 +467,19 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                             await interrupting;
                             return;
                         }
+                        if (event.type === 'message.request_closed' && event.payload.outcome === 'cancelled' && event.payload.eventId === request.eventId) {
+                            watching = false;
+                            requestCancelled = true;
+                            status({detail: 'Request cancelled; stopping the current turn.'});
+                            interrupting = active.interrupt().then((outcome) => { interruptOutcome = outcome; });
+                            await interrupting;
+                            return;
+                        }
                     }
                 }
             })().catch((error: unknown) => status({detail: `Interrupt watch: ${error instanceof Error ? error.message : String(error)}`}));
-            const answer = await runtime.execute(current, {
+            const runtimeRequest = current.recoversEventId ? {...current, text: `${current.text}\n\nReceiver-confirmed workspace: ${config.cwd}`} : current;
+            const answer = await runtime.execute(runtimeRequest, {
                 acknowledge: async () => {
                     await client.acknowledgeMessage(room.roomId, credential, request.eventId);
                     if (snapshot.messageStagesSupported) {
@@ -548,10 +568,13 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                 attemptJournal.answerSaved(attemptId);
             }
         } catch (error) {
-            const reason = error instanceof Error ? error.message : 'Runtime failed';
+            const reason = requestCancelled ? 'Request cancelled by its sender or a room admin; no answer was posted.' : error instanceof Error ? error.message : 'Runtime failed';
             // An interrupted turn is not a failure to report: the relay already fenced it.
-            database.prepare('UPDATE jobs SET phase=?, failure=? WHERE event_id=?').run(error instanceof RuntimeInterrupted ? 'interrupted' : 'failed', reason, request.eventId);
-            terminal = {kind: attemptTerminalKind(error), at: Date.now(), failureReason: reason, ...(lastDeadlineSnapshot ? {deadline: lastDeadlineSnapshot} : {})};
+            database.prepare('UPDATE jobs SET phase=?, failure=? WHERE event_id=?').run(requestCancelled ? 'cancelled' : error instanceof RuntimeInterrupted ? 'interrupted' : 'failed', reason, request.eventId);
+            terminal = {kind: requestCancelled ? 'cancelled' : attemptTerminalKind(error), at: Date.now(), failureReason: reason, ...(lastDeadlineSnapshot ? {deadline: lastDeadlineSnapshot} : {})};
+            // A failed or cancelled turn is not a proven provider checkpoint. The
+            // next request starts a fresh conversation instead of resuming it.
+            deleteValue('thread');
             runtime?.close();
             runtime = undefined;
             status({detail: reason});
@@ -562,13 +585,13 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
             await interrupting?.catch((error: unknown) => status({detail: `Interrupt report failed: ${error instanceof Error ? error.message : String(error)}`}));
         }
         if (terminal) {
-            if (terminal.kind === 'interrupted') {
+            if (terminal.kind === 'interrupted' || terminal.kind === 'cancelled') {
                 terminal.cancellationGraceful = interruptOutcome === 'current_turn_cancelled' ? true : interruptOutcome === 'tool_cancellation_unknown' ? null : false;
             }
             attemptJournal.terminal(attemptId, terminal);
         }
         await flush();
-        status({state: 'available', eventId: '', requestStartedAt: null, lastActivityAt: null, idleDeadlineAt: null, absoluteDeadlineAt: null});
+        status({state: 'available', eventId: '', attempt: null, attemptId: null, requestStartedAt: null, lastActivityAt: null, idleDeadlineAt: null, absoluteDeadlineAt: null});
     }
 
     try {
