@@ -15,6 +15,7 @@ import {basename, dirname, join, resolve} from 'node:path';
 
 import type {LocalStore} from '@pairlobby/client';
 
+import {skillAgents, skillsDirectoryForAgent} from './skill-paths.js';
 import {VERSION} from './version.js';
 
 export const UPDATE_REPOSITORY = 'PairLobby/app';
@@ -286,9 +287,8 @@ function bundledSkills(root: string): Set<string> {
 /** Refreshes agent skills that still match a skill an earlier release installed; edited ones are left alone. */
 function refreshSkills(root: string, skill: string, say: (line: string) => void): void {
     const known = bundledSkills(root);
-    const homes = {claude: join(homedir(), '.claude'), codex: process.env['CODEX_HOME'] ?? join(homedir(), '.codex'), qwen: join(homedir(), '.qwen')};
-    for (const [agent, home] of Object.entries(homes)) {
-        const target = join(home, 'skills/pairlobby/SKILL.md');
+    for (const agent of skillAgents) {
+        const target = join(skillsDirectoryForAgent(agent), 'pairlobby/SKILL.md');
         let current: string;
         try {
             current = readFileSync(target, 'utf8');

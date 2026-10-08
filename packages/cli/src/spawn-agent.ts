@@ -15,16 +15,18 @@ import type {ReceiverStatus} from './receiver.js';
 import type {ReceiverRuntimeName} from './receiver-runtime.js';
 import {parseSpawnOptions, SPAWN_HELP, splitCommand, validateEffort} from './spawn-options.js';
 import type {SpawnOptions} from './spawn-options.js';
+import {validateManagedDeadline} from './managed-deadline.js';
+import {formatDuration} from './when.js';
 
 const executeFile = promisify(execFile);
 type SpawnPhase = 'minting' | 'redeeming' | 'joined' | 'ready' | 'cleanup' | 'failed';
 type SpawnOperation = {
     id: string; roomId: string; actorSessionId: string; sessionId: string; participantCredential: string;
-    runtime: ReceiverRuntimeName; name: string; model?: string; effort?: string; cwd: string; executable: string;
+    runtime: ReceiverRuntimeName; name: string; model?: string; effort?: string; cwd: string; executable: string; idleTimeoutMs: number; absoluteTimeoutMs: number;
     phase: SpawnPhase; invite?: string; participantId?: string; joinedAt: number;
 };
 export type SpawnContext = {store: LocalStore; roomId: string; sessionId: string};
-export type SpawnResult = {operationId: string; roomId: string; sessionId: string; participantId: string; name: string; runtime: string; model?: string; effort?: string; workdir: string; receiver: ReceiverStatus | null};
+export type SpawnResult = {operationId: string; roomId: string; sessionId: string; participantId: string; name: string; runtime: string; model?: string; effort?: string; workdir: string; idleTimeoutMs: number; absoluteTimeoutMs: number; receiver: ReceiverStatus | null};
 export type SpawnDependencies = {start?: typeof startReceiver; preflight?: typeof preflightRuntime};
 type SpawnMetadata = {actorSessionId: string; invite?: string; model?: string};
 
@@ -133,7 +135,7 @@ function load(db: DatabaseSync, id: string): SpawnOperation | undefined {
 }
 
 function result(store: LocalStore, operation: SpawnOperation): SpawnResult {
-    return {operationId: operation.id, roomId: operation.roomId, sessionId: operation.sessionId, participantId: operation.participantId!, name: operation.name, runtime: operation.runtime, ...(operation.model ? {model: operation.model} : {}), ...(operation.effort ? {effort: operation.effort} : {}), workdir: operation.cwd, receiver: receiverStatus(store, operation.sessionId)};
+    return {operationId: operation.id, roomId: operation.roomId, sessionId: operation.sessionId, participantId: operation.participantId!, name: operation.name, runtime: operation.runtime, ...(operation.model ? {model: operation.model} : {}), ...(operation.effort ? {effort: operation.effort} : {}), workdir: operation.cwd, idleTimeoutMs: operation.idleTimeoutMs, absoluteTimeoutMs: operation.absoluteTimeoutMs, receiver: receiverStatus(store, operation.sessionId)};
 }
 
 async function cleanup(client: PairLobbyClient, store: LocalStore, operation: SpawnOperation): Promise<void> {
@@ -164,6 +166,8 @@ export async function spawnAgent(context: SpawnContext, options: SpawnOptions, d
             if (!operation || operation.roomId !== roomId || operation.actorSessionId !== sessionId) {
                 throw new UsageError('No spawn operation with that ID belongs to this human session and room.');
             }
+            operation.idleTimeoutMs ??= store.settings().managedTaskIdleMs;
+            operation.absoluteTimeoutMs ??= store.settings().managedTaskTimeoutMs;
             if (operation.phase === 'ready') {
                 return result(store, operation);
             }
@@ -198,7 +202,9 @@ export async function spawnAgent(context: SpawnContext, options: SpawnOptions, d
             for (let suffix = 2; names.has(name.toLowerCase()); suffix++) {
                 name = `${runtime}-${suffix}`;
             }
-            operation = {id: newId('attempt'), roomId, actorSessionId: sessionId, sessionId: newId('session'), participantCredential: newCredential('participant'), runtime, name, cwd, executable, ...(options.model ? {model: options.model} : {}), ...(options.effort ? {effort: options.effort} : {}), phase: 'minting', joinedAt: Date.now()};
+            const settings = store.settings();
+            const deadline = validateManagedDeadline({idleMs: options.taskIdleTimeoutMs ?? settings.managedTaskIdleMs, absoluteMs: options.taskTimeoutMs ?? settings.managedTaskTimeoutMs});
+            operation = {id: newId('attempt'), roomId, actorSessionId: sessionId, sessionId: newId('session'), participantCredential: newCredential('participant'), runtime, name, cwd, executable, idleTimeoutMs: deadline.idleMs, absoluteTimeoutMs: deadline.absoluteMs, ...(options.model ? {model: options.model} : {}), ...(options.effort ? {effort: options.effort} : {}), phase: 'minting', joinedAt: Date.now()};
             save(db, operation);
         }
         if (operation.phase === 'minting') {
@@ -230,7 +236,7 @@ export async function spawnAgent(context: SpawnContext, options: SpawnOptions, d
             if (!existing) {
                 store.addSession(roomId, entry);
             }
-            await (dependencies.start ?? startReceiver)(store, roomId, operation.sessionId, operation.model, operation.cwd, operation.effort, operation.executable);
+            await (dependencies.start ?? startReceiver)(store, roomId, operation.sessionId, {workdir: operation.cwd, executable: operation.executable, idleTimeoutMs: operation.idleTimeoutMs, absoluteTimeoutMs: operation.absoluteTimeoutMs, ...(operation.model ? {model: operation.model} : {}), ...(operation.effort ? {effort: operation.effort} : {})});
             operation.phase = 'ready';
             save(db, operation);
             return result(store, operation);
@@ -256,7 +262,7 @@ export async function spawnAgent(context: SpawnContext, options: SpawnOptions, d
 }
 
 export function formatSpawnResult(value: SpawnResult): string {
-    return `${value.name} joined · ${value.runtime} · receiver ${value.receiver?.state ?? 'not configured'}\nModel: ${value.model ?? 'provider default'}${value.effort ? ` · effort: ${value.effort}` : ''}\nSession: ${value.sessionId}\nReceiver readiness does not verify provider access; send @${value.name} a task to start work.`;
+    return `${value.name} joined · ${value.runtime} · receiver ${value.receiver?.state ?? 'not configured'}\nModel: ${value.model ?? 'provider default'}${value.effort ? ` · effort: ${value.effort}` : ''}\nManaged request limits: inactivity ${formatDuration(value.idleTimeoutMs)} · absolute ${formatDuration(value.absoluteTimeoutMs)}\nSession: ${value.sessionId}\nReceiver readiness does not verify provider access; send @${value.name} a task to start work.`;
 }
 
 export async function runAgentCommand(line: string, context: SpawnContext): Promise<string> {

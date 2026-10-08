@@ -1,5 +1,5 @@
 import {afterEach, beforeEach, describe, expect, test} from 'vitest';
-import {DEFAULT_ROOM_POLICY, newCredential, newId, requestState} from '@pairlobby/protocol';
+import {DEFAULT_ROOM_POLICY, messageActionLabel, newCredential, newId, requestState} from '@pairlobby/protocol';
 import {RoomService} from '@pairlobby/server-core';
 import type {StoreFactory} from './contract.js';
 import type {TestableRoomStore} from './harness.js';
@@ -222,6 +222,87 @@ export function runRequestContract(label: string, makeStore: StoreFactory) {
             await service.acknowledgeMessage(roomId, bob, event.eventId);
             await answer(event.eventId);
             expect(requestState(await service.request(roomId, alice, event.eventId))).toBe('answered');
+        });
+
+        const fail = (id: string, credential = bob, reason = 'Claude produced no runtime activity for 10 minutes; work was stopped, not retried.') =>
+            service.send(roomId, credential, {type: 'message.delivery_failed', payload: {eventId: id, reason, stage: 'execution'}, idempotencyKey: newId('event')});
+        const recover = (id: string, to = bobId, credential = alice, key = `recover-${id}`) =>
+            service.send(roomId, credential, {type: 'message', recipientId: to, payload: {text: 'Finish what remains', priority: 'normal', recovers: id}, idempotencyKey: key});
+        const join = async (name: string) => {
+            const credential = newCredential('participant');
+            const invite = await service.mintInvite(roomId, controller, 'member', true);
+            const {participantId} = await service.redeemInvite({code: invite.code, displayName: name, kind: 'agent', participantCredential: credential, attemptId: newId('attempt')});
+            return {credential, participantId};
+        };
+
+        test('a failed request is retried as a new attempt, and its answer resolves the original without erasing the failure', async () => {
+            expect((await service.snapshot(roomId, alice)).requestRecoverySupported).toBe(true);
+            const {event} = await ask('build the survey');
+            await fail(event.eventId);
+            const retry = await recover(event.eventId);
+            expect(await service.request(roomId, alice, retry.event.eventId)).toMatchObject({to: bobId, from: aliceId, attempt: 2, recoversEventId: event.eventId, requiresReply: true});
+            const waiting = await service.request(roomId, alice, event.eventId);
+            expect(waiting).toMatchObject({recoveredByEventId: retry.event.eventId, responseEventId: null, failureReason: expect.stringContaining('no runtime activity')});
+            expect(requestState(waiting)).toBe('failed');
+
+            // Repeating the same recovery returns the same attempt; a second, different one is refused.
+            expect((await recover(event.eventId)).event.eventId).toBe(retry.event.eventId);
+            await expect(recover(event.eventId, bobId, alice, newId('event'))).rejects.toThrow(/already being recovered/);
+
+            await service.acknowledgeMessage(roomId, bob, retry.event.eventId);
+            const done = await answer(retry.event.eventId, 'Survey finished and validated');
+            const original = await service.request(roomId, alice, event.eventId);
+            expect(original).toMatchObject({responseEventId: done.event.eventId, responseText: 'Survey finished and validated', failureAt: waiting.failureAt, failureStage: 'execution', recoveredByEventId: retry.event.eventId});
+            expect(requestState(original)).toBe('answered');
+            expect(messageActionLabel(original)).toBe('Done · recovered');
+            expect(requestState(await service.request(roomId, alice, retry.event.eventId))).toBe('answered');
+            expect((await service.requests(roomId, alice)).requests).toHaveLength(0);
+        });
+
+        test('a retry that fails is retried again, and one answer resolves every attempt before it', async () => {
+            const {event} = await ask('store the evidence');
+            await fail(event.eventId);
+            const second = await recover(event.eventId);
+            await fail(second.event.eventId, bob, 'Claude exceeded the 1 hour absolute request limit; work was stopped, not retried.');
+            await expect(recover(event.eventId, bobId, alice, newId('event'))).rejects.toThrow(/retry that one/);
+            const third = await recover(second.event.eventId);
+            expect(await service.request(roomId, alice, third.event.eventId)).toMatchObject({attempt: 3, recoversEventId: second.event.eventId});
+            await service.acknowledgeMessage(roomId, bob, third.event.eventId);
+            const done = await answer(third.event.eventId, 'Stored');
+            for (const id of [event.eventId, second.event.eventId, third.event.eventId]) {
+                expect(await service.request(roomId, alice, id)).toMatchObject({responseEventId: done.event.eventId});
+            }
+            expect((await service.request(roomId, alice, second.event.eventId)).failureReason).toContain('absolute request limit');
+        });
+
+        test('a failed request can be given to another participant, whose answer resolves it', async () => {
+            const carol = await join('carol');
+            const {event} = await ask('observe the queue');
+            await fail(event.eventId);
+            const reassigned = await recover(event.eventId, carol.participantId);
+            expect(await service.request(roomId, alice, reassigned.event.eventId)).toMatchObject({to: carol.participantId, attempt: 2});
+            await service.acknowledgeMessage(roomId, carol.credential, reassigned.event.eventId);
+            const done = await service.send(roomId, carol.credential, {type: 'message', recipientId: aliceId, replyTo: reassigned.event.eventId, payload: {text: 'Observed', priority: 'normal', responseStage: 'final'}, idempotencyKey: newId('event')});
+            expect(await service.request(roomId, alice, event.eventId)).toMatchObject({to: bobId, responseEventId: done.event.eventId, failureAt: expect.any(Number)});
+            expect(done.event.senderId).toBe(carol.participantId);
+        });
+
+        test('only the asker or an admin recovers a request, and only one that failed and is unresolved', async () => {
+            const carol = await join('carol');
+            const {event} = await ask('work');
+            await expect(recover(event.eventId)).rejects.toThrow(/has not failed/);
+            await fail(event.eventId);
+            await expect(recover(event.eventId, bobId, carol.credential)).rejects.toThrow(/original sender or a room admin/);
+            await expect(recover(event.eventId, bobId, bob)).rejects.toThrow(/original sender or a room admin/);
+            await expect(recover(newId('event'))).rejects.toThrow(/no such request/);
+            await expect(service.send(roomId, alice, {type: 'message', allRecipients: true, payload: {text: 'again', priority: 'normal', recovers: event.eventId}, idempotencyKey: newId('event')})).rejects.toThrow(/one participant/);
+            await service.setRole(roomId, controller, carol.participantId, 'controller');
+            expect((await recover(event.eventId, bobId, carol.credential)).event.senderId).toBe(carol.participantId);
+
+            const answered = await ask('answered already');
+            await service.acknowledgeMessage(roomId, bob, answered.event.eventId);
+            await answer(answered.event.eventId);
+            await expect(recover(answered.event.eventId)).rejects.toThrow(/already resolved/);
         });
     });
 }

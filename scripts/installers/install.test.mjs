@@ -54,7 +54,11 @@ test('installer verifies downloads, preserves customized skills, and installs a 
   const qwenSkill=join(root,'qwen-skills/pairlobby/SKILL.md');assert.match(readFileSync(qwenSkill,'utf8'),/--runtime qwen/);
   writeFileSync(qwenSkill,'Customized Qwen skill');result=await run(process.execPath,qwenArgs,env);assert.equal(result.code,0,result.output);assert.equal(readFileSync(qwenSkill,'utf8'),'Customized Qwen skill');
   result=await run(join(root,'bin/pairlobby'),['install-skill','qwen','--skills-dir',join(root,'qwen-cli-skills'),'--json'],env);assert.equal(result.code,0,result.output);assert.ok(JSON.parse(result.output).installed[0].endsWith('pairlobby/SKILL.md'));
-  result=await run(process.execPath,[installer],env);assert.equal(result.code,0,result.output);assert.match(result.output,/No interactive terminal; skipping agent skills/);assert.doesNotMatch(result.output,/Installed (claude|codex|qwen) skill/);
+  for(const agent of ['cursor','grok','muse']){
+   const skillsDirectory=join(root,`${agent}-skills`);
+   result=await run(process.execPath,[installer,'--skills',agent,'--skills-dir',skillsDirectory],env);assert.equal(result.code,0,result.output);assert.match(result.output,new RegExp(`Installed ${agent} skill`));assert.match(readFileSync(join(skillsDirectory,'pairlobby/SKILL.md'),'utf8'),/name: pairlobby/);
+  }
+  result=await run(process.execPath,[installer],env);assert.equal(result.code,0,result.output);assert.match(result.output,/No interactive terminal; skipping agent skills/);assert.doesNotMatch(result.output,/Installed (claude|codex|qwen|cursor|grok|muse) skill/);
   const before=readFileSync(join(root,'bin/pairlobby'),'utf8');bad=true;
   result=await run(process.execPath,args,env);assert.notEqual(result.code,0);assert.match(result.output,/checksum/);assert.equal(readFileSync(join(root,'bin/pairlobby'),'utf8'),before);
   bad=false;

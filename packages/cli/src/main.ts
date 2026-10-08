@@ -29,8 +29,8 @@ import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, rende
 
 import {acceptInvitation, accountToken, declineInvitation, isOnlineKey, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineOrigin, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
 import type {ReceivedInvitation} from './online.js';
-import {receiverStatus, runReceiver, startReceiver, stopReceiver} from './receiver.js';
-import type {ReceiverStatus} from './receiver.js';
+import {receiverAttempts, receiverStatus, runReceiver, startReceiver, stopReceiver} from './receiver.js';
+import type {ReceiverStartOptions, ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
 import {discoverableNote, joinCommand, localOnlyNote, parseJoinLink, shareTarget} from './share.js';
 import {invitationNotice, rememberInvitations, scheduleInvitationCheck} from './invitation-notice.js';
@@ -39,7 +39,7 @@ import {routeForRoom} from './mentions.js';
 import type {RoutedChatMessage} from './mentions.js';
 import {tailscaleNames, tailscaleView} from './tailscale.js';
 import {VERSION} from './version.js';
-import {NETWORK_SHARING_RESTART, SETTING_KEYS, describeSettingValue, parseLifetime, parseSettingValue} from './device-settings.js';
+import {NETWORK_SHARING_RESTART, SETTING_KEYS, describeSettingValue, parseLifetime, parseManagedDuration, parseSettingValue, validateManagedSettings} from './device-settings.js';
 import {applyAutoCloseToRooms, parseAutoClose, summarizeBulk} from './auto-close.js';
 import {runSettingsMenu} from './settings-menu.js';
 import {checkForInteractiveUpdate, checkForUpdate, installRelease, managedInstall, parseUpdateChoice, runBackgroundUpdate, scheduleBackgroundCheck, shouldOfferUpdate, updateNotice, writeUpdateState} from './updater.js';
@@ -51,6 +51,7 @@ import {parseSpawnOptions, SPAWN_HELP} from './spawn-options.js';
 import {RoomBrowser} from './room-browser.js';
 import type {RoomBrowserOptions} from './room-browser.js';
 import {ROOM_COLUMNS, loadRoomList, roomListJson, roomRows, sortListRows} from './room-list.js';
+import {recoverRequest} from './request-recovery.js';
 import {waitForReply} from './reply-wait.js';
 import {suspendedReplyParents} from './reply-watches.js';
 
@@ -69,6 +70,8 @@ const OPTIONS = {
     version: {type: 'boolean'},
     model: {type: 'string'},
     effort: {type: 'string'},
+    'task-idle-timeout': {type: 'string'},
+    'task-timeout': {type: 'string'},
     resume: {type: 'string'},
     'manual-receive': {type: 'boolean'},
     private: {type: 'boolean'},
@@ -161,7 +164,7 @@ const HELP = `pairlobby
   pairlobby profile --username <handle>  choose the handle others invite you by: /invite @handle
   pairlobby join <code> --runtime codex|claude|qwen
                                     join as a managed agent; receive automatically
-  pairlobby receiver status|start|stop
+  pairlobby receiver status|start|stop|attempts
                                     manage automatic receiving for the selected agent
   pairlobby spawn <claude|codex|qwen> [model] [--name name] [--effort level]
                                     create a new background agent in a saved room
@@ -175,7 +178,7 @@ const HELP = `pairlobby
   pairlobby send <text> --to codex,claude   ask several agents; --to all asks all agents
   pairlobby turns [sequential|parallel|skip|cancel]   inspect/control speaking turns
   pairlobby turn claim|renew|pass <request>          cooperative agent turn tools
-  pairlobby install-skill <agent>   install instructions for claude, codex, qwen, or all
+  pairlobby install-skill <agent>   install instructions for claude, codex, qwen, cursor, grok, muse, or all
   pairlobby configure-claude        prepare a scoped Claude channel and Stop hook
   pairlobby reply <event-id> <text>  answer one exact request; --progress keeps it open
   pairlobby receipt <event-id>       explicitly acknowledge delivery
@@ -189,6 +192,11 @@ const HELP = `pairlobby
                                     explicitly report your stage; --reason for waiting/decisions
   pairlobby link-answer <request-id> <answer-id>
                                     attach your existing unthreaded answer to its request
+  pairlobby request retry <request-id>
+                                    ask again after a request failed; the new attempt inspects the
+                                    workspace first, and its answer resolves the original
+  pairlobby request reassign <request-id> --to <name>
+                                    give a failed request to another participant
   pairlobby session                  this session's id and runtime conversation
   pairlobby profile --as <name> --human
                                      set defaults so plain "join <code>" works
@@ -264,14 +272,16 @@ async function main(argv: string[]): Promise<number> {
             const {room, session} = select(store, str(values, 'room'), str(values, 'session'));
             const action = positionals[1] ?? 'status';
             if (action === 'start') {
-                json(await startReceiver(store, room.roomId, session.sessionId, str(values, 'model'), str(values, 'workdir'), str(values, 'effort')));
+                json(await startReceiver(store, room.roomId, session.sessionId, receiverStartOptions(values)));
             } else if (action === 'stop') {
                 await stopReceiver(store, session.sessionId);
                 json({state: 'stopped'});
             } else if (action === 'status') {
                 json(receiverStatus(store, session.sessionId) ?? {state: 'not-configured'});
+            } else if (action === 'attempts') {
+                json({attempts: receiverAttempts(store, session.sessionId, str(values, 'request'))});
             } else {
-                throw new UsageError('pairlobby receiver status|start|stop');
+                throw new UsageError('pairlobby receiver status|start|stop|attempts');
             }
             return 0;
         }
@@ -403,6 +413,8 @@ async function main(argv: string[]): Promise<number> {
             return messageStatusCommand(store, values, positionals[1], positionals[2]);
         case 'link-answer':
             return messageStatusCommand(store, values, positionals[1], 'done', positionals[2]);
+        case 'request':
+            return requestCommand(store, values, positionals[1], positionals[2]);
         case 'chat':
             if (await offerUpdate(store, values)) {
                 return 0;
@@ -887,6 +899,7 @@ async function settingsCommand(store: LocalStore, values: Values, key?: string, 
             throw new UsageError(`pairlobby settings ${key} <value>`);
         }
         const parsed = parseSettingValue(key, definition, value);
+        validateManagedSettings({...store.settings(), [definition.field]: parsed});
         store.setSettings({[definition.field]: parsed} as Partial<Settings>);
         note(`${key} is now ${describeSettingValue(definition, parsed)}`);
         if (key === 'network-sharing') {
@@ -1110,12 +1123,27 @@ async function enableReceiver(store: LocalStore, values: Values, roomId: string,
     if (flag(values, 'manual-receive') || session.kind !== 'agent' || session.role === 'guest' || !receiverRuntimeName(session.runtime)) {
         return null;
     }
-    const receiver = await startReceiver(store, roomId, sessionId, str(values, 'model'), str(values, 'workdir'), str(values, 'effort'));
+    const receiver = await startReceiver(store, roomId, sessionId, receiverStartOptions(values));
     if (!flag(values, 'json')) {
         const name = receiver.runtime === 'claude' ? 'Claude' : receiver.runtime === 'qwen' ? 'Qwen' : 'Codex';
         note(`Automatic receiver available. Room requests run in a managed ${name} session; no reader or listening agent is needed.`);
     }
     return receiver;
+}
+
+function receiverStartOptions(values: Values): ReceiverStartOptions {
+    const model = str(values, 'model');
+    const workdir = str(values, 'workdir');
+    const effort = str(values, 'effort');
+    const idle = str(values, 'task-idle-timeout');
+    const absolute = str(values, 'task-timeout');
+    return {
+        ...(model ? {model} : {}),
+        ...(workdir ? {workdir} : {}),
+        ...(effort ? {effort} : {}),
+        ...(idle ? {idleTimeoutMs: parseManagedDuration('task-idle-timeout', idle)} : {}),
+        ...(absolute ? {absoluteTimeoutMs: parseManagedDuration('task-timeout', absolute)} : {})
+    };
 }
 
 /** Applies this device's defaults for new rooms; a relay that refuses one keeps the room and says so. */
@@ -1502,6 +1530,25 @@ async function messageStatusCommand(store: LocalStore, values: Values, eventId?:
             json({eventId, state: action, ...(responseEventId ? {responseEventId} : {}), furtherActionExpected: action === 'read' ? null : !['done', 'no_action', 'declined'].includes(action)});
         } else {
             out(`${action.replaceAll('_', ' ')} recorded for ${eventId}${responseEventId ? `; answer ${responseEventId} linked` : ''}`);
+        }
+        return 0;
+    } finally {
+        client.closeLive();
+    }
+}
+
+async function requestCommand(store: LocalStore, values: Values, action?: string, requestId?: string): Promise<number> {
+    const to = str(values, 'to');
+    if ((action !== 'retry' && action !== 'reassign') || !requestId || (action === 'reassign') !== !!to) {
+        throw new UsageError('Use request retry <request-id>, or request reassign <request-id> --to <name>.');
+    }
+    const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    try {
+        const recovery = await recoverRequest({client, roomId: room.roomId, credential}, requestId, to);
+        if (flag(values, 'json')) {
+            json(recovery);
+        } else {
+            out(`Attempt ${recovery.attempt} of ${requestId} sent to ${recovery.toName} as ${recovery.requestId}. Its answer will resolve the original request.`);
         }
         return 0;
     } finally {

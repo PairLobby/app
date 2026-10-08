@@ -8,8 +8,20 @@ import {receiverRuntimeName} from './receiver-runtime.js';
 const home = vi.hoisted(() => ({directory: ''}));
 vi.mock('node:os', async (importOriginal) => ({...await importOriginal<typeof import('node:os')>(), homedir: () => home.directory}));
 
-beforeEach(() => { home.directory = mkdtempSync(join(tmpdir(), 'pairlobby-skills-')); });
-afterEach(() => { rmSync(home.directory, {recursive: true, force: true}); });
+const originalXdgConfigHome = process.env['XDG_CONFIG_HOME'];
+
+beforeEach(() => {
+    home.directory = mkdtempSync(join(tmpdir(), 'pairlobby-skills-'));
+    delete process.env['XDG_CONFIG_HOME'];
+});
+afterEach(() => {
+    rmSync(home.directory, {recursive: true, force: true});
+    if (originalXdgConfigHome === undefined) {
+        delete process.env['XDG_CONFIG_HOME'];
+    } else {
+        process.env['XDG_CONFIG_HOME'] = originalXdgConfigHome;
+    }
+});
 
 test('Qwen installs to its personal skills directory and preserves custom instructions', () => {
     const expected = join(home.directory, '.qwen', 'skills', 'pairlobby', 'SKILL.md');
@@ -31,6 +43,24 @@ test('Qwen accepts a project skill directory and rejects ambiguous or invalid ta
     expect(installSkill('qwen', false, directory)).toEqual([join(directory, 'pairlobby', 'SKILL.md')]);
     expect(() => installSkill('all', false, directory)).toThrow('one agent');
     expect(() => installSkill('unknown')).toThrow('qwen');
+});
+
+test('Cursor, Grok, and Muse install to their user skill directories', () => {
+    expect(installSkill('cursor')).toEqual([join(home.directory, '.cursor', 'skills', 'pairlobby', 'SKILL.md')]);
+    expect(installSkill('grok')).toEqual([join(home.directory, '.grok', 'skills', 'pairlobby', 'SKILL.md')]);
+    expect(installSkill('muse')).toEqual([join(home.directory, '.config', 'muse', 'skills', 'pairlobby', 'SKILL.md')]);
+
+    const xdgConfigHome = join(home.directory, 'xdg-config');
+    process.env['XDG_CONFIG_HOME'] = xdgConfigHome;
+    expect(installSkill('muse')).toEqual([join(xdgConfigHome, 'muse', 'skills', 'pairlobby', 'SKILL.md')]);
+});
+
+test('all installs the shared skill for every supported agent', () => {
+    const installed = installSkill('all');
+    expect(installed).toHaveLength(6);
+    expect(installed).toContain(join(home.directory, '.cursor', 'skills', 'pairlobby', 'SKILL.md'));
+    expect(installed).toContain(join(home.directory, '.grok', 'skills', 'pairlobby', 'SKILL.md'));
+    expect(installed).toContain(join(home.directory, '.config', 'muse', 'skills', 'pairlobby', 'SKILL.md'));
 });
 
 test('all validates conflicting skills before writing any installation', () => {

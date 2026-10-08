@@ -6,13 +6,15 @@ test('spawn arguments preserve quoted values without evaluating shell input', ()
     expect(splitCommand("qwen --name '$(touch /tmp/never)' ")).toEqual(['qwen', '--name', '$(touch /tmp/never)']);
     expect(parseSpawnOptions(['codex'])).toEqual({runtime: 'codex'});
     expect(parseSpawnOptions(['codex', '--model', 'custom-model', '--json', '--room', 'room'], true)).toMatchObject({runtime: 'codex', model: 'custom-model', json: true, room: 'room'});
+    expect(parseSpawnOptions(['claude', '--task-idle-timeout', '15m', '--task-timeout', '2h'])).toMatchObject({runtime: 'claude', taskIdleTimeoutMs: 900_000, taskTimeoutMs: 7_200_000});
 });
 
 test.each([
     ['claude', 'model', 'name'], ['codex', 'model', '--model', 'other'], ['claude', '--name', 'all'],
     ['claude', '--name', ''], ['claude', '--name', 'a', '--name', 'b'], ['qwen', '--effort', 'high'],
     ['codex', '--effort', 'invented'], ['deepseek'], ['claude', '--workdir', ''], ['codex', '--unknown'],
-    ['codex', '--session', 'someone-else'], ['--resume', 'bad'], ['codex', '--model', ''], ['--resume', 'at_' + 'A'.repeat(26), '--name', 'changed']
+    ['codex', '--session', 'someone-else'], ['--resume', 'bad'], ['codex', '--model', ''], ['--resume', 'at_' + 'A'.repeat(26), '--name', 'changed'],
+    ['codex', '--task-idle-timeout', '2h', '--task-timeout', '1h'], ['codex', '--task-timeout', 'never']
 ])('invalid spawn command fails before it can create an agent: %j', (...args) => {
     expect(() => parseSpawnOptions(args)).toThrow();
 });
@@ -29,4 +31,5 @@ test('agent commands are recognized and completed without treating mentions as c
     expect(completeAgentCommand('/cod')).toEqual(['/codex ']);
     expect(completeAgentCommand('/spawn qw')).toEqual(['/spawn qwen ']);
     expect(completeAgentCommand('/claude --wo')).toEqual(['/claude --workdir ']);
+    expect(completeAgentCommand('/codex --task')).toEqual(['/codex --task-idle-timeout ', '/codex --task-timeout ']);
 });

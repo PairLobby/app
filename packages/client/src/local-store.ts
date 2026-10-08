@@ -78,6 +78,10 @@ export interface Settings {
     updateCheck: boolean;
     /** Install a newer release in the background instead of only offering it. */
     autoUpdate: boolean;
+    /** Stop a managed request after this long without runtime output. */
+    managedTaskIdleMs: number;
+    /** Stop a managed request at this absolute elapsed time even when active. */
+    managedTaskTimeoutMs: number;
     /** Reply mode for rooms this device creates. */
     defaultTurnMode: 'sequential' | 'parallel';
     /** What a plain `/invite` admits in rooms this device creates. */
@@ -102,6 +106,8 @@ export const DEFAULT_SETTINGS: Settings = {
     defaultInviteLifetimeMs: null,
     updateCheck: true,
     autoUpdate: false,
+    managedTaskIdleMs: 10 * 60_000,
+    managedTaskTimeoutMs: 60 * 60_000,
     defaultTurnMode: 'sequential',
     defaultInviteRole: 'member',
     defaultGuestAccess: 'invite_only',

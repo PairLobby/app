@@ -32,8 +32,10 @@ To install the current checkout instead, on macOS/Linux:
 npm install
 npm run install:local
 pairlobby --version
-pairlobby install-skill codex  # or: claude, qwen, all; --force backs up a differing skill
+pairlobby install-skill codex  # or: claude, qwen, cursor, grok, muse, all; --force backs up a differing skill
 ```
+
+The shared PairLobby skill also installs into Cursor (`~/.cursor/skills`), Grok (`~/.grok/skills`), and Muse Code (`$XDG_CONFIG_HOME/muse/skills`, normally `~/.config/muse/skills`). These agents can follow the manual room workflow; automatic managed receiving remains limited to Codex, Claude, and Qwen.
 
 Compare the actual build/release artifact rather than assuming two builds with the same version contain identical changes. Reopen existing chat terminals after installing to load the new commands; already-running receivers keep their installed code until restarted. Installing a skill alone does not start receiving.
 
@@ -473,7 +475,9 @@ An active human member can start a separate agent on the device running their te
 | `--name <name>` | Defaults to the runtime name, then `-2`, `-3`, etc. Explicit names must be valid and unambiguous; quote names with spaces. |
 | `--effort <level>` | Optional provider-specific override. Codex accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra` only when the model catalog supports it. Claude accepts `low`, `medium`, `high`, `xhigh`, or `max` only when advertised by the installed CLI; model support still varies. Qwen rejects this option. |
 | `--workdir <path>` | Defaults to the directory from which chat/the CLI was launched. Must exist; the receiver's project scope is saved. |
-| `--resume <operation-id>` | Reuse a saved spawn operation's identity/settings; cannot be combined with new runtime/model/name/effort/workdir options. |
+| `--task-idle-timeout <duration>` | Stop a request after this long without runtime output. Defaults to the device setting, initially 10 minutes. |
+| `--task-timeout <duration>` | Absolute request ceiling even while the runtime remains active. Defaults to the device setting, initially 1 hour, and cannot be shorter than the inactivity limit. |
+| `--resume <operation-id>` | Reuse a saved spawn operation's identity/settings; cannot be combined with new runtime/model/name/effort/workdir/timeout options. |
 | `--room`, `--session`, `--json` | Shell CLI options only; chat already supplies its room and human identity. |
 
 The optional positional argument is always the model; use `--name` and `--effort` for other settings. Tab completes the spawn commands and option names. Default names are `claude`, `claude-2`, etc. Each spawn gets its own participant credential, saved session, inbox, and managed runtime conversation. The human's profile and preferred chat session stay unchanged. The runtime must already be installed and signed in; spawning does not install software or change authentication.
@@ -481,6 +485,12 @@ The optional positional argument is always the model; use `--name` and `--effort
 Outside chat, use `pairlobby spawn codex --room <room-id> --name reviewer --json`. The saved human session is selected when unambiguous; use `--session <human-session-id>` when needed. The room's existing relay and admission rules apply, including hosted-account access. A hosted room still executes the agent on the invoking device. Received room text never launches a process; these are local commands from a human session.
 
 Receivers wait without model inference and survive closing the terminal. “Receiver available” means the listener started, not that provider authentication or model access has been verified. Address the new agent to start work. Explicit effort is supported for Codex and Claude: Codex checks the resolved model's catalog before starting inference, and Claude must advertise the selected effort in its installed CLI help. Provider/model errors remain visible on the first task. Qwen effort overrides are rejected; its configured provider defaults remain in effect. Configured model/effort are saved separately from any provider-reported model identity.
+
+Managed requests use two bounds rather than the old unconditional ten-minute kill. Runtime output resets the **inactivity limit**; it never extends the **absolute limit**. Configure device defaults with `pairlobby settings managed-task-idle-timeout 10m` and `pairlobby settings managed-task-timeout 1h`, or override one spawned/joined receiver with the flags above. Stop an existing receiver before changing its saved limits through `pairlobby receiver start --task-idle-timeout ... --task-timeout ...`. `pairlobby receiver status --json` and **I → session details** show the active timing data. A deadline failure remains conservative: partial effects are not undone and the request is not retried automatically.
+
+Each managed execution has an immutable local attempt journal containing its runtime/thread identity, model and effort, activity/deadline snapshots, usage, saved-answer state, terminal outcome, failure, and correlated response. Inspect every attempt for a receiver with `pairlobby receiver attempts --room <ROOM> --session <SESSION>`, or add `--request <DELIVERY_ID>` for one request. The journal stays on the device that owns the receiver; existing pre-journal failures are not given invented history.
+
+To ask again after a request failed, the sender or a room admin runs `pairlobby request retry <REQUEST_ID>`, or `pairlobby request reassign <REQUEST_ID> --to <name>` to give it to someone else. The new attempt carries the original request and the failure reason, and tells the agent to inspect the workspace before changing anything. Its answer also resolves the original request, shown as **Done · recovered**; the failed attempt stays on record. A retry that fails can itself be retried. Running the command twice sends one attempt. The relay must support it (`requestRecoverySupported`); dismissing a failed request is not built.
 
 ### Agent table and cell copying
 

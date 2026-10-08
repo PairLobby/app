@@ -358,6 +358,30 @@ export class RoomService {
             const excerpt = original.payload.text.slice(0, 4000);
             quoteContext = `Quoted message from ${sender}:\n${excerpt}${excerpt.length < original.payload.text.length ? '\n[quote shortened]' : ''}\n\nFollow-up:\n`;
         }
+        // A new attempt at a failed request, for the same recipient or another. The failed
+        // attempt is kept as it is; only its asker or an admin may ask again.
+        let recovered: MessageRequest | null = null;
+        if (request.type === 'message' && request.payload.recovers) {
+            if (group || request.replyTo || !request.recipientId) {
+                throw new ProtocolError('invalid_request', 'a recovery is a new message to one participant');
+            }
+            recovered = await this.store.messageRequest(roomId, request.payload.recovers);
+            if (!recovered) {
+                throw new ProtocolError('invalid_request', 'no such request in this room');
+            }
+            if (actor.kind !== 'participant' || (participantId !== recovered.from && actor.participant.role !== 'controller')) {
+                throw new ProtocolError('unauthorized', 'only the original sender or a room admin may retry a request');
+            }
+            if (recovered.responseEventId || !recovered.requiresReply) {
+                throw new ProtocolError('invalid_request', 'this request is already resolved');
+            }
+            if (!recovered.failureAt) {
+                throw new ProtocolError('invalid_request', 'this request has not failed; wait for it or cancel it');
+            }
+            if (recovered.recoveredByEventId) {
+                throw new ProtocolError('invalid_request', `this attempt is already being recovered as ${recovered.recoveredByEventId}; retry that one if it failed`);
+            }
+        }
         let recipients = request.recipientId ? [request.recipientId] : [];
         if (group) {
             const eligible = view.participants.filter((participant) => participant.kind === 'agent' && participant.role !== 'guest' && participant.leftAt === null && participant.revokedAt === null && !participant.muted && participant.participantId !== participantId).sort((a, b) => a.joinedAt - b.joinedAt || a.participantId.localeCompare(b.participantId));
@@ -486,6 +510,16 @@ export class RoomService {
         }
         if (replyTarget && request.type === 'message' && request.payload.responseStage !== 'progress') {
             updates[0] = {...replyTarget, responseEventId: mutation.appendEvent.eventId, respondedAt: now, responseText: request.payload.text, action: 'done', actionAt: now, ...(replyTarget.turnRequired ? {turnStatus: 'answered' as const} : {})};
+            // The answer to a recovery also resolves every failed attempt before it. Their failures stay on record.
+            let earlier = replyTarget.recoversEventId;
+            for (let depth = 0; earlier && depth < 32; depth++) {
+                const failed = await this.store.messageRequest(roomId, earlier);
+                if (!failed || failed.responseEventId) {
+                    break;
+                }
+                updates.push({...failed, responseEventId: mutation.appendEvent.eventId, respondedAt: now, responseText: request.payload.text, action: 'done', actionAt: now});
+                earlier = failed.recoversEventId;
+            }
         }
         if (updates.some((entry) => entry.turnRequired) && (request.type !== 'message.received' || request.payload.action)) {
             const revision = view.room.turnRevision ?? 0;
@@ -503,10 +537,14 @@ export class RoomService {
                     roomId, eventId: group ? newId('event') : mutation.appendEvent.eventId, seq: seq++,
                     from: mutation.appendEvent.senderId!, to: recipient, text: quoteContext + request.payload.text, at: mutation.appendEvent.at,
                     requiresReply: !request.replyTo, receivedAt: null, responseEventId: null, respondedAt: null, progressAt: null,
-                    ...(group ? {conversationId: mutation.appendEvent.eventId, turnRequired: true} : {})
+                    ...(group ? {conversationId: mutation.appendEvent.eventId, turnRequired: true} : {}),
+                    ...(recovered ? {recoversEventId: recovered.eventId, attempt: (recovered.attempt ?? 1) + 1} : {})
                 });
             }
             mutation.room.nextRequestSeq = seq;
+        }
+        if (recovered) {
+            updates.push({...recovered, recoveredByEventId: mutation.appendEvent.eventId});
         }
         mutation.upsertRequests = updates;
         await this.store.apply(mutation, {key: request.idempotencyKey, requestDigest});

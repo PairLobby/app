@@ -51,9 +51,10 @@ test('spawned Claude, Codex and Qwen wait without inference, overlap independent
         const credential = store.credential(owner.roomId, owner.sessionId)!;
         const controller = store.credential(owner.roomId, 'controller')!;
         async function spawnAgent(runtime: string, name?: string): Promise<SpawnResult> {
-            const agent = await command<SpawnResult>(['spawn', runtime, 'fixture-model', '--room', owner.roomId, '--workdir', directory, ...(name ? ['--name', name] : []), ...(runtime !== 'qwen' ? ['--effort', 'high'] : [])], runtime);
+            const agent = await command<SpawnResult>(['spawn', runtime, 'fixture-model', '--room', owner.roomId, '--workdir', directory, '--task-idle-timeout', '12m', '--task-timeout', '2h', ...(name ? ['--name', name] : []), ...(runtime !== 'qwen' ? ['--effort', 'high'] : [])], runtime);
             agents.push(agent);
             expect(agent.receiver?.state).toBe('available');
+            expect(agent).toMatchObject({idleTimeoutMs: 720_000, absoluteTimeoutMs: 7_200_000});
             expect(agent.sessionId).not.toBe(owner.sessionId);
             expect(agent.workdir).toBe(directory);
             return agent;
@@ -87,7 +88,7 @@ test('spawned Claude, Codex and Qwen wait without inference, overlap independent
         await command(['receiver', 'stop', '--room', owner.roomId, '--session', codex.sessionId]);
         await command(['receiver', 'start', '--room', owner.roomId, '--session', codex.sessionId], 'codex');
         const config = JSON.parse(readFileSync(join(data, 'receivers', codex.sessionId, 'config.json'), 'utf8'));
-        expect(config).toMatchObject({model: 'fixture-model', effort: 'high', cwd: directory});
+        expect(config).toMatchObject({model: 'fixture-model', effort: 'high', cwd: directory, idleTimeoutMs: 720_000, absoluteTimeoutMs: 7_200_000});
         expect(config.executable).toContain('codex');
         const invalid = await command<SpawnResult>(['spawn', 'codex', 'fixture-model', '--effort', 'ultra', '--room', owner.roomId], 'unsupported');
         agents.push(invalid);

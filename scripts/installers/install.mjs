@@ -13,7 +13,7 @@ function selectSkills(requested) {
     try {
         terminal = openSync('/dev/tty', 'r+');
     } catch {
-        console.log('No interactive terminal; skipping agent skills. Use --skills all, claude, codex or qwen to include them.');
+        console.log('No interactive terminal; skipping agent skills. Use --skills all, claude, codex, qwen, cursor, grok or muse to include them.');
         return 'none';
     }
 
@@ -37,13 +37,16 @@ function selectSkills(requested) {
             writeSync(terminal, 'Please enter y or n.\n');
         }
         while (true) {
-            const answer = ask('Which agents? 1) Claude Code  2) Codex  3) Qwen Code  4) All [4]: ');
+            const answer = ask('Which agents? 1) Claude Code  2) Codex  3) Qwen Code  4) Cursor  5) Grok  6) Muse Code  7) All [7]: ');
             if (answer === null) return 'none';
             if (['1', 'claude', 'claude code'].includes(answer)) return 'claude';
             if (['2', 'codex'].includes(answer)) return 'codex';
             if (['3', 'qwen', 'qwen code'].includes(answer)) return 'qwen';
-            if (['', '4', 'all'].includes(answer)) return 'all';
-            writeSync(terminal, 'Please enter 1, 2, 3 or 4.\n');
+            if (['4', 'cursor'].includes(answer)) return 'cursor';
+            if (['5', 'grok', 'grok build'].includes(answer)) return 'grok';
+            if (['6', 'muse', 'muse code'].includes(answer)) return 'muse';
+            if (['', '7', 'all'].includes(answer)) return 'all';
+            writeSync(terminal, 'Please enter 1, 2, 3, 4, 5, 6 or 7.\n');
         }
     } finally {
         closeSync(terminal);
@@ -51,7 +54,7 @@ function selectSkills(requested) {
 }
 
 values.skills = selectSkills(values.skills);
-if(!['all','claude','codex','qwen','none'].includes(values.skills)) throw new Error('Skills must be all, claude, codex, qwen or none.');
+if(!['all','claude','codex','qwen','cursor','grok','muse','none'].includes(values.skills)) throw new Error('Skills must be all, claude, codex, qwen, cursor, grok, muse or none.');
 if(values['skills-dir']&&['all','none'].includes(values.skills)) throw new Error('--skills-dir requires a single agent.');
 const windows=platform()==='win32';
 const root=resolve(process.env.PAIRLOBBY_INSTALL_DIR??(windows?join(process.env.LOCALAPPDATA??homedir(),'PairLobby'):join(homedir(),'.local/share/pairlobby')));
@@ -101,10 +104,10 @@ try {
     execFileSync(process.execPath,[cli,'--help'],{stdio:'pipe'});
     const release=join(root,'releases',`${version}-${expected.slice(0,12)}`);mkdirSync(join(root,'releases'),{recursive:true});
     if(!existsSync(release))renameSync(packageRoot,release);
-    const targets=values.skills==='none'?[]:values.skills==='all'?['claude','codex','qwen']:[values.skills];
+    const targets=values.skills==='none'?[]:values.skills==='all'?['claude','codex','qwen','cursor','grok','muse']:[values.skills];
     const skill=readFileSync(join(release,'skills/pairlobby/SKILL.md'),'utf8');
     for(const agent of targets){
-        const skillsRoot=values['skills-dir']?resolve(values['skills-dir']):join(agent==='codex'?(process.env.CODEX_HOME??join(homedir(),'.codex')):join(homedir(),agent==='qwen'?'.qwen':'.claude'),'skills');
+        const skillsRoot=values['skills-dir']?resolve(values['skills-dir']):agent==='codex'?join(process.env.CODEX_HOME??join(homedir(),'.codex'),'skills'):agent==='muse'?join(process.env.XDG_CONFIG_HOME??join(homedir(),'.config'),'muse','skills'):join(homedir(),`.${agent}`,'skills');
         const target=join(skillsRoot,'pairlobby/SKILL.md');
         if(existsSync(target)&&readFileSync(target,'utf8')!==skill){
             const current=readFileSync(target,'utf8');

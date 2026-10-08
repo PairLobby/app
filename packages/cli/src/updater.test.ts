@@ -8,14 +8,21 @@ import {LocalStore} from '@pairlobby/client';
 import {checkForInteractiveUpdate, checkForUpdate, compareVersions, currentVersion, fetchLatestRelease, installRelease, managedInstall, parseUpdateChoice, readUpdateState, scheduleBackgroundCheck, shouldOfferUpdate, updateNotice, writeUpdateState} from './updater.js';
 import type {LatestRelease} from './updater.js';
 
+const home = vi.hoisted(() => ({directory: ''}));
+vi.mock('node:os', async (importOriginal) => ({...await importOriginal<typeof import('node:os')>(), homedir: () => home.directory}));
+
 const API = 'http://127.0.0.1:9/repos/PairLobby/app';
 let directory: string;
 
 beforeEach(() => {
     directory = realpathSync(mkdtempSync(join(tmpdir(), 'pairlobby-updater-')));
+    home.directory = join(directory, 'home');
+    mkdirSync(home.directory, {recursive: true});
     vi.stubEnv('PAIRLOBBY_UPDATE_API', API);
     vi.stubEnv('PAIRLOBBY_INSTALL_DIR', join(directory, 'install'));
     vi.stubEnv('PAIRLOBBY_BIN_DIR', join(directory, 'bin'));
+    vi.stubEnv('CODEX_HOME', join(home.directory, '.codex'));
+    vi.stubEnv('XDG_CONFIG_HOME', join(home.directory, '.config'));
 });
 
 afterEach(() => {
@@ -131,6 +138,37 @@ test('test_an_update_installs_beside_the_old_release_and_moves_the_launcher', as
     expect(installed).toBe(join(directory, 'install/releases', `9.0.0-${checksum.slice(0, 12)}`));
     expect(readFileSync(join(directory, 'bin/pairlobby'), 'utf8')).toContain(join(installed, 'dist/main.mjs'));
     expect(readFileSync(entry, 'utf8')).toBe('');
+});
+
+test('test_an_update_refreshes_unchanged_skills_for_every_supported_agent', async () => {
+    const entry = installCurrent();
+    const oldSkill = 'skill 8.0.0\n';
+    const previous = join(directory, 'install/releases/previous/skills/pairlobby');
+    mkdirSync(previous, {recursive: true});
+    writeFileSync(join(previous, 'SKILL.md'), oldSkill);
+    const skillDirectories = [
+        join(home.directory, '.claude/skills'),
+        join(home.directory, '.codex/skills'),
+        join(home.directory, '.qwen/skills'),
+        join(home.directory, '.cursor/skills'),
+        join(home.directory, '.grok/skills'),
+        join(home.directory, '.config/muse/skills')
+    ];
+    for (const skillsDirectory of skillDirectories) {
+        mkdirSync(join(skillsDirectory, 'pairlobby'), {recursive: true});
+        writeFileSync(join(skillsDirectory, 'pairlobby/SKILL.md'), oldSkill);
+    }
+
+    const archive = packRelease('9.0.0');
+    const checksum = createHash('sha256').update(archive).digest('hex');
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => new Response(url.endsWith('.sha256') ? `${checksum}  pairlobby-cli-9.0.0.tgz\n` : archive)));
+    const messages: string[] = [];
+    await installRelease(latest('9.0.0'), managedInstall(entry)!, {say: (line) => messages.push(line)});
+
+    for (const skillsDirectory of skillDirectories) {
+        expect(readFileSync(join(skillsDirectory, 'pairlobby/SKILL.md'), 'utf8')).toBe('skill 9.0.0\n');
+    }
+    expect(messages.filter((line) => line.startsWith('Updated the '))).toHaveLength(6);
 });
 
 test('test_a_tampered_update_changes_nothing', async () => {

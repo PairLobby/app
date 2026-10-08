@@ -8,9 +8,10 @@ import type {ListColumn, ListRow, ListSort, NetworkRoom, RoomInvite} from './roo
 import {RoomPanel} from './room-panel.js';
 import type {RoomPanelPage} from './room-panel.js';
 import {plainCell} from './agent-roster.js';
-import {receiverConfiguration, startReceiver, stopReceiver} from './receiver.js';
+import {receiverConfiguration, receiverStatus, startReceiver, stopReceiver} from './receiver.js';
 import {copyToClipboard} from './clipboard.js';
 import {createTerminalProgram} from './terminal-program.js';
+import {formatDuration} from './when.js';
 
 /** A saved room or session to chat in, a network room to join, or an invitation to accept and join. */
 export type RoomBrowserSelection = {roomId: string; openChat: true} | {roomId: string; sessionId: string} | {roomId: string; joinAt: string} | {roomId: string; invitationId: string};
@@ -389,7 +390,25 @@ export class RoomBrowser {
             {id: 'room-id', label: 'Room ID', value: row.roomId, section: 'Room'},
             {id: 'directory', label: 'Working directory', value: session.cwd, section: 'Local'}
         ]};
-        if (receiverConfiguration(this.store, session.sessionId)) {
+        const configuration = receiverConfiguration(this.store, session.sessionId);
+        if (configuration) {
+            const status = receiverStatus(this.store, session.sessionId);
+            const idleTimeoutMs = configuration.idleTimeoutMs ?? this.store.settings().managedTaskIdleMs;
+            const absoluteTimeoutMs = configuration.absoluteTimeoutMs ?? this.store.settings().managedTaskTimeoutMs;
+            page.rows.push({id: 'idle-timeout', label: 'Inactivity limit', value: formatDuration(idleTimeoutMs), section: 'Managed request'});
+            page.rows.push({id: 'absolute-timeout', label: 'Absolute limit', value: formatDuration(absoluteTimeoutMs), section: 'Managed request'});
+            if (status?.requestStartedAt) {
+                page.rows.push({id: 'request-started', label: 'Request started', value: new Date(status.requestStartedAt).toISOString(), section: 'Managed request'});
+            }
+            if (status?.lastActivityAt) {
+                page.rows.push({id: 'last-activity', label: 'Last runtime activity', value: new Date(status.lastActivityAt).toISOString(), section: 'Managed request'});
+            }
+            if (status?.idleDeadlineAt) {
+                page.rows.push({id: 'idle-deadline', label: 'Inactivity remaining', value: formatDuration(Math.max(0, status.idleDeadlineAt - Date.now())), section: 'Managed request'});
+            }
+            if (status?.absoluteDeadlineAt) {
+                page.rows.push({id: 'absolute-deadline', label: 'Absolute remaining', value: formatDuration(Math.max(0, status.absoluteDeadlineAt - Date.now())), section: 'Managed request'});
+            }
             page.rows.push({id: 'stop', label: 'Stop receiver', value: 'Keep room membership', section: 'Actions', action: {kind: 'command', closeAfterSave: true, confirm: `Stop ${row.values['name']}? It stays joined. Tools already started may continue.`, run: async () => {
                 await stopReceiver(this.store, session.sessionId);
                 this.actionNotice = 'Receiver stopped; room membership unchanged.';

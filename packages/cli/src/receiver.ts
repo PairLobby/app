@@ -16,11 +16,17 @@ import {validateEffort} from './spawn-options.js';
 import {startReceiptMonitor} from './receipt-monitor.js';
 import type {ReceiptMonitor} from './receipt-monitor.js';
 import {modelId, savedSessionModel} from './model-metadata.js';
+import {ManagedDeadlineExpired, validateManagedDeadline} from './managed-deadline.js';
+import type {ManagedDeadlinePolicy, ManagedDeadlineSnapshot} from './managed-deadline.js';
+import {ReceiverAttemptJournal, initializeReceiverDatabase, localDeviceId} from './receiver-attempt-journal.js';
+import type {AttemptTerminal, AttemptTerminalKind} from './receiver-attempt-journal.js';
 
-export type ReceiverStatus = {pid: number; state: string; runtime: string; threadId?: string; model?: string; eventId?: string; detail?: string; receiptError?: string; usage?: unknown};
-type Job = {event_id: string; phase: string; acknowledged: number; answer: string | null; failure: string | null};
-type ReceiverConfiguration = {runtime: ReceiverRuntimeName; cwd: string; model?: string; effort?: string; executable?: string};
+export type ReceiverStatus = {pid: number; state: string; runtime: string; threadId?: string; model?: string; eventId?: string; detail?: string; receiptError?: string; usage?: unknown; idleTimeoutMs?: number; absoluteTimeoutMs?: number; requestStartedAt?: number | null; lastActivityAt?: number | null; idleDeadlineAt?: number | null; absoluteDeadlineAt?: number | null};
+export type ReceiverStartOptions = {model?: string; workdir?: string; effort?: string; executable?: string; idleTimeoutMs?: number; absoluteTimeoutMs?: number};
+type Job = {event_id: string; phase: string; acknowledged: number; answer: string | null; failure: string | null; attempt_id: string | null};
+type ReceiverConfiguration = {runtime: ReceiverRuntimeName; cwd: string; model?: string; effort?: string; executable?: string; idleTimeoutMs: number; absoluteTimeoutMs: number};
 type ReceiverPaths = {directory: string; status: string; lock: string; stop: string; log: string; config: string; database: string};
+const JOURNAL_ACTIVITY_INTERVAL_MS = 5_000;
 
 function paths(store: LocalStore, sessionId: string): ReceiverPaths {
     if (!/^se_[A-Z0-9]+$/.test(sessionId)) {
@@ -49,6 +55,17 @@ function writePrivate(file: string, value: unknown): void {
     renameSync(temporary, file);
 }
 
+function attemptTerminalKind(error: unknown): AttemptTerminalKind {
+    if (error instanceof ManagedDeadlineExpired) {
+        return error.kind === 'idle' ? 'idle_timeout' : 'absolute_timeout';
+    }
+    if (error instanceof RuntimeInterrupted) {
+        return 'interrupted';
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return /not on PATH|could not be started|missing required options|busy or unavailable/i.test(message) ? 'unavailable' : 'adapter_error';
+}
+
 export function receiverConfiguration(store: LocalStore, sessionId: string): ReceiverConfiguration | null {
     if (!/^se_[A-Z0-9]+$/.test(sessionId)) {
         return null;
@@ -73,7 +90,21 @@ export function receiverStatus(store: LocalStore, sessionId: string): ReceiverSt
     }
 }
 
-export async function startReceiver(store: LocalStore, roomRef: string, sessionRef: string, model?: string, workdir?: string, effort?: string, executable?: string): Promise<ReceiverStatus> {
+export function receiverAttempts(store: LocalStore, sessionId: string, requestEventId?: string): ReturnType<ReceiverAttemptJournal['list']> {
+    const databaseFile = paths(store, sessionId).database;
+    if (!existsSync(databaseFile)) {
+        return [];
+    }
+    const database = new DatabaseSync(databaseFile, {readOnly: true});
+    try {
+        const table = database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='receiver_attempts'").get();
+        return table ? new ReceiverAttemptJournal(database).list(requestEventId) : [];
+    } finally {
+        database.close();
+    }
+}
+
+export async function startReceiver(store: LocalStore, roomRef: string, sessionRef: string, options: ReceiverStartOptions = {}): Promise<ReceiverStatus> {
     const {room, session} = select(store, roomRef, sessionRef);
     const runtimeName = receiverRuntimeName(session.runtime);
     if (session.kind !== 'agent' || session.role === 'guest' || !runtimeName) {
@@ -98,20 +129,22 @@ export async function startReceiver(store: LocalStore, roomRef: string, sessionR
             throw new UsageError('This receiver belongs to a different runtime; use a separate room membership.');
         }
     }
-    const cwd = realpathSync(workdir ? resolve(workdir) : previous?.cwd ?? session.cwd);
+    const cwd = realpathSync(options.workdir ? resolve(options.workdir) : previous?.cwd ?? session.cwd);
     if (!statSync(cwd).isDirectory()) {
         throw new UsageError('Receiver workdir must be an existing directory');
     }
     if (previous && previous.cwd !== cwd && existsSync(location.database)) {
         throw new UsageError('An existing receiver cannot change project scope; use a separate membership.');
     }
-    const selectedModel = model ?? previous?.model;
-    const selectedEffort = effort ?? previous?.effort;
+    const selectedModel = options.model ?? previous?.model;
+    const selectedEffort = options.effort ?? previous?.effort;
     if (selectedEffort) {
         validateEffort(runtimeName, selectedEffort);
     }
-    const selectedExecutable = executable ?? previous?.executable;
-    const config: ReceiverConfiguration = {runtime: runtimeName, cwd, ...(selectedModel ? {model: selectedModel} : {}), ...(selectedEffort ? {effort: selectedEffort} : {}), ...(selectedExecutable ? {executable: selectedExecutable} : {})};
+    const selectedExecutable = options.executable ?? previous?.executable;
+    const settings = store.settings();
+    const deadline = validateManagedDeadline({idleMs: options.idleTimeoutMs ?? previous?.idleTimeoutMs ?? settings.managedTaskIdleMs, absoluteMs: options.absoluteTimeoutMs ?? previous?.absoluteTimeoutMs ?? settings.managedTaskTimeoutMs});
+    const config: ReceiverConfiguration = {runtime: runtimeName, cwd, idleTimeoutMs: deadline.idleMs, absoluteTimeoutMs: deadline.absoluteMs, ...(selectedModel ? {model: selectedModel} : {}), ...(selectedEffort ? {effort: selectedEffort} : {}), ...(selectedExecutable ? {executable: selectedExecutable} : {})};
     writePrivate(location.config, config);
     if (existsSync(location.stop)) {
         unlinkSync(location.stop);
@@ -174,17 +207,19 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
     writeFileSync(lock, String(process.pid));
     closeSync(lock);
     const database = new DatabaseSync(location.database);
-    database.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
-        CREATE TABLE IF NOT EXISTS jobs(event_id TEXT PRIMARY KEY, phase TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0, answer TEXT, failure TEXT, turn_id TEXT);
-        CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
-    database.exec("UPDATE jobs SET phase='failed', failure='Receiver restarted during execution. Outcome is uncertain; not automatically rerun.' WHERE phase='running'");
+    initializeReceiverDatabase(database);
+    const attemptJournal = new ReceiverAttemptJournal(database);
+    const restartFailure = 'Receiver restarted during execution. Outcome is uncertain; not automatically rerun.';
+    attemptJournal.crashRunningJobs(restartFailure);
+    database.prepare("UPDATE jobs SET phase='failed', failure=? WHERE phase='running'").run(restartFailure);
+    const ownerDeviceId = localDeviceId(store.directory);
     const savedThread = database.prepare("SELECT value FROM metadata WHERE key='thread'").get() as {value: string} | undefined;
     const savedModel = database.prepare("SELECT value FROM metadata WHERE key='model'").get() as {value: string} | undefined;
     const recoveredModel = modelId(savedModel?.value) ?? (savedThread ? savedSessionModel({runtime: config.runtime, threadId: savedThread.value, cwd: config.cwd}) : undefined);
     if (recoveredModel && savedModel?.value !== recoveredModel) {
         database.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('model',?)").run(recoveredModel);
     }
-    let state: ReceiverStatus = {pid: process.pid, state: 'starting', runtime: config.runtime, ...(savedThread ? {threadId: savedThread.value} : {}), ...(recoveredModel ? {model: recoveredModel} : {})};
+    let state: ReceiverStatus = {pid: process.pid, state: 'starting', runtime: config.runtime, idleTimeoutMs: config.idleTimeoutMs, absoluteTimeoutMs: config.absoluteTimeoutMs, requestStartedAt: null, lastActivityAt: null, idleDeadlineAt: null, absoluteDeadlineAt: null, ...(savedThread ? {threadId: savedThread.value} : {}), ...(recoveredModel ? {model: recoveredModel} : {})};
     const status = (update: Partial<ReceiverStatus>) => {
         const next = {...state, ...update};
         if (JSON.stringify(next) !== JSON.stringify(state) || !existsSync(location.status)) {
@@ -237,6 +272,11 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
             try {
                 const current = await client.request(room.roomId, credential, job.event_id);
                 if (current.responseEventId || !current.requiresReply) {
+                    if (job.attempt_id) {
+                        attemptJournal.terminal(job.attempt_id, current.responseEventId
+                            ? {kind: 'answered', at: current.respondedAt ?? Date.now(), responseEventId: current.responseEventId}
+                            : {kind: 'cancelled', at: Date.now(), failureReason: 'The request no longer requires a reply.'});
+                    }
                     database.prepare("UPDATE jobs SET phase='done' WHERE event_id=?").run(job.event_id);
                     continue;
                 }
@@ -244,15 +284,24 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                     if (snapshot.messageStagesSupported && current.action !== 'reply_pending') {
                         await client.reportMessageStatus(room.roomId, credential, job.event_id, 'reply_pending', token ? {turnToken: token} : {});
                     }
-                    await client.reply(room.roomId, credential, job.event_id, job.answer!, false, token);
+                    const response = await client.reply(room.roomId, credential, job.event_id, job.answer!, false, token);
+                    if (job.attempt_id) {
+                        attemptJournal.terminal(job.attempt_id, {kind: 'answered', at: response.event.at, responseEventId: response.event.eventId});
+                    }
                 } else if (job.phase === 'decision') {
                     const decision = JSON.parse(savedValue(`decision:${job.event_id}`)!) as {state: 'no_action' | 'declined'; reason: string};
                     await client.reportMessageStatus(room.roomId, credential, job.event_id, decision.state, {reason: decision.reason, ...(token ? {turnToken: token} : {})});
+                    if (job.attempt_id) {
+                        attemptJournal.terminal(job.attempt_id, {kind: decision.state === 'declined' ? 'declined' : 'passed', at: Date.now(), failureReason: decision.reason});
+                    }
                 } else if (job.phase === 'pass' && token) {
                     if (snapshot.messageStagesSupported) {
                         await client.reportMessageStatus(room.roomId, credential, job.event_id, 'no_action', {reason: 'Agent explicitly passed: nothing further to add.', turnToken: token});
                     } else {
                         await client.passTurn(room.roomId, credential, job.event_id, token);
+                    }
+                    if (job.attempt_id) {
+                        attemptJournal.terminal(job.attempt_id, {kind: 'passed', at: Date.now()});
                     }
                 } else {
                     await client.deliveryFailed(room.roomId, credential, job.event_id, job.failure ?? 'Execution failed', token, 'execution');
@@ -261,6 +310,9 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
             } catch (error) {
                 if (error instanceof ProtocolError && ['turn_required', 'turn_expired'].includes(error.code)) {
                     database.prepare("UPDATE jobs SET phase='withheld', failure=? WHERE event_id=?").run('Speaking turn ended; saved output was not posted.', job.event_id);
+                    if (job.attempt_id) {
+                        attemptJournal.terminal(job.attempt_id, {kind: 'cancelled', at: Date.now(), failureReason: 'Speaking turn ended; saved output was not posted.'});
+                    }
                     status({detail: 'Speaking turn ended; saved output was not posted.'});
                 } else {
                     throw error;
@@ -300,6 +352,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         }
         let leaseFailure: Error | undefined;
         let interrupting: Promise<void> | undefined;
+        let interruptOutcome: InterruptOutcome | undefined;
         let watching = true;
         let renewing = false;
         let renewal: Promise<void> = Promise.resolve();
@@ -319,12 +372,47 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                 }
             }).finally(() => { renewing = false; });
         }, 10_000) : undefined;
-        database.prepare("UPDATE jobs SET phase='running' WHERE event_id=?").run(request.eventId);
+        const previousThreadId = savedValue('thread');
+        const startedAt = Date.now();
+        const recoverySourceAttemptId = current.recoversEventId ? attemptJournal.latestAttemptId(current.recoversEventId) : undefined;
+        let attemptId: string;
+        database.exec('BEGIN IMMEDIATE');
+        try {
+            attemptId = attemptJournal.start({
+                requestEventId: current.eventId,
+                ordinal: current.attempt ?? 1,
+                ...(current.recoversEventId ? {recoversEventId: current.recoversEventId, ...(recoverySourceAttemptId ? {recoverySourceAttemptId} : {})} : {}),
+                roomId: room.roomId,
+                participantId: session.participantId,
+                sessionId: session.sessionId,
+                ownerDeviceId,
+                runtime: config.runtime,
+                ...(config.model ? {model: config.model} : {}),
+                ...(config.effort ? {effort: config.effort} : {}),
+                ...(previousThreadId ? {providerThreadId: previousThreadId} : {}),
+                workingDirectory: config.cwd,
+                receiverProcessId: process.pid,
+                startedAt,
+                idleTimeoutMs: config.idleTimeoutMs,
+                absoluteTimeoutMs: config.absoluteTimeoutMs
+            });
+            database.prepare("UPDATE jobs SET phase='running', attempt_id=? WHERE event_id=?").run(attemptId, request.eventId);
+            database.exec('COMMIT');
+        } catch (error) {
+            database.exec('ROLLBACK');
+            throw error;
+        }
         status({state: 'working', eventId: request.eventId, detail: ''});
+        let lastStatusActivityWrite = 0;
+        let lastJournalActivityWrite = startedAt;
+        let lastJournalActivityAt = startedAt;
+        let lastDeadlineSnapshot: ManagedDeadlineSnapshot | undefined;
+        let terminal: AttemptTerminal | undefined;
+        let attemptModel: string | undefined;
         try {
             if (!runtime) {
                 const saved = database.prepare("SELECT value FROM metadata WHERE key='thread'").get() as {value: string} | undefined;
-                const runtimeOptions = {cwd: config.cwd, roomId: room.roomId, sessionId: session.sessionId, ...(saved ? {threadId: saved.value} : {}), ...(config.model ? {model: config.model} : {}), ...(config.effort ? {effort: config.effort} : {}), ...(config.executable ? {executable: config.executable} : {})};
+                const runtimeOptions = {cwd: config.cwd, roomId: room.roomId, sessionId: session.sessionId, deadline: {idleMs: config.idleTimeoutMs, absoluteMs: config.absoluteTimeoutMs}, ...(saved ? {threadId: saved.value} : {}), ...(config.model ? {model: config.model} : {}), ...(config.effort ? {effort: config.effort} : {}), ...(config.executable ? {executable: config.executable} : {})};
                 const mcpOptions = {...runtimeOptions, stateDirectory: location.directory, cliPath: resolve(process.argv[1]!), dataDirectory: store.directory, roomId: room.roomId, sessionId: session.sessionId};
                 if (config.runtime === 'qwen') {
                     runtime = new QwenReceiver(mcpOptions);
@@ -340,6 +428,9 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                     database.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('model',?)").run(runtime.model);
                     status({model: runtime.model});
                 }
+            }
+            if (runtime.model) {
+                attemptModel = runtime.model;
             }
             // Watch the room while the turn runs: an interrupt for this participant stops
             // the turn now instead of waiting for it to finish. Started before execute()
@@ -358,7 +449,10 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                         if (event.type === 'control.pause' && event.payload.interrupt && event.payload.targetParticipantId === session.participantId) {
                             watching = false;
                             status({detail: 'Interrupt requested; stopping the current turn.'});
-                            interrupting = active.interrupt().then((outcome) => acknowledgeControl(event.payload.revision, outcome));
+                            interrupting = active.interrupt().then(async (outcome) => {
+                                interruptOutcome = outcome;
+                                await acknowledgeControl(event.payload.revision, outcome);
+                            });
                             await interrupting;
                             return;
                         }
@@ -402,15 +496,36 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                     database.prepare('UPDATE jobs SET acknowledged=1 WHERE event_id=?').run(request.eventId);
                     saveValue(`pass:${request.eventId}`, '1');
                 },
-                started: (turnId) => { database.prepare('UPDATE jobs SET turn_id=? WHERE event_id=?').run(turnId, request.eventId); },
+                started: (turnId, processId) => {
+                    database.prepare('UPDATE jobs SET turn_id=? WHERE event_id=?').run(turnId, request.eventId);
+                    attemptJournal.runtimeStarted(attemptId, {providerThreadId: runtime!.threadId, turnId, ...(processId ? {processId} : {}), ...(attemptModel ? {model: attemptModel} : {})});
+                },
+                activity: (snapshot: ManagedDeadlineSnapshot) => {
+                    lastDeadlineSnapshot = snapshot;
+                    const now = Date.now();
+                    if (now - lastJournalActivityWrite >= JOURNAL_ACTIVITY_INTERVAL_MS) {
+                        lastJournalActivityWrite = now;
+                        lastJournalActivityAt = snapshot.lastActivityAt;
+                        attemptJournal.activity(attemptId, snapshot);
+                    }
+                    if (snapshot.lastActivityAt === snapshot.startedAt || now - lastStatusActivityWrite >= 1_000) {
+                        lastStatusActivityWrite = now;
+                        status({requestStartedAt: snapshot.startedAt, lastActivityAt: snapshot.lastActivityAt, idleDeadlineAt: snapshot.idleDeadlineAt, absoluteDeadlineAt: snapshot.absoluteDeadlineAt});
+                    }
+                },
                 usage: (usage) => {
+                    attemptJournal.usage(attemptId, usage);
                     status({usage});
                 },
                 model: (model) => {
                     const reported = modelId(model);
-                    if (reported && reported !== state.model) {
+                    if (reported && reported !== attemptModel) {
+                        attemptModel = reported;
                         saveValue('model', reported);
-                        status({model: reported});
+                        attemptJournal.model(attemptId, reported);
+                        if (reported !== state.model) {
+                            status({model: reported});
+                        }
                     }
                 }
             });
@@ -424,11 +539,19 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                 throw leaseFailure;
             }
             // Persist before transmission; retries reuse the server's reply idempotency key.
-            database.prepare('UPDATE jobs SET phase=?, answer=? WHERE event_id=?').run(savedValue(`decision:${request.eventId}`) ? 'decision' : savedValue(`pass:${request.eventId}`) === '1' ? 'pass' : 'reply', answer, request.eventId);
+            if (lastDeadlineSnapshot && lastDeadlineSnapshot.lastActivityAt !== lastJournalActivityAt) {
+                attemptJournal.activity(attemptId, lastDeadlineSnapshot);
+            }
+            const completedPhase = savedValue(`decision:${request.eventId}`) ? 'decision' : savedValue(`pass:${request.eventId}`) === '1' ? 'pass' : 'reply';
+            database.prepare('UPDATE jobs SET phase=?, answer=? WHERE event_id=?').run(completedPhase, answer, request.eventId);
+            if (completedPhase === 'reply') {
+                attemptJournal.answerSaved(attemptId);
+            }
         } catch (error) {
             const reason = error instanceof Error ? error.message : 'Runtime failed';
             // An interrupted turn is not a failure to report: the relay already fenced it.
             database.prepare('UPDATE jobs SET phase=?, failure=? WHERE event_id=?').run(error instanceof RuntimeInterrupted ? 'interrupted' : 'failed', reason, request.eventId);
+            terminal = {kind: attemptTerminalKind(error), at: Date.now(), failureReason: reason, ...(lastDeadlineSnapshot ? {deadline: lastDeadlineSnapshot} : {})};
             runtime?.close();
             runtime = undefined;
             status({detail: reason});
@@ -438,8 +561,14 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
             await renewal;
             await interrupting?.catch((error: unknown) => status({detail: `Interrupt report failed: ${error instanceof Error ? error.message : String(error)}`}));
         }
+        if (terminal) {
+            if (terminal.kind === 'interrupted') {
+                terminal.cancellationGraceful = interruptOutcome === 'current_turn_cancelled' ? true : interruptOutcome === 'tool_cancellation_unknown' ? null : false;
+            }
+            attemptJournal.terminal(attemptId, terminal);
+        }
         await flush();
-        status({state: 'available', eventId: ''});
+        status({state: 'available', eventId: '', requestStartedAt: null, lastActivityAt: null, idleDeadlineAt: null, absoluteDeadlineAt: null});
     }
 
     try {
