@@ -58,6 +58,7 @@ export type MessageAction = z.infer<typeof MessageAction>;
 /** Optional status fields extend the receipt envelope so older clients can still parse it. */
 const messageReceivedPayload = z.object({eventId: EventId, stage: z.literal('read').optional(), action: MessageAction.optional(), reason: z.string().max(1024).optional(), responseEventId: EventId.optional()});
 const deliveryFailedPayload = z.object({eventId: EventId, reason: z.string().min(1).max(1024), stage: z.enum(['delivery', 'execution', 'publishing']).optional()});
+const requestClosedPayload = z.object({eventId: EventId, outcome: z.enum(['dismissed', 'cancelled']), reason: z.string().max(1024).optional()});
 
 const handoverOfferedPayload = z.object({handoverId: HandoverId, revision: z.number().int().min(1), document: HandoverDocument});
 const handoverAcceptedPayload = z.object({handoverId: HandoverId, revision: z.number().int().min(1), note: z.string().max(2048).optional()});
@@ -111,6 +112,7 @@ export const EventBody = z.discriminatedUnion('type', [
     z.object({type: z.literal('message'), payload: messagePayload}),
     z.object({type: z.literal('message.received'), payload: messageReceivedPayload}),
     z.object({type: z.literal('message.delivery_failed'), payload: deliveryFailedPayload}),
+    z.object({type: z.literal('message.request_closed'), payload: requestClosedPayload}),
     z.object({type: z.literal('handover.offered'), payload: handoverOfferedPayload}),
     z.object({type: z.literal('handover.accepted'), payload: handoverAcceptedPayload}),
     z.object({type: z.literal('handover.declined'), payload: handoverDeclinedPayload}),

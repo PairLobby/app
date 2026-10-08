@@ -19,6 +19,7 @@ test('Tab extends a shared prefix without choosing an ambiguous command', () => 
     expect(commandMatches('/agent')).toEqual(['/agents ', '/agent ']);
     expect(completeChatCommand('/agent st')).toEqual([[], '/agent st']);
     expect(completeChatCommand('/turns par')).toEqual([['/turns parallel '], '/turns par']);
+    expect(completeChatCommand('/requests dis')).toEqual([['/requests dismiss '], '/requests dis']);
     expect(completeChatCommand('/invite a')).toEqual([['/invite as '], '/invite a']);
 });
 

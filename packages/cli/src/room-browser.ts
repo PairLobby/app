@@ -400,6 +400,9 @@ export class RoomBrowser {
             if (status?.requestStartedAt) {
                 page.rows.push({id: 'request-started', label: 'Request started', value: new Date(status.requestStartedAt).toISOString(), section: 'Managed request'});
             }
+            if (status?.attempt && status.attemptId) {
+                page.rows.push({id: 'request-attempt', label: 'Attempt', value: `${status.attempt} · ${status.attemptId}`, section: 'Managed request'});
+            }
             if (status?.lastActivityAt) {
                 page.rows.push({id: 'last-activity', label: 'Last runtime activity', value: new Date(status.lastActivityAt).toISOString(), section: 'Managed request'});
             }

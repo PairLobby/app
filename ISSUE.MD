@@ -2,8 +2,12 @@
 
 ## Status
 
-The deadline-policy slice is implemented on `feature/managed-request-deadlines`.
-Attempt history and explicit recovery controls remain open.
+The implementation is complete locally on `feature/request-recovery-controls`:
+deadline policy, attempt journal, retry/reassign/dismiss/cancel, interactive
+actions, remaining-time/attempt diagnostics, exact workspace context, and
+fresh-thread recovery after unsafe termination. The issue remains until the
+published packages reach the hosted worker and new provider-backed acceptance
+is recorded.
 
 This issue records the complete product and engineering contract for replacing
 PairLobby's hard-coded managed-agent request deadline and safely recovering work
@@ -13,14 +17,15 @@ that times out after producing partial side effects.
 
 Managed Codex, Claude, and Qwen requests previously had a hard-coded ten-minute
 wall-clock deadline that expired even while an agent was actively producing
-runtime events. The first delivery slice replaces it with shared activity-aware
-and absolute limits; the durable recovery workflow remains open.
+runtime events. The current implementation replaces it with shared
+activity-aware and absolute limits plus explicit, auditable recovery.
 
 When it expires, PairLobby correctly terminates the managed runtime, records a
 delivery failure, releases the speaking turn, and keeps the receiver healthy.
-However, the request becomes permanently failed even when valuable workspace
-changes already exist. There is no first-class retry/recovery workflow, attempt
-history, or safe continuation contract.
+On the current branch, a sender or room controller can retry or reassign that
+failed request and the owning device retains new execution attempts. The
+local workflow is complete. Hosted rollout and fresh live-provider evidence
+remain release gates rather than missing local behavior.
 
 The complete recovery feature consists of:
 
@@ -82,7 +87,8 @@ delivery problems.
 
 ## Immediate operating workaround
 
-Until the complete recovery flow ships:
+Until the complete recovery flow ships, use `pairlobby request retry` or
+`request reassign` only on relays advertising `requestRecoverySupported`, and:
 
 - Split assignments into independently verifiable tasks that fit comfortably
   inside the managed deadline.
@@ -165,6 +171,10 @@ Expose:
 The terminal UI should display remaining inactivity and absolute time for an
 active managed request.
 
+Implemented: `receiver status` reports both remaining millisecond values, and
+the interactive session-details page renders them as durations with the current
+attempt number and attempt ID.
+
 Error messages must distinguish:
 
 ```text
@@ -209,6 +219,10 @@ pairlobby request cancel <request-id>
 
 Also expose equivalent actions in `/requests`, the agent/activity view, and the
 failed message row where appropriate.
+
+Implemented: shell `requests --json` includes authorized actions, terminal
+`/requests` prints runnable actions beside failed/pending rows, and its
+subcommands execute them without leaving chat.
 
 ### Authorization
 
@@ -373,9 +387,9 @@ Failed request rows should show:
 1. [x] Centralize deadline policy and expose diagnostics.
 2. [x] Apply activity-aware deadlines to Codex, Claude, and Qwen adapters.
 3. [x] Add append-only local attempt journal and migrations. New attempts use immutable headers plus append-only lifecycle events; `pairlobby receiver attempts` exposes them locally without fabricating history for older jobs.
-4. Add relay protocol/state for retry, reassign, dismiss, and correlation.
-5. Add safe adapter recovery and CLI/interactive controls.
-6. Add provider-backed acceptance and UI documentation.
+4. [x] Add relay protocol/state for retry, reassign, dismiss, cancel, fencing, and correlation.
+5. [x] Add safe fresh-turn recovery, exact receiver workspace context, shell commands, and interactive `/requests` actions.
+6. [ ] Publish the packages into the hosted worker and record new provider-backed acceptance; Claude is currently unavailable, so deterministic Codex/Claude/Qwen fixtures are the present regression gate.
 
 ## Existing implementation work
 

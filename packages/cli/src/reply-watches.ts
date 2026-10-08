@@ -13,7 +13,7 @@ const WatchSchema = z.object({
     createdAt: z.number(),
     updatedAt: z.number(),
     lastError: z.string().nullable(),
-    outcome: z.object({requestId: z.string(), state: z.enum(['pending', 'answered', 'passed', 'no_action', 'declined', 'skipped', 'cancelled', 'failed', 'unavailable']), senderId: z.string(), responseEventId: z.string().nullable(), text: z.string().nullable(), reason: z.string().nullable()}).nullable()
+    outcome: z.object({requestId: z.string(), state: z.enum(['pending', 'answered', 'passed', 'no_action', 'declined', 'skipped', 'cancelled', 'dismissed', 'failed', 'unavailable']), senderId: z.string(), responseEventId: z.string().nullable(), text: z.string().nullable(), reason: z.string().nullable()}).nullable()
 });
 const RegistrySchema = z.object({version: z.literal(1), watches: z.array(WatchSchema)});
 export type ReplyWatch = z.infer<typeof WatchSchema>;

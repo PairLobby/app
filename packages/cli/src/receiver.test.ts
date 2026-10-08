@@ -106,10 +106,10 @@ test.each(['codex', 'claude', 'qwen'])('%s CLI joins receive asynchronously and 
         const failure = await client.request(host.roomId, host.participantCredential, uncertain.event.eventId);
         expect(failure.receivedAt).not.toBeNull();
         expect(failure.failureReason).toContain('uncertain');
+        const afterCrash = await client.send(host.roomId, host.participantCredential, {...request, idempotencyKey: 'after-crash'});
+        await waitFor(async () => Boolean((await client.request(host.roomId, host.participantCredential, afterCrash.event.eventId)).responseEventId));
+        expect(calls().filter((line) => line === 'thread/start')).toHaveLength(2);
         if (runtime !== 'codex') {
-            const next = await client.send(host.roomId, host.participantCredential, {...request, idempotencyKey: 'after-crash'});
-            await waitFor(async () => Boolean((await client.request(host.roomId, host.participantCredential, next.event.eventId)).responseEventId));
-            expect(calls().filter((line) => line === 'thread/start')).toHaveLength(2);
             const invalid = await client.send(host.roomId, host.participantCredential, {...request, idempotencyKey: 'invalid-ack', payload: {text: 'invalid-ack', priority: 'normal'}});
             await waitFor(async () => Boolean((await client.request(host.roomId, host.participantCredential, invalid.event.eventId)).failureAt));
             await waitFor(async () => (await client.request(host.roomId, host.participantCredential, invalid.event.eventId)).receivedAt !== null);
@@ -181,12 +181,12 @@ test.each(['codex', 'claude', 'qwen'])('%s receiver reports an inactivity timeou
             }
             await sleep(50);
         }
-        expect(working).toMatchObject({state: 'working', idleTimeoutMs: 1_000, absoluteTimeoutMs: 5_000, requestStartedAt: expect.any(Number), lastActivityAt: expect.any(Number), idleDeadlineAt: expect.any(Number), absoluteDeadlineAt: expect.any(Number)});
+        expect(working).toMatchObject({state: 'working', attempt: 1, attemptId: expect.stringMatching(/^at_/), idleTimeoutMs: 1_000, absoluteTimeoutMs: 5_000, requestStartedAt: expect.any(Number), lastActivityAt: expect.any(Number), idleDeadlineAt: expect.any(Number), absoluteDeadlineAt: expect.any(Number), idleRemainingMs: expect.any(Number), absoluteRemainingMs: expect.any(Number)});
         await waitForFailure(sent.event.eventId);
         const failed = await client.request(host.roomId, host.participantCredential, sent.event.eventId);
         expect(failed.failureReason).toContain('no runtime activity for 1 second');
         const status = await command(['receiver', 'status', '--room', joined.roomId, '--session', joined.sessionId]);
-        expect(status).toMatchObject({state: 'available', idleTimeoutMs: 1_000, absoluteTimeoutMs: 5_000, requestStartedAt: null, lastActivityAt: null, idleDeadlineAt: null, absoluteDeadlineAt: null});
+        expect(status).toMatchObject({state: 'available', attempt: null, attemptId: null, idleTimeoutMs: 1_000, absoluteTimeoutMs: 5_000, requestStartedAt: null, lastActivityAt: null, idleDeadlineAt: null, absoluteDeadlineAt: null, idleRemainingMs: null, absoluteRemainingMs: null});
     } finally {
         if (joined) {
             await command(['receiver', 'stop', '--room', joined.roomId, '--session', joined.sessionId]);
@@ -252,9 +252,10 @@ test.each(['codex', 'claude', 'qwen'])('%s output keeps a request alive well pas
 }, 40_000);
 
 test.each(['codex', 'claude', 'qwen'])('%s output never extends the absolute limit', async (runtime) => {
-    // Keep enough separation that parallel test load cannot make a 250 ms fixture heartbeat
-    // race the inactivity timer; this case is about the independent absolute ceiling.
-    const outcome = await busyRequest(runtime, {idle: '3s', absolute: '4s'}, 8_000, 250);
+    // Equal bounds make the absolute timer (registered first) deterministic even if
+    // parallel subprocess load delays fixture heartbeats; the separate test above
+    // proves that output extends a shorter inactivity timer.
+    const outcome = await busyRequest(runtime, {idle: '4s', absolute: '4s'}, 8_000, 250);
     expect(outcome.failureReason).toContain('exceeded the 4 seconds absolute request limit');
     expect(outcome.responseEventId ?? null).toBeNull();
 }, 40_000);

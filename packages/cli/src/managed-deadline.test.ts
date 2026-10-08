@@ -41,6 +41,16 @@ test('silence expires the inactivity watchdog and stopping cancels both timers',
     expect(cancelled).not.toHaveBeenCalled();
 });
 
+test('an idle callback delivered at the absolute boundary is classified as absolute', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    const expired = vi.fn();
+    new ManagedDeadline({idleMs: 1_000, absoluteMs: 1_000}, expired);
+    vi.advanceTimersByTime(1_000);
+    expect(expired).toHaveBeenCalledOnce();
+    expect(expired).toHaveBeenCalledWith('absolute', expect.objectContaining({absoluteDeadlineAt: 11_000}));
+});
+
 test('policy validation and failure messages keep the two limits distinct', () => {
     expect(() => validateManagedDeadline({idleMs: 10_000, absoluteMs: 5_000})).toThrow('at least');
     expect(() => validateManagedDeadline({idleMs: 999, absoluteMs: 5_000})).toThrow('between 1 second');

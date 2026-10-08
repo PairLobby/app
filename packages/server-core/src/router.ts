@@ -27,6 +27,7 @@ import {
     TurnTokenRequest,
     TurnModeRequest,
     TurnActionRequest,
+    ResolveRequestRequest,
     SetExpiryRequest,
     ControlRequest
 } from '@pairlobby/protocol';
@@ -221,6 +222,9 @@ async function route(request: Request, service: RoomService): Promise<Response> 
             if (segments[4] && segments[5] === 'pass') {
                 await service.turns.pass(roomId, credential, segments[4], TurnTokenRequest.parse(await request.json()).token);
                 return json({ok: true});
+            }
+            if (segments[4] && segments[5] === 'resolve') {
+                return json(await service.resolveRequest(roomId, credential, segments[4], ResolveRequestRequest.parse(await request.json())));
             }
             if (segments[4] && segments[5] === 'ack') {
                 return json(await service.acknowledgeMessage(roomId, credential, segments[4]));

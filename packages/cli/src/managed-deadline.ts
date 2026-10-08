@@ -115,7 +115,8 @@ export class ManagedDeadline {
         if (this.stopped) {
             return;
         }
+        const resolvedKind = kind === 'idle' && Date.now() >= this.snapshotValue.absoluteDeadlineAt ? 'absolute' : kind;
         this.stop();
-        this.expired(kind, this.snapshot());
+        this.expired(resolvedKind, this.snapshot());
     }
 }

@@ -23,6 +23,7 @@ import {settingsPage, statusPage} from './room-settings.js';
 import {describeAutoClose, describeCloseReason} from './auto-close.js';
 import {loadAgentRoster} from './agent-roster.js';
 import {invitationTerms} from './render.js';
+import {closeRequest, recoverRequest} from './request-recovery.js';
 
 type ParticipantMatch = {id: string; name: string} | null;
 
@@ -71,7 +72,8 @@ const HELP = `  <message>          address all eligible agents (same as @all)
   /seen [message] full  the same rows unclipped, with full dates and time zone, in the conversation
   /working           show agents that explicitly started answering (F3)
   /select            select and copy text with your terminal (F4; Esc resumes)
-  /requests          show every unanswered request
+  /requests          show requests and available recovery actions
+  /requests retry|reassign|dismiss|cancel <id> [target/reason]
   /reply             ↑/↓ pick a message; Enter/Tab select; type your answer
   /reply <id> <text>  reply to an exact message
   /who               who is registered in this room
@@ -387,16 +389,17 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 view.showWorking();
                 return;
             }
-            if (line === '/requests') {
-                void client
-                    .requests(roomId, credential)
-                    .then((page) => {
-                        for (const request of page.requests) emit(`${request.eventId} ${requestState(request)} ${request.text.slice(0, 100)}`);
-                        if (page.hasMore) {
-                            emit('More requests remain; use pairlobby requests --after to page through them.');
-                        }
-                    })
-                    .catch((error) => emit(`Cannot verify requests: ${String(error)}`));
+            if (line === '/requests' || line.startsWith('/requests ')) {
+                void runRequestsCommand(line.slice('/requests'.length).trim(), {
+                    client,
+                    roomId,
+                    credential,
+                    participantId,
+                    snapshot,
+                    store,
+                    ...(options.controllerCredential ? {controllerCredential: options.controllerCredential} : {}),
+                    emit
+                }).catch((error) => emit(`Request action failed: ${error instanceof Error ? error.message : String(error)}`));
                 return;
             }
             if (line.startsWith('/reply ')) {
@@ -616,6 +619,73 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
     }
 }
 
+export type RequestsCommandContext = {
+    client: PairLobbyClient;
+    roomId: string;
+    credential: string;
+    participantId: string;
+    snapshot: RoomSnapshot;
+    store: LocalStore;
+    controllerCredential?: string;
+    emit: (line: string) => void;
+};
+
+export async function runRequestsCommand(argument: string, context: RequestsCommandContext): Promise<void> {
+    const {client, roomId, credential, participantId, snapshot, store, controllerCredential, emit} = context;
+    if (!argument) {
+        const page = await client.requests(roomId, credential);
+        const self = snapshot.participants.find((participant) => participant.participantId === participantId);
+        for (const request of page.requests) {
+            const state = requestState(request);
+            emit(`${request.eventId} ${state} ${request.text.slice(0, 100)}`);
+            const authorized = request.from === participantId || self?.role === 'controller' || Boolean(controllerCredential);
+            if (authorized && !request.resolution && !request.responseEventId && !request.recoveredByEventId) {
+                if (request.failureAt) {
+                    emit(`  actions: /requests retry ${request.eventId} · /requests reassign ${request.eventId} <name> · /requests dismiss ${request.eventId} [reason] · /requests cancel ${request.eventId} [reason]`);
+                } else if (request.requiresReply) {
+                    emit(`  action: /requests cancel ${request.eventId} [reason]`);
+                }
+            }
+        }
+        if (page.hasMore) {
+            emit('More requests remain; use pairlobby requests --after to page through them.');
+        }
+        return;
+    }
+    const [action, requestId, ...rest] = argument.split(/\s+/);
+    if (!requestId || !['retry', 'reassign', 'dismiss', 'cancel'].includes(action ?? '')) {
+        throw new Error('Usage: /requests retry <id>, reassign <id> <name>, dismiss <id> [reason], or cancel <id> [reason].');
+    }
+    const request = await client.request(roomId, credential, requestId);
+    const self = snapshot.participants.find((participant) => participant.participantId === participantId);
+    const authority = request.from === participantId || self?.role === 'controller' ? credential : controllerCredential ?? credential;
+    if (action === 'retry') {
+        if (!snapshot.requestRecoverySupported) {
+            throw new Error('This relay does not support request retries yet.');
+        }
+        if (rest.length) {
+            throw new Error('Usage: /requests retry <id>');
+        }
+        const result = await recoverRequest({client, roomId, credential: authority, workspaceForParticipant: (id) => store.room(roomId)?.sessions.find((session) => session.participantId === id)?.cwd}, requestId);
+        emit(`Attempt ${result.attempt} sent to ${result.toName} as ${result.requestId}.`);
+        return;
+    }
+    if (action === 'reassign') {
+        if (!snapshot.requestRecoverySupported) {
+            throw new Error('This relay does not support request reassignment yet.');
+        }
+        const target = rest.join(' ').trim();
+        if (!target) {
+            throw new Error('Usage: /requests reassign <id> <name or participant ID>');
+        }
+        const result = await recoverRequest({client, roomId, credential: authority, workspaceForParticipant: (id) => store.room(roomId)?.sessions.find((session) => session.participantId === id)?.cwd}, requestId, target);
+        emit(`Attempt ${result.attempt} reassigned to ${result.toName} as ${result.requestId}.`);
+        return;
+    }
+    const result = await closeRequest({client, roomId, credential: authority}, requestId, action === 'dismiss' ? 'dismiss' : 'cancel', rest.join(' ').trim() || undefined);
+    emit(`${requestId} ${result.outcome}; no success was recorded.${result.reason ? ` ${result.reason}` : ''}`);
+}
+
 function header(snapshot: RoomSnapshot, participantId: string, sessionId: string, emit: (line: string) => void): void {
     const active = snapshot.participants.filter((participant) => !participant.revoked && !participant.left);
     const people = active.filter((participant) => participant.kind === 'human').length;
@@ -672,7 +742,7 @@ export function formatRequestStatus(request: MessageRequest, names: Map<string, 
         answered: 'Answered',
         no_action: 'No action needed',
         declined: 'Declined',
-        failed: failureLabel(request.failureStage),
+        failed: failureLabel(request.failureStage), dismissed: 'Failed · dismissed',
         waiting_turn: 'Waiting for a speaking turn', answering: 'Answering', stalled: 'Speaking turn stalled', passed: 'Passed', skipped: 'Skipped', cancelled: 'Cancelled'
     };
     const receipt = request.readAt !== undefined ? 'Read' : request.receivedAt !== null ? 'Received' : 'Sent · receipt unconfirmed';
@@ -705,6 +775,8 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
             return `resume requested for ${names.get(event.payload.targetParticipantId) ?? 'someone'}, revision ${event.payload.revision}`;
         case 'control.ack':
             return `${sender} ${controlOutcomeText(event.payload.outcome)}`;
+        case 'message.request_closed':
+            return `${sender} ${event.payload.outcome === 'dismissed' ? 'dismissed the failed request' : 'cancelled the request'} ${event.payload.eventId}${event.payload.reason ? `: ${event.payload.reason}` : ''}`;
         case 'room.lock_changed':
             return event.payload.locked ? 'the room was locked' : 'the room was unlocked';
         case 'participant.mute_changed':

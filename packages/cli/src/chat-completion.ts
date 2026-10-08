@@ -5,6 +5,7 @@ export const CHAT_COMMANDS = ['/claude', '/codex', '/qwen', '/spawn', '/agents',
 const SUBCOMMANDS: Record<string, string[]> = {
     '/agent': ['start', 'stop'],
     '/turns': ['sequential', 'parallel', 'skip', 'cancel'],
+    '/requests': ['retry', 'reassign', 'dismiss', 'cancel'],
     '/invite': ['as', 'member', 'observer'],
     '/invites': ['revoke']
 };

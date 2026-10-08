@@ -237,6 +237,7 @@ export function runRequestContract(label: string, makeStore: StoreFactory) {
 
         test('a failed request is retried as a new attempt, and its answer resolves the original without erasing the failure', async () => {
             expect((await service.snapshot(roomId, alice)).requestRecoverySupported).toBe(true);
+            expect((await service.snapshot(roomId, alice)).requestResolutionSupported).toBe(true);
             const {event} = await ask('build the survey');
             await fail(event.eventId);
             const retry = await recover(event.eventId);
@@ -303,6 +304,55 @@ export function runRequestContract(label: string, makeStore: StoreFactory) {
             await service.acknowledgeMessage(roomId, bob, answered.event.eventId);
             await answer(answered.event.eventId);
             await expect(recover(answered.event.eventId)).rejects.toThrow(/already resolved/);
+        });
+
+        test('failed requests can be dismissed without erasing failure evidence or claiming success', async () => {
+            const carol = await join('carol');
+            const {event} = await ask('review the partial workspace');
+            await fail(event.eventId);
+            await expect(service.resolveRequest(roomId, bob, event.eventId, {action: 'dismiss'})).rejects.toThrow(/original sender or a room admin/);
+            await expect(service.resolveRequest(roomId, carol.credential, event.eventId, {action: 'dismiss'})).rejects.toThrow(/original sender or a room admin/);
+            const dismissed = await service.resolveRequest(roomId, alice, event.eventId, {action: 'dismiss', reason: 'Recovered manually outside PairLobby'});
+            expect(dismissed.deduplicated).toBe(false);
+            expect(dismissed.event).toMatchObject({type: 'message.request_closed', payload: {eventId: event.eventId, outcome: 'dismissed', reason: 'Recovered manually outside PairLobby'}});
+            expect(dismissed.request).toMatchObject({requiresReply: false, resolution: 'dismissed', failureAt: expect.any(Number), failureReason: expect.stringContaining('no runtime activity')});
+            expect(requestState(dismissed.request)).toBe('dismissed');
+            expect(messageActionLabel(dismissed.request)).toBe('Failed · dismissed');
+            const repeated = await service.resolveRequest(roomId, alice, event.eventId, {action: 'dismiss', reason: 'Recovered manually outside PairLobby'});
+            expect(repeated).toMatchObject({deduplicated: true, event: {eventId: dismissed.event.eventId}});
+            await expect(service.resolveRequest(roomId, alice, event.eventId, {action: 'dismiss', reason: 'different'})).rejects.toThrow(/different reason/);
+            await expect(service.resolveRequest(roomId, alice, event.eventId, {action: 'cancel'})).rejects.toThrow(/already dismissed/);
+            await expect(recover(event.eventId)).rejects.toThrow(/already resolved/);
+        });
+
+        test('cancelling unresolved work fences late answers and permits a later explicit retry', async () => {
+            const {event} = await ask('cancel this before it finishes');
+            await expect(service.resolveRequest(roomId, alice, event.eventId, {action: 'dismiss'})).rejects.toThrow(/only a failed request/);
+            const cancelled = await service.resolveRequest(roomId, alice, event.eventId, {action: 'cancel', reason: 'Superseded by a newer request'});
+            expect(cancelled.request).toMatchObject({requiresReply: false, resolution: 'cancelled', failureAt: expect.any(Number), failureReason: 'Superseded by a newer request'});
+            expect(requestState(cancelled.request)).toBe('cancelled');
+            expect(messageActionLabel(cancelled.request)).toBe('Cancelled · no success claimed');
+            await service.acknowledgeMessage(roomId, bob, event.eventId);
+            await expect(answer(event.eventId, 'late answer')).rejects.toThrow(/already finished/);
+
+            const retried = await recover(event.eventId);
+            expect(await service.request(roomId, alice, retried.event.eventId)).toMatchObject({attempt: 2, recoversEventId: event.eventId, requiresReply: true});
+            await service.acknowledgeMessage(roomId, bob, retried.event.eventId);
+            const done = await answer(retried.event.eventId, 'new attempt completed');
+            expect(await service.request(roomId, alice, event.eventId)).toMatchObject({resolution: 'cancelled', responseEventId: done.event.eventId});
+        });
+
+        test('a room admin can cancel, but an earlier failed attempt with an active recovery must target the current attempt', async () => {
+            const carol = await join('carol');
+            await service.setRole(roomId, controller, carol.participantId, 'controller');
+            const pending = await ask('admin may cancel this');
+            expect((await service.resolveRequest(roomId, carol.credential, pending.event.eventId, {action: 'cancel'})).request.resolution).toBe('cancelled');
+
+            const failed = await ask('recover this');
+            await fail(failed.event.eventId);
+            const attempt = await recover(failed.event.eventId);
+            await expect(service.resolveRequest(roomId, alice, failed.event.eventId, {action: 'dismiss'})).rejects.toThrow(new RegExp(`being recovered as ${attempt.event.eventId}`));
+            expect((await service.resolveRequest(roomId, alice, attempt.event.eventId, {action: 'cancel'})).request.resolution).toBe('cancelled');
         });
     });
 }

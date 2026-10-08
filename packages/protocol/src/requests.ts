@@ -35,6 +35,12 @@ export interface MessageRequest {
     attempt?: number;
     /** On a failed request: the attempt that recovers it. The failure itself is kept. */
     recoveredByEventId?: string;
+    /** A sender/admin terminal disposition that never claims the requested work succeeded. */
+    resolution?: 'dismissed' | 'cancelled';
+    resolutionAt?: number;
+    resolutionBy?: string;
+    resolutionReason?: string;
+    resolutionEventId?: string;
 }
 export type TurnMode = 'sequential' | 'parallel';
 export type TurnEntry = {requestId: string; conversationId: string; participantId: string; name: string; state: 'waiting' | 'answering' | 'stalled' | 'paused' | 'unavailable' | 'failed'; expiresAt: number | null; workingAt?: number; runtime?: string};
@@ -42,12 +48,15 @@ export type TurnQueue = {mode: TurnMode; entries: TurnEntry[]};
 export type TurnGrant = {state: 'granted' | 'waiting' | 'finished' | 'stalled'; token?: string; expiresAt?: number; request?: MessageRequest};
 export type TurnAction = {action: 'skip' | 'cancel'; requestId?: string | undefined; participantId?: string | undefined};
 export const TURN_LEASE_MS = 90_000;
-export type RequestState = 'awaiting_ack' | 'awaiting_reply' | 'ack_overdue' | 'reply_overdue' | 'answered' | 'no_action' | 'declined' | 'failed' | 'waiting_turn' | 'answering' | 'stalled' | 'passed' | 'skipped' | 'cancelled';
+export type RequestState = 'awaiting_ack' | 'awaiting_reply' | 'ack_overdue' | 'reply_overdue' | 'answered' | 'no_action' | 'declined' | 'failed' | 'dismissed' | 'waiting_turn' | 'answering' | 'stalled' | 'passed' | 'skipped' | 'cancelled';
 export const ACK_TIMEOUT_MS = 30_000;
 export const REPLY_TIMEOUT_MS = 5 * 60_000;
 export function requestState(request: MessageRequest, now = Date.now()): RequestState {
     if (request.responseEventId) {
         return 'answered';
+    }
+    if (request.resolution) {
+        return request.resolution;
     }
     if (request.action === 'no_action' || request.action === 'declined') {
         return request.action;
@@ -73,6 +82,12 @@ export function requestState(request: MessageRequest, now = Date.now()): Request
 export function messageActionLabel(request: MessageRequest): string {
     if (request.responseEventId) {
         return request.failureAt ? 'Done · recovered' : 'Done';
+    }
+    if (request.resolution === 'dismissed') {
+        return 'Failed · dismissed';
+    }
+    if (request.resolution === 'cancelled') {
+        return 'Cancelled · no success claimed';
     }
     if (request.action === 'no_action') {
         return 'No action needed';
@@ -138,6 +153,11 @@ export function mergeMessageRequest(previous: MessageRequest | null | undefined,
         failureAt: previous?.failureAt ?? request.failureAt,
         failureReason: previous?.failureReason ?? request.failureReason,
         failureStage: previous?.failureStage ?? request.failureStage,
+        resolution: previous?.resolution ?? request.resolution,
+        resolutionAt: previous?.resolutionAt ?? request.resolutionAt,
+        resolutionBy: previous?.resolutionBy ?? request.resolutionBy,
+        resolutionReason: previous?.resolutionReason ?? request.resolutionReason,
+        resolutionEventId: previous?.resolutionEventId ?? request.resolutionEventId,
         progressAt: Math.max(previous?.progressAt ?? 0, request.progressAt ?? 0) || null
     } as MessageRequest;
 }

@@ -15,6 +15,10 @@ export function openRequests(events: RoomEvent[], now = Date.now()): OpenRequest
     const open = new Map<string, OpenRequest>();
     const ordered = [...events].sort((a, b) => a.seq - b.seq);
     for (const event of ordered) {
+        if (event.type === 'message.request_closed') {
+            open.delete(event.payload.eventId);
+            continue;
+        }
         if (event.type === 'message.received') {
             const request = open.get(event.payload.eventId);
             if (request?.to === event.senderId) {
