@@ -9,6 +9,7 @@ import {RuntimeInterrupted} from './receiver-runtime.js';
 import type {InterruptOutcome, ReceiverRuntime, RuntimeHooks, RuntimeOptions} from './receiver-runtime.js';
 import {OWN_PROCESS_GROUP, interruptProcess, signalTree} from './runtime-process.js';
 import {streamModel} from './model-metadata.js';
+import {ManagedDeadline, managedDeadlineError, managedDeadlinePolicy} from './managed-deadline.js';
 
 export type QwenRuntimeOptions = RuntimeOptions & {stateDirectory: string; cliPath: string; dataDirectory: string; roomId: string; sessionId: string};
 type QwenSessionState = {threadId: string; completed: boolean};
@@ -88,14 +89,16 @@ export class QwenReceiver implements ReceiverRuntime {
                     signalTree(child, 'SIGTERM');
                     shutdown = setTimeout(() => signalTree(child, 'SIGKILL'), 5000);
                 };
-                const deadline = setTimeout(() => terminate(new Error('Qwen exceeded the ten-minute request deadline; work was stopped, not retried.')), 600_000);
+                const policy = managedDeadlinePolicy(this.options.deadline);
+                const deadline = new ManagedDeadline(policy, (kind) => terminate(managedDeadlineError('Qwen', kind, policy)), hooks.activity);
                 const reader = createInterface({input: child.stdout});
-                child.stderr.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-4000); });
+                child.stderr.on('data', (chunk: Buffer) => { deadline.touch(); stderr = (stderr + chunk.toString()).slice(-4000); });
                 child.stdin.on('error', (error: Error) => terminate(error));
                 child.on('error', (error: NodeJS.ErrnoException) => {
                     failure = new Error(error.code === 'ENOENT' ? 'Qwen Code is not on PATH. Install and sign into Qwen Code, then restart this receiver.' : 'Qwen Code could not be started.');
                 });
                 reader.on('line', (line) => {
+                    deadline.touch();
                     try {
                         const message = JSON.parse(line) as QwenMessage;
                         const model = streamModel(message, this.threadId);
@@ -125,7 +128,7 @@ export class QwenReceiver implements ReceiverRuntime {
                     }
                 });
                 child.once('close', (code) => {
-                    clearTimeout(deadline);
+                    deadline.stop();
                     clearTimeout(shutdown);
                     reader.close();
                     this.child = undefined;
@@ -158,7 +161,7 @@ export class QwenReceiver implements ReceiverRuntime {
                     this.saveState(true);
                     resolve(result.result.trim());
                 });
-                hooks.started(randomUUID());
+                hooks.started(randomUUID(), child.pid);
                 child.stdin.write(JSON.stringify({type: 'user', session_id: this.threadId, parent_tool_use_id: null, message: {role: 'user', content: [{type: 'text', text: `PairLobby request ${request.eventId}, sender ${request.from}:\n${request.text}`}]}}) + '\n');
             });
         } finally {

@@ -47,7 +47,9 @@ const messagePayload = z.object({
         .max(32 * 1024)
         .refine((text) => text.trim().length > 0, 'message must not be blank'),
     priority: z.enum(['normal', 'priority']).default('normal'),
-    responseStage: z.enum(['progress', 'final']).optional()
+    responseStage: z.enum(['progress', 'final']).optional(),
+    /** A new attempt at a request that failed: the failed request's delivery ID. Its answer resolves that request too. */
+    recovers: EventId.optional()
 });
 
 /** A participant confirms receipt of a message; only the target satisfies an addressed request. */

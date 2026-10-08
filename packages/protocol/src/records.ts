@@ -160,6 +160,8 @@ export const RoomSnapshot = z.object({
     /** Absent on older relays, which only accept addressed-recipient receipts. */
     messageReceiptScope: z.enum(['recipient', 'members']).optional(),
     messageStagesSupported: z.boolean().optional(),
+    /** The relay accepts a new attempt at a failed request and resolves the original when it is answered. */
+    requestRecoverySupported: z.boolean().optional(),
     rejoinSupported: z.boolean().optional(),
     renameSelfSupported: z.boolean().optional(),
     adminRolesSupported: z.boolean().optional(),

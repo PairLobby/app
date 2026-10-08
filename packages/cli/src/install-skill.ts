@@ -1,11 +1,13 @@
 import {existsSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs';
-import {homedir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
+import {isSkillAgent, skillAgents, skillsDirectoryForAgent} from './skill-paths.js';
+import type {SkillAgent} from './skill-paths.js';
+
 export function installSkill(agent: string | undefined, force = false, skillsDirectory?: string): string[] {
-    if (!agent || !['claude', 'codex', 'qwen', 'all'].includes(agent)) {
-        throw new Error('Usage: pairlobby install-skill claude|codex|qwen|all [--force] [--skills-dir <directory>]');
+    if (!agent || (agent !== 'all' && !isSkillAgent(agent))) {
+        throw new Error('Usage: pairlobby install-skill claude|codex|qwen|cursor|grok|muse|all [--force] [--skills-dir <directory>]');
     }
     const candidates = [new URL('../skills/pairlobby/SKILL.md', import.meta.url), new URL('../../../integrations/claude-code/SKILL.md', import.meta.url)];
     const source = candidates.map((url) => fileURLToPath(url)).find(existsSync);
@@ -13,17 +15,11 @@ export function installSkill(agent: string | undefined, force = false, skillsDir
         throw new Error('This installation is missing its skill file. Reinstall the official PairLobby package.');
     }
     const content = readFileSync(source, 'utf8');
-    const agents = agent === 'all' ? ['claude', 'codex', 'qwen'] : [agent];
+    const agents: readonly SkillAgent[] = agent === 'all' ? skillAgents : [agent];
     if (skillsDirectory && agent === 'all') {
         throw new Error('Choose one agent when using --skills-dir');
     }
-    const destinations = agents.map((name) =>
-        join(
-            skillsDirectory ? resolve(skillsDirectory) : join(name === 'codex' ? (process.env['CODEX_HOME'] ?? join(homedir(), '.codex')) : join(homedir(), name === 'qwen' ? '.qwen' : '.claude'), 'skills'),
-            'pairlobby',
-            'SKILL.md'
-        )
-    );
+    const destinations = agents.map((name) => join(skillsDirectory ? resolve(skillsDirectory) : skillsDirectoryForAgent(name), 'pairlobby', 'SKILL.md'));
     for (const destination of destinations)
         if (existsSync(destination) && readFileSync(destination, 'utf8') !== content && !force) {
             throw new Error(`A different skill already exists at ${destination}. Review it first; --force saves a backup and replaces it.`);

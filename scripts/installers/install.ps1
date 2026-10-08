@@ -1,4 +1,4 @@
-param([ValidateSet('ask','all','claude','codex','qwen','none')][string]$Skills = 'ask', [string]$SkillsDir = '')
+param([ValidateSet('ask','all','claude','codex','qwen','cursor','grok','muse','none')][string]$Skills = 'ask', [string]$SkillsDir = '')
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $base = if ($env:PAIRLOBBY_DOWNLOAD_BASE) { $env:PAIRLOBBY_DOWNLOAD_BASE } else { 'https://pairlobby.com' }
@@ -6,16 +6,16 @@ $root = if ($env:PAIRLOBBY_INSTALL_DIR) { $env:PAIRLOBBY_INSTALL_DIR } else { Jo
 if ($Skills -eq 'ask') {
     $Skills = 'none'
     if ([Console]::IsInputRedirected) {
-        Write-Host 'No interactive terminal; skipping agent skills. Use -Skills all, claude, codex or qwen to include them.'
+        Write-Host 'No interactive terminal; skipping agent skills. Use -Skills all, claude, codex, qwen, cursor, grok or muse to include them.'
     } else {
         do {
             $answer = (Read-Host 'Install agent skills? [y/N]').Trim().ToLowerInvariant()
         } while ($answer -notin @('', 'y', 'yes', 'n', 'no'))
         if ($answer -in @('y', 'yes')) {
             do {
-                $choice = (Read-Host 'Which agents? 1) Claude Code  2) Codex  3) Qwen Code  4) All [4]').Trim().ToLowerInvariant()
-            } while ($choice -notin @('', '1', 'claude', 'claude code', '2', 'codex', '3', 'qwen', 'qwen code', '4', 'all'))
-            $Skills = if ($choice -in @('1', 'claude', 'claude code')) { 'claude' } elseif ($choice -in @('2', 'codex')) { 'codex' } elseif ($choice -in @('3', 'qwen', 'qwen code')) { 'qwen' } else { 'all' }
+                $choice = (Read-Host 'Which agents? 1) Claude Code  2) Codex  3) Qwen Code  4) Cursor  5) Grok  6) Muse Code  7) All [7]').Trim().ToLowerInvariant()
+            } while ($choice -notin @('', '1', 'claude', 'claude code', '2', 'codex', '3', 'qwen', 'qwen code', '4', 'cursor', '5', 'grok', 'grok build', '6', 'muse', 'muse code', '7', 'all'))
+            $Skills = if ($choice -in @('1', 'claude', 'claude code')) { 'claude' } elseif ($choice -in @('2', 'codex')) { 'codex' } elseif ($choice -in @('3', 'qwen', 'qwen code')) { 'qwen' } elseif ($choice -in @('4', 'cursor')) { 'cursor' } elseif ($choice -in @('5', 'grok', 'grok build')) { 'grok' } elseif ($choice -in @('6', 'muse', 'muse code')) { 'muse' } else { 'all' }
         }
     }
 }

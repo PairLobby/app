@@ -36,7 +36,7 @@ class PromptTests(unittest.TestCase):
         server_process = multiprocessing.get_context('fork').Process(target=server.serve_forever)
         server_process.start()
         try:
-            for answer, choice, agent in [('n', None, None), ('y', '1', 'claude'), ('y', '2', 'codex'), ('y', '3', 'qwen')]:
+            for answer, choice, agent in [('n', None, None), ('y', '1', 'claude'), ('y', '2', 'codex'), ('y', '3', 'qwen'), ('y', '4', 'cursor'), ('y', '5', 'grok'), ('y', '6', 'muse')]:
                 with self.subTest(agent=agent), tempfile.TemporaryDirectory(prefix='pairlobby-prompt-') as directory:
                     root = Path(directory)
                     args = [node, str(installer)]

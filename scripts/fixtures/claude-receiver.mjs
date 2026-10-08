@@ -82,7 +82,13 @@ for await (const line of source) {
         const decision = await call(5, 'tools/call', {name: 'message_status', arguments: {state: 'no_action', reason: 'No further work needed'}});
         if (decision.result?.isError) throw new Error('Decision rejected');
     }
-    await sleep(Number(process.env.PAIRLOBBY_TEST_DELAY_MS ?? 0));
+    // With a heartbeat set, the wait is busy: output keeps arriving, as from a model that is still working.
+    for (let waited = 0, beat = Number(process.env.PAIRLOBBY_TEST_HEARTBEAT_MS ?? 0), delay = Number(process.env.PAIRLOBBY_TEST_DELAY_MS ?? 0); waited < delay; waited += beat || delay) {
+        await sleep(Math.min(beat || delay, delay - waited));
+        if (beat) {
+            send({type: 'system', subtype: 'status', session_id: session});
+        }
+    }
     child.stdin.end();
     await new Promise((resolve) => child.once('close', resolve));
     send({type: 'result', subtype: invalid ? 'error_ack' : 'success', is_error: invalid, session_id: session, result: invalid ? '' : 'Claude fixture answer: ' + text, usage: {input_tokens: 10, output_tokens: 10}});

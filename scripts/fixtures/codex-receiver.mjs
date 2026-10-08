@@ -62,7 +62,13 @@ for await (const line of createInterface({input: process.stdin})) {
             send({id: 'working', method: 'item/tool/call', params: {threadId: 'test-thread', turnId: turn, tool: 'pairlobby_working', arguments: {}}});
             continue;
         }
-        await sleep(Number(process.env.PAIRLOBBY_TEST_DELAY_MS ?? 0));
+        // With a heartbeat set, the wait is busy: output keeps arriving, as from a model that is still working.
+        for (let waited = 0, beat = Number(process.env.PAIRLOBBY_TEST_HEARTBEAT_MS ?? 0), delay = Number(process.env.PAIRLOBBY_TEST_DELAY_MS ?? 0); waited < delay; waited += beat || delay) {
+            await sleep(Math.min(beat || delay, delay - waited));
+            if (beat) {
+                send({method: 'fixture/heartbeat', params: {threadId: 'test-thread', turnId: turn}});
+            }
+        }
         if (text.includes('reroute-fixture')) {
             send({method: 'model/rerouted', params: {threadId: 'another-thread', turnId: turn, fromModel: 'fixture-model', toModel: 'wrong-thread-model'}});
             send({method: 'model/rerouted', params: {threadId: 'test-thread', turnId: turn, fromModel: 'fixture-model', toModel: 'gpt-6-sol'}});

@@ -5,6 +5,7 @@ import type {MessageRequest} from '@pairlobby/protocol';
 import {RuntimeInterrupted} from './receiver-runtime.js';
 import type {InterruptOutcome, RuntimeOptions, RuntimeHooks} from './receiver-runtime.js';
 import {modelId} from './model-metadata.js';
+import {ManagedDeadline, managedDeadlineError, managedDeadlinePolicy} from './managed-deadline.js';
 export type {RuntimeOptions, RuntimeHooks} from './receiver-runtime.js';
 
 type RpcMessage = {id?: number | string; method?: string; params?: Record<string, any>; result?: any; error?: {code?: number; message: string}};
@@ -18,7 +19,7 @@ type ActiveTurn = {
     resolve: (answer: string) => void;
     reject: (error: Error) => void;
     answer: string;
-    timer: NodeJS.Timeout;
+    deadline: ManagedDeadline;
     turnId: Promise<string>;
     setTurnId: (id: string) => void;
     /** Shell commands Codex started in this turn and has not reported finished. */
@@ -122,13 +123,14 @@ export class CodexReceiver {
             hooks.model?.(this.threadModel);
         }
         return new Promise<string>((resolve, reject) => {
-            const timer = setTimeout(() => {
-                this.fail(new Error('Runtime exceeded the ten-minute request deadline. Execution was stopped, not retried.'));
+            const policy = managedDeadlinePolicy(this.options.deadline);
+            const deadline = new ManagedDeadline(policy, (kind) => {
+                this.fail(managedDeadlineError('Codex', kind, policy));
                 this.close();
-            }, 600_000);
+            }, hooks.activity);
             let setTurnId: (id: string) => void = () => {};
             const turnId = new Promise<string>((ready) => { setTurnId = ready; });
-            const active: ActiveTurn = {hooks, resolve, reject, answer: '', timer, turnId, setTurnId, commands: new Set(), interrupted: false};
+            const active: ActiveTurn = {hooks, resolve, reject, answer: '', deadline, turnId, setTurnId, commands: new Set(), interrupted: false};
             this.active = active;
             void this.call('turn/start', {
                 threadId: this.threadId,
@@ -136,12 +138,13 @@ export class CodexReceiver {
                 input: [{type: 'text', text: `PairLobby request ${request.eventId}, sender ${request.from}:\n${request.text}`}]
             }).then((result: TurnResult) => {
                 active.setTurnId(result.turn.id);
-                hooks.started(result.turn.id);
+                hooks.started(result.turn.id, this.child?.pid);
             }).catch((error: Error) => this.fail(error));
         });
     }
 
     private async receive(message: RpcMessage): Promise<void> {
+        this.active?.deadline.touch();
         if (message.id !== undefined && !message.method) {
             const pending = this.pending.get(Number(message.id));
             if (pending) {
@@ -226,7 +229,7 @@ export class CodexReceiver {
         }
         if (message.method === 'turn/completed') {
             const active = this.active;
-            clearTimeout(active.timer);
+            active.deadline.stop();
             this.active = undefined;
             active.finished?.(params.turn?.status ?? 'failed');
             if (active.interrupted) {
@@ -293,7 +296,7 @@ export class CodexReceiver {
 
     private fail(error: Error): void {
         if (this.active) {
-            clearTimeout(this.active.timer);
+            this.active.deadline.stop();
             this.active.finished?.('failed');
             this.active.reject(this.active.interrupted ? new RuntimeInterrupted() : error);
             this.active = undefined;

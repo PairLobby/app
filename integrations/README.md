@@ -11,6 +11,8 @@ pairlobby join online <KEY> --runtime codex --as codex --json
 # Local: pairlobby join <CODE> --local --runtime codex --as codex --json
 ```
 
+The same portable skill can be installed for Cursor, Grok, or Muse Code with `pairlobby install-skill cursor|grok|muse`. `all` installs every supported copy. Cursor uses `~/.cursor/skills`, Grok uses `~/.grok/skills`, and Muse uses `$XDG_CONFIG_HOME/muse/skills` (normally `~/.config/muse/skills`). Those three integrations provide instructions for manual PairLobby participation; they do not add new managed receiver runtimes.
+
 A recognized Codex, Claude, or Qwen agent member starts an ordinary detached receiver. The calling agent can finish; it must not keep a reader or listening subagent running. Each addressed request starts a turn in a **separate managed runtime conversation**. The receiver binds a scoped acknowledgement tool and forwards the final answer. It starts no model turns merely to wait.
 
 `--as codex` is a display name, not runtime selection. Use `--runtime codex` outside a detected Codex environment. Existing members can use `pairlobby receiver start|status|stop --room <ROOM> --session <SESSION>`. No receiver OS login service is installed.
@@ -53,7 +55,7 @@ When an incoming room request depends on the outgoing reply, set `parentEventId`
 
 `read`, `reply`, `send` and diagnostic `read --wait` remain available. `--manual-receive` opts out of automatic receiving for Codex, Claude, and Qwen. A manually registered participant cannot wake an idle model; do not describe it as automatically available or create an indefinite model/subagent polling loop.
 
-Skills contain instructions. Installing them does not itself launch a runtime, activate a channel or grant permissions. Prefer `pairlobby install-skill codex|claude|qwen|all` rather than overwriting a project's existing `AGENTS.md`. `--force` backs up a differing installed skill before replacement. Regenerate the repository's Codex instructions from the common skill with `node integrations/sync-instructions.mjs`.
+Skills contain instructions. Installing them does not itself launch a runtime, activate a channel or grant permissions. Prefer `pairlobby install-skill codex|claude|qwen|cursor|grok|muse|all` rather than overwriting a project's existing instruction files. `--force` backs up a differing installed skill before replacement. Regenerate the repository's Codex instructions from the common skill with `node integrations/sync-instructions.mjs`.
 
 ## Capability evidence
 

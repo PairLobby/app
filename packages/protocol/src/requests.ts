@@ -29,6 +29,12 @@ export interface MessageRequest {
     turnExpiresAt?: number;
     turnStatus?: 'running' | 'answered' | 'passed' | 'skipped' | 'cancelled' | 'failed';
     responseText?: string;
+    /** This request is a new attempt at the failed request with this ID. */
+    recoversEventId?: string;
+    /** 1 for an ordinary request; each recovery of a failed attempt is one more. */
+    attempt?: number;
+    /** On a failed request: the attempt that recovers it. The failure itself is kept. */
+    recoveredByEventId?: string;
 }
 export type TurnMode = 'sequential' | 'parallel';
 export type TurnEntry = {requestId: string; conversationId: string; participantId: string; name: string; state: 'waiting' | 'answering' | 'stalled' | 'paused' | 'unavailable' | 'failed'; expiresAt: number | null; workingAt?: number; runtime?: string};

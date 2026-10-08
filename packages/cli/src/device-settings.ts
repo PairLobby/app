@@ -7,8 +7,9 @@ import {UsageError} from './context.js';
 import type {PanelChoice, RoomPanelPage, RoomPanelRow} from './room-panel.js';
 import {AUTO_CLOSE_CHOICES, AUTO_CLOSE_USAGE, applyAutoCloseToRooms, describeAutoClose, formatAutoClose, parseAutoClose, summarizeBulk} from './auto-close.js';
 import {WhenError, formatDuration, parseDuration} from './when.js';
+import {validateManagedDeadline} from './managed-deadline.js';
 
-type SettingKind = 'boolean' | 'number' | 'duration' | 'choice' | 'auto-close';
+type SettingKind = 'boolean' | 'number' | 'duration' | 'managed-duration' | 'choice' | 'auto-close';
 
 export type SettingDefinition = {
     field: keyof Settings;
@@ -34,6 +35,8 @@ export const SETTING_KEYS: Record<string, SettingDefinition> = {
     'poll-interval': {field: 'pollIntervalMs', kind: 'number', label: 'Poll interval (ms)', section: 'Terminal', help: 'milliseconds between live-room polls'},
     'update-check': {field: 'updateCheck', kind: 'boolean', label: 'Check for updates', section: 'Updates', help: 'check GitHub whenever an interactive room or chat opens; other commands check daily in the background'},
     'auto-update': {field: 'autoUpdate', kind: 'boolean', label: 'Install updates automatically', section: 'Updates', help: 'install new releases without asking at interactive startup or in the background (needs update-check)'},
+    'managed-task-idle-timeout': {field: 'managedTaskIdleMs', kind: 'managed-duration', label: 'Managed task inactivity limit', section: 'Agents', help: 'stop a managed agent request after no runtime output for this duration (1s–24h)'},
+    'managed-task-timeout': {field: 'managedTaskTimeoutMs', kind: 'managed-duration', label: 'Managed task absolute limit', section: 'Agents', help: 'stop a managed agent request after this total elapsed time even while active (1s–24h; at least the inactivity limit)'},
     'network-sharing': {field: 'relayNetwork', kind: 'choice', label: 'Share this device\'s relay', section: 'Network', help: 'which other devices may join rooms on this device\'s relay: off, tailscale or lan; restart the relay to apply', choices: [{label: 'Off — only this device', value: 'off'}, {label: 'Tailscale — your devices on your tailnet, encrypted', value: 'tailscale'}, {label: 'Local network — any device on this Wi-Fi or LAN, unencrypted', value: 'lan'}]},
     'network-rooms': {field: 'networkRooms', kind: 'boolean', label: 'Show rooms on my network', section: 'Network', help: 'list rooms open to the local network or tailnet beside your own; searches the network when the room list refreshes'},
 };
@@ -76,6 +79,29 @@ export function parseCount(key: string, value: string): number {
     return parsed;
 }
 
+export function parseManagedDuration(key: string, value: string): number {
+    let parsed: number;
+    try {
+        parsed = parseDuration(value.trim().toLowerCase());
+    } catch (error) {
+        throw new UsageError(error instanceof WhenError ? error.message : String(error));
+    }
+    try {
+        validateManagedDeadline({idleMs: parsed, absoluteMs: parsed});
+    } catch (error) {
+        throw new UsageError(error instanceof Error ? error.message : String(error));
+    }
+    return parsed;
+}
+
+export function validateManagedSettings(settings: Settings): void {
+    try {
+        validateManagedDeadline({idleMs: settings.managedTaskIdleMs, absoluteMs: settings.managedTaskTimeoutMs});
+    } catch (error) {
+        throw new UsageError(error instanceof Error ? error.message : String(error));
+    }
+}
+
 /** Choice values accept their short names too: observer for guest, open for open_to_guests. */
 const CHOICE_ALIASES: Record<string, string> = {observer: 'guest', 'read-only': 'guest', open: 'open_to_guests', 'invite-only': 'invite_only'};
 
@@ -83,6 +109,7 @@ export function parseSettingValue(key: string, definition: SettingDefinition, va
     switch (definition.kind) {
         case 'boolean':  return parseBoolean(key, value);
         case 'duration': return parseLifetime(value);
+        case 'managed-duration': return parseManagedDuration(key, value);
         case 'number':   return parseCount(key, value);
         case 'auto-close': return formatAutoClose(parseAutoClose(value));
         case 'choice': {
@@ -99,6 +126,9 @@ export function parseSettingValue(key: string, definition: SettingDefinition, va
 export function describeSettingValue(definition: SettingDefinition, value: Settings[keyof Settings]): string {
     if (definition.kind === 'duration') {
         return describeLifetime(value as number | null);
+    }
+    if (definition.kind === 'managed-duration') {
+        return formatDuration(value as number);
     }
     if (definition.kind === 'choice') {
         return definition.choices!.find((choice) => choice.value === value)?.label.split(' — ')[0] ?? String(value);
@@ -131,9 +161,12 @@ export function deviceSettingsPage(store: LocalStore, state: MenuState = {note: 
     for (const [key, definition] of Object.entries(SETTING_KEYS)) {
         const current = settings[definition.field];
         const choices = definition.kind === 'boolean' ? ON_OFF : definition.choices;
-        const initial = definition.kind === 'duration' ? describeLifetime(current as number | null) : String(current);
+        const initial = definition.kind === 'duration' ? describeLifetime(current as number | null) : definition.kind === 'managed-duration' ? formatDuration(current as number) : String(current);
         rows.push({id: key, label: definition.label, value: describeSettingValue(definition, current), section: definition.section, action: {kind: 'edit', initial, ...(choices ? {choices} : {}), hint: `${definition.help} · shell: pairlobby settings ${key} <value>`, save: async (value) => {
-            store.setSettings({[definition.field]: parseSettingValue(key, definition, value)} as Partial<Settings>);
+            const parsed = parseSettingValue(key, definition, value);
+            const next = {...store.settings(), [definition.field]: parsed};
+            validateManagedSettings(next);
+            store.setSettings({[definition.field]: parsed} as Partial<Settings>);
         }}});
     }
     const autoClose = parseAutoClose(settings.defaultAutoClose);

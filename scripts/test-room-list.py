@@ -79,6 +79,7 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-room-browser-') as directory:
         choose('Helper'); keys(b'i')
         wait_for('Session — Helper')
         assert 'Session ID' in text(), text()
+        assert 'Inactivity limit' in text() and 'Absolute limit' in text(), text()
         keys(b'\x1b'); wait_for('Local sessions')
         choose('Helper'); keys(b'c')
         wait_for('Close local session')
