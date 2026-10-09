@@ -24,6 +24,7 @@ import {describeAutoClose, describeCloseReason} from './auto-close.js';
 import {loadAgentRoster} from './agent-roster.js';
 import {invitationTerms} from './render.js';
 import {closeRequest, recoverRequest} from './request-recovery.js';
+import {requestsPage} from './request-panel.js';
 
 type ParticipantMatch = {id: string; name: string} | null;
 
@@ -72,7 +73,7 @@ const HELP = `  <message>          address all eligible agents (same as @all)
   /seen [message] full  the same rows unclipped, with full dates and time zone, in the conversation
   /working           show agents that explicitly started answering (F3)
   /select            select and copy text with your terminal (F4; Esc resumes)
-  /requests          show requests and available recovery actions
+  /requests          interactive request details, attempts and recovery actions
   /requests retry|reassign|dismiss|cancel <id> [target/reason]
   /reply             ↑/↓ pick a message; Enter/Tab select; type your answer
   /reply <id> <text>  reply to an exact message
@@ -389,7 +390,20 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 view.showWorking();
                 return;
             }
-            if (line === '/requests' || line.startsWith('/requests ')) {
+            if (line === '/requests') {
+                if (statusLoading) {
+                    emit('A room panel is already loading.');
+                } else {
+                    statusLoading = true;
+                    emit('Loading requests…');
+                    const context = {client, roomId, credential, participantId, store, ...(options.controllerCredential ? {controllerCredential: options.controllerCredential} : {})};
+                    void view.showRoomPanel(() => requestsPage(context))
+                        .catch((error) => { if (!closed) { emit(`Requests unavailable: ${error instanceof Error ? error.message : String(error)}`); } })
+                        .finally(() => { statusLoading = false; });
+                }
+                return;
+            }
+            if (line.startsWith('/requests ')) {
                 void runRequestsCommand(line.slice('/requests'.length).trim(), {
                     client,
                     roomId,

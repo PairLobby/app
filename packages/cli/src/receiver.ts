@@ -20,9 +20,11 @@ import {ManagedDeadlineExpired, validateManagedDeadline} from './managed-deadlin
 import type {ManagedDeadlinePolicy, ManagedDeadlineSnapshot} from './managed-deadline.js';
 import {ReceiverAttemptJournal, initializeReceiverDatabase, localDeviceId} from './receiver-attempt-journal.js';
 import type {AttemptTerminal, AttemptTerminalKind} from './receiver-attempt-journal.js';
+import {VERSION} from './version.js';
 
-export type ReceiverStatus = {pid: number; state: string; runtime: string; threadId?: string; model?: string; eventId?: string; attempt?: number | null; attemptId?: string | null; detail?: string; receiptError?: string; usage?: unknown; idleTimeoutMs?: number; absoluteTimeoutMs?: number; requestStartedAt?: number | null; lastActivityAt?: number | null; idleDeadlineAt?: number | null; absoluteDeadlineAt?: number | null; idleRemainingMs?: number | null; absoluteRemainingMs?: number | null};
+export type ReceiverStatus = {pid: number; state: string; runtime: string; version?: string; entrypoint?: string; restartRequired?: boolean; threadId?: string; model?: string; eventId?: string; attempt?: number | null; attemptId?: string | null; detail?: string; receiptError?: string; usage?: unknown; idleTimeoutMs?: number; absoluteTimeoutMs?: number; requestStartedAt?: number | null; lastActivityAt?: number | null; idleDeadlineAt?: number | null; absoluteDeadlineAt?: number | null; idleRemainingMs?: number | null; absoluteRemainingMs?: number | null};
 export type ReceiverStartOptions = {model?: string; workdir?: string; effort?: string; executable?: string; idleTimeoutMs?: number; absoluteTimeoutMs?: number};
+export type ReceiverRefreshResult = {restarted: string[]; scheduled: string[]; current: string[]; stopped: string[]; failed: {sessionId: string; reason: string}[]};
 type Job = {event_id: string; phase: string; acknowledged: number; answer: string | null; failure: string | null; attempt_id: string | null};
 type ReceiverConfiguration = {runtime: ReceiverRuntimeName; cwd: string; model?: string; effort?: string; executable?: string; idleTimeoutMs: number; absoluteTimeoutMs: number};
 type ReceiverPaths = {directory: string; status: string; lock: string; stop: string; log: string; config: string; database: string};
@@ -46,6 +48,14 @@ function alive(pid: number): boolean {
         return true;
     } catch {
         return false;
+    }
+}
+
+function currentEntrypoint(): string {
+    try {
+        return realpathSync(resolve(process.argv[1]!));
+    } catch {
+        return resolve(process.argv[1]!);
     }
 }
 
@@ -82,7 +92,8 @@ export function receiverStatus(store: LocalStore, sessionId: string): ReceiverSt
     try {
         const status = JSON.parse(readFileSync(location.status, 'utf8')) as ReceiverStatus;
         const now = Date.now();
-        const withRemaining = {...status, idleRemainingMs: status.idleDeadlineAt ? Math.max(0, status.idleDeadlineAt - now) : null, absoluteRemainingMs: status.absoluteDeadlineAt ? Math.max(0, status.absoluteDeadlineAt - now) : null};
+        const restartRequired = status.version !== VERSION || !status.entrypoint || resolve(status.entrypoint) !== currentEntrypoint();
+        const withRemaining = {...status, restartRequired, idleRemainingMs: status.idleDeadlineAt ? Math.max(0, status.idleDeadlineAt - now) : null, absoluteRemainingMs: status.absoluteDeadlineAt ? Math.max(0, status.absoluteDeadlineAt - now) : null};
         if (!alive(status.pid) || !existsSync(location.lock) || Number(readFileSync(location.lock, 'utf8')) !== status.pid) {
             return {...withRemaining, state: status.state === 'stopped' ? 'stopped' : 'offline'};
         }
@@ -118,7 +129,10 @@ export async function startReceiver(store: LocalStore, roomRef: string, sessionR
     }
     const existing = receiverStatus(store, session.sessionId);
     if (existing && !['offline', 'stopped', 'error'].includes(existing.state)) {
-        return existing;
+        if (!existing.restartRequired || existing.state === 'working') {
+            return existing;
+        }
+        await stopReceiver(store, session.sessionId);
     }
     const location = paths(store, session.sessionId);
     if (existsSync(location.lock) && alive(Number(readFileSync(location.lock, 'utf8')))) {
@@ -190,6 +204,70 @@ export async function stopReceiver(store: LocalStore, sessionId: string): Promis
     throw new UsageError('Stop requested, but receiver has not exited yet. Inspect pairlobby receiver status.');
 }
 
+async function refreshReceiver(store: LocalStore, roomId: string, sessionId: string, scheduleWorking: boolean): Promise<'restarted' | 'scheduled' | 'current' | 'stopped'> {
+    const status = receiverStatus(store, sessionId);
+    if (!status?.restartRequired) {
+        return 'current';
+    }
+    if (status.state === 'stopped' || status.state === 'offline') {
+        return 'stopped';
+    }
+    if (status.state === 'working' || status.state === 'starting') {
+        if (!scheduleWorking) {
+            return 'scheduled';
+        }
+        const environment: NodeJS.ProcessEnv = {...process.env, PAIRLOBBY_DATA_DIR: store.directory};
+        delete environment['PAIRLOBBY_TEST_RECEIVER_VERSION'];
+        delete environment['PAIRLOBBY_TEST_RECEIVER_ENTRYPOINT'];
+        const child = spawn(process.execPath, [currentEntrypoint(), 'receiver-refresh-one', '--room', roomId, '--session', sessionId], {detached: true, stdio: 'ignore', env: environment});
+        child.on('error', () => {});
+        child.unref();
+        return 'scheduled';
+    }
+    await stopReceiver(store, sessionId);
+    await startReceiver(store, roomId, sessionId);
+    return 'restarted';
+}
+
+/** Refreshes idle stale receivers now and schedules busy ones for their next safe boundary. */
+export async function refreshReceivers(store: LocalStore): Promise<ReceiverRefreshResult> {
+    const result: ReceiverRefreshResult = {restarted: [], scheduled: [], current: [], stopped: [], failed: []};
+    for (const room of store.rooms()) {
+        for (const session of room.sessions) {
+            if (session.kind !== 'agent' || !receiverConfiguration(store, session.sessionId)) {
+                continue;
+            }
+            try {
+                const state = await refreshReceiver(store, room.roomId, session.sessionId, true);
+                result[state].push(session.sessionId);
+            } catch (error) {
+                result.failed.push({sessionId: session.sessionId, reason: error instanceof Error ? error.message : String(error)});
+            }
+        }
+    }
+    return result;
+}
+
+/** Detached ordinary-code waiter used only when an updated receiver is still executing. */
+export async function waitAndRefreshReceiver(store: LocalStore, roomId: string, sessionId: string): Promise<number> {
+    for (let checked = 0; checked < 86_400; checked++) {
+        const status = receiverStatus(store, sessionId);
+        if (!status?.restartRequired || status.state === 'stopped') {
+            return 0;
+        }
+        if (status.state === 'offline') {
+            await startReceiver(store, roomId, sessionId);
+            return 0;
+        }
+        if (!['working', 'starting'].includes(status.state)) {
+            await refreshReceiver(store, roomId, sessionId, false);
+            return 0;
+        }
+        await sleep(1_000);
+    }
+    return 1;
+}
+
 /** One ordinary process owns the participant; neither timers nor empty reads start a turn. */
 export async function runReceiver(store: LocalStore, roomRef: string, sessionRef: string): Promise<number> {
     const {room, session, credential, client} = select(store, roomRef, sessionRef);
@@ -225,7 +303,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
     if (recoveredModel && savedModel?.value !== recoveredModel) {
         database.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('model',?)").run(recoveredModel);
     }
-    let state: ReceiverStatus = {pid: process.pid, state: 'starting', runtime: config.runtime, idleTimeoutMs: config.idleTimeoutMs, absoluteTimeoutMs: config.absoluteTimeoutMs, attempt: null, attemptId: null, requestStartedAt: null, lastActivityAt: null, idleDeadlineAt: null, absoluteDeadlineAt: null, ...(savedThread ? {threadId: savedThread.value} : {}), ...(recoveredModel ? {model: recoveredModel} : {})};
+    let state: ReceiverStatus = {pid: process.pid, state: 'starting', runtime: config.runtime, version: process.env['PAIRLOBBY_TEST_RECEIVER_VERSION'] ?? VERSION, entrypoint: process.env['PAIRLOBBY_TEST_RECEIVER_ENTRYPOINT'] ?? currentEntrypoint(), restartRequired: false, idleTimeoutMs: config.idleTimeoutMs, absoluteTimeoutMs: config.absoluteTimeoutMs, attempt: null, attemptId: null, requestStartedAt: null, lastActivityAt: null, idleDeadlineAt: null, absoluteDeadlineAt: null, ...(savedThread ? {threadId: savedThread.value} : {}), ...(recoveredModel ? {model: recoveredModel} : {})};
     const status = (update: Partial<ReceiverStatus>) => {
         const next = {...state, ...update};
         if (JSON.stringify(next) !== JSON.stringify(state) || !existsSync(location.status)) {

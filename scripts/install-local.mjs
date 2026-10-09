@@ -42,6 +42,12 @@ try {
     chmodSync(staged, 0o755);
     renameSync(staged, launcher);
     console.log(`${replaced ? 'Replaced' : 'Installed'}: ${launcher}\nRelease: ${release}${existsSync(backup) ? `\nPrevious launcher: ${backup}` : ''}`);
+    try {
+        const refreshed = JSON.parse(execFileSync(process.execPath, [cli, 'receiver-refresh'], {encoding: 'utf8', env: {...process.env}}));
+        console.log(`Receivers: ${refreshed.restarted.length} restarted, ${refreshed.scheduled.length} scheduled after current work, ${refreshed.stopped.length} intentionally stopped.`);
+    } catch (error) {
+        console.log(`Receiver refresh needs attention: ${error instanceof Error ? error.message : String(error)}`);
+    }
     if (!(process.env.PATH ?? '').split(':').includes(dirname(launcher))) {
         console.log(`\n${dirname(launcher)} is not on your PATH. Add it, then open a new terminal:\n  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.${(process.env.SHELL ?? '').endsWith('zsh') ? 'zshrc' : 'profile'}`);
     }

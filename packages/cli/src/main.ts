@@ -29,7 +29,7 @@ import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, rende
 
 import {acceptInvitation, accountToken, declineInvitation, isOnlineKey, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineOrigin, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
 import type {ReceivedInvitation} from './online.js';
-import {receiverAttempts, receiverStatus, runReceiver, startReceiver, stopReceiver} from './receiver.js';
+import {receiverAttempts, receiverStatus, refreshReceivers, runReceiver, startReceiver, stopReceiver, waitAndRefreshReceiver} from './receiver.js';
 import type {ReceiverStartOptions, ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
 import {discoverableNote, joinCommand, localOnlyNote, parseJoinLink, shareTarget} from './share.js';
@@ -164,7 +164,7 @@ const HELP = `pairlobby
   pairlobby profile --username <handle>  choose the handle others invite you by: /invite @handle
   pairlobby join <code> --runtime codex|claude|qwen
                                     join as a managed agent; receive automatically
-  pairlobby receiver status|start|stop|attempts
+  pairlobby receiver status|start|stop|attempts|refresh
                                     manage automatic receiving for the selected agent
   pairlobby spawn <claude|codex|qwen> [model] [--name name] [--effort level]
                                     create a new background agent in a saved room
@@ -272,9 +272,18 @@ async function main(argv: string[]): Promise<number> {
             return (await import('./receiver-tools.js')).runReceiverTools(store, str(values, 'room')!, str(values, 'session')!, str(values, 'request')!);
         case 'receiver-run':
             return runReceiver(store, str(values, 'room')!, str(values, 'session')!);
+        case 'receiver-refresh':
+            json(await refreshReceivers(store));
+            return 0;
+        case 'receiver-refresh-one':
+            return waitAndRefreshReceiver(store, str(values, 'room')!, str(values, 'session')!);
         case 'receiver': {
-            const {room, session} = select(store, str(values, 'room'), str(values, 'session'));
             const action = positionals[1] ?? 'status';
+            if (action === 'refresh') {
+                json(await refreshReceivers(store));
+                return 0;
+            }
+            const {room, session} = select(store, str(values, 'room'), str(values, 'session'));
             if (action === 'start') {
                 json(await startReceiver(store, room.roomId, session.sessionId, receiverStartOptions(values)));
             } else if (action === 'stop') {
@@ -285,7 +294,7 @@ async function main(argv: string[]): Promise<number> {
             } else if (action === 'attempts') {
                 json({attempts: receiverAttempts(store, session.sessionId, str(values, 'request'))});
             } else {
-                throw new UsageError('pairlobby receiver status|start|stop|attempts');
+                throw new UsageError('pairlobby receiver status|start|stop|attempts|refresh');
             }
             return 0;
         }

@@ -9,14 +9,18 @@ const version=JSON.parse(readFileSync('packages/cli/package.json','utf8')).versi
 if(process.argv[3]&&process.argv[3]!==version)throw new Error('Release override must match packages/cli/package.json');
 if(!/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(version))throw new Error('Invalid release version');
 const stage=mkdtempSync(join(tmpdir(),'pairlobby-release-'));
-const pkg=join(stage,'package');mkdirSync(join(pkg,'dist'),{recursive:true});mkdirSync(join(pkg,'skills/pairlobby'),{recursive:true});mkdirSync(output,{recursive:true});
+const pkg=join(stage,'package');mkdirSync(join(pkg,'dist'),{recursive:true});mkdirSync(join(pkg,'skills/pairlobby'),{recursive:true});mkdirSync(join(pkg,'.docs'),{recursive:true});mkdirSync(join(pkg,'integrations'),{recursive:true});mkdirSync(output,{recursive:true});
 const result=await build({entryPoints:['packages/cli/dist/main.js'],outfile:join(pkg,'dist/main.mjs'),bundle:true,external:['blessed'],platform:'node',format:'esm',target:'node22',metafile:true,legalComments:'eof',banner:{js:"import { createRequire as __pairlobbyCreateRequire } from 'node:module'; const require = __pairlobbyCreateRequire(import.meta.url);"}});
 chmodSync(join(pkg,'dist/main.mjs'),0o755);
 mkdirSync(join(pkg,'node_modules'),{recursive:true});
 cpSync('node_modules/blessed',join(pkg,'node_modules/blessed'),{recursive:true});
 cpSync('integrations/claude-code/SKILL.md',join(pkg,'skills/pairlobby/SKILL.md'));
-writeFileSync(join(pkg,'package.json'),JSON.stringify({name:'@pairlobby/cli',version,description:'PairLobby rooms for humans and their coding agents',type:'module',license:'Elastic-2.0',dependencies:{blessed:'0.1.81'},bundledDependencies:['blessed'],bin:{pairlobby:'dist/main.mjs'},engines:{node:'>=22.18.0'},files:['dist','skills','README.md','LICENSE','THIRD_PARTY_NOTICES.txt']},null,2)+'\n');
+writeFileSync(join(pkg,'package.json'),JSON.stringify({name:'@pairlobby/cli',version,description:'PairLobby rooms for humans and their coding agents',type:'module',license:'Elastic-2.0',dependencies:{blessed:'0.1.81'},bundledDependencies:['blessed'],bin:{pairlobby:'dist/main.mjs'},engines:{node:'>=22.18.0'},files:['dist','skills','.docs','integrations','README.md','STATUS.md','LICENSE','THIRD_PARTY_NOTICES.txt']},null,2)+'\n');
 cpSync(existsSync('docs/cli-readme.md') ? 'docs/cli-readme.md' : 'README.md',join(pkg,'README.md'));
+cpSync('.docs/guide.md',join(pkg,'.docs/guide.md'));
+cpSync('STATUS.md',join(pkg,'STATUS.md'));
+cpSync('integrations/README.md',join(pkg,'integrations/README.md'));
+cpSync('integrations/SPIKE.md',join(pkg,'integrations/SPIKE.md'));
 cpSync('LICENSE',join(pkg,'LICENSE'));
 const roots=new Set([resolve('node_modules/blessed')]);
 for(const input of Object.keys(result.metafile.inputs)) {
