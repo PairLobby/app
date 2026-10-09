@@ -42,7 +42,7 @@ class PromptTests(unittest.TestCase):
                     args = [node, str(installer)]
                     if agent:
                         args.extend(['--skills-dir', str(root / 'skills')])
-                    env = dict(os.environ, PAIRLOBBY_RELEASES=f'http://127.0.0.1:{server.server_port}', PAIRLOBBY_VERSION=version, PAIRLOBBY_INSTALL_DIR=str(root / 'app'), PAIRLOBBY_BIN_DIR=str(root / 'bin'), PAIRLOBBY_SKIP_PATH='1')
+                    env = dict(os.environ, PAIRLOBBY_RELEASES=f'http://127.0.0.1:{server.server_port}', PAIRLOBBY_VERSION=version, PAIRLOBBY_INSTALL_DIR=str(root / 'app'), PAIRLOBBY_BIN_DIR=str(root / 'bin'), PAIRLOBBY_DATA_DIR=str(root / 'data'), PAIRLOBBY_SKIP_PATH='1')
                     child, terminal = pty.fork()
                     if child == 0:
                         # curl | sh gives the installer non-terminal stdin.

@@ -34,7 +34,7 @@ test('installer verifies downloads, preserves customized skills, and installs a 
  });
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  const base='http://127.0.0.1:'+server.address().port;
- const env={...process.env,PAIRLOBBY_RELEASES:base,PAIRLOBBY_INSTALL_DIR:join(root,'app'),PAIRLOBBY_BIN_DIR:join(root,'bin'),PAIRLOBBY_SKIP_PATH:'1'};
+ const env={...process.env,PAIRLOBBY_RELEASES:base,PAIRLOBBY_INSTALL_DIR:join(root,'app'),PAIRLOBBY_BIN_DIR:join(root,'bin'),PAIRLOBBY_DATA_DIR:join(root,'data'),PAIRLOBBY_SKIP_PATH:'1'};
  try{
   const args=[installer,'--skills','claude','--skills-dir',join(root,'skills')];
   let result=await run(process.execPath,args,env);assert.equal(result.code,0,result.output);

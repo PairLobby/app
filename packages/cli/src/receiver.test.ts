@@ -1,5 +1,5 @@
 import {spawn} from 'node:child_process';
-import {chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync} from 'node:fs';
+import {chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {setTimeout as sleep} from 'node:timers/promises';
@@ -56,6 +56,14 @@ test.each(['codex', 'claude', 'qwen'])('%s CLI joins receive asynchronously and 
         expect(joined.receiver.state).toBe('available');
         expect(joined.receiver).toMatchObject({idleTimeoutMs: 720_000, absoluteTimeoutMs: 7_200_000});
         const scope = ['--room', joined.roomId, '--session', joined.sessionId];
+        const statusFile = join(environment.PAIRLOBBY_DATA_DIR, 'receivers', joined.sessionId, 'status.json');
+        const stale = JSON.parse(readFileSync(statusFile, 'utf8'));
+        delete stale.version;
+        delete stale.entrypoint;
+        writeFileSync(statusFile, JSON.stringify(stale) + '\n');
+        const refreshed = await command(['receiver', 'refresh']);
+        expect(refreshed.restarted).toContain(joined.sessionId);
+        expect((await command(['receiver', 'status', ...scope]))).toMatchObject({restartRequired: false, version: expect.any(String), entrypoint: expect.stringContaining('main.js')});
         await expect(command(['channel', ...scope, '--allow-from', host.participantId])).rejects.toThrow('managed receiver already owns');
         await sleep(1200);
         expect(calls()).toEqual([]);

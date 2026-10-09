@@ -23,19 +23,19 @@ Updated 2026-10-05, for the release after **0.9.2**. `pairlobby --version` says 
 - Interactive `pairlobby settings` for this device and `/settings` for a room.
 - A second relay implementation on Durable Objects that runs on Celld or Cloudflare and passes the same store contracts. It moved to its own repository, [PairLobby/durable-runtime](https://github.com/PairLobby/durable-runtime), on 2026-10-06.
 
-The latest full local run recorded **730 passing tests** (2026-10-05), including real MCP/HTTP reply-subscription checks, plus terminal tests driven through a real PTY. Spawning/provider-option tests use deterministic provider fixtures. Earlier real Codex and Claude checks, and Qwen's real-CLI/loopback-provider check, are historical evidence described in the [capability matrix](integrations/README.md#capability-evidence). They do not certify new live-provider behavior, every terminal host, overnight idle, or production load.
+The latest full local run recorded **641 passing tests** (2026-10-08), including real MCP/HTTP reply-subscription checks, plus terminal tests driven through a real PTY. Spawning/provider-option tests use deterministic provider fixtures. Earlier real Codex and Claude checks, and Qwen's real-CLI/loopback-provider check, are historical evidence described in the [capability matrix](integrations/README.md#capability-evidence). They do not certify new live-provider behavior, every terminal host, overnight idle, or production load.
 
 ## Read first
 
-- [Install and join](README.md#try-it).
-- [Spawn agents](README.md#spawn-a-new-agent-from-chat).
-- [Agent table and copying](README.md#agent-table-and-cell-copying).
-- [Lifecycle and spawn recovery](README.md#agent-lifecycle-and-spawn-recovery).
-- [Group conversations](README.md#multiple-agents-and-speaking-turns).
-- [Other devices on your network](README.md#other-devices-on-your-network) and [inviting people by @handle](README.md#inviting-people-by-handle).
+- [Install and join](.docs/guide.md#try-it).
+- [Spawn agents](.docs/guide.md#spawn-a-new-agent-from-chat).
+- [Agent table and copying](.docs/guide.md#agent-table-and-cell-copying).
+- [Lifecycle and spawn recovery](.docs/guide.md#agent-lifecycle-and-spawn-recovery).
+- [Group conversations](.docs/guide.md#multiple-agents-and-speaking-turns).
+- [Other devices on your network](.docs/guide.md#other-devices-on-your-network) and [inviting people by @handle](.docs/guide.md#inviting-people-by-handle).
 - [Runtime setup/capabilities](integrations/README.md) and [validation procedures](integrations/SPIKE.md).
 
-These tracked guides are the published references. Workspace `docs/` and `.docs/` are local-only planning/diagnostic material and may be absent from a clone.
+These tracked guides are the published references. `.docs/guide.md` is tracked; `.docs/papercuts.md` and workspace planning under `docs/` remain local-only.
 
 ## Boundaries
 
@@ -56,7 +56,7 @@ These tracked guides are the published references. Workspace `docs/` and `.docs/
 | Request deadline | Managed Codex, Claude and Qwen share an activity-aware inactivity watchdog (10 minutes by default) and finite absolute ceiling (1 hour by default), configurable per device or saved receiver. Status/session details expose exact remaining time and attempt identity. A timeout records a visible failed attempt and preserves filesystem side effects; retry/reassign/dismiss/cancel are explicit rather than automatic. |
 | Restart | Receivers survive terminal closure. Automatic receiver restart after reboot is not implemented. |
 | Delegation | An activated native Claude channel can notify the same conversation of an explicitly watched outgoing reply. Managed-receiver task suspension/resumption remains planned. Reply notifications replay until handled; consumers must avoid repeating side effects. |
-| Release | Installing updates the launcher for new processes, not already-running terminals/receivers or public downloads. |
+| Release | Installing updates the launcher for new processes, refreshes idle stale receivers immediately, and schedules working receivers to refresh after their current request. Intentionally stopped/offline receivers remain stopped; already-running human terminals keep their current process. |
 
 ## Remaining work and known limits
 
@@ -66,7 +66,7 @@ These tracked guides are the published references. Workspace `docs/` and `.docs/
 - The Durable Object relay speaks HTTP only and is not qualified on a multi-node Celld fleet.
 - Native graphics in actual iTerm2/Ghostty windows and broader Windows/Warp terminal support still need validation; portable character output and protocol/PTY paths have tests.
 - Receiver descendants, approval forwarding, native Claude channel acceptance, hosted receiver end-to-end/reconnect/load checks, and overnight idle need additional testing.
-- Managed-request recovery now has activity-aware deadlines, append-only local attempts, retry/reassign/dismiss/cancel, interactive `/requests` actions, receiver-confirmed workspace context, remaining-time/attempt status, and fresh-thread recovery after unsafe termination. Hosted-package rollout and new live-provider acceptance remain. Automatic replay remains intentionally disabled. See [ISSUE.md](ISSUE.MD).
+- Managed-request recovery now has activity-aware deadlines, append-only local attempts, retry/reassign/dismiss/cancel, an interactive `/requests` details/attempts/action panel, receiver-confirmed workspace context, remaining-time/attempt status, and fresh-thread recovery after unsafe termination. Automatic replay remains intentionally disabled.
 - Members may invite other members; invitations never grant controller privileges. Room text cannot broaden runtime permissions.
 - Local credentials share the OS user's trust boundary. Naming or marking a membership as human is not an independent OS security boundary.
 - Closing guest admission does not eject existing guests. Revocation affects a membership/seat, not every future identity of the same account.

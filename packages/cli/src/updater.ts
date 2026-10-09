@@ -346,13 +346,21 @@ export async function installRelease(latest: LatestRelease, install: ManagedInst
         writeFileSync(pending, launcher, {mode: 0o755});
         chmodSync(pending, 0o755);
         renameSync(pending, install.launcher);
+        try {
+            const refreshed = JSON.parse(execFileSync(process.execPath, [entry, 'receiver-refresh'], {encoding: 'utf8', env: {...process.env}})) as {restarted: string[]; scheduled: string[]};
+            if (refreshed.restarted.length || refreshed.scheduled.length) {
+                say(`Receivers refreshed: ${refreshed.restarted.length} restarted, ${refreshed.scheduled.length} scheduled after current work.`);
+            }
+        } catch (error) {
+            say(`Receiver refresh needs attention: ${error instanceof Error ? error.message : String(error)}`);
+        }
         return releaseDirectory;
     } finally {
         rmSync(work, {recursive: true, force: true});
     }
 }
 
-const NEVER_CHECK = new Set(['update', 'receiver-run', 'receiver-tools', 'channel', 'guard-stop']);
+const NEVER_CHECK = new Set(['update', 'receiver-run', 'receiver-tools', 'receiver-refresh', 'receiver-refresh-one', 'channel', 'guard-stop']);
 
 /** Starts a detached day-old check (and install, with auto-update) without delaying this command. */
 export function scheduleBackgroundCheck(store: LocalStore, command: string): void {

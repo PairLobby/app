@@ -122,6 +122,7 @@ try {
     const entry=join(release,'dist/main.mjs');
     const launcher=windows?`@echo off\r\nrem PairLobby managed launcher\r\n"${process.execPath}" "${entry}" %*\r\n`:`#!/bin/sh\n# PairLobby managed launcher\nexec ${quote(process.execPath)} ${quote(entry)} "$@"\n`;
     const pending=join(bin,`.pairlobby-${process.pid}.tmp`);writeFileSync(pending,launcher,{mode:0o755});chmodSync(pending,0o755);renameSync(pending,target);
+    try{const refreshed=JSON.parse(execFileSync(process.execPath,[entry,'receiver-refresh'],{encoding:'utf8',env:{...process.env}}));if(refreshed.restarted.length||refreshed.scheduled.length)console.log(`Receivers refreshed: ${refreshed.restarted.length} restarted, ${refreshed.scheduled.length} scheduled after current work.`);}catch(error){console.log(`Receiver refresh needs attention: ${error instanceof Error?error.message:String(error)}`);}
     if(process.env.PAIRLOBBY_SKIP_PATH!=='1') {
         if(windows){
             const path=bin.replaceAll("'","''");
