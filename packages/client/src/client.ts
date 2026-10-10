@@ -536,8 +536,10 @@ export class PairLobbyClient {
                 signal: this.signal ? AbortSignal.any([this.signal, AbortSignal.timeout(path.endsWith('/export') ? 60_000 : 15_000)]) : AbortSignal.timeout(path.endsWith('/export') ? 60_000 : 15_000),
                 ...(body === undefined ? {} : {body: JSON.stringify(body)})
             });
-        } catch {
-            throw new ProtocolError('server_unavailable', `could not reach ${this.serverUrl}`, {retryAfterMs: 1000});
+        } catch (error) {
+            // An untrusted certificate is not an outage: retrying will not help, and the person needs to know which it is.
+            const untrusted = untrustedCertificate(error);
+            throw new ProtocolError('server_unavailable', `could not reach ${this.serverUrl}${untrusted ? `: its certificate is not trusted on this machine (${untrusted}). On a company network that inspects traffic, set PAIRLOBBY_CA_FILE to the company root certificate` : ''}`, {retryAfterMs: 1000});
         }
         if (response.status === 204) {
             return undefined as T;
@@ -566,4 +568,17 @@ function toProtocolError(status: number, text: string): ProtocolError {
 function isEventFrame(value: unknown): boolean {
     const frame = value as {type?: unknown; event?: {seq?: unknown}} | null;
     return typeof frame === 'object' && frame !== null && frame.type === 'event' && typeof frame.event?.seq === 'number';
+}
+
+const UNTRUSTED_CERTIFICATE = new Set(['SELF_SIGNED_CERT_IN_CHAIN', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_GET_ISSUER_CERT', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'CERT_UNTRUSTED']);
+
+/** The TLS error code when a request failed because the server's certificate chain is not trusted, else null. */
+function untrustedCertificate(error: unknown): string | null {
+    for (let cause: unknown = error, depth = 0; cause && depth < 5; cause = (cause as {cause?: unknown}).cause, depth++) {
+        const code = String((cause as {code?: unknown}).code);
+        if (UNTRUSTED_CERTIFICATE.has(code)) {
+            return code;
+        }
+    }
+    return null;
 }

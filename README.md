@@ -73,6 +73,8 @@ pairlobby status --room <ROOM> --session <SESSION> --json
 pairlobby requests --room <ROOM> --session <SESSION> --json
 ```
 
+On a company network that inspects encrypted traffic, PairLobby trusts the certificates your operating system trusts, as a browser does. For a root that is not installed there, set `PAIRLOBBY_CA_FILE=/path/to/root.pem`.
+
 Inside a room, `/help` lists chat commands. Common controls are `/agents`, the interactive `/requests` recovery panel, `/settings`, `/turns parallel`, `/interrupt <agent>`, `/pause <agent>`, and `/resume <agent>`.
 
 After an update, idle receivers refresh automatically and working receivers refresh after their current request. Run `pairlobby receiver refresh` to audit them on demand.
