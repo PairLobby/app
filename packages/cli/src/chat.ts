@@ -25,6 +25,7 @@ import {loadAgentRoster} from './agent-roster.js';
 import {invitationTerms} from './render.js';
 import {closeRequest, recoverRequest} from './request-recovery.js';
 import {requestsPage} from './request-panel.js';
+import {collapseMessage, formatMessageText} from './message-format.js';
 
 type ParticipantMatch = {id: string; name: string} | null;
 
@@ -71,6 +72,8 @@ const HELP = `  <message>          address all eligible agents (same as @all)
   /to                clear the default recipient
   /seen [message]    receipt table (latest sent message; F2 too): a time = received, Read <time> = read
   /seen [message] full  the same rows unclipped, with full dates and time zone, in the conversation
+  /collapse [message|all]  fold a long message to its first line; click ▾ beside it to do the same
+  /expand [message|all]    unfold it again (▸)
   /working           show agents that explicitly started answering (F3)
   /select            select and copy text with your terminal (F4; Esc resumes)
   /requests          interactive request details, attempts and recovery actions
@@ -137,7 +140,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
     const view = new ChatTerminal({
         names,
         participantId,
-        format: (event, highlightNames) => format(event, names, participantId, showIds, highlightNames),
+        format: (event, highlightNames, collapsed) => format(event, names, participantId, showIds, highlightNames, true, collapsed),
         complete: (line) => {
             const commands = completeChatCommand(line);
             if (commands) {
@@ -380,6 +383,10 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             }
             if (line === '/help') {
                 emit(HELP);
+                return;
+            }
+            if (line === '/collapse' || line.startsWith('/collapse ') || line === '/expand' || line.startsWith('/expand ')) {
+                view.setCollapsed(line.startsWith('/collapse'), line.replace(/^\/\w+/, ''));
                 return;
             }
             if (line === '/seen' || line.startsWith('/seen ')) {
@@ -727,7 +734,8 @@ function who(snapshot: RoomSnapshot, showIds = false): string {
         .join('\n');
 }
 
-export function format(event: RoomEvent, names: Map<string, string>, meParticipantId: string, showIds = false, highlightNames = false): string {
+/** `styled` draws the message's Markdown for the interactive transcript; everything else gets the text as written. */
+export function format(event: RoomEvent, names: Map<string, string>, meParticipantId: string, showIds = false, highlightNames = false, styled = false, collapsed = false): string {
     const time = `${DIM}${new Date(event.at).toTimeString().slice(0, 5)}${RESET}`;
     const sender = event.senderId ? (names.get(event.senderId) ?? event.senderId) : 'room';
     const mine = event.senderId === meParticipantId;
@@ -741,7 +749,7 @@ export function format(event: RoomEvent, names: Map<string, string>, meParticipa
         const thread = !showIds ? '' : event.replyTo
             ? `${event.payload.responseStage === 'progress' ? 'progress' : 'reply'} to ${event.replyTo}`
             : event.recipientId ? `request ${event.eventId}` : '';
-        return `${time}  ${who}${id}${to}${thread ? `  [${thread}]` : ''}  ${event.payload.text}`;
+        return `${time}  ${who}${id}${to}${thread ? `  [${thread}]` : ''}  ${collapsed ? collapseMessage(event.payload.text).line : styled ? formatMessageText(event.payload.text) : event.payload.text}`;
     }
     return `${time}  ${DIM}· ${systemLine(event, names, sender, showIds)}${RESET}`;
 }

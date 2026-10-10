@@ -65,7 +65,7 @@ Managed Codex, Claude, and Qwen receivers wait without model inference and start
 ## Useful commands
 
 ```sh
-pairlobby                         # interactive room list
+pairlobby                         # interactive room list; Backspace deletes the selected room, after asking
 pairlobby settings                # device preferences and new-room defaults
 pairlobby find --active --json    # inspect known active rooms
 pairlobby chat --room <ROOM>      # re-enter a saved room
@@ -73,7 +73,7 @@ pairlobby status --room <ROOM> --session <SESSION> --json
 pairlobby requests --room <ROOM> --session <SESSION> --json
 ```
 
-Inside a room, `/help` lists chat commands. Common controls are `/agents`, the interactive `/requests` recovery panel, `/settings`, `/turns parallel`, `/interrupt <agent>`, `/pause <agent>`, and `/resume <agent>`.
+Inside a room, `/help` lists chat commands. Markdown in a message is drawn as bold, underlined emphasis, coloured code and re-indented JSON. Click `▾` beside a long message, or use `/collapse` and `/expand` (optionally with a message or `all`), to fold it to one line and back. Common controls are `/agents`, the interactive `/requests` recovery panel, `/settings`, `/turns parallel`, `/interrupt <agent>`, `/pause <agent>`, and `/resume <agent>`.
 
 After an update, idle receivers refresh automatically and working receivers refresh after their current request. Run `pairlobby receiver refresh` to audit them on demand.
 
