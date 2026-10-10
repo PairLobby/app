@@ -3,7 +3,7 @@ import type {Key} from 'node:readline';
 import {PairLobbyClient} from '@pairlobby/client';
 import type {LocalStore} from '@pairlobby/client';
 import type {RoomListEntry} from './render.js';
-import {INVITED_STATE, NETWORK_STATE, ROOM_COLUMNS, SESSION_COLUMNS, closeListedRoom, invitationRows, leaveListedSession, loadRoomList, networkRows, roomRows, sessionRows, sortListRows} from './room-list.js';
+import {INVITED_STATE, NETWORK_STATE, ROOM_COLUMNS, SESSION_COLUMNS, closeListedRoom, deleteListedRoom, forgetListedRoom, invitationRows, administersListedRoom, leaveListedSession, loadRoomList, networkRows, roomRows, sessionRows, sortListRows} from './room-list.js';
 import type {ListColumn, ListRow, ListSort, NetworkRoom, RoomInvite} from './room-list.js';
 import {RoomPanel} from './room-panel.js';
 import type {RoomPanelPage} from './room-panel.js';
@@ -97,6 +97,13 @@ export class RoomBrowser {
         }
         if ((key.ctrl && key.name === 'c') || key.name === 'q') {
             this.close();
+            return;
+        }
+        // Backspace goes back out of a room's sessions. On the room list it deletes the selected room, after asking.
+        if ((key.name === 'backspace' || key.name === 'delete') && !this.roomId) {
+            if (!this.loading) {
+                this.confirmDelete();
+            }
             return;
         }
         if (key.name === 'escape' || key.name === 'backspace') {
@@ -361,6 +368,44 @@ export class RoomBrowser {
         this.details.key(undefined, {name: 'enter'});
     }
 
+    /**
+     * Deleting is the one action here that cannot be undone, so it always asks, whatever
+     * the device's confirmDelete setting says: one stray key must not cost a room's history.
+     */
+    private confirmDelete(): void {
+        const row = this.rows[this.selected];
+        if (!row) {
+            return;
+        }
+        const invitation = row.values['state'] !== INVITED_STATE ? undefined : this.invited.find((candidate) => candidate.roomId === row.roomId);
+        if (invitation) {
+            this.confirmDecline(invitation);
+            return;
+        }
+        if (row.values['state'] === NETWORK_STATE) {
+            this.note = 'This room is not joined yet, so there is nothing to delete. Enter joins it.';
+            this.render();
+            return;
+        }
+        // The owner's device, or an admin's, deletes the room itself. Anyone else only takes it off their own list.
+        const entry = this.entries.find((candidate) => candidate.room.roomId === row.roomId);
+        const owner = entry ? administersListedRoom(this.store, entry) : false;
+        const name = row.values['name'];
+        const description = owner
+            ? `Delete ${name} (${row.roomId}) and its history for everyone? This cannot be undone.`
+            : `Remove ${name} (${row.roomId}) from this device? You leave the room and your receivers stop. The room carries on for everyone else. To come back you join again, which needs an invite if the room is invite-only.`;
+        const page: RoomPanelPage = {id: 'delete-selection', closeOnCancel: true, title: owner ? 'Delete room for everyone' : 'Remove room from this device', note: description, reload: async () => page, rows: [{id: 'confirm', label: owner ? 'Delete room' : 'Remove room', value: name ?? '', section: 'Confirm', action: {kind: 'command', confirm: description, closeAfterSave: true, run: async () => {
+            if (owner) {
+                this.actionNotice = (await deleteListedRoom(this.store, row.roomId)) === 'deleted' ? `Deleted ${name} for everyone.` : `${name} was already gone; removed it from this device.`;
+            } else {
+                await forgetListedRoom(this.store, row.roomId);
+                this.actionNotice = `Removed ${name} from this device. The room itself is unchanged.`;
+            }
+        }}}]};
+        this.details.show(page);
+        this.details.key(undefined, {name: 'enter'});
+    }
+
     private showSession(): void {
         const page = this.sessionPage();
         if (page) {
@@ -479,7 +524,7 @@ export class RoomBrowser {
         const title = this.roomId ? `Local sessions — ${room?.snapshot?.name ?? room?.room.name ?? this.roomId}` : 'PairLobby rooms';
         this.cell(0, 1, width, `${title} (${this.rows.length}) · sort: ${this.sort().key} ${this.sort().descending ? 'descending' : 'ascending'}`);
         this.cell(1, 1, width, '↑/↓ rows · ←/→/Tab columns · S/header sort · Enter chat/join/accept · R refresh');
-        this.cell(2, 1, width, 'I sessions/details · C close room/session · Y copy cell · Esc back · Q quit');
+        this.cell(2, 1, width, 'I sessions/details · C close room/session · ⌫ delete room · Y copy cell · Esc back · Q quit');
         if (height < 10 || width < 28) {
             this.cell(2, 1, width, 'Enlarge terminal · Q quits');
             this.screen.render();

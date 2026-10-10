@@ -20,7 +20,7 @@ import type {StatusRow} from './status-table.js';
 import {agentActivities, activitySummary} from './agent-activity.js';
 import type {AgentActivity, AgentActivityContext} from './agent-activity.js';
 
-type ChatTerminalOptions = {names: Map<string, string>; participantId: string; format: (event: RoomEvent, highlightNames?: boolean) => string; complete: (line: string) => [string[], string]};
+type ChatTerminalOptions = {names: Map<string, string>; participantId: string; format: (event: RoomEvent, highlightNames?: boolean, collapsed?: boolean) => string; complete: (line: string) => [string[], string]};
 type TranscriptEntry = {text: string; event?: RoomEvent; alertId?: string};
 export type RequestAlert = {requestId: string; text: string};
 type ScreenKey = Key & {full?: string};
@@ -62,6 +62,8 @@ export class ChatTerminal {
     private suspended = false;
     private pinned = false;
     private detailsId: string | undefined;
+    /** Messages the person folded to one line. Display only: copying, replies and status use the whole message. */
+    private collapsed = new Set<string>();
     private follow = true;
     private inputChanged: (() => void) | undefined;
     private labels = new Map<string, blessed.Widgets.BoxElement>();
@@ -410,6 +412,35 @@ export class ChatTerminal {
         }
     }
 
+    private toggleCollapsed(eventId: string): void {
+        if (!this.collapsed.delete(eventId)) {
+            this.collapsed.add(eventId);
+        }
+        this.rebuild();
+    }
+
+    /**
+     * Folds or unfolds messages: one named by its id or sequence number, the latest
+     * message when none is named, or every message in the loaded transcript for `all`.
+     */
+    setCollapsed(collapse: boolean, argument?: string): void {
+        const reference = (argument ?? '').trim();
+        const messages = this.entries.filter((entry) => entry.event?.type === 'message').map((entry) => entry.event!);
+        const chosen = reference === 'all' ? messages : [reference ? messages.findLast((event) => event.eventId === reference || event.seq.toString() === reference) : messages.at(-1)].filter((event): event is RoomEvent => Boolean(event));
+        if (!chosen.length) {
+            this.log('No matching message in the loaded transcript.');
+            return;
+        }
+        for (const event of chosen) {
+            if (collapse) {
+                this.collapsed.add(event.eventId);
+            } else {
+                this.collapsed.delete(event.eventId);
+            }
+        }
+        this.rebuild();
+    }
+
     showLatestReceipt(argument?: string): void {
         const words = (argument ?? '').split(/\s+/).filter(Boolean);
         const full = words.at(-1) === 'full';
@@ -509,8 +540,11 @@ export class ChatTerminal {
                 selectedTop = top;
             }
             const receipt = Boolean(message);
-            const text = message ? this.options.format(message) : entry.text;
-            const content = blessed.text({parent: this.body, top, left: 0, right: isWorking ? 19 : message ? 9 : 1, height: 'shrink', content: selected && this.detailsId !== message?.eventId ? stripVTControlCharacters(text) : text, tags: false, wrap: true, style: selected ? {bg: 'blue', fg: 'white'} : {}});
+            // Only a message with more than one line of text can be folded, and nothing arrives folded.
+            const foldable = message ? message.payload.text.split('\n').filter((line) => line.trim()).length > 1 : false;
+            const folded = Boolean(message && foldable && this.collapsed.has(message.eventId));
+            const text = message ? this.options.format(message, false, folded) : entry.text;
+            const content = blessed.text({parent: this.body, top, left: 0, right: (isWorking ? 19 : message ? 9 : 1) + (foldable ? 2 : 0), height: 'shrink', content: selected && this.detailsId !== message?.eventId ? stripVTControlCharacters(text) : text, tags: false, wrap: true, style: selected ? {bg: 'blue', fg: 'white'} : {}});
             const lines = Math.max(1, content.getScreenLines().length);
             content.height = lines;
             const layout: MessageLayout | undefined = message ? {event: message, content, normalText: text, highlighted: false, top, height: lines, selected: Boolean(selected)} : undefined;
@@ -521,6 +555,11 @@ export class ChatTerminal {
                 const label = blessed.box({parent: this.body, top, right: 10, width: 7, height: 1, content: 'Working', mouse: true, style: {fg: 'cyan', hover: {underline: true}}});
                 this.working.bind(label, message.eventId);
                 layout!.working = label;
+            }
+            if (foldable && message) {
+                const toggle = blessed.box({parent: this.body, top, right: isWorking ? 18 : 9, width: 1, height: 1, content: folded ? '▸' : '▾', mouse: true, style: {fg: 'gray', hover: {fg: 'white'}}});
+                // The press alone: the rebuild it causes replaces this box before a release could reach it.
+                toggle.on('mousedown', () => this.toggleCollapsed(message.eventId));
             }
             if (receipt && message) {
                 const label = blessed.box({parent: this.body, top, right: 2, width: 6, height: 1, content: 'Status', mouse: true, style: {fg: 'gray', hover: {fg: 'white', underline: true}}});
@@ -666,7 +705,7 @@ export class ChatTerminal {
             }
             layout.highlighted = highlighted;
             layout.content.style.bg = layout.selected ? 'blue' : highlighted ? '#252a30' : 'default';
-            const text = highlighted ? this.options.format(layout.event, true) : layout.normalText;
+            const text = highlighted ? this.options.format(layout.event, true, this.collapsed.has(layout.event.eventId)) : layout.normalText;
             const rendered = layout.selected && !highlighted ? stripVTControlCharacters(text) : text;
             if (layout.content.content !== rendered) {
                 layout.content.setContent(rendered);

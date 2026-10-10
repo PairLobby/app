@@ -172,6 +172,107 @@ export async function leaveListedSession(store: LocalStore, roomId: string, sess
     }
 }
 
+export type RoomRemoval = 'deleted' | 'already_gone';
+
+/**
+ * Whether this device may delete the room for everyone: it holds the owner credential
+ * (the room was created here), or one of its sessions is an active admin of the room.
+ * `entry` is the room as the list last loaded it; without a snapshot only ownership is known.
+ */
+export function administersListedRoom(store: LocalStore, entry: RoomListEntry): boolean {
+    if (store.credential(entry.room.roomId, 'controller')) {
+        return true;
+    }
+    return entry.room.sessions.some((session) => entry.snapshot?.participants.some((person) => person.participantId === session.participantId && person.role === 'controller' && !person.left && !person.revoked && !person.muted) && Boolean(store.credential(entry.room.roomId, session.sessionId)));
+}
+
+/** The credential that may act on the whole room: the owner's, else an active admin session's. Null when this device has neither. */
+async function administratorCredential(store: LocalStore, room: RoomEntry, client: PairLobbyClient): Promise<string | null> {
+    const owner = store.credential(room.roomId, 'controller');
+    if (owner) {
+        return owner;
+    }
+    for (const session of room.sessions) {
+        const credential = store.credential(room.roomId, session.sessionId);
+        if (!credential) {
+            continue;
+        }
+        try {
+            const snapshot = await client.snapshot(room.roomId, credential);
+            if (snapshot.participants.some((person) => person.participantId === session.participantId && person.role === 'controller' && !person.left && !person.revoked && !person.muted)) {
+                return credential;
+            }
+        } catch (error) {
+            if (!(error instanceof ProtocolError) || !['unauthorized', 'participant_revoked', 'room_locked'].includes(error.code)) {
+                throw error;
+            }
+        }
+    }
+    return null;
+}
+
+/** Stops this device's receivers for a room that is about to disappear from it. Best effort: a receiver that is already gone is fine. */
+async function stopRoomReceivers(store: LocalStore, room: RoomEntry): Promise<void> {
+    for (const session of room.sessions) {
+        if (receiverConfiguration(store, session.sessionId)) {
+            await stopReceiver(store, session.sessionId).catch(() => undefined);
+        }
+    }
+}
+
+/**
+ * Deletes a room and its history for everyone, then drops this device's record of it.
+ * Owner or admin only. The relay has to answer: when it cannot be reached nothing is
+ * removed, because deleting only the local record would leave the room running without
+ * its owner.
+ */
+export async function deleteListedRoom(store: LocalStore, roomId: string): Promise<RoomRemoval> {
+    const room = store.room(roomId);
+    if (!room) {
+        throw new UsageError('This room is no longer saved. Refresh the list.');
+    }
+    const client = new PairLobbyClient(room.serverUrl);
+    let removal: RoomRemoval = 'deleted';
+    try {
+        const credential = await administratorCredential(store, room, client);
+        if (!credential) {
+            throw new UsageError('Deleting a room for everyone requires its owner or an admin.');
+        }
+        await client.delete(roomId, credential);
+    } catch (error) {
+        if (error instanceof ProtocolError && error.code === 'server_unavailable') {
+            throw new UsageError(`could not reach ${room.serverUrl}, so the room was not deleted.\n  Start the server and try again, or drop this device's record of it:\n    pairlobby forget ${room.roomId}`);
+        }
+        if (!(error instanceof ProtocolError) || (error.code !== 'room_not_found' && error.code !== 'room_expired')) {
+            throw error;
+        }
+        removal = 'already_gone';
+    } finally {
+        client.closeLive();
+    }
+    await stopRoomReceivers(store, room);
+    store.forgetRoom(roomId);
+    return removal;
+}
+
+/**
+ * Removes a room from this device without deleting it: each local session leaves, its
+ * receiver stops, and the saved record and credentials go. The room and everyone else
+ * in it are unaffected. Leaving is best effort, so a relay that is gone cannot keep its
+ * rooms in the list forever.
+ */
+export async function forgetListedRoom(store: LocalStore, roomId: string): Promise<void> {
+    const room = store.room(roomId);
+    if (!room) {
+        throw new UsageError('This room is no longer saved. Refresh the list.');
+    }
+    for (const session of room.sessions) {
+        await leaveListedSession(store, roomId, session.sessionId).catch(() => undefined);
+    }
+    await stopRoomReceivers(store, room);
+    store.forgetRoom(roomId);
+}
+
 export async function closeListedRoom(store: LocalStore, roomId: string): Promise<void> {
     const room = store.room(roomId);
     if (!room) {

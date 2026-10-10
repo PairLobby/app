@@ -5,7 +5,7 @@ import {expect, test} from 'vitest';
 import {LocalStore, PairLobbyClient} from '@pairlobby/client';
 import {newId} from '@pairlobby/protocol';
 import {startServer} from '@pairlobby/local-server';
-import {closeListedRoom, leaveListedSession, loadRoomList, roomListJson, roomRows, sessionRows, sortListRows} from './room-list.js';
+import {closeListedRoom, deleteListedRoom, forgetListedRoom, administersListedRoom, leaveListedSession, loadRoomList, roomListJson, roomRows, sessionRows, sortListRows} from './room-list.js';
 import type {ListRow} from './room-list.js';
 
 test('sorts numeric counts and dates numerically, keeps unknown last, and resolves ties by identity', () => {
@@ -86,3 +86,81 @@ test('invitations are listed as invited, with who asked and nothing from inside 
     expect(row!.values).toMatchObject({name: 'Design review', state: 'invited', people: 'by @maria', sessions: 'Not joined', agents: 'Unknown', relay: 'answer by 2026-10-12'});
     expect(row!.sessionId).toBeUndefined();
 });
+
+test('test_deleting_a_listed_room_needs_its_owner_and_removing_one_leaves_the_room_alone', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'pairlobby-room-delete-'));
+    const relay = await startServer({port: 0, dataFile: join(directory, 'relay.sqlite')});
+    const client = new PairLobbyClient(relay.url);
+    let stopped = false;
+    try {
+        const save = (store: LocalStore, roomId: string, name: string, sessionId: string, participantId: string, credential: string) => {
+            store.upsertRoom({roomId, name, serverUrl: relay.url, createdAt: Date.now(), expiresAt: null, controls: false, sessions: []});
+            store.addSession(roomId, {sessionId, participantId, displayName: name, kind: 'human', role: 'member', joinedAt: Date.now(), lastReadSeq: 0, cwd: directory});
+            store.putCredential(roomId, sessionId, credential);
+        };
+        const created = await client.createRoom('Shared', {displayName: 'Owner', kind: 'human'});
+        const member = await client.redeemInvite(created.invite.code, {displayName: 'Member', kind: 'human'});
+        const owner = new LocalStore(join(directory, 'owner'));
+        save(owner, created.roomId, 'Shared', newId('session'), created.participantId, created.participantCredential);
+        owner.putCredential(created.roomId, 'controller', created.controllerCredential);
+        const guest = new LocalStore(join(directory, 'guest'));
+        save(guest, created.roomId, 'Shared', newId('session'), member.participantId, member.participantCredential);
+
+        const listed = async (store: LocalStore) => (await loadRoomList(store)).find((entry) => entry.room.roomId === created.roomId)!;
+        expect(administersListedRoom(owner, await listed(owner))).toBe(true);
+        expect(administersListedRoom(guest, await listed(guest))).toBe(false);
+        await expect(deleteListedRoom(guest, created.roomId)).rejects.toThrow('requires its owner or an admin');
+        expect(guest.room(created.roomId)).toBeDefined();
+
+        // An admin on another device may delete too; a muted or demoted one may not.
+        const promoted = await client.redeemInvite((await client.mintInvite(created.roomId, created.controllerCredential, 'member', true)).code, {displayName: 'Admin', kind: 'human'});
+        const admin = new LocalStore(join(directory, 'admin'));
+        save(admin, created.roomId, 'Shared', newId('session'), promoted.participantId, promoted.participantCredential);
+        expect(administersListedRoom(admin, await listed(admin))).toBe(false);
+        await client.setRole(created.roomId, created.controllerCredential, promoted.participantId, 'controller');
+        expect(administersListedRoom(admin, await listed(admin))).toBe(true);
+        await client.setRole(created.roomId, created.controllerCredential, promoted.participantId, 'member');
+        expect(administersListedRoom(admin, await listed(admin))).toBe(false);
+        await expect(deleteListedRoom(admin, created.roomId)).rejects.toThrow('requires its owner or an admin');
+        await client.setRole(created.roomId, created.controllerCredential, promoted.participantId, 'controller');
+
+        // Removing it from the member's device leaves the room, and the owner's record, as they were.
+        await forgetListedRoom(guest, created.roomId);
+        expect(guest.room(created.roomId)).toBeUndefined();
+        expect(guest.credential(created.roomId, 'controller')).toBeUndefined();
+        const after = await client.snapshot(created.roomId, created.participantCredential);
+        expect(after.lifecycle).toBe('open');
+        expect(after.participants.find((person) => person.participantId === member.participantId)?.left).toBe(true);
+        await expect(forgetListedRoom(guest, created.roomId)).rejects.toThrow('no longer saved');
+
+        expect(await deleteListedRoom(admin, created.roomId)).toBe('deleted');
+        expect(admin.room(created.roomId)).toBeUndefined();
+        // The owner's own record of a room an admin deleted is simply dropped.
+        expect(await deleteListedRoom(owner, created.roomId)).toBe('already_gone');
+        expect(owner.room(created.roomId)).toBeUndefined();
+        await expect(client.snapshot(created.roomId, created.participantCredential)).rejects.toThrow();
+
+        // A room the relay no longer has is simply dropped; an unreachable relay deletes nothing.
+        const second = await client.createRoom('Second', {displayName: 'Owner', kind: 'human'});
+        save(owner, second.roomId, 'Second', newId('session'), second.participantId, second.participantCredential);
+        owner.putCredential(second.roomId, 'controller', second.controllerCredential);
+        await client.delete(second.roomId, second.controllerCredential);
+        expect(await deleteListedRoom(owner, second.roomId)).toBe('already_gone');
+        const third = await client.createRoom('Third', {displayName: 'Owner', kind: 'human'});
+        save(owner, third.roomId, 'Third', newId('session'), third.participantId, third.participantCredential);
+        owner.putCredential(third.roomId, 'controller', third.controllerCredential);
+        client.closeLive();
+        await relay.close();
+        stopped = true;
+        await expect(deleteListedRoom(owner, third.roomId)).rejects.toThrow(/was not deleted/);
+        expect(owner.room(third.roomId)).toBeDefined();
+        await forgetListedRoom(owner, third.roomId);
+        expect(owner.room(third.roomId)).toBeUndefined();
+    } finally {
+        client.closeLive();
+        if (!stopped) {
+            await relay.close();
+        }
+        rmSync(directory, {recursive: true, force: true});
+    }
+}, 30_000);
