@@ -50,7 +50,7 @@ import {spawnAgent, formatSpawnResult} from './spawn-agent.js';
 import {parseSpawnOptions, SPAWN_HELP} from './spawn-options.js';
 import {RoomBrowser} from './room-browser.js';
 import type {RoomBrowserOptions} from './room-browser.js';
-import {ROOM_COLUMNS, loadRoomList, roomListJson, roomRows, sortListRows} from './room-list.js';
+import {ROOM_COLUMNS, deleteListedRoom, loadRoomList, roomListJson, roomRows, sortListRows} from './room-list.js';
 import {closeRequest, recoverRequest} from './request-recovery.js';
 import {waitForReply} from './reply-wait.js';
 import {suspendedReplyParents} from './reply-watches.js';
@@ -832,7 +832,8 @@ async function deleteRoom(store: LocalStore, values: Values, reference: string |
         throw new UsageError('pairlobby delete needs a room');
     }
     const room = resolveRoom(store, reference);
-    const credential = controllerCredential(store, room);
+    // Refuses here, before the question, when this device does not own the room.
+    controllerCredential(store, room);
     const confirm = store.settings().confirmDelete && !flag(values, 'force') && !flag(values, 'json') && process.stdin.isTTY;
     if (confirm) {
         const {createInterface} = await import('node:readline/promises');
@@ -844,24 +845,10 @@ async function deleteRoom(store: LocalStore, values: Values, reference: string |
             return 0;
         }
     }
-    try {
-        await new PairLobbyClient(room.serverUrl).delete(room.roomId, credential);
-    } catch (error) {
-        // A dead relay must not strand the entry forever. Deleting needs the server
-        // to answer; dropping the local record does not, so say which is which.
-        if (error instanceof ProtocolError && error.code === 'server_unavailable') {
-            throw new UsageError(
-                `could not reach ${room.serverUrl}, so the room was not deleted.\n  Start the server and try again, or drop this device's record of it:\n    pairlobby forget ${room.roomId}`
-            );
-        }
-        if (error instanceof ProtocolError && (error.code === 'room_not_found' || error.code === 'room_expired')) {
-            store.forgetRoom(room.roomId);
-            out(`${room.name} was already gone; removed it from this device.`);
-            return 0;
-        }
-        throw error;
+    if ((await deleteListedRoom(store, room.roomId)) === 'already_gone') {
+        out(`${room.name} was already gone; removed it from this device.`);
+        return 0;
     }
-    store.forgetRoom(room.roomId);
 
     if (flag(values, 'json')) {
         json({roomId: room.roomId, deleted: true});
