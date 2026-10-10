@@ -53,6 +53,7 @@ import type {RoomBrowserOptions} from './room-browser.js';
 import {ROOM_COLUMNS, deleteListedRoom, loadRoomList, roomListJson, roomRows, sortListRows} from './room-list.js';
 import {closeRequest, recoverRequest} from './request-recovery.js';
 import {waitForReply} from './reply-wait.js';
+import {trustLocalCertificates} from './trust.js';
 import {suspendedReplyParents} from './reply-watches.js';
 
 type LocalIdentity = {nameSource: 'room' | 'profile'; displayName: string; kind: 'agent' | 'human'; sessionId: string; capabilities?: AdapterCapabilities};
@@ -236,6 +237,11 @@ should pass --session (or set PAIRLOBBY_SESSION) on every later command.
 `;
 
 async function main(argv: string[]): Promise<number> {
+    // Before any connection: also trust what the operating system trusts, as a browser does.
+    const trust = trustLocalCertificates();
+    if (trust.problem) {
+        note(`certificates: ${trust.problem}`);
+    }
     const {values, positionals, tokens} = parseArgs({args: argv, options: OPTIONS, allowPositionals: true, strict: true, tokens: true});
     if (positionals[0] === 'spawn') {
         const commandIndex = tokens.find((token) => token.kind === 'positional')!.index;
