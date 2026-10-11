@@ -1,13 +1,15 @@
 import {completeAgentCommand} from './spawn-options.js';
 import {commonPrefix, renderSuggestions} from './mentions.js';
 
-export const CHAT_COMMANDS = ['/claude', '/codex', '/qwen', '/spawn', '/agents', '/agent', '/status', '/settings', '/turns', '/to', '/seen', '/collapse', '/expand', '/working', '/select', '/requests', '/reply', '/who', '/name', '/invite', '/invites', '/lock', '/unlock', '/kick', '/mute', '/unmute', '/expiry', '/interrupt', '/pause', '/resume', '/help', '/quit', '/exit'];
+export const CHAT_COMMANDS = ['/claude', '/codex', '/qwen', '/spawn', '/agents', '/agent', '/status', '/settings', '/turns', '/to', '/seen', '/collapse', '/expand', '/working', '/select', '/requests', '/reply', '/who', '/name', '/invite', '/invites', '/lock', '/unlock', '/kick', '/mute', '/unmute', '/permissions', '/preset', '/expiry', '/interrupt', '/pause', '/resume', '/help', '/quit', '/exit'];
 const SUBCOMMANDS: Record<string, string[]> = {
     '/agent': ['start', 'stop'],
     '/turns': ['sequential', 'parallel', 'skip', 'cancel'],
     '/requests': ['retry', 'reassign', 'dismiss', 'cancel'],
     '/invite': ['as', 'member', 'observer'],
-    '/invites': ['revoke']
+    '/invites': ['revoke'],
+    '/permissions': ['allow', 'deny', 'reset'],
+    '/preset': ['list', 'save', 'show', 'apply', 'delete', 'default']
 };
 
 /** Readline supplies the text before the cursor; it preserves the suffix itself. */

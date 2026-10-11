@@ -22,6 +22,7 @@ import {
     SetAutoCloseRequest,
     SetLockedRequest,
     SetMutedRequest,
+    SetPermissionsRequest,
     SetRoleRequest,
     TurnClaimRequest,
     TurnTokenRequest,
@@ -272,11 +273,19 @@ async function route(request: Request, service: RoomService): Promise<Response> 
                 const {role} = SetRoleRequest.parse(await request.json());
                 return json(await service.setRole(roomId, credential, segments[4]!, role));
             }
+            if (segments.length === 6 && segments[5] === 'permissions') {
+                const {permissions} = SetPermissionsRequest.parse(await request.json());
+                return json(await service.setParticipantPermissions(roomId, credential, segments[4]!, permissions));
+            }
             if (segments.length !== 6 || segments[5] !== 'mute') {
                 return errorResponse('invalid_request', 'unknown participant operation', 404);
             }
             const {muted} = SetMutedRequest.parse(await request.json());
             return json({event: await service.setMuted(roomId, credential, segments[4]!, muted)});
+        }
+        case 'POST permissions': {
+            const {permissions} = SetPermissionsRequest.parse(await request.json());
+            return json(await service.setRoomPermissions(roomId, credential, permissions));
         }
         case 'POST access': {
             const {joinPolicy} = SetAccessRequest.parse(await request.json());

@@ -1,6 +1,6 @@
 import {ACK_TIMEOUT_MS, ProtocolError, TURN_LEASE_MS, hashCredential, newCredential, newId} from '@pairlobby/protocol';
 import type {MessageRequest, TurnAction, TurnGrant, TurnMode, TurnQueue} from '@pairlobby/protocol';
-import {appendEvent, assertCanWrite, assertController, assertRoomWritable, authenticate, emptyMutation} from '@pairlobby/room-core';
+import {appendEvent, assertCanWrite, assertController, assertMayTarget, assertPermitted, assertRoomWritable, authenticate, emptyMutation} from '@pairlobby/room-core';
 import type {Actor, RoomView} from '@pairlobby/room-core';
 import type {RoomStore} from './store.js';
 
@@ -233,7 +233,11 @@ export class TurnCoordinator {
     async fenceRunning(roomId: string, credential: string, participantId: string): Promise<string[]> {
         const view = await this.view(roomId);
         const actor = authenticate(view, await hashCredential(credential), this.now());
-        assertController(actor);
+        assertPermitted(view, actor, 'pause');
+        const target = view.participants.find((participant) => participant.participantId === participantId);
+        if (target) {
+            assertMayTarget(actor, target);
+        }
         const running = (await this.pending(roomId)).filter((request) => request.to === participantId && request.turnStatus === 'running');
         if (running.length) {
             await this.change(view, actor, running.map((request) => ({...request, requiresReply: false, turnStatus: 'skipped' as const, turnToken: '', turnExpiresAt: 0})), 'skipped');
@@ -244,7 +248,7 @@ export class TurnCoordinator {
     async control(roomId: string, credential: string, action: TurnAction): Promise<TurnQueue> {
         const view = await this.view(roomId);
         const actor = authenticate(view, await hashCredential(credential), this.now());
-        assertController(actor);
+        assertPermitted(view, actor, 'turns');
         const pending = (await this.store.messageRequests(roomId, 0, 1000)).requests;
         const chosen = action.requestId
             ? pending.find((request) => request.eventId === action.requestId || request.conversationId === action.requestId)

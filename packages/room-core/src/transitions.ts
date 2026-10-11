@@ -1,7 +1,7 @@
 //! Room state transitions. Each returns one atomic mutation for a storage
 //! adapter to apply together with its idempotency record.
 
-import {RenameSelfRequest, DEFAULT_ROOM_POLICY, ProtocolError, newId} from '@pairlobby/protocol';
+import {RenameSelfRequest, DEFAULT_ROOM_POLICY, ProtocolError, applyPermissionChange, newId, samePermissions} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
     EventSubmission,
@@ -10,6 +10,8 @@ import type {
     NameSource,
     ParticipantRecord,
     ParticipantRole,
+    PermissionChange,
+    PermissionSet,
     RoomInvitationChange,
     RoomPolicy,
     RoomRecord,
@@ -17,7 +19,7 @@ import type {
 } from '@pairlobby/protocol';
 
 import {appendEvent} from './append.js';
-import {assertActiveMember, assertCanAcknowledge, assertCanWrite, assertRoomJoinable, assertController, assertRecipientExists, assertRoomWritable, authenticate, type Actor} from './authorize.js';
+import {assertActiveMember, assertCanAcknowledge, assertCanWrite, assertMayTarget, assertPermitted, assertRoomJoinable, assertController, assertRecipientExists, assertRoomWritable, authenticate, type Actor} from './authorize.js';
 import {applyHandoverAccepted, applyHandoverDeclined, applyHandoverOffered} from './handover.js';
 import {activeParticipants, controlFor, emptyMutation, findParticipant, isActive, type CoreContext, type Mutation, type RoomView} from './state.js';
 
@@ -168,12 +170,13 @@ export function sendEvent(view: RoomView, credentialHash: string, request: SendE
  */
 export function requestControl(view: RoomView, credentialHash: string, targetParticipantId: string, paused: boolean, ctx: CoreContext, interrupt = false): Mutation {
     const actor = authenticate(view, credentialHash, ctx.now);
-    assertController(actor);
+    assertPermitted(view, actor, 'pause');
     assertRoomWritable(view, ctx.now);
     const target = findParticipant(view, targetParticipantId);
     if (!target || !isActive(target)) {
         throw new ProtocolError('invalid_request', 'control target is not an active participant of this room');
     }
+    assertMayTarget(actor, target);
     if (interrupt && (!paused || target.kind !== 'agent')) {
         throw new ProtocolError('invalid_request', 'only an agent can be interrupted');
     }
@@ -198,12 +201,13 @@ export function requestControl(view: RoomView, credentialHash: string, targetPar
 
 export function revokeParticipant(view: RoomView, credentialHash: string, targetParticipantId: string, ctx: CoreContext): Mutation {
     const actor = authenticate(view, credentialHash, ctx.now);
-    assertController(actor);
+    assertPermitted(view, actor, 'kick');
     assertRoomWritable(view, ctx.now);
     const target = findParticipant(view, targetParticipantId);
     if (!target) {
         throw new ProtocolError('invalid_request', 'no such participant in this room');
     }
+    assertMayTarget(actor, target);
     if (target.revokedAt !== null) {
         throw new ProtocolError('idempotency_conflict', 'this participant was already removed');
     }
@@ -285,7 +289,7 @@ export function renameSelf(view: RoomView, credentialHash: string, input: Rename
 
 export function renameRoom(view: RoomView, credentialHash: string, name: string, ctx: CoreContext): Mutation {
     const actor = authenticate(view, credentialHash, ctx.now);
-    assertController(actor);
+    assertPermitted(view, actor, 'rename');
     assertRoomWritable(view, ctx.now);
     const previousName = view.room.name;
     if (previousName === name) {
@@ -320,7 +324,50 @@ export function setParticipantRole(view: RoomView, credentialHash: string, parti
         idempotencyKey: null, recipientId: null, replyTo: null,
         body: {type: 'participant.role_changed', payload: {participantId, role, previousRole: target.role}}
     }, ctx);
-    return {...emptyMutation(room, event), upsertParticipants: [{...target, role}]};
+    // Allowances an admin held as a member do not come back when they are made a member again.
+    const {permissions: _dropped, ...withoutPermissions} = target;
+    return {...emptyMutation(room, event), upsertParticipants: [{...withoutPermissions, role}]};
+}
+
+/** Sets which commands members may use room-wide. Owner or admin only; returns null when nothing would change. */
+export function setRoomPermissions(view: RoomView, credentialHash: string, change: PermissionChange, ctx: CoreContext): Mutation | null {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    const previous: PermissionSet = view.room.policy.permissions ?? {};
+    const permissions = applyPermissionChange(previous, change);
+    if (samePermissions(previous, permissions)) {
+        return null;
+    }
+    const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
+    const {permissions: _previous, ...policy} = view.room.policy;
+    const room = {...view.room, policy: Object.keys(permissions).length ? {...policy, permissions} : policy};
+    const {room: updated, event} = appendEvent(room, {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'room.permissions_changed', payload: {permissions, previous}}}, ctx);
+    return emptyMutation(updated, event);
+}
+
+/** Allows or refuses commands for one member, ahead of the room's answer. Owner or admin only; returns null when nothing would change. */
+export function setParticipantPermissions(view: RoomView, credentialHash: string, participantId: string, change: PermissionChange, ctx: CoreContext): Mutation | null {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    const target = assertRecipientExists(view, participantId);
+    if (target.role === 'guest') {
+        throw new ProtocolError('invalid_request', 'A read-only observer cannot use room commands. Invite them as a member first.');
+    }
+    if (target.role === 'controller') {
+        throw new ProtocolError('invalid_request', 'Admins can already use every command. Make them a member to limit them.');
+    }
+    const previous: PermissionSet = target.permissions ?? {};
+    const permissions = applyPermissionChange(previous, change);
+    if (samePermissions(previous, permissions)) {
+        return null;
+    }
+    const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
+    const {permissions: _previous, ...rest} = target;
+    const updated: ParticipantRecord = Object.keys(permissions).length ? {...rest, permissions} : rest;
+    const {room, event} = appendEvent(view.room, {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'participant.permissions_changed', payload: {participantId, permissions, previous}}}, ctx);
+    return {...emptyMutation(room, event), upsertParticipants: [updated]};
 }
 
 /** Sets or clears when a room expires. Null stops it expiring at all. */
@@ -484,7 +531,7 @@ export type {Actor};
 
 export function setLocked(view: RoomView, credentialHash: string, locked: boolean, ctx: CoreContext): Mutation {
     const actor = authenticate(view, credentialHash, ctx.now);
-    assertController(actor);
+    assertPermitted(view, actor, 'lock');
     assertRoomWritable(view, ctx.now);
     const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
     const {room, event} = appendEvent({...view.room, locked}, {
@@ -496,9 +543,10 @@ export function setLocked(view: RoomView, credentialHash: string, locked: boolea
 
 export function setMuted(view: RoomView, credentialHash: string, participantId: string, muted: boolean, ctx: CoreContext): Mutation {
     const actor = authenticate(view, credentialHash, ctx.now);
-    assertController(actor);
+    assertPermitted(view, actor, 'mute');
     assertRoomWritable(view, ctx.now);
     const target = assertRecipientExists(view, participantId);
+    assertMayTarget(actor, target);
     const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
     const {room, event} = appendEvent(view.room, {
         senderId, idempotencyKey: null, recipientId: null, replyTo: null,

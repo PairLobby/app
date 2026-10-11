@@ -4,6 +4,7 @@
 import type {RoomEvent, RoomInvitationChange, RoomSnapshot} from '@pairlobby/protocol';
 import {failureLabel} from '@pairlobby/protocol';
 import {describeAutoClose, describeCloseReason} from './auto-close.js';
+import {describeParticipantPermissionChange, describeRoomPermissionChange} from './permissions.js';
 import type {OpenRequest, RoomEntry} from '@pairlobby/client';
 
 type ParticipantLabel = {displayName: string; kind: string};
@@ -245,6 +246,10 @@ function describe(event: RoomEvent): string {
             return `${event.payload.participantId} was ${event.payload.muted ? 'muted' : 'unmuted'}`;
         case 'participant.role_changed':
             return `${event.payload.participantId} is now ${event.payload.role === 'controller' ? 'an admin' : 'a member'}`;
+        case 'room.permissions_changed':
+            return `command permissions changed: ${describeRoomPermissionChange(event.payload.permissions, event.payload.previous)}`;
+        case 'participant.permissions_changed':
+            return describeParticipantPermissionChange(event.payload.participantId, event.payload.permissions, event.payload.previous);
         case 'room.closed':
             return `the room was ${describeCloseReason(event.payload.reason)}`;
         case 'room.auto_close_changed':

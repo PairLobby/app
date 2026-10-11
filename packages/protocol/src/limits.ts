@@ -1,6 +1,8 @@
 //! Starting product limits. These are product choices to validate, not platform
 //! limits and not commercial entitlements.
 
+import type {PermissionSet} from './permissions.js';
+
 /**
  * How a room may be joined.
  *
@@ -28,6 +30,8 @@ export type CloseReason = 'manual' | 'inactivity' | 'age' | 'agents_and_guests_l
 export const MIN_AUTO_CLOSE_MS = 1000;
 
 export interface RoomPolicy {
+    /** Which commands members may use; an absent command takes the built-in default. Owner and admins are never limited. */
+    permissions?: PermissionSet;
     joinPolicy: JoinPolicy;
     /** Absent on rooms created before invitation defaults existed, which means `member`. */
     inviteRole?: InviteRole;
@@ -97,6 +101,8 @@ export const QUOTA_EXEMPT_EVENT_TYPES = [
     'room.auto_close_changed',
     'room.local_join_changed',
     'room.invitation_changed',
+    'room.permissions_changed',
+    'participant.permissions_changed',
     'message.received',
     'conversation.turn_changed',
     'message.delivery_failed',

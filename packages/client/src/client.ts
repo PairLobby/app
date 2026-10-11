@@ -20,6 +20,7 @@ import type {
     ParticipantKind,
     NameSource,
     ParticipantRole,
+    PermissionChange,
     ReadEventsResponse,
     RoomEvent,
     RoomSnapshot,
@@ -196,6 +197,16 @@ export class PairLobbyClient {
 
     setRole(roomId: string, credential: string, participantId: string, role: 'member' | 'controller'): Promise<RoomSnapshot> {
         return this.call('POST', `/v1/rooms/${roomId}/participants/${participantId}/role`, credential, {role});
+    }
+
+    /** Which commands members may use room-wide; `null` for a command puts it back to the built-in default. Owner or admin. */
+    setRoomPermissions(roomId: string, credential: string, permissions: PermissionChange): Promise<RoomSnapshot> {
+        return this.call('POST', `/v1/rooms/${roomId}/permissions`, credential, {permissions});
+    }
+
+    /** One member's own allowances and refusals; `null` for a command makes them follow the room again. Owner or admin. */
+    setParticipantPermissions(roomId: string, credential: string, participantId: string, permissions: PermissionChange): Promise<RoomSnapshot> {
+        return this.call('POST', `/v1/rooms/${roomId}/participants/${participantId}/permissions`, credential, {permissions});
     }
 
     accountRestrictions(roomId: string, credential: string): Promise<RoomAccountRestrictions> {
