@@ -235,6 +235,100 @@ export function runRequestContract(label: string, makeStore: StoreFactory) {
             return {credential, participantId};
         };
 
+        const providerWait = {
+            provider: 'claude',
+            limitKind: 'session' as const,
+            detectedAt: 1_000,
+            retryAt: 2_000,
+            resetTimezone: 'America/Toronto',
+            displayMessage: 'Claude usage limit reached; waiting for reset.',
+            resetActionUrl: 'https://clau.de/reset',
+            automaticRetry: true
+        };
+
+        test('provider wait releases a sequential turn and resumes the same unresolved request as a new attempt', async () => {
+            expect((await service.snapshot(roomId, alice)).providerWaitSupported).toBe(true);
+            const first = await ask('first provider task');
+            const second = await ask('second task');
+            const firstGrant = await service.turns.claim(roomId, bob, first.event.eventId, newId('event'));
+            expect(firstGrant.state).toBe('granted');
+            await service.turns.defer(roomId, bob, first.event.eventId, firstGrant.token!, providerWait);
+            await service.turns.defer(roomId, bob, first.event.eventId, firstGrant.token!, providerWait);
+
+            const deferred = await service.request(roomId, alice, first.event.eventId);
+            expect(deferred).toMatchObject({requiresReply: true, responseEventId: null, providerWait, action: 'provider_wait'});
+            expect(deferred.failureAt).toBeFalsy();
+            expect(requestState(deferred)).toBe('provider_wait');
+            expect((await service.turns.status(roomId, alice)).entries.find((entry) => entry.requestId === first.event.eventId)?.state).toBe('provider_wait');
+            expect((await service.requests(roomId, bob, 0, 100, bobId, false)).requests.some((request) => request.eventId === first.event.eventId)).toBe(false);
+
+            const secondGrant = await service.turns.claim(roomId, bob, second.event.eventId, newId('event'));
+            expect(secondGrant.state).toBe('granted');
+            await service.turns.pass(roomId, bob, second.event.eventId, secondGrant.token!);
+
+            const resumed = await service.turns.resume(roomId, bob, first.event.eventId);
+            await service.turns.resume(roomId, bob, first.event.eventId);
+            expect(resumed).toMatchObject({eventId: first.event.eventId, requiresReply: true, attempt: 2});
+            expect(resumed.providerWait).toBeUndefined();
+            expect(resumed.action).toBeUndefined();
+            const changes = (await service.read(roomId, alice, 0, 100)).events.filter((event) => event.type === 'conversation.turn_changed');
+            expect(changes.filter((event) => event.type === 'conversation.turn_changed' && event.payload.action === 'deferred')).toHaveLength(1);
+            expect(changes.filter((event) => event.type === 'conversation.turn_changed' && event.payload.action === 'resumed')).toHaveLength(1);
+            expect(changes.find((event) => event.type === 'conversation.turn_changed' && event.payload.action === 'deferred')?.payload.detail).toContain('usage limit');
+            expect(changes.find((event) => event.type === 'conversation.turn_changed' && event.payload.action === 'resumed')?.payload.detail).toContain('retry started');
+            expect((await service.turns.claim(roomId, bob, first.event.eventId, newId('event'))).state).toBe('granted');
+        });
+
+        test('provider wait cannot be resumed by another participant or after cancellation or reassignment', async () => {
+            const cancelled = await ask('cancel this provider task');
+            const cancelGrant = await service.turns.claim(roomId, bob, cancelled.event.eventId, newId('event'));
+            await service.turns.defer(roomId, bob, cancelled.event.eventId, cancelGrant.token!, providerWait);
+            await expect(service.turns.resume(roomId, alice, cancelled.event.eventId)).rejects.toMatchObject({code: 'unauthorized'});
+            await service.resolveRequest(roomId, alice, cancelled.event.eventId, {action: 'cancel', reason: 'No longer needed'});
+            await expect(service.turns.resume(roomId, bob, cancelled.event.eventId)).rejects.toMatchObject({code: 'invalid_request'});
+
+            const reassigned = await ask('reassign this provider task');
+            const reassignGrant = await service.turns.claim(roomId, bob, reassigned.event.eventId, newId('event'));
+            await service.turns.defer(roomId, bob, reassigned.event.eventId, reassignGrant.token!, providerWait);
+            const carol = await join('carol-provider');
+            await recover(reassigned.event.eventId, carol.participantId);
+            await expect(service.turns.resume(roomId, bob, reassigned.event.eventId)).rejects.toMatchObject({code: 'invalid_request'});
+        });
+
+        test('pause, mute and revocation prevent a stale provider retry', async () => {
+            const paused = await ask('pause this provider task');
+            const pausedGrant = await service.turns.claim(roomId, bob, paused.event.eventId, newId('event'));
+            await service.turns.defer(roomId, bob, paused.event.eventId, pausedGrant.token!, providerWait);
+            await service.control(roomId, controller, bobId, true);
+            await expect(service.turns.resume(roomId, bob, paused.event.eventId)).rejects.toMatchObject({code: 'invalid_request'});
+            await service.control(roomId, controller, bobId, false);
+            expect((await service.turns.resume(roomId, bob, paused.event.eventId)).attempt).toBe(2);
+            await service.resolveRequest(roomId, alice, paused.event.eventId, {action: 'cancel'});
+
+            const muted = await ask('mute this provider task');
+            const mutedGrant = await service.turns.claim(roomId, bob, muted.event.eventId, newId('event'));
+            await service.turns.defer(roomId, bob, muted.event.eventId, mutedGrant.token!, providerWait);
+            await service.setMuted(roomId, controller, bobId, true);
+            await expect(service.turns.resume(roomId, bob, muted.event.eventId)).rejects.toMatchObject({code: 'participant_muted'});
+            await service.setMuted(roomId, controller, bobId, false);
+            await service.resolveRequest(roomId, alice, muted.event.eventId, {action: 'cancel'});
+
+            const revokedAgent = await join('revoked-provider');
+            const revoked = await service.send(roomId, alice, {type: 'message', recipientId: revokedAgent.participantId, payload: {text: 'revoked provider task', priority: 'normal'}, idempotencyKey: newId('event')});
+            const revokedGrant = await service.turns.claim(roomId, revokedAgent.credential, revoked.event.eventId, newId('event'));
+            await service.turns.defer(roomId, revokedAgent.credential, revoked.event.eventId, revokedGrant.token!, providerWait);
+            await service.revoke(roomId, controller, revokedAgent.participantId);
+            await expect(service.turns.resume(roomId, revokedAgent.credential, revoked.event.eventId)).rejects.toMatchObject({code: 'participant_revoked'});
+        });
+
+        test('room closure prevents a stale provider retry', async () => {
+            const sent = await ask('close before provider retry');
+            const grant = await service.turns.claim(roomId, bob, sent.event.eventId, newId('event'));
+            await service.turns.defer(roomId, bob, sent.event.eventId, grant.token!, providerWait);
+            await service.close(roomId, controller);
+            await expect(service.turns.resume(roomId, bob, sent.event.eventId)).rejects.toMatchObject({code: 'room_closed'});
+        });
+
         test('a failed request is retried as a new attempt, and its answer resolves the original without erasing the failure', async () => {
             expect((await service.snapshot(roomId, alice)).requestRecoverySupported).toBe(true);
             expect((await service.snapshot(roomId, alice)).requestResolutionSupported).toBe(true);

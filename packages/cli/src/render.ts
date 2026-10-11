@@ -274,7 +274,7 @@ function describe(event: RoomEvent): string {
         case 'message.received':
             return `${event.payload.stage === 'read' ? 'read' : 'received'} ${event.payload.eventId}${event.payload.action ? ` · ${event.payload.action.replaceAll('_', ' ')}` : ''}`;
         case 'conversation.turn_changed':
-            return `speaking turns: ${event.payload.action} (${event.payload.mode})`;
+            return event.payload.detail ?? `speaking turns: ${event.payload.action} (${event.payload.mode})`;
     }
 }
 

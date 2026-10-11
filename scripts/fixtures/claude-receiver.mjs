@@ -3,7 +3,7 @@
 import {spawn} from 'node:child_process';
 import {setTimeout as sleep} from 'node:timers/promises';
 import {createInterface} from 'node:readline';
-import {appendFileSync, readFileSync} from 'node:fs';
+import {appendFileSync, existsSync, readFileSync, writeFileSync} from 'node:fs';
 
 const args = process.argv.slice(2);
 if (args.includes('--help')) {
@@ -26,6 +26,7 @@ if (!args.includes('--restricted') || value('--permission-mode') !== 'acceptEdit
 record(args.includes('--resume') ? 'thread/resume' : 'thread/start');
 const source = createInterface({input: process.stdin});
 let heldText = '';
+let usageLimited = false;
 for await (const line of source) {
     const input = JSON.parse(line);
     if (input.type === 'control_request') {
@@ -40,6 +41,19 @@ for await (const line of source) {
     const text = input.message.content[0].text;
     record('turn/start');
     send({type: 'system', subtype: 'init', session_id: session, model: 'claude-opus-5-5'});
+    const usageLimitMarker = process.env.PAIRLOBBY_TEST_USAGE_LIMIT_ONCE;
+    const usageLimitCount = Number(process.env.PAIRLOBBY_TEST_USAGE_LIMIT_COUNT ?? (usageLimitMarker ? 1 : Number.POSITIVE_INFINITY));
+    const reportedLimits = usageLimitMarker && existsSync(usageLimitMarker) ? Number(readFileSync(usageLimitMarker, 'utf8').trim()) || 0 : 0;
+    if (text.includes('usage-limit-fixture') && reportedLimits < usageLimitCount) {
+        if (usageLimitMarker) {
+            writeFileSync(usageLimitMarker, `${reportedLimits + 1}\n`);
+        }
+        usageLimited = true;
+        const limitText = process.env.PAIRLOBBY_TEST_USAGE_LIMIT_TEXT ?? "You've hit your session limit · resets 6:20pm (America/Toronto)";
+        process.stderr.write(`${limitText}\nUse your limit reset to reset it now: https://clau.de/reset\n`);
+        send({type: 'result', subtype: 'success', is_error: false, session_id: session, result: limitText, errors: [], usage: {input_tokens: 0, output_tokens: 0}});
+        break;
+    }
     if (text.includes('hang-until-crash') || text.includes('hold-for-interrupt')) {
         heldText = text;
         continue;
@@ -94,3 +108,4 @@ for await (const line of source) {
     send({type: 'result', subtype: invalid ? 'error_ack' : 'success', is_error: invalid, session_id: session, result: invalid ? '' : 'Claude fixture answer: ' + text, usage: {input_tokens: 10, output_tokens: 10}});
 }
 record('process/exit');
+if (usageLimited) process.exitCode = 1;

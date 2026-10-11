@@ -1,6 +1,6 @@
 import type {MessageRequest, RoomEvent, RoomSnapshot, TurnQueue} from '@pairlobby/protocol';
 
-export type AgentActivityState = 'idle' | 'unread' | 'clear' | 'failed' | 'working' | 'preparing' | 'waiting' | 'stalled' | 'paused' | 'muted' | 'unknown';
+export type AgentActivityState = 'idle' | 'unread' | 'clear' | 'failed' | 'working' | 'preparing' | 'provider_wait' | 'waiting' | 'stalled' | 'paused' | 'muted' | 'unknown';
 export type AgentActivity = {participantId: string; name: string; state: AgentActivityState};
 export type AgentActivityContext = {participants: RoomSnapshot['participants']; requests: MessageRequest[]; queue: TurnQueue | null; complete: boolean; available: boolean};
 type ActivityEvidence = {latestMessage: RoomEvent | undefined; acknowledged: Set<string>; settled?: Set<string>; now?: number};
@@ -24,6 +24,8 @@ export function agentActivities(context: AgentActivityContext, evidence: Activit
             state = 'stalled';
         } else if (entries.some((entry) => entry.state === 'answering')) {
             state = 'preparing';
+        } else if (entries.some((entry) => entry.state === 'provider_wait')) {
+            state = 'provider_wait';
         } else if (pending || entries.some((entry) => entry.state === 'waiting')) {
             state = 'waiting';
         } else if (context.requests.some((request) => request.to === person.participantId && request.failureAt && !request.responseEventId && request.requiresReply)) {
@@ -48,9 +50,9 @@ export function activitySummary(agents: AgentActivity[]): string {
     if (agents.every((agent) => agent.state === 'idle')) {
         return `All agents idle (${agents.length}) · no further action declared`;
     }
-    const states: AgentActivityState[] = ['working', 'preparing', 'waiting', 'stalled', 'failed', 'unread', 'idle', 'clear', 'paused', 'muted', 'unknown'];
+    const states: AgentActivityState[] = ['working', 'preparing', 'provider_wait', 'waiting', 'stalled', 'failed', 'unread', 'idle', 'clear', 'paused', 'muted', 'unknown'];
     return 'Agents: ' + states.flatMap((state) => {
         const count = agents.filter((agent) => agent.state === state).length;
-        return count ? [`${count} ${state === 'clear' ? 'no queued task' : state === 'unread' ? 'receipt unconfirmed' : state}`] : [];
+        return count ? [`${count} ${state === 'clear' ? 'no queued task' : state === 'unread' ? 'receipt unconfirmed' : state === 'provider_wait' ? 'provider limited' : state}`] : [];
     }).join(' · ');
 }

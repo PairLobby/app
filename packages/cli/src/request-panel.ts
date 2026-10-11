@@ -3,7 +3,7 @@
 import type {LocalStore, PairLobbyClient} from '@pairlobby/client';
 import {messageActionLabel, requestState} from '@pairlobby/protocol';
 import type {MessageRequest, RoomSnapshot} from '@pairlobby/protocol';
-import {receiverAttempts, receiverStatus} from './receiver.js';
+import {receiverAttempts, receiverConfiguration, receiverStatus, retryProviderNow} from './receiver.js';
 import {closeRequest, recoverRequest} from './request-recovery.js';
 import type {RoomPanelPage, RoomPanelRow} from './room-panel.js';
 import {formatDuration} from './when.js';
@@ -46,6 +46,15 @@ function iso(value?: number | null): string {
     return value ? new Date(value).toISOString() : 'Not recorded';
 }
 
+function providerReset(request: MessageRequest): string {
+    const wait = request.providerWait;
+    if (!wait?.retryAt) {
+        return 'Unknown · manual retry required';
+    }
+    const timezone = wait.resetTimezone ?? 'UTC';
+    return `${new Intl.DateTimeFormat('en-CA', {timeZone: timezone, dateStyle: 'medium', timeStyle: 'short'}).format(wait.retryAt)} ${timezone}`;
+}
+
 function excerpt(text: string, limit = 120): string {
     const flat = text.replaceAll(/\s+/g, ' ').trim();
     return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat;
@@ -56,14 +65,19 @@ export async function requestsPage(context: RequestPanelContext): Promise<RoomPa
         context.client.requests(context.roomId, context.credential),
         context.client.snapshot(context.roomId, context.credential)
     ]);
-    const rows: RoomPanelRow[] = page.requests.map((request) => ({
-        id: request.eventId,
-        label: `${participantName(snapshot, request.from)} → ${participantName(snapshot, request.to)}`,
-        value: `${messageActionLabel(request)} · attempt ${request.attempt ?? 1} · ${excerpt(request.text, 70)}`,
-        section: request.failureAt ? 'Attention' : requestState(request) === 'stalled' ? 'Attention' : 'Requests',
-        hint: request.eventId,
-        action: {kind: 'menu', load: () => requestPage(context, request.eventId)}
-    }));
+    const rows: RoomPanelRow[] = page.requests.map((request) => {
+        const session = localSession(context, request.to);
+        const localWait = session ? receiverStatus(context.store, session.sessionId)?.providerWait : null;
+        const heldByProfile = !request.providerWait && localWait;
+        return {
+            id: request.eventId,
+            label: `${participantName(snapshot, request.from)} → ${participantName(snapshot, request.to)}`,
+            value: `${heldByProfile ? `Queued · ${localWait.displayMessage}` : messageActionLabel(request)} · attempt ${request.attempt ?? 1} · ${excerpt(request.text, 70)}`,
+            section: request.failureAt || request.providerWait || heldByProfile ? 'Attention' : requestState(request) === 'stalled' ? 'Attention' : 'Requests',
+            hint: request.eventId,
+            action: {kind: 'menu', load: () => requestPage(context, request.eventId)}
+        };
+    });
     if (!rows.length) {
         rows.push({id: 'empty', label: 'Requests', value: 'No unresolved requests', section: 'Ready'});
     }
@@ -83,6 +97,7 @@ export async function requestPage(context: RequestPanelContext, requestId: strin
     ]);
     const {authority} = access(context, request, snapshot);
     const session = localSession(context, request.to);
+    const managedSession = session && receiverConfiguration(context.store, session.sessionId) ? session : undefined;
     const attempts = session ? receiverAttempts(context.store, session.sessionId, request.eventId) : [];
     const activeStatus = session ? receiverStatus(context.store, session.sessionId) : null;
     const rows: RoomPanelRow[] = [
@@ -109,6 +124,25 @@ export async function requestPage(context: RequestPanelContext, requestId: strin
         rows.push({id: 'failure-stage', label: 'Stage', value: request.failureStage ?? 'unknown', section: 'Failure'});
         rows.push({id: 'failure-at', label: 'Failed', value: iso(request.failureAt), section: 'Failure'});
     }
+    if (request.providerWait) {
+        rows.push({id: 'provider', label: 'Provider', value: request.providerWait.provider, section: 'Provider wait'});
+        rows.push({id: 'provider-model', label: 'Model', value: request.providerWait.model ?? 'Not reported', section: 'Provider wait'});
+        rows.push({id: 'provider-limit', label: 'Limit', value: request.providerWait.limitKind, section: 'Provider wait'});
+        rows.push({id: 'provider-evidence', label: 'Detected from', value: request.providerWait.source ?? 'Not recorded', section: 'Provider wait'});
+        rows.push({id: 'provider-reset', label: 'Expected reset', value: providerReset(request), section: 'Provider wait'});
+        rows.push({id: 'provider-retry', label: 'Automatic retry', value: request.providerWait.automaticRetry ? 'Scheduled' : 'Off · manual retry required', section: 'Provider wait'});
+        rows.push({id: 'provider-detected', label: 'Detected', value: iso(request.providerWait.detectedAt), section: 'Provider wait'});
+        if (attempts.at(-1)) {
+            rows.push({id: 'provider-last-attempt', label: 'Stopped attempt', value: attempts.at(-1)!.attemptId, section: 'Provider wait'});
+        }
+        if (request.providerWait.resetActionUrl) {
+            rows.push({id: 'provider-reset-url', label: 'Provider reset page', value: request.providerWait.resetActionUrl, section: 'Provider wait', hint: 'PairLobby never opens this link automatically.'});
+        }
+    }
+    if (!request.providerWait && activeStatus?.state === 'provider_wait' && activeStatus.providerWait) {
+        rows.push({id: 'provider-queue-hold', label: 'Queue hold', value: activeStatus.providerWait.displayMessage, section: 'Provider wait'});
+        rows.push({id: 'provider-queue-reset', label: 'Expected reset', value: activeStatus.providerWait.retryAt ? `${iso(activeStatus.providerWait.retryAt)} · ${activeStatus.providerWait.resetTimezone ?? 'timezone unavailable'}` : 'Unknown · manual retry required', section: 'Provider wait'});
+    }
     if (request.resolution) {
         rows.push({id: 'resolution', label: 'Disposition', value: `${request.resolution}${request.resolutionReason ? ` · ${request.resolutionReason}` : ''}`, section: 'Resolution'});
         rows.push({id: 'resolution-at', label: 'Resolved', value: iso(request.resolutionAt), section: 'Resolution'});
@@ -126,6 +160,11 @@ export async function requestPage(context: RequestPanelContext, requestId: strin
         rows.push({id: 'attempt-history', label: 'Local attempt history', value: `${attempts.length} recorded`, section: 'Inspect', action: {kind: 'menu', load: () => attemptsPage(context, request.eventId)}});
     }
     const actionable = authority && !request.responseEventId && !request.recoveredByEventId && !request.resolution;
+    if (request.providerWait && managedSession && !request.responseEventId && !request.recoveredByEventId && !request.resolution) {
+        rows.push({id: 'retry-provider', label: 'Retry provider now', value: participantName(snapshot, request.to), section: 'Actions', action: {kind: 'command', confirm: 'Try this provider once now? PairLobby will inspect prior work and return to provider wait if the limit remains.', run: async () => {
+            await retryProviderNow(context.store, context.roomId, managedSession.sessionId, request.eventId);
+        }}});
+    }
     if (actionable && request.failureAt && snapshot.requestRecoverySupported) {
         rows.push({id: 'retry', label: 'Retry safely', value: participantName(snapshot, request.to), section: 'Actions', action: {kind: 'command', confirm: 'Start a fresh managed attempt? It will inspect the existing workspace before changing anything.', run: async () => {
             await recoverRequest({client: context.client, roomId: context.roomId, credential: authority, workspaceForParticipant: (id) => workspace(context, id)}, request.eventId);
@@ -134,6 +173,14 @@ export async function requestPage(context: RequestPanelContext, requestId: strin
         rows.push({id: 'reassign', label: 'Reassign safely', value: participantName(snapshot, request.to), section: 'Actions', action: {kind: 'edit', initial: request.to, choices: targets.map((participant) => ({label: `${participant.displayName} — ${participant.kind}`, value: participant.participantId})), hint: 'Choose the participant who should inspect and finish the remaining work.', confirm: (value) => `Give this failed request to ${participantName(snapshot, value)} as a fresh attempt?`, save: async (value) => {
             await recoverRequest({client: context.client, roomId: context.roomId, credential: authority, workspaceForParticipant: (id) => workspace(context, id)}, request.eventId, value);
         }}});
+    }
+    if (actionable && request.providerWait && snapshot.requestRecoverySupported) {
+        const targets = snapshot.participants.filter((participant) => participant.participantId !== request.to && !participant.left && !participant.revoked && participant.role !== 'guest');
+        if (targets.length) {
+            rows.push({id: 'reassign', label: 'Reassign safely', value: participantName(snapshot, request.to), section: 'Actions', action: {kind: 'edit', initial: targets[0]!.participantId, choices: targets.map((participant) => ({label: `${participant.displayName} — ${participant.kind}`, value: participant.participantId})), hint: 'Choose a different participant or provider to inspect and finish the remaining work.', confirm: (value) => `Give this provider-limited request to ${participantName(snapshot, value)} as a fresh attempt?`, save: async (value) => {
+                await recoverRequest({client: context.client, roomId: context.roomId, credential: authority, workspaceForParticipant: (id) => workspace(context, id)}, request.eventId, value);
+            }}});
+        }
     }
     if (actionable && request.failureAt && snapshot.requestResolutionSupported) {
         rows.push({id: 'dismiss', label: 'Dismiss failure', value: 'No success claimed', section: 'Actions', action: dispositionEdit(context, authority, request.eventId, 'dismiss')});
@@ -204,6 +251,10 @@ async function attemptPage(context: RequestPanelContext, requestId: string, atte
     }
     if (attempt.terminal?.responseEventId) {
         rows.push({id: 'response', label: 'Response event', value: attempt.terminal.responseEventId, section: 'Outcome'});
+    }
+    if (attempt.terminal?.providerWait) {
+        rows.push({id: 'provider-limit', label: 'Provider limit', value: attempt.terminal.providerWait.limitKind, section: 'Outcome'});
+        rows.push({id: 'provider-reset', label: 'Expected reset', value: attempt.terminal.providerWait.retryAt ? `${iso(attempt.terminal.providerWait.retryAt)} · ${attempt.terminal.providerWait.resetTimezone ?? 'timezone unavailable'}` : 'Unknown · manual retry required', section: 'Outcome'});
     }
     return {id: `attempt-${attemptId}`, title: `Attempt — ${attemptId}`, rows, note: 'Immutable local execution evidence.', reload: () => attemptPage(context, requestId, attemptId)};
 }

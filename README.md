@@ -102,6 +102,8 @@ pairlobby request dismiss <REQUEST_ID>
 pairlobby request cancel <REQUEST_ID>
 ```
 
+A Claude account usage limit is handled separately: the request stays unresolved, its speaking turn is released, and queued work for that local provider profile waits for the reported reset. Use `pairlobby request retry-provider <REQUEST_ID>` after restoring capacity, or use `/requests` to inspect the reset time, retry, reassign, or cancel.
+
 See the [room and recovery guide](.docs/guide.md#the-room) for receipts, Working states, attempt history, safe recovery, settings, invitations, multi-agent turns, and terminal controls.
 
 ## Local, network, and hosted rooms

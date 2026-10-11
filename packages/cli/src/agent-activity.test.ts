@@ -24,6 +24,8 @@ test('working, claimed and expired turns never appear idle after acknowledgement
     expect(agentActivities({...context, queue: {mode: 'parallel', entries: [entry]}}, caughtUp)[0]!.state).toBe('preparing');
     expect(agentActivities({...context, queue: {mode: 'parallel', entries: [{...entry, workingAt: 500}]}}, caughtUp)[0]!.state).toBe('working');
     expect(agentActivities({...context, queue: {mode: 'parallel', entries: [{...entry, workingAt: 500, expiresAt: 999}]}}, caughtUp)[0]!.state).toBe('stalled');
+    expect(agentActivities({...context, queue: {mode: 'parallel', entries: [{...entry, state: 'provider_wait', expiresAt: null}]}}, caughtUp)[0]!.state).toBe('provider_wait');
+    expect(activitySummary(agentActivities({...context, queue: {mode: 'parallel', entries: [{...entry, state: 'provider_wait', expiresAt: null}]}}, caughtUp))).toContain('provider limited');
 });
 
 test('partial history, unavailable data and paused members cannot produce all-idle', () => {

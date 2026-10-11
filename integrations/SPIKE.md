@@ -25,7 +25,7 @@ python scripts/test-spawn-chat.py
 python scripts/test-agent-table.py
 ```
 
-The synthetic harness requires Codex CLI and Python 3.11+ but uses a localhost fake provider. Vitest receiver/spawn tests use deterministic Codex, Claude, and Qwen protocol fixtures; these and the terminal tests make no paid model calls. Agent-table copying tests use a test sink rather than changing the user's clipboard. Clipboard transport unit tests verify stdin/OSC encoding with mocks; they do not certify every native OS clipboard. The latest full run recorded 464 passing tests plus source and installed-package spawn/table PTY checks.
+The synthetic harness requires Codex CLI and Python 3.11+ but uses a localhost fake provider. Vitest receiver/spawn tests use deterministic Codex, Claude, and Qwen protocol fixtures; these and the terminal tests make no paid model calls. Agent-table copying tests use a test sink rather than changing the user's clipboard. Clipboard transport unit tests verify stdin/OSC encoding with mocks; they do not certify every native OS clipboard. The latest full run recorded 683 passing tests plus source and installed-package spawn/table PTY checks.
 
 ## Feature-specific regression checks
 
@@ -55,6 +55,19 @@ Live requests consume runtime usage. Use a throwaway project, a local room, harm
 9. Separately test receiver stop/timeout during a harmless tool. Observe the turn, tool and OS descendants independently. An agent's self-report is not cancellation evidence.
 10. Stop the test receiver and close the room. Record usage and failures.
 
+### Live Claude usage-limit acceptance
+
+Do not deliberately spend through an account allowance merely to trigger this check. When a test account naturally reaches a Claude session or weekly limit, preserve the harmless local room and request IDs and verify:
+
+1. The request becomes `provider_wait`, its attempt is `usage_limited`, and no `message.delivery_failed` event is emitted.
+2. `receiver status`, `/agents`, `/requests`, and the working strip show the reset time/timezone and do not say Ready or Failed.
+3. A second harmless request on another receiver using the same Claude configuration remains queued and creates no provider attempt; a distinct Claude configuration or another runtime remains usable.
+4. The original speaking turn is released. Pause or mute the participant, then pass the reset time: no provider process starts until it is resumed.
+5. After the provider resets—or after the user explicitly restores capacity and chooses **Retry provider now**—exactly one profile probe starts. It receives the recovery instruction, inspects prior workspace state, and resolves the original request once.
+6. If Claude returns the same limit again, confirm one bounded-backoff probe and then manual-only state, without repeated notifications or rapid child-process launches.
+
+Record only sanitized status, timestamps, model/runtime versions, request/attempt IDs, and outcomes. Never attach credentials, raw prompts, full stderr, or the provider configuration directory. The deterministic fixture suite covers these state transitions, but only this naturally occurring check can certify the real provider message format for the installed Claude version.
+
 ## Still required
 
-Overnight idle soak, hosted WebSocket end-to-end/reconnect and load testing, verified child-process cancellation, interactive approval handling, distributed ownership, and native Claude acceptance remain incomplete. Do not mark these verified based on documentation or a synthetic provider.
+Overnight idle soak, hosted WebSocket end-to-end/reconnect and load testing, verified child-process cancellation, interactive approval handling, distributed ownership, and naturally occurring Claude usage-limit acceptance remain incomplete. Do not mark these verified based on documentation or a synthetic provider.

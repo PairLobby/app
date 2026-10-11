@@ -650,7 +650,7 @@ export class ChatTerminal {
 
     private paintDetails(): void {
         if (this.activityOpen) {
-            const descriptions = {idle: 'Idle · explicitly no further action', clear: 'No queued room task · reading not implied', failed: 'Failed task needs attention', unread: 'Latest transport receipt unconfirmed', working: 'Working', preparing: 'Preparing an answer', waiting: 'Waiting · pending request', stalled: 'Stalled request', paused: 'Paused', muted: 'Muted', unknown: 'Status unavailable'};
+            const descriptions = {idle: 'Idle · explicitly no further action', clear: 'No queued room task · reading not implied', failed: 'Failed task needs attention', unread: 'Latest transport receipt unconfirmed', working: 'Working', preparing: 'Preparing an answer', provider_wait: 'Provider usage limited · waiting to retry', waiting: 'Waiting · pending request', stalled: 'Stalled request', paused: 'Paused', muted: 'Muted', unknown: 'Status unavailable'};
             fitPopup(this.popup, ['Agent activity', ...this.currentActivities().map((agent) => `${agent.name} — ${descriptions[agent.state]}`)], this.screen);
             this.popup.top = Math.max(0, Number(this.turns.atop) - Number(this.popup.height));
             this.popup.show();

@@ -1,4 +1,4 @@
-import {mkdirSync, mkdtempSync, rmSync} from 'node:fs';
+import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
@@ -38,6 +38,7 @@ test('request panel exposes details, local attempts, and confirmed recovery acti
 
         const receiverDirectory = join(store.directory, 'receivers', agentSession);
         mkdirSync(receiverDirectory, {recursive: true});
+        writeFileSync(join(receiverDirectory, 'config.json'), JSON.stringify({runtime: 'claude', cwd: join(directory, 'workspace'), idleTimeoutMs: 600_000, absoluteTimeoutMs: 3_600_000}));
         const database = new DatabaseSync(join(receiverDirectory, 'inbox.sqlite'));
         initializeReceiverDatabase(database);
         const journal = new ReceiverAttemptJournal(database);
@@ -63,6 +64,16 @@ test('request panel exposes details, local attempts, and confirmed recovery acti
         expect(resolved.rows.find((row) => row.id === 'resolution')?.value).toBe('dismissed · Reviewed manually');
         expect(resolved.rows.some((row) => row.section === 'Actions')).toBe(false);
         expect((await requestsPage(context)).rows[0]?.id).toBe('empty');
+
+        const limited = await client.send(room.roomId, room.participantCredential, {type: 'message', recipientId: agent.participantId, payload: {text: 'Wait for provider capacity', priority: 'normal'}, idempotencyKey: newId('event')});
+        const grant = await client.claimTurn(room.roomId, agent.participantCredential, limited.event.eventId, newId('event'));
+        await client.deferForProvider(room.roomId, agent.participantCredential, limited.event.eventId, grant.token!, {provider: 'claude', limitKind: 'session', detectedAt: 1_000, retryAt: 2_000, resetTimezone: 'America/Toronto', displayMessage: 'Claude usage limit reached.', resetActionUrl: 'https://clau.de/reset', automaticRetry: true});
+        const waiting = await requestPage(context, limited.event.eventId);
+        expect(waiting.rows.find((row) => row.id === 'state')?.value).toContain('Provider limited');
+        expect(waiting.rows.find((row) => row.id === 'provider-model')?.value).toBe('Not reported');
+        expect(waiting.rows.find((row) => row.id === 'provider-reset')?.value).toContain('America/Toronto');
+        expect(waiting.rows.find((row) => row.id === 'provider-reset-url')?.hint).toContain('never opens');
+        expect(waiting.rows.filter((row) => row.section === 'Actions').map((row) => row.id)).toEqual(['retry-provider', 'reassign', 'cancel']);
     } finally {
         client.closeLive();
         await relay.close();

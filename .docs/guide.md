@@ -494,6 +494,16 @@ Each managed execution has an immutable local attempt journal containing its run
 
 To ask again after a request failed, the sender or a room admin runs `pairlobby request retry <REQUEST_ID>`, or `pairlobby request reassign <REQUEST_ID> --to <name>` to give it to someone else. The new attempt carries the original request, failure metadata, and the receiver-confirmed working directory, and tells the agent to inspect before changing anything. A failed/cancelled provider turn is never treated as a resumable checkpoint: the recovery starts a fresh provider conversation. Its answer also resolves the original request, shown as **Done · recovered**; the earlier failure stays on record. A retry that fails can itself be retried. Running the command twice sends one attempt.
 
+#### Provider usage limits
+
+When managed Claude reports an account usage/session limit, PairLobby records the execution attempt as `usage_limited` and keeps the logical request unresolved in `provider_wait`. This is not a task failure, a PairLobby room quota, a context-window error, or a managed-request deadline. The receiver exits the Claude child process, releases its speaking turn, and durably pauses later work that uses the same local Claude executable and configuration profile. Other providers and separate Claude profiles can continue.
+
+The receiver status, agent roster, working strip, room status, request panel, and attempt history identify the provider wait. When Claude supplies a reset time, PairLobby preserves its timezone, displays the expected reset, and atomically grants one receiver on that local provider profile a recovery probe after the reset and a short grace period. Other receivers sharing the profile remain fenced until that probe proves capacity has returned. The new invocation keeps the same logical request ID, gets a new attempt ID, and is told to inspect the workspace before acting so it does not repeat side effects from the interrupted attempt. A process restart reloads the device-wide cooldown; a dead probe owner is replaced safely rather than stranding or duplicating work.
+
+If the probe reaches the same limit without a later reset time, PairLobby schedules one bounded-backoff probe. A further unchanged limit disables automatic retry and requires **Retry provider now**, **Cancel**, or **Reassign**; it never enters a rapid loop. Pause, mute, cancellation, reassignment, revocation, participant removal, and room closure are rechecked before every probe and prevent stale execution.
+
+Use `pairlobby request retry-provider <REQUEST_ID>` or **Retry provider now** in `/requests` after manually restoring provider capacity. This bypasses the local wait once; the request returns to `provider_wait` if Claude still reports the limit. **Cancel** permanently fences that request, while **Reassign** creates a safe recovery request for a different participant/provider. If no reset time can be parsed, automatic retry remains off and those manual controls stay available. PairLobby may display the allow-listed `https://clau.de/reset` link, but never opens it or changes provider billing/limits automatically.
+
 `pairlobby request dismiss <REQUEST_ID> [--reason ...]` archives a failed request after it has been reviewed; `request cancel` fences unresolved work so a late answer cannot revive it. Neither action claims success, and both are limited to the original sender or a room admin. A cancelled request may later be retried explicitly. In terminal chat, `/requests` opens an interactive panel with request details, local attempt history, remaining deadlines and confirmed recovery actions; `/requests retry|reassign|dismiss|cancel ...` remains available for direct entry. The relay advertises `requestRecoverySupported` and `requestResolutionSupported` separately for compatibility.
 
 ### Agent table and cell copying
@@ -504,7 +514,7 @@ To ask again after a request failed, the sender or a room admin runs `pairlobby 
 | --- | --- |
 | Name | Current room display name; duplicate names remain separate participants. |
 | Provider | Brand derived from the reported runtime, such as Codex → OpenAI or Claude → Anthropic; not inferred from the display name. |
-| Status | Known receiver/turn state, including Ready, Working, Waiting, Stalled, Paused, Muted, Stopped, or Offline. Joined (unverified) does not prove a listener is running. |
+| Status | Known receiver/turn state, including Ready, Working, Usage limited, Waiting, Stalled, Paused, Muted, Stopped, or Offline. Joined (unverified) does not prove a listener is running. |
 | Model | Exact last-reported model ID and version, configured selection marked `*`, or Not started / Not reported / Not shared. |
 | Conversation ID | Managed runtime thread/session ID, or the saved external conversation ID for a manually connected agent. Not started means no managed conversation ID is recorded yet. |
 | Invite | Locally recorded admission code; Not recorded/Not shared means the value is unavailable. No new invite is minted just to fill the cell. |
@@ -586,7 +596,7 @@ python scripts/test-people-chat.py   # three people, no agent, through the real 
 python scripts/test-network-rooms.py # a room open to the network, joined from the room list
 ```
 
-The last full local run (2026-10-08) recorded **641 passing tests**, plus source and installed-package terminal checks. Spawning, concurrent receivers, argument forwarding, recovery, roster metadata, and clipboard transport use deterministic fixtures; this does not claim new provider-backed acceptance or native clipboard testing on every OS. See [the validation guide](../integrations/SPIKE.md) for targeted commands and remaining gaps.
+The last full local run (2026-10-11) recorded **683 passing tests**, plus source and installed-package terminal checks. Spawning, concurrent receivers, argument forwarding, recovery, roster metadata, and clipboard transport use deterministic fixtures; this does not claim new provider-backed acceptance or native clipboard testing on every OS. See [the validation guide](../integrations/SPIKE.md) for targeted commands and remaining gaps.
 
 `fixtures/src/contract.ts` is the room contract and `fixtures/src/redemption-contract.ts` the invite crash-recovery gate. Both are parameterized by store and run against the in-memory reference and SQLite here, and against Durable Object SQLite in [durable-runtime](https://github.com/PairLobby/durable-runtime), so a behaviour that differs between adapters fails a build. A new storage adapter is expected to call them too.
 

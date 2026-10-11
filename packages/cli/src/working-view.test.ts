@@ -24,6 +24,14 @@ test('provider counts are per agent, even when an agent has multiple requests or
     expect(logoProvider()).toBe('other');
 });
 
+test('provider waits are visible but never reported as active work', () => {
+    const view = new WorkingView();
+    view.update({mode: 'sequential', entries: [{...base, state: 'provider_wait', expiresAt: null}]});
+    expect(view.active(100)).toEqual([]);
+    expect(view.visible(100)).toHaveLength(1);
+    expect(view.groups(100)[0]).toMatchObject({provider: 'claude', state: 'provider_wait', count: 1});
+});
+
 test('terminal selection has a safe fallback and an explicit override', () => {
     expect(graphicsMode({TERM_PROGRAM: 'Apple_Terminal'})).toBe('cells');
     expect(graphicsMode({TERM_PROGRAM: 'iTerm.app'})).toBe('iterm2');

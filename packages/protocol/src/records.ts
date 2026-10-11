@@ -169,6 +169,8 @@ export const RoomSnapshot = z.object({
     requestRecoverySupported: z.boolean().optional(),
     /** The relay can dismiss failed requests and cancel unresolved work without claiming success. */
     requestResolutionSupported: z.boolean().optional(),
+    /** The relay can defer unresolved requests while a local provider is temporarily unavailable. */
+    providerWaitSupported: z.boolean().optional(),
     rejoinSupported: z.boolean().optional(),
     renameSelfSupported: z.boolean().optional(),
     adminRolesSupported: z.boolean().optional(),

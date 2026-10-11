@@ -55,6 +55,10 @@ function statusFor(participant: RoomSnapshot['participants'][number], receiver: 
     if (receiver && ['stopped', 'offline', 'error'].includes(receiver.state)) {
         return receiver.state === 'stopped' ? 'Stopped' : receiver.state === 'offline' ? 'Offline' : 'Error';
     }
+    if (receiver?.state === 'provider_wait') {
+        const wait = receiver.providerWait;
+        return wait?.retryAt ? `Limited until ${new Intl.DateTimeFormat('en-CA', {timeZone: wait.resetTimezone ?? 'UTC', hour: 'numeric', minute: '2-digit'}).format(wait.retryAt)} ${wait.resetTimezone ?? 'UTC'}` : 'Usage limited';
+    }
     const turns = queue?.entries.filter((entry) => entry.participantId === participant.participantId) ?? [];
     if (turns.some((entry) => entry.state === 'answering' && entry.workingAt !== undefined && (entry.expiresAt ?? 0) > Date.now())) {
         return 'Working';
@@ -66,10 +70,10 @@ function statusFor(participant: RoomSnapshot['participants'][number], receiver: 
         return 'Stalled';
     }
     if (receiver) {
-        const labels: Record<string, string> = {available: 'Ready', working: 'Turn claimed', waiting: 'Waiting', starting: 'Starting', reconnecting: 'Reconnecting', stopped: 'Stopped', offline: 'Offline', error: 'Error', stalled: 'Stalled', paused: 'Paused'};
+        const labels: Record<string, string> = {available: 'Ready', working: 'Turn claimed', provider_wait: 'Usage limited', provider_retry: 'Checking provider', waiting: 'Waiting', starting: 'Starting', reconnecting: 'Reconnecting', stopped: 'Stopped', offline: 'Offline', error: 'Error', stalled: 'Stalled', paused: 'Paused'};
         return labels[receiver.state] ?? receiver.state;
     }
-    return turns.some((entry) => entry.state === 'waiting') ? 'Waiting' : 'Joined (unverified)';
+    return turns.some((entry) => entry.state === 'provider_wait') ? 'Usage limited' : turns.some((entry) => entry.state === 'waiting') ? 'Waiting' : 'Joined (unverified)';
 }
 
 /** Raw history reads do not acknowledge messages, advance session cursors, or start inference. */

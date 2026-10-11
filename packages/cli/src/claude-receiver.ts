@@ -10,6 +10,7 @@ import type {InterruptOutcome, ReceiverRuntime, RuntimeHooks, RuntimeOptions} fr
 import {OWN_PROCESS_GROUP, interruptProcess, signalTree} from './runtime-process.js';
 import {streamModel} from './model-metadata.js';
 import {ManagedDeadline, managedDeadlineError, managedDeadlinePolicy} from './managed-deadline.js';
+import {ProviderUsageLimited, detectClaudeUsageLimit} from './provider-limits.js';
 
 export type ClaudeRuntimeOptions = RuntimeOptions & {stateDirectory: string; cliPath: string; dataDirectory: string; roomId: string; sessionId: string};
 type ClaudeSessionState = {threadId: string; completed: boolean};
@@ -145,6 +146,16 @@ export class ClaudeReceiver implements ReceiverRuntime {
                         return;
                     }
                     if (failure || code !== 0 || !result || result.is_error || result.subtype !== 'success' || !result.result?.trim()) {
+                        const usageLimit = detectClaudeUsageLimit({
+                            ...(result?.result === undefined ? {} : {result: result.result}),
+                            ...(result?.errors === undefined ? {} : {errors: result.errors}),
+                            stderr,
+                            defaultTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+                        });
+                        if (usageLimit) {
+                            reject(new ProviderUsageLimited(usageLimit));
+                            return;
+                        }
                         // Do not dump prompts, runtime logs or provider credentials into the room.
                         const startup = /unknown option|unknown argument/i.test(stderr) ? ' Installed Claude CLI is missing required options; update Claude Code.' : '';
                         reject(failure ?? new Error(`Claude did not complete this request (exit ${code ?? 'signal'}; ${result?.subtype ?? 'no result'}).${startup}`));

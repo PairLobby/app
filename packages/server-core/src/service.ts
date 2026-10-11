@@ -387,8 +387,8 @@ export class RoomService {
             if (recovered.responseEventId || (!recovered.requiresReply && recovered.resolution !== 'cancelled')) {
                 throw new ProtocolError('invalid_request', 'this request is already resolved');
             }
-            if (!recovered.failureAt) {
-                throw new ProtocolError('invalid_request', 'this request has not failed; wait for it or cancel it');
+            if (!recovered.failureAt && !recovered.providerWait) {
+                throw new ProtocolError('invalid_request', 'this request has not failed or entered provider wait; wait for it or cancel it');
             }
             if (recovered.recoveredByEventId) {
                 throw new ProtocolError('invalid_request', `this attempt is already being recovered as ${recovered.recoveredByEventId}; retry that one if it failed`);
