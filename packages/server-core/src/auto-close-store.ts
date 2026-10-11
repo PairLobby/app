@@ -8,7 +8,7 @@ import type {HandoverRecord, InviteRecord, MessageRequest, ParticipantRecord, Re
 import {autoCloseDue, autoCloseRoom, refreshAutoClose} from '@pairlobby/room-core';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 
-import type {EventPage, IdempotencyRecord, RoomStore} from './store.js';
+import type {EventPage, FileStore, IdempotencyRecord, RoomStore} from './store.js';
 
 type Clock = () => number;
 
@@ -25,6 +25,10 @@ function membersAfter(current: ParticipantRecord[], upserts: ParticipantRecord[]
 
 export class AutoCloseStore implements RoomStore {
     constructor(private readonly store: RoomStore, private readonly now: Clock) {}
+
+    get files(): FileStore | undefined {
+        return this.store.files;
+    }
 
     async createRoom(room: RoomRecord, participant: ParticipantRecord, event: RoomEvent): Promise<void> {
         await this.store.createRoom(refreshAutoClose(room, [participant], event, this.now()), participant, event);

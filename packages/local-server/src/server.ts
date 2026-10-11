@@ -39,6 +39,9 @@ export interface RunningServer {
     close(): Promise<void>;
 }
 
+/** The most one request may carry. Above any file a room accepts by default; nothing reads an unbounded body into memory. */
+const MAX_REQUEST_BYTES = 32 * 1024 * 1024;
+
 /** The port a relay listens on unless told otherwise, and the one other devices try when searching a tailnet. */
 export const DEFAULT_PORT = 8790;
 
@@ -212,6 +215,11 @@ function shareUrls(host: string, port: number, publicUrl: string | undefined, ta
 
 async function respond(handle: (request: Request) => Promise<Response>, incoming: IncomingMessage, outgoing: ServerResponse, origin: string, peerAddresses: WeakMap<Request, string>): Promise<void> {
     try {
+        if (Number(incoming.headers['content-length'] ?? 0) > MAX_REQUEST_BYTES) {
+            outgoing.writeHead(413, {'content-type': 'application/json', connection: 'close'});
+            outgoing.end(JSON.stringify({error: {code: 'payload_too_large', message: 'this request is larger than the relay accepts'}}));
+            return;
+        }
         const request = await toRequest(incoming, origin);
         peerAddresses.set(request, incoming.socket.remoteAddress ?? '');
         const response = await handle(request);
@@ -225,7 +233,14 @@ async function respond(handle: (request: Request) => Promise<Response>, incoming
 
 async function toRequest(incoming: IncomingMessage, origin: string): Promise<Request> {
     const chunks: Buffer[] = [];
-    for await (const chunk of incoming) chunks.push(chunk as Buffer);
+    let received = 0;
+    for await (const chunk of incoming) {
+        received += (chunk as Buffer).byteLength;
+        if (received > MAX_REQUEST_BYTES) {
+            throw new Error('request body too large');
+        }
+        chunks.push(chunk as Buffer);
+    }
     const method = incoming.method ?? 'GET';
     const headers = new Headers();
     for (const [name, value] of Object.entries(incoming.headers)) {

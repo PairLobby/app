@@ -5,6 +5,7 @@
 import {PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, ServerFrame, newCredential, newId} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
+    Attachment,
     AutoClosePolicy,
     MessageRequest,
     MessageAction,
@@ -23,11 +24,13 @@ import type {
     PermissionChange,
     ReadEventsResponse,
     RoomEvent,
+    RoomFile,
     RoomSnapshot,
     SendEventRequest,
     SendEventResponse
 } from '@pairlobby/protocol';
 
+type RawUpload = {body: Uint8Array<ArrayBuffer>; contentType: string};
 type RoomAccountAccess = {private: boolean; allowedAccounts: string[]};
 export type RoomAccountRestrictions = {private: boolean; accounts: string[]; preserveAllowlistSupported?: boolean};
 
@@ -209,6 +212,46 @@ export class PairLobbyClient {
         return this.call('POST', `/v1/rooms/${roomId}/participants/${participantId}/permissions`, credential, {permissions});
     }
 
+    /** Stores a file on the relay and returns what to put in a message's `attachments`. It is not in the room until a message carries it. */
+    async uploadFile(roomId: string, credential: string, name: string, bytes: Uint8Array, mediaType = 'application/octet-stream'): Promise<Attachment> {
+        const response = await this.raw('POST', `/v1/rooms/${roomId}/files?name=${encodeURIComponent(name)}`, credential, {body: bytes as Uint8Array<ArrayBuffer>, contentType: mediaType});
+        return (JSON.parse(await response.text()) as {file: Attachment}).file;
+    }
+
+    async files(roomId: string, credential: string): Promise<RoomFile[]> {
+        return (await this.call<{files: RoomFile[]}>('GET', `/v1/rooms/${roomId}/files`, credential)).files;
+    }
+
+    /** The file's bytes, checked against the digest the relay recorded for it. */
+    async downloadFile(roomId: string, credential: string, fileId: string): Promise<Uint8Array> {
+        const response = await this.raw('GET', `/v1/rooms/${roomId}/files/${fileId}`, credential);
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        const expected = response.headers.get('pairlobby-file-sha256');
+        const digest = Array.from(new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', bytes)), (byte) => byte.toString(16).padStart(2, '0')).join('');
+        if (expected && expected !== digest) {
+            throw new ProtocolError('server_unavailable', 'the file arrived damaged; try again');
+        }
+        return bytes;
+    }
+
+    /** A request whose body or answer is bytes rather than JSON. Errors still come back as `ProtocolError`. */
+    private async raw(method: string, path: string, credential: string, upload?: RawUpload): Promise<Response> {
+        const headers = new Headers({[PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION), authorization: `Bearer ${credential}`});
+        if (upload) {
+            headers.set('content-type', upload.contentType);
+        }
+        let response: Response;
+        try {
+            response = await fetch(`${this.serverUrl}${path}`, {method, headers, redirect: 'error', signal: this.signal ? AbortSignal.any([this.signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000), ...(upload ? {body: upload.body} : {})});
+        } catch (error) {
+            throw new ProtocolError('server_unavailable', `could not reach ${this.serverUrl}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        if (!response.ok) {
+            throw toProtocolError(response.status, await response.text());
+        }
+        return response;
+    }
+
     accountRestrictions(roomId: string, credential: string): Promise<RoomAccountRestrictions> {
         return this.call('GET', `/v1/rooms/${roomId}/allowed-accounts`, credential);
     }
@@ -294,7 +337,7 @@ export class PairLobbyClient {
         }
         await this.send(roomId, credential, {type: 'message.delivery_failed', payload: {eventId: request.eventId, reason, ...(stage ? {stage} : {})}, idempotencyKey: `failure-${request.eventId}`, ...(turnToken ? {turnToken} : {})});
     }
-    async reply(roomId: string, credential: string, eventId: string, text: string, progress = false, turnToken?: string): Promise<SendEventResponse> {
+    async reply(roomId: string, credential: string, eventId: string, text: string, progress = false, turnToken?: string, attachments: Attachment[] = []): Promise<SendEventResponse> {
         const target = await this.request(roomId, credential, eventId);
         if (target.receivedAt === null) {
             await this.acknowledgeMessage(roomId, credential, eventId);
@@ -304,7 +347,7 @@ export class PairLobbyClient {
             recipientId: target.from,
             replyTo: target.eventId,
             ...(turnToken ? {turnToken} : {}),
-            payload: {text, priority: 'normal', responseStage: progress ? 'progress' : 'final'},
+            payload: {text, priority: 'normal', responseStage: progress ? 'progress' : 'final', ...(attachments.length ? {attachments} : {})},
             idempotencyKey: progress ? newId('event') : `reply-${target.eventId}`
         });
     }

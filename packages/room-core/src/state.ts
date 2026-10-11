@@ -21,6 +21,8 @@ export interface Mutation {
     upsertControls: ControlRecord[];
     upsertRequests?: MessageRequest[];
     expectedTurnRevision?: number;
+    /** Uploaded files this event carries. A store marks them attached in the same write, or fails the whole mutation. */
+    attachFiles?: string[];
 }
 
 export interface CoreContext {

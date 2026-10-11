@@ -2,7 +2,7 @@
 //! everything diagnostic goes to stderr so a piped command stays parseable.
 
 import type {RoomEvent, RoomInvitationChange, RoomSnapshot} from '@pairlobby/protocol';
-import {failureLabel} from '@pairlobby/protocol';
+import {failureLabel, formatFileSize} from '@pairlobby/protocol';
 import {describeAutoClose, describeCloseReason} from './auto-close.js';
 import {describeParticipantPermissionChange, describeRoomPermissionChange} from './permissions.js';
 import type {OpenRequest, RoomEntry} from '@pairlobby/client';
@@ -219,7 +219,7 @@ export function renderEvents(events: RoomEvent[], names: Map<string, string>): v
 function describe(event: RoomEvent): string {
     switch (event.type) {
         case 'message':
-            return event.payload.text;
+            return `${event.payload.text}${(event.payload.attachments ?? []).map((file) => `\n  file: ${file.name} · ${formatFileSize(file.size)} · ${file.fileId}`).join('')}`;
         case 'handover.offered':
             return `handover ${event.payload.handoverId} revision ${event.payload.revision}: ${event.payload.document.metadata.goal}`;
         case 'handover.accepted':

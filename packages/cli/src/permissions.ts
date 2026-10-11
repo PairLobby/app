@@ -17,6 +17,7 @@ type PermissionRequest = {action: 'allow' | 'deny' | 'reset'; permissions: RoomP
 
 export const PERMISSION_LABELS: Record<RoomPermission, string> = {
     invite: 'create invites',
+    attach: 'send files',
     rename: 'rename the room',
     lock:   'lock and unlock the room',
     mute:   'mute and unmute participants',

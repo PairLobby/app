@@ -76,6 +76,23 @@ CREATE TABLE IF NOT EXISTS message_requests (
 CREATE INDEX IF NOT EXISTS message_requests_pending ON message_requests(room_id,seq) WHERE requires_reply=1 AND response_event_id IS NULL;
 CREATE INDEX IF NOT EXISTS message_requests_group ON message_requests(room_id,json_extract(body,'$.conversationId'));
 
+CREATE TABLE IF NOT EXISTS files (
+    file_id    TEXT PRIMARY KEY,
+    room_id    TEXT NOT NULL,
+    size       INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    event_id   TEXT,
+    body       TEXT NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS files_by_room ON files (room_id, created_at);
+
+CREATE TABLE IF NOT EXISTS file_chunks (
+    file_id TEXT NOT NULL,
+    idx     INTEGER NOT NULL,
+    bytes   BLOB NOT NULL,
+    PRIMARY KEY (file_id, idx)
+) STRICT;
+
 CREATE INDEX IF NOT EXISTS events_message_id ON events(room_id,json_extract(body,'$.eventId'));
 CREATE INDEX IF NOT EXISTS events_reply_to ON events(room_id,json_extract(body,'$.replyTo')) WHERE json_extract(body,'$.type')='message';
 CREATE INDEX IF NOT EXISTS events_receipt_to ON events(room_id,json_extract(body,'$.payload.eventId')) WHERE json_extract(body,'$.type')='message.received';

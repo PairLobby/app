@@ -8,7 +8,7 @@ export const CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const ID_BODY_LENGTH = 26;
 const INVITE_CODE_LENGTH = 8;
 
-export const ID_PREFIXES = {room: 'rm', participant: 'pt', event: 'ev', handover: 'ho', session: 'se', invite: 'iv', attempt: 'at'} as const;
+export const ID_PREFIXES = {room: 'rm', participant: 'pt', event: 'ev', handover: 'ho', session: 'se', invite: 'iv', attempt: 'at', file: 'fl'} as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;
 
@@ -33,6 +33,7 @@ export const EventId = idSchema('event');
 export const HandoverId = idSchema('handover');
 export const SessionId = idSchema('session');
 export const AttemptId = idSchema('attempt');
+export const FileId = idSchema('file');
 
 /** Generates a fresh invite code in canonical `XXXX-XXXX` form. */
 export function newInviteCode(length: 8 | 12 = 8): string {

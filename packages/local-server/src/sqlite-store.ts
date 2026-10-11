@@ -5,10 +5,10 @@
 import {ProtocolError, mergeMessageRequest} from '@pairlobby/protocol';
 import {DatabaseSync} from 'node:sqlite';
 
-import type {HandoverRecord, InviteRecord, LocalRoom, MessageRequest, ParticipantRecord, RequestPage, RoomEvent, RoomRecord} from '@pairlobby/protocol';
+import type {FileRecord, HandoverRecord, InviteRecord, LocalRoom, MessageRequest, ParticipantRecord, RequestPage, RoomEvent, RoomRecord} from '@pairlobby/protocol';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 import {REQUEST_BACKFILL_SQL} from '@pairlobby/server-core';
-import type {EventPage, IdempotencyRecord, RoomStore} from '@pairlobby/server-core';
+import type {EventPage, FileStore, IdempotencyRecord, RoomStore} from '@pairlobby/server-core';
 
 import {SCHEMA, SCHEMA_VERSION} from './schema.js';
 
@@ -18,8 +18,47 @@ interface BodyRow {
     body: string;
 }
 
+/** Small enough for any SQLite-backed store, including ones that cap a single value. */
+const FILE_CHUNK_BYTES = 1024 * 1024;
+
 export class SqliteRoomStore implements RoomStore {
     private readonly db: DatabaseSync;
+    readonly files: FileStore = {
+        putFile: async (file, bytes, limitBytes) => this.transaction(() => {
+            const held = this.db.prepare('SELECT coalesce(sum(size), 0) AS total FROM files WHERE room_id = ?').get(file.roomId) as {total: number};
+            if (Number(held.total) + file.size > limitBytes) {
+                return false;
+            }
+            this.db.prepare('INSERT INTO files (file_id, room_id, size, created_at, event_id, body) VALUES (?, ?, ?, ?, ?, ?)').run(file.fileId, file.roomId, file.size, file.createdAt, file.eventId, JSON.stringify(file));
+            const insert = this.db.prepare('INSERT INTO file_chunks (file_id, idx, bytes) VALUES (?, ?, ?)');
+            for (let offset = 0, index = 0; offset < bytes.byteLength; offset += FILE_CHUNK_BYTES, index++) {
+                insert.run(file.fileId, index, bytes.subarray(offset, offset + FILE_CHUNK_BYTES));
+            }
+            return true;
+        }),
+        file: async (roomId, fileId) => {
+            const row = this.db.prepare('SELECT body FROM files WHERE room_id = ? AND file_id = ?').get(roomId, fileId) as BodyRow | undefined;
+            return row ? (JSON.parse(row.body) as FileRecord) : null;
+        },
+        fileBytes: async (roomId, fileId) => {
+            const file = this.db.prepare('SELECT size FROM files WHERE room_id = ? AND file_id = ?').get(roomId, fileId) as {size: number} | undefined;
+            if (!file) {
+                return null;
+            }
+            const bytes = new Uint8Array(Number(file.size));
+            let offset = 0;
+            for (const chunk of this.db.prepare('SELECT bytes FROM file_chunks WHERE file_id = ? ORDER BY idx').all(fileId) as {bytes: Uint8Array}[]) {
+                bytes.set(chunk.bytes, offset);
+                offset += chunk.bytes.byteLength;
+            }
+            return offset === bytes.byteLength ? bytes : null;
+        },
+        attachedFiles: async (roomId) => (this.db.prepare('SELECT body FROM files WHERE room_id = ? AND event_id IS NOT NULL ORDER BY created_at, file_id').all(roomId) as unknown as BodyRow[]).map((row) => JSON.parse(row.body) as FileRecord),
+        deleteUnattachedFiles: async (roomId, before) => this.transaction(() => {
+            this.db.prepare('DELETE FROM file_chunks WHERE file_id IN (SELECT file_id FROM files WHERE room_id = ? AND event_id IS NULL AND created_at < ?)').run(roomId, before);
+            this.db.prepare('DELETE FROM files WHERE room_id = ? AND event_id IS NULL AND created_at < ?').run(roomId, before);
+        }),
+    };
 
     constructor(location: string) {
         this.db = new DatabaseSync(location);
@@ -95,6 +134,14 @@ export class SqliteRoomStore implements RoomStore {
                     .run(control.roomId, control.targetParticipantId, JSON.stringify(control));
             }
             for (const request of mutation.upsertRequests ?? []) this.writeRequest(request);
+            for (const fileId of mutation.attachFiles ?? []) {
+                const row = this.db.prepare('SELECT body FROM files WHERE room_id = ? AND file_id = ? AND event_id IS NULL').get(mutation.room.roomId, fileId) as BodyRow | undefined;
+                if (!row) {
+                    throw new ProtocolError('invalid_request', 'an attached file is no longer available; upload it again');
+                }
+                const file: FileRecord = {...(JSON.parse(row.body) as FileRecord), eventId: mutation.appendEvent.eventId};
+                this.db.prepare('UPDATE files SET event_id = ?, body = ? WHERE file_id = ?').run(file.eventId, JSON.stringify(file), fileId);
+            }
             this.writeEvent(mutation.appendEvent);
             if (idempotency) {
                 this.db
@@ -274,7 +321,8 @@ export class SqliteRoomStore implements RoomStore {
     /** Physical cleanup. Access was already denied by the lifecycle change. */
     async deleteRoom(roomId: string): Promise<void> {
         this.transaction(() => {
-            for (const table of ['message_requests', 'events', 'idempotency', 'handovers', 'controls', 'invites', 'participants']) {
+            this.db.prepare('DELETE FROM file_chunks WHERE file_id IN (SELECT file_id FROM files WHERE room_id = ?)').run(roomId);
+            for (const table of ['files', 'message_requests', 'events', 'idempotency', 'handovers', 'controls', 'invites', 'participants']) {
                 this.db.prepare(`DELETE FROM ${table} WHERE room_id = ?`).run(roomId);
             }
         });

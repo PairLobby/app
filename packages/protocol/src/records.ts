@@ -19,6 +19,8 @@ export const RoomPolicySchema = z.object({
     autoClose: AutoClosePolicySchema.optional(),
     localJoin: z.boolean().optional(),
     permissions: PermissionSet.optional(),
+    maxFileBytes: z.number().int().nonnegative().optional(),
+    maxRetainedFileBytes: z.number().int().nonnegative().optional(),
     maxParticipants: z.number().int().min(2),
     maxEventPayloadBytes: z.number().int().min(1),
     maxRetainedEventBytes: z.number().int().min(1),
@@ -174,6 +176,8 @@ export const RoomSnapshot = z.object({
     adminRolesSupported: z.boolean().optional(),
     /** The relay enforces per-command permissions for members and accepts changes to them. */
     permissionsSupported: z.boolean().optional(),
+    /** The relay stores files, so messages may carry attachments. */
+    filesSupported: z.boolean().optional(),
     inviteRoleSupported: z.boolean().optional(),
     autoCloseSupported: z.boolean().optional(),
     interruptSupported: z.boolean().optional(),

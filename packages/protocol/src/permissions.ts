@@ -6,26 +6,26 @@ import {z} from 'zod';
 /**
  * `invite` mints invite codes; `rename` renames the room; `lock` locks and unlocks
  * admission; `mute` and `kick` act on another participant; `pause` pauses, resumes
- * and interrupts an agent; `turns` skips or cancels a speaking turn.
+ * and interrupts an agent; `turns` skips or cancels a speaking turn; `attach` sends files.
  */
-export const ROOM_PERMISSIONS = ['invite', 'rename', 'lock', 'mute', 'kick', 'pause', 'turns'] as const;
+export const ROOM_PERMISSIONS = ['invite', 'attach', 'rename', 'lock', 'mute', 'kick', 'pause', 'turns'] as const;
 export const RoomPermission = z.enum(ROOM_PERMISSIONS);
 export type RoomPermission = z.infer<typeof RoomPermission>;
 
 const choice = z.boolean().optional();
 
 /** Only the commands that were decided. An absent command falls back: a member's to the room's, the room's to the built-in default. */
-export const PermissionSet = z.object({invite: choice, rename: choice, lock: choice, mute: choice, kick: choice, pause: choice, turns: choice});
+export const PermissionSet = z.object({invite: choice, attach: choice, rename: choice, lock: choice, mute: choice, kick: choice, pause: choice, turns: choice});
 export type PermissionSet = z.infer<typeof PermissionSet>;
 
 const change = z.boolean().nullable().optional();
 
 /** `true` allows, `false` refuses, `null` clears the decision so the fallback applies again. */
-export const PermissionChange = z.object({invite: change, rename: change, lock: change, mute: change, kick: change, pause: change, turns: change});
+export const PermissionChange = z.object({invite: change, attach: change, rename: change, lock: change, mute: change, kick: change, pause: change, turns: change});
 export type PermissionChange = z.infer<typeof PermissionChange>;
 
-/** What a member may do in a room nobody has configured: pass an invite along, and nothing that moderates. */
-export const DEFAULT_MEMBER_PERMISSIONS: Record<RoomPermission, boolean> = {invite: true, rename: false, lock: false, mute: false, kick: false, pause: false, turns: false};
+/** What a member may do in a room nobody has configured: pass an invite along, send files, and nothing that moderates. */
+export const DEFAULT_MEMBER_PERMISSIONS: Record<RoomPermission, boolean> = {invite: true, attach: true, rename: false, lock: false, mute: false, kick: false, pause: false, turns: false};
 
 type PermissionHolder = {role: 'guest' | 'member' | 'controller'; permissions?: PermissionSet | undefined};
 
@@ -38,7 +38,7 @@ export function roomPermissions(room: PermissionSet | undefined): Record<RoomPer
 export function effectivePermissions(holder: PermissionHolder, room: PermissionSet | undefined): Record<RoomPermission, boolean> {
     if (holder.role !== 'member') {
         const all = holder.role === 'controller';
-        return {invite: all, rename: all, lock: all, mute: all, kick: all, pause: all, turns: all};
+        return {invite: all, attach: all, rename: all, lock: all, mute: all, kick: all, pause: all, turns: all};
     }
     return overlay(roomPermissions(room), holder.permissions);
 }

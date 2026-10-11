@@ -53,7 +53,7 @@ test('test_settings_pages_edit_room_and_member_permissions_and_give_an_allowed_m
     const {context: joe} = await admit(room, 'joe');
 
     const settings = await settingsPage(owner);
-    expect(settings.rows.find((row) => row.id === 'permissions')?.value).toBe('Members may: invite');
+    expect(settings.rows.find((row) => row.id === 'permissions')?.value).toBe('Members may: invite, attach');
     const permissions = await open(settings, 'permissions');
     expect(permissions.rows.find((row) => row.id === 'mute')?.value).toBe('Owner and admins only (default)');
     await (permissions.rows.find((row) => row.id === 'invite')!.action as PanelEdit).save('deny');
@@ -78,7 +78,7 @@ test('test_settings_pages_edit_room_and_member_permissions_and_give_an_allowed_m
 });
 
 test('test_effective_permissions_put_a_members_own_decision_before_the_rooms_and_never_limit_admins', () => {
-    expect(roomPermissions(undefined)).toEqual({invite: true, rename: false, lock: false, mute: false, kick: false, pause: false, turns: false});
+    expect(roomPermissions(undefined)).toEqual({invite: true, attach: true, rename: false, lock: false, mute: false, kick: false, pause: false, turns: false});
     expect(effectivePermissions({role: 'member'}, {invite: false, lock: true}).invite).toBe(false);
     expect(effectivePermissions({role: 'member', permissions: {invite: true, lock: false}}, {invite: false, lock: true})).toMatchObject({invite: true, lock: false});
     expect(Object.values(effectivePermissions({role: 'controller'}, {invite: false})).every(Boolean)).toBe(true);
@@ -90,7 +90,7 @@ test('test_permission_command_parsing_accepts_several_commands_all_and_a_name_wi
     expect(parsePermissionCommand('allow kick mute @maria')).toEqual({action: 'allow', permissions: ['kick', 'mute'], target: '@maria'});
     expect(parsePermissionCommand('deny invite')).toEqual({action: 'deny', permissions: ['invite'], target: ''});
     expect(parsePermissionCommand('reset all for build agent').target).toBe('build agent');
-    expect(parsePermissionCommand('reset all').permissions).toHaveLength(7);
+    expect(parsePermissionCommand('reset all').permissions).toHaveLength(8);
     expect(() => parsePermissionCommand('grant kick')).toThrow('Usage: /permissions');
     expect(() => parsePermissionCommand('allow nothing')).toThrow('Usage: /permissions');
 });

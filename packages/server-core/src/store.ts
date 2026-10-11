@@ -2,7 +2,7 @@
 //! imitating a database API, so a Durable Object's SQL transaction and a Node
 //! server's SQLite transaction implement the same small surface.
 
-import type {HandoverRecord, MessageRequest, RequestPage, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
+import type {FileRecord, HandoverRecord, MessageRequest, RequestPage, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 
 type IdempotencyKey = {key: string; requestDigest: string} | null;
@@ -17,7 +17,28 @@ export interface EventPage {
     hasMore: boolean;
 }
 
+/**
+ * Where a relay keeps attached files. Optional: a store without one makes a relay
+ * that refuses attachments and says so in its snapshot.
+ */
+export interface FileStore {
+    /**
+     * Stores a new upload, record and bytes together. Returns false, storing nothing,
+     * when the room would then hold more than `limitBytes` across all its files.
+     */
+    putFile(file: FileRecord, bytes: Uint8Array, limitBytes: number): Promise<boolean>;
+    file(roomId: string, fileId: string): Promise<FileRecord | null>;
+    fileBytes(roomId: string, fileId: string): Promise<Uint8Array | null>;
+    /** Files a message carries, oldest first. Uploads nobody sent are not listed. */
+    attachedFiles(roomId: string): Promise<FileRecord[]>;
+    /** Removes uploads older than `before` that no message carried. */
+    deleteUnattachedFiles(roomId: string, before: number): Promise<void>;
+}
+
 export interface RoomStore {
+    /** Present when this store keeps files. `apply` then also honours `Mutation.attachFiles`, and `deleteRoom` removes the room's files. */
+    files?: FileStore | undefined;
+
     /** Creates the room, its first participant, and the joined event in one transaction. */
     createRoom(room: RoomRecord, participant: ParticipantRecord, event: RoomEvent): Promise<void>;
 

@@ -7,6 +7,7 @@ import {NameSource, ParticipantName} from './names.js';
 import {EventId, HandoverId, ParticipantId, RoomId} from './ids.js';
 import {HandoverDocument} from './handover.js';
 import {AutoClosePolicySchema, CloseReasonSchema} from './auto-close.js';
+import {Attachment, MAX_ATTACHMENTS_PER_MESSAGE} from './files.js';
 import {PermissionSet} from './permissions.js';
 
 export const PROTOCOL_VERSION = 1;
@@ -50,7 +51,9 @@ const messagePayload = z.object({
     priority: z.enum(['normal', 'priority']).default('normal'),
     responseStage: z.enum(['progress', 'final']).optional(),
     /** A new attempt at a request that failed: the failed request's delivery ID. Its answer resolves that request too. */
-    recovers: EventId.optional()
+    recovers: EventId.optional(),
+    /** Files sent with this message. Only a relay with a file store accepts them; see `filesSupported`. */
+    attachments: z.array(Attachment).min(1).max(MAX_ATTACHMENTS_PER_MESSAGE).optional()
 });
 
 /** A participant confirms receipt of a message; only the target satisfies an addressed request. */

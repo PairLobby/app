@@ -1,3 +1,5 @@
+import type {Attachment} from './files.js';
+
 /** Durable obligation per addressed message. Transport receipt is not a reply. */
 export interface MessageRequest {
     roomId: string;
@@ -41,6 +43,8 @@ export interface MessageRequest {
     resolutionBy?: string;
     resolutionReason?: string;
     resolutionEventId?: string;
+    /** Files the message carried, so a recipient can fetch them without reading the transcript. */
+    attachments?: Attachment[];
 }
 export type TurnMode = 'sequential' | 'parallel';
 export type TurnEntry = {requestId: string; conversationId: string; participantId: string; name: string; state: 'waiting' | 'answering' | 'stalled' | 'paused' | 'unavailable' | 'failed'; expiresAt: number | null; workingAt?: number; runtime?: string};

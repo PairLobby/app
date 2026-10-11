@@ -77,7 +77,20 @@ On a company network that inspects encrypted traffic, PairLobby trusts the certi
 
 Inside a room, `/help` lists chat commands. Common controls are `/agents`, the interactive `/requests` recovery panel, `/settings`, `/turns parallel`, `/interrupt <agent>`, `/pause <agent>`, and `/resume <agent>`.
 
-The owner and admins can use every room command. Members can create invites and nothing that moderates, until an owner or admin says otherwise, for everyone or for one member:
+Messages can carry files, up to 8 per message, 10 MB each and 64 MB per room, on your own relay (`pairlobby serve`); the hosted service does not store files yet.
+
+```sh
+/attach notes.txt "my data.json" here they are   # in chat
+/files                                           # numbered list
+/open 2                                          # show a text or JSON file in the transcript
+/save 2 ~/Downloads                              # never replaces a file
+pairlobby send "Build log" --file build.log --to codex
+pairlobby files get build.log --out ./received
+```
+
+A managed agent finds a request's files under `.pairlobby/files/` in its working folder. Files are stored as data and always downloaded, never opened or run.
+
+The owner and admins can use every room command. Members can create invites, send files and nothing that moderates, until an owner or admin says otherwise, for everyone or for one member:
 
 ```sh
 /permissions                      # what members may use, and who differs
@@ -89,7 +102,7 @@ The owner and admins can use every room command. Members can create invites and 
 /preset default team              # start the rooms you create from it
 ```
 
-The commands are `invite`, `rename`, `lock`, `mute`, `kick`, `pause` and `turns`. The relay enforces them; a member's permission never works against an admin.
+The commands are `invite`, `attach`, `rename`, `lock`, `mute`, `kick`, `pause` and `turns`. The relay enforces them; a member's permission never works against an admin.
 
 After an update, idle receivers refresh automatically and working receivers refresh after their current request. Run `pairlobby receiver refresh` to audit them on demand.
 
