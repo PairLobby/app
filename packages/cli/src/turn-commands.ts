@@ -2,6 +2,7 @@ import {ProtocolError} from '@pairlobby/protocol';
 import {stripVTControlCharacters} from 'node:util';
 import type {TurnAction, TurnQueue} from '@pairlobby/protocol';
 import type {RoomCommandContext} from './chat-commands.js';
+import {authorityFor, notPermitted} from './permissions.js';
 
 export function formatTurnQueue(queue: TurnQueue, details = false): string {
     const priorities = {answering: 0, stalled: 1, waiting: 2, paused: 3, unavailable: 4, failed: 5};
@@ -20,12 +21,16 @@ export async function runTurnCommand(argument: string, context: RoomCommandConte
     if (!argument.trim()) {
         return client.turnQueue(roomId, credential);
     }
-    const owner = controllerCredential ?? (snapshot.participants.find((participant) => participant.participantId === context.participantId)?.role === 'controller' ? credential : undefined);
-    if (!owner) {
-        throw new ProtocolError('unauthorized', 'only the room owner may change or skip speaking turns');
-    }
     if (argument === 'sequential' || argument === 'parallel') {
-        return client.setTurnMode(roomId, owner, argument);
+        const admin = controllerCredential ?? (snapshot.participants.find((participant) => participant.participantId === context.participantId)?.role === 'controller' ? credential : undefined);
+        if (!admin) {
+            throw new ProtocolError('unauthorized', 'only the room owner and admins may change the reply mode');
+        }
+        return client.setTurnMode(roomId, admin, argument);
+    }
+    const owner = authorityFor(snapshot, context.participantId, 'turns', credential, controllerCredential);
+    if (!owner) {
+        throw notPermitted('turns');
     }
     const [command, ...words] = argument.split(/\s+/);
     if (command !== 'skip' && command !== 'cancel') {

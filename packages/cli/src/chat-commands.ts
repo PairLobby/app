@@ -2,6 +2,7 @@ import {ParticipantName, ProtocolError} from '@pairlobby/protocol';
 import type {RoomSnapshot} from '@pairlobby/protocol';
 import type {PairLobbyClient, RoomInvitation} from '@pairlobby/client';
 import {isHostedUrl, joinCommand} from './share.js';
+import {authorityFor, notPermitted, runPermissionCommand} from './permissions.js';
 import {formatTurnQueue, runTurnCommand} from './turn-commands.js';
 
 export type RoomCommandContext = {
@@ -13,7 +14,7 @@ export type RoomCommandContext = {
 };
 
 export function isRoomCommand(line: string): boolean {
-    return /^\/(name|invite|invites|lock|unlock|kick|mute|unmute|turns)(?:\s|$)/.test(line);
+    return /^\/(name|invite|invites|lock|unlock|kick|mute|unmute|turns|permissions|perms)(?:\s|$)/.test(line);
 }
 
 function targetParticipant(snapshot: RoomSnapshot, reference: string): string {
@@ -95,6 +96,9 @@ export async function runRoomCommand(line: string, context: RoomCommandContext):
         await client.renameSelf(roomId, credential, parsed.data);
         return `Your name in this room is ${parsed.data}. Your default profile is unchanged.`;
     }
+    if (command === '/permissions' || command === '/perms') {
+        return runPermissionCommand(argument, context);
+    }
     if (command === '/turns') {
         return formatTurnQueue(await runTurnCommand(argument, context), true);
     }
@@ -119,15 +123,20 @@ export async function runRoomCommand(line: string, context: RoomCommandContext):
         const defaultName = /^as\s/.test(argument) ? argument.slice(3).trim() : undefined;
         // A named invite or an explicit choice wins; otherwise the room's /settings default, which is member.
         const role = defaultName || argument === 'member' ? 'member' : argument === 'observer' ? 'guest' : snapshot.policy.inviteRole ?? 'member';
-        const invite = await client.mintInvite(roomId, credential, role, true, undefined, defaultName);
+        const inviter = authorityFor(snapshot, participantId, 'invite', credential, controllerCredential);
+        if (!inviter) {
+            throw notPermitted('invite');
+        }
+        const invite = await client.mintInvite(roomId, inviter, role, true, undefined, defaultName);
         const share = await joinCommand(client.serverUrl, invite.code);
         const reach = share.target.discoverable ? ` (on your network or tailnet, pairlobby join ${invite.code} is enough)` : !share.target.localOnly ? '' : share.target.otherRelay ? ' (this device only; other devices need an address of this relay they can reach)' : ' (this device only; share it with pairlobby settings network-sharing, then restart the relay)';
         const admits = role === 'guest' ? 'read-only observer' : defaultName ? `member who can speak, default name: ${defaultName}` : 'member who can speak';
         return `Invite: ${invite.code} — ${admits} · ${share.command}${reach}`;
     }
-    const owner = controllerCredential ?? (member.role === 'controller' ? credential : undefined);
+    const permission = command === '/lock' || command === '/unlock' ? 'lock' : command === '/kick' ? 'kick' : 'mute';
+    const owner = authorityFor(snapshot, participantId, permission, credential, controllerCredential);
     if (!owner) {
-        throw new ProtocolError('unauthorized', 'this command requires the room owner');
+        throw notPermitted(permission);
     }
     if (command === '/lock' || command === '/unlock') {
         if (argument) {

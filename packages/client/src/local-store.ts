@@ -8,6 +8,8 @@ import {chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync} from 'nod
 import {homedir, platform} from 'node:os';
 import {join} from 'node:path';
 
+import type {AutoClosePolicy, PermissionSet} from '@pairlobby/protocol';
+
 type RoomResolution = {room: RoomEntry} | {ambiguous: RoomEntry[]} | {missing: true};
 
 export interface SessionEntry {
@@ -53,6 +55,22 @@ export interface RoomEntry {
     /** Chosen by a human chat, never inferred from a matching display name. */
     preferredHumanSessionId?: string;
 }
+
+/**
+ * A named room setup saved on this device. Configuration only: no credentials and
+ * nothing that names a participant, so it can be applied to any room.
+ */
+export interface RoomPreset {
+    name: string;
+    savedAt: number;
+    /** Room-wide command permissions as decided; an absent command means the built-in default. */
+    permissions: PermissionSet;
+    turnMode: 'sequential' | 'parallel';
+    inviteRole: 'member' | 'guest';
+    autoClose: AutoClosePolicy;
+}
+
+type PresetLibrary = {default: string | null; presets: RoomPreset[]};
 
 /** Defaults for this device, so a human does not retype their identity on every join. */
 export interface Profile {
@@ -295,6 +313,55 @@ export class LocalStore {
             }
         }
         writeJsonPrivate(this.credentialsFile, credentials);
+    }
+
+    private get presetsFile(): string {
+        return join(this.directory, 'presets.json');
+    }
+
+    private presetLibrary(): PresetLibrary {
+        const saved = readJson<Partial<PresetLibrary>>(this.presetsFile, {});
+        return {default: saved.default ?? null, presets: saved.presets ?? []};
+    }
+
+    presets(): RoomPreset[] {
+        return this.presetLibrary().presets;
+    }
+
+    /** Names match without regard to case, so "Team" and "team" are one preset. */
+    preset(name: string): RoomPreset | undefined {
+        return this.presets().find((preset) => preset.name.toLowerCase() === name.toLowerCase());
+    }
+
+    /** Adds the preset, or replaces the one with the same name. Returns true when it replaced one. */
+    savePreset(preset: RoomPreset): boolean {
+        const library = this.presetLibrary();
+        const others = library.presets.filter((saved) => saved.name.toLowerCase() !== preset.name.toLowerCase());
+        const replaced = others.length !== library.presets.length;
+        const wasDefault = library.default?.toLowerCase() === preset.name.toLowerCase();
+        writeJsonPrivate(this.presetsFile, {default: wasDefault ? preset.name : library.default, presets: [...others, preset]});
+        return replaced;
+    }
+
+    /** Removes a preset, and stops using it for new rooms if it was the default. Returns false when none had that name. */
+    deletePreset(name: string): boolean {
+        const library = this.presetLibrary();
+        const others = library.presets.filter((saved) => saved.name.toLowerCase() !== name.toLowerCase());
+        if (others.length === library.presets.length) {
+            return false;
+        }
+        writeJsonPrivate(this.presetsFile, {default: library.default?.toLowerCase() === name.toLowerCase() ? null : library.default, presets: others});
+        return true;
+    }
+
+    /** The preset applied to rooms this device creates, if one is chosen and still exists. */
+    defaultPreset(): RoomPreset | undefined {
+        const name = this.presetLibrary().default;
+        return name ? this.preset(name) : undefined;
+    }
+
+    setDefaultPreset(name: string | null): void {
+        writeJsonPrivate(this.presetsFile, {...this.presetLibrary(), default: name});
     }
 
     putCredential(roomId: string, scope: string, credential: string): void {

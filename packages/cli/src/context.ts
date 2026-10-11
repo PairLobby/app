@@ -150,6 +150,23 @@ export function controllerCredential(store: LocalStore, room: RoomEntry): string
     return store.credential(room.roomId, admin.sessionId)!;
 }
 
+/**
+ * The credential for a command a room may let members use: the owner's or an admin's
+ * when this device holds one, otherwise the selected session's. The relay decides.
+ */
+export function moderationCredential(store: LocalStore, room: RoomEntry, sessionRef?: string): string {
+    try {
+        return controllerCredential(store, room);
+    } catch (error) {
+        const session = room.sessions.length === 1 || sessionRef ? resolveSession(room, sessionRef) : undefined;
+        const credential = session ? store.credential(room.roomId, session.sessionId) : undefined;
+        if (!credential) {
+            throw error;
+        }
+        return credential;
+    }
+}
+
 /** Resolves a recipient by participant id or unambiguous display name. */
 export function resolveRecipient(participants: RecipientParticipant[], reference: string): string {
     const byId = participants.find((participant) => participant.participantId === reference);

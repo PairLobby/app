@@ -9,6 +9,8 @@ import type {
     RequestPage,
     ExportResponse,
     ParticipantKind,
+    PermissionChange,
+    PermissionSet,
     RenameSelfRequest,
     NameSource,
     ParticipantRole,
@@ -28,6 +30,7 @@ import {
     assertCanAcknowledge,
     assertActiveMember,
     assertController,
+    assertPermitted,
     authenticate,
     closeRoom,
     createRoom,
@@ -49,7 +52,9 @@ import {
     setLocalJoin,
     setLocked,
     setMuted,
+    setParticipantPermissions,
     setParticipantRole,
+    setRoomPermissions,
     emptyMutation,
     toSnapshot
 } from '@pairlobby/room-core';
@@ -182,9 +187,7 @@ export class RoomService {
     async mintInvite(roomId: string, credential: string, role: ParticipantRole, reusable = true, expiresAt?: number | null, defaultName?: string): Promise<MintedInvite> {
         const view = await this.view(roomId);
         const actor = authenticate(view, await hashCredential(credential), this.now());
-        if (actor.kind === 'participant') {
-            assertCanWrite(actor);
-        }
+        assertPermitted(view, actor, 'invite');
         if (role === 'controller') {
             assertController(actor);
         }
@@ -313,6 +316,11 @@ export class RoomService {
         );
         if (previousOccupant?.muted) {
             joined.participant.muted = true;
+        }
+        // Leaving and coming back on the same seat keeps what was refused; what was allowed must be granted again.
+        const refused = refusedPermissions(previousOccupant?.permissions);
+        if (refused && admissionRole === 'member') {
+            joined.participant.permissions = refused;
         }
         await this.store.apply(joined.mutation, null);
         await this.store.completeInvite(digest, joined.participant.participantId);
@@ -721,6 +729,22 @@ export class RoomService {
         return toSnapshot(await this.view(roomId));
     }
 
+    async setRoomPermissions(roomId: string, credential: string, change: PermissionChange): Promise<RoomSnapshot> {
+        const mutation = setRoomPermissions(await this.view(roomId), await hashCredential(credential), change, this.ctx());
+        if (mutation) {
+            await this.applyOne(mutation);
+        }
+        return toSnapshot(await this.view(roomId));
+    }
+
+    async setParticipantPermissions(roomId: string, credential: string, participantId: string, change: PermissionChange): Promise<RoomSnapshot> {
+        const mutation = setParticipantPermissions(await this.view(roomId), await hashCredential(credential), participantId, change, this.ctx());
+        if (mutation) {
+            await this.applyOne(mutation);
+        }
+        return toSnapshot(await this.view(roomId));
+    }
+
     async control(roomId: string, credential: string, targetParticipantId: string, paused: boolean): Promise<RoomEvent> {
         return this.applyOne(requestControl(await this.view(roomId), await hashCredential(credential), targetParticipantId, paused, this.ctx()));
     }
@@ -925,6 +949,11 @@ export class RoomService {
         await this.store.apply(mutation, null);
         return mutation.appendEvent;
     }
+}
+
+function refusedPermissions(permissions: PermissionSet | undefined): PermissionSet | null {
+    const refused = Object.fromEntries(Object.entries(permissions ?? {}).filter(([, allowed]) => allowed === false)) as PermissionSet;
+    return Object.keys(refused).length ? refused : null;
 }
 
 export {DEFAULT_ROOM_POLICY};

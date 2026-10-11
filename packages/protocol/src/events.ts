@@ -7,6 +7,7 @@ import {NameSource, ParticipantName} from './names.js';
 import {EventId, HandoverId, ParticipantId, RoomId} from './ids.js';
 import {HandoverDocument} from './handover.js';
 import {AutoClosePolicySchema, CloseReasonSchema} from './auto-close.js';
+import {PermissionSet} from './permissions.js';
 
 export const PROTOCOL_VERSION = 1;
 export const PROTOCOL_VERSION_HEADER = 'pairlobby-protocol';
@@ -133,6 +134,8 @@ export const EventBody = z.discriminatedUnion('type', [
     z.object({type: z.literal('room.lock_changed'), payload: z.object({locked: z.boolean()})}),
     z.object({type: z.literal('participant.mute_changed'), payload: z.object({participantId: ParticipantId, muted: z.boolean()})}),
     z.object({type: z.literal('participant.role_changed'), payload: z.object({participantId: ParticipantId, role: ParticipantRole, previousRole: ParticipantRole})}),
+    z.object({type: z.literal('room.permissions_changed'), payload: z.object({permissions: PermissionSet, previous: PermissionSet})}),
+    z.object({type: z.literal('participant.permissions_changed'), payload: z.object({participantId: ParticipantId, permissions: PermissionSet, previous: PermissionSet})}),
     z.object({type: z.literal('conversation.turn_changed'), payload: z.object({action: z.enum(['claimed', 'working', 'passed', 'skipped', 'cancelled', 'mode']), requestIds: z.array(EventId).max(32), participantIds: z.array(ParticipantId).max(32), mode: z.enum(['sequential', 'parallel'])})})
 ]);
 export type EventBody = z.infer<typeof EventBody>;

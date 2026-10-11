@@ -8,6 +8,7 @@ import {AdapterCapabilities, ControlOutcome, ParticipantKind, ParticipantRole} f
 import {AttemptId, EventId, HandoverId, ParticipantId, RoomId, SessionId} from './ids.js';
 import {HandoverDocument, HandoverState} from './handover.js';
 import {AutoClosePolicySchema, CloseReasonSchema} from './auto-close.js';
+import {PermissionSet} from './permissions.js';
 
 export const RoomLifecycle = z.enum(['open', 'closed', 'expired', 'deleted']);
 export type RoomLifecycle = z.infer<typeof RoomLifecycle>;
@@ -17,6 +18,7 @@ export const RoomPolicySchema = z.object({
     inviteRole: z.enum(['member', 'guest']).optional(),
     autoClose: AutoClosePolicySchema.optional(),
     localJoin: z.boolean().optional(),
+    permissions: PermissionSet.optional(),
     maxParticipants: z.number().int().min(2),
     maxEventPayloadBytes: z.number().int().min(1),
     maxRetainedEventBytes: z.number().int().min(1),
@@ -73,7 +75,9 @@ export const ParticipantRecord = z.object({
     joinedAt: z.number().int().nonnegative(),
     revokedAt: z.number().int().nonnegative().nullable(),
     leftAt: z.number().int().nonnegative().nullable(),
-    muted: z.boolean().optional()
+    muted: z.boolean().optional(),
+    /** This member's own allowances and refusals, ahead of the room's. Dropped when they stop being a member. */
+    permissions: PermissionSet.optional()
 });
 export type ParticipantRecord = z.infer<typeof ParticipantRecord>;
 
@@ -147,6 +151,7 @@ export const ParticipantView = z.object({
     left: z.boolean(),
     paused: z.boolean(),
     muted: z.boolean().optional(),
+    permissions: PermissionSet.optional(),
     controlRevision: z.number().int().nonnegative(),
     acknowledgedOutcome: ControlOutcome.nullable(),
     /** The revision the receiver last acknowledged, so a client can tell whether the latest control was answered. */
@@ -167,6 +172,8 @@ export const RoomSnapshot = z.object({
     rejoinSupported: z.boolean().optional(),
     renameSelfSupported: z.boolean().optional(),
     adminRolesSupported: z.boolean().optional(),
+    /** The relay enforces per-command permissions for members and accepts changes to them. */
+    permissionsSupported: z.boolean().optional(),
     inviteRoleSupported: z.boolean().optional(),
     autoCloseSupported: z.boolean().optional(),
     interruptSupported: z.boolean().optional(),

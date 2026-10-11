@@ -1,8 +1,8 @@
 //! Authorization runs on every operation, including events arriving on a socket
 //! that was authorized when it opened.
 
-import {ProtocolError, digestsEqual} from '@pairlobby/protocol';
-import type {ParticipantRecord} from '@pairlobby/protocol';
+import {ProtocolError, digestsEqual, effectivePermissions} from '@pairlobby/protocol';
+import type {ParticipantRecord, RoomPermission} from '@pairlobby/protocol';
 
 import {findParticipant, isActive, type RoomView} from './state.js';
 
@@ -55,6 +55,26 @@ export function assertController(actor: Actor): void {
         return;
     }
     throw new ProtocolError('unauthorized', 'this action requires the room controller credential');
+}
+
+const PERMISSION_LABELS: Record<RoomPermission, string> = {invite: 'create invites', rename: 'rename the room', lock: 'lock or unlock the room', mute: 'mute or unmute participants', kick: 'remove participants', pause: 'pause, resume or interrupt agents', turns: 'skip or cancel speaking turns'};
+
+/** Owner and admins always pass. A member passes when their own decision, or else the room's, allows the command. */
+export function assertPermitted(view: RoomView, actor: Actor, permission: RoomPermission): void {
+    if (actor.kind === 'controller') {
+        return;
+    }
+    const participant = assertCanWrite(actor);
+    if (!effectivePermissions(participant, view.room.policy.permissions)[permission]) {
+        throw new ProtocolError('unauthorized', `this room does not let you ${PERMISSION_LABELS[permission]}; ask its owner or an admin`);
+    }
+}
+
+/** A permission lets a member moderate other members, never the people who granted it. */
+export function assertMayTarget(actor: Actor, target: ParticipantRecord): void {
+    if (actor.kind === 'participant' && actor.participant.role !== 'controller' && target.role === 'controller') {
+        throw new ProtocolError('unauthorized', 'only the room owner or another admin can do this to an admin');
+    }
 }
 
 /**

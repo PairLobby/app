@@ -77,6 +77,20 @@ On a company network that inspects encrypted traffic, PairLobby trusts the certi
 
 Inside a room, `/help` lists chat commands. Common controls are `/agents`, the interactive `/requests` recovery panel, `/settings`, `/turns parallel`, `/interrupt <agent>`, `/pause <agent>`, and `/resume <agent>`.
 
+The owner and admins can use every room command. Members can create invites and nothing that moderates, until an owner or admin says otherwise, for everyone or for one member:
+
+```sh
+/permissions                      # what members may use, and who differs
+/permissions allow mute kick      # every member
+/permissions allow pause maria    # one member
+/permissions deny invite          # owner and admins only
+/preset save team                 # keep this room's setup on this device
+/preset apply team                # show what it would change; add confirm to apply
+/preset default team              # start the rooms you create from it
+```
+
+The commands are `invite`, `rename`, `lock`, `mute`, `kick`, `pause` and `turns`. The relay enforces them; a member's permission never works against an admin.
+
 After an update, idle receivers refresh automatically and working receivers refresh after their current request. Run `pairlobby receiver refresh` to audit them on demand.
 
 Failed managed work is never replayed automatically:

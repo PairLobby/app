@@ -7,6 +7,7 @@ export * from './http.js';
 export * from './ids.js';
 export * from './names.js';
 export * from './limits.js';
+export * from './permissions.js';
 export * from './records.js';
 export * from './wire.js';
 

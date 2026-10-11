@@ -13,8 +13,8 @@ import {userInfo} from 'node:os';
 import {parseArgs} from 'node:util';
 
 import {LocalStore, PairLobbyClient, openRequests, owedByMe, unreceipted} from '@pairlobby/client';
-import type {JoinedRoom, RoomEntry, Settings} from '@pairlobby/client';
-import {ParticipantName, ProtocolError, requestState, newId, normalizeInviteCode, MessageAction} from '@pairlobby/protocol';
+import type {JoinedRoom, RoomEntry, RoomPreset, Settings} from '@pairlobby/client';
+import {ParticipantName, ProtocolError, effectivePermissions, requestState, newId, normalizeInviteCode, MessageAction, roomPermissions} from '@pairlobby/protocol';
 import type {AdapterCapabilities, MessageRequest} from '@pairlobby/protocol';
 
 import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
@@ -23,7 +23,7 @@ import {runChatRoom} from './chat.js';
 import {chooseHumanSession, selectHumanSession} from './human-session.js';
 import {WhenError, formatDuration, parseDuration, parseExpiry} from './when.js';
 import {pickExpiry} from './picker.js';
-import {DEFAULT_LOCAL_SERVER, DEFAULT_RELAY_PORT, UsageError, controllerCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
+import {DEFAULT_LOCAL_SERVER, DEFAULT_RELAY_PORT, UsageError, controllerCredential, moderationCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
 import type {Selection} from './context.js';
 import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
@@ -45,6 +45,8 @@ import {runSettingsMenu} from './settings-menu.js';
 import {checkForInteractiveUpdate, checkForUpdate, installRelease, managedInstall, parseUpdateChoice, runBackgroundUpdate, scheduleBackgroundCheck, shouldOfferUpdate, updateNotice, writeUpdateState} from './updater.js';
 import type {LatestRelease, UpdateCheck, UpdateChoice} from './updater.js';
 import {findRooms, formatFoundRooms} from './find.js';
+import {runPermissionCommand} from './permissions.js';
+import {applyPresetChanges, presetChanges, runPresetCommand, runPresetLibraryCommand} from './presets.js';
 import {formatTurnQueue, runTurnCommand} from './turn-commands.js';
 import {spawnAgent, formatSpawnResult} from './spawn-agent.js';
 import {parseSpawnOptions, SPAWN_HELP} from './spawn-options.js';
@@ -103,6 +105,7 @@ const OPTIONS = {
     agent: {type: 'boolean'},
     clear: {type: 'boolean'},
     force: {type: 'boolean'},
+    preset: {type: 'string'},
     reset: {type: 'boolean'},
     once: {type: 'boolean'},
     off: {type: 'boolean'},
@@ -149,6 +152,9 @@ const HELP = `pairlobby
   pairlobby forget <room>            drop the local record, leave the server alone
   pairlobby settings                 interactive menu for this device's preferences and new-room defaults
   pairlobby create --name <name>     start a room and print an invite
+  pairlobby create --name <name> --preset <name|none>  start it from a saved preset, or from the built-in defaults
+  pairlobby presets                  saved room setups on this device: list, show <name>, delete <name>, default <name|none>
+  pairlobby presets save|apply <name> --room <room>  save a room's setup, or apply one (--yes applies; owner/admin)
   pairlobby create --name <name> --open-local
                                     the same, and anyone on your network or tailnet can join by its name
   pairlobby join <code>              join a local room and enter it
@@ -213,8 +219,10 @@ const HELP = `pairlobby
   pairlobby invite                   mint an invite code (a reusable seat; --once for single use)
   pairlobby invite --expires-in 10m  mint one that stops working after a while
   pairlobby ack --outcome <outcome>  report what a pause actually did
-  pairlobby interrupt <agent>        stop one agent's current task, hold its queue (owner/admin)
-  pairlobby pause <who>              controller only
+  pairlobby permissions              which commands members may use in a room, and who differs
+  pairlobby permissions allow|deny|reset <command …|all> [name]  for all members, or one (owner/admin)
+  pairlobby interrupt <agent>        stop one agent's current task, hold its queue (owner/admin, or members the room allows)
+  pairlobby pause <who>              owner/admin, or members the room allows
   pairlobby resume <who>             controller only
   pairlobby serve                    run a local room server (shared as pairlobby settings network-sharing says)
   pairlobby update                   check GitHub for a new release and offer to install it
@@ -463,6 +471,11 @@ async function main(argv: string[]): Promise<number> {
             return resolveHandover(store, values, positionals[1], false);
         case 'ack':
             return acknowledge(store, values);
+        case 'permissions':
+            return permissions(store, values, positionals.slice(1));
+        case 'preset':
+        case 'presets':
+            return presets(store, values, positionals.slice(1));
         case 'interrupt':
             return interruptAgent(store, values, positionals.slice(1).join(' '));
         case 'pause':
@@ -1176,6 +1189,21 @@ async function applyRoomDefaults(client: PairLobbyClient, roomId: string, contro
     }
 }
 
+/** `--preset <name>` picks one, `--preset none` starts from the built-in defaults, and no flag uses this device's default preset. */
+function roomPreset(store: LocalStore, name: string | undefined): RoomPreset | undefined {
+    if (name === undefined) {
+        return store.defaultPreset();
+    }
+    if (name.toLowerCase() === 'none') {
+        return undefined;
+    }
+    const preset = store.preset(name);
+    if (!preset) {
+        throw new UsageError(`no preset named ${name}; "pairlobby presets" lists them`);
+    }
+    return preset;
+}
+
 async function createRoom(store: LocalStore, values: Values, online = false): Promise<number> {
     const name = str(values, 'name');
     if (!name) {
@@ -1194,6 +1222,7 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
         throw new UsageError('--private and --public apply to online rooms: pairlobby create online --name <name> --private');
     }
     const settings = store.settings();
+    const preset = roomPreset(store, str(values, 'preset'));
     // The device default decides when neither flag is given.
     const privateRoom = online && (flag(values, 'private') || (settings.defaultPrivateOnline && !flag(values, 'public')));
     if (str(values, 'allow') && !privateRoom) {
@@ -1235,7 +1264,16 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
         ...localDetail(values)
     });
 
-    await applyRoomDefaults(client, created.roomId, created.controllerCredential, settings, online);
+    // A preset decides reply mode, invitations and auto-close in place of the device defaults for them.
+    await applyRoomDefaults(client, created.roomId, created.controllerCredential, preset ? {...settings, defaultTurnMode: 'sequential', defaultInviteRole: 'member', defaultAutoClose: 'off'} : settings, online);
+    if (preset) {
+        const changes = presetChanges(preset, await client.snapshot(created.roomId, created.participantCredential), {client, roomId: created.roomId});
+        for (const line of await applyPresetChanges(changes, created.controllerCredential)) {
+            if (line.includes(': not changed — ')) {
+                note(`Room created, but preset ${preset.name} was not fully applied:${line}`);
+            }
+        }
+    }
     let openLocal = false;
     if (flag(values, 'open-local')) {
         try {
@@ -2126,7 +2164,7 @@ async function setPaused(store: LocalStore, values: Values, target: string | und
         throw new UsageError(`pairlobby ${paused ? 'pause' : 'resume'} needs a participant`);
     }
     const room = resolveRoom(store, str(values, 'room'));
-    const credential = controllerCredential(store, room);
+    const credential = moderationCredential(store, room, str(values, 'session'));
     const client = new PairLobbyClient(room.serverUrl);
     const snapshot = await client.snapshot(room.roomId, credential);
     const targetId = resolveRecipient(snapshot.participants, target);
@@ -2142,12 +2180,44 @@ async function setPaused(store: LocalStore, values: Values, target: string | und
     return 0;
 }
 
+/** Saved room setups. Listing, showing, deleting and choosing a default need no room; saving and applying act on one. */
+async function presets(store: LocalStore, values: Values, words: string[]): Promise<number> {
+    const local = runPresetLibraryCommand(words, store);
+    if (local !== null) {
+        if (flag(values, 'json')) {
+            json({default: store.defaultPreset()?.name ?? null, presets: store.presets()});
+            return 0;
+        }
+        out(local.replaceAll('/preset', 'pairlobby presets'));
+        return 0;
+    }
+    const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    const confirmed = words[0] === 'apply' && flag(values, 'yes') && words[2] === undefined ? [...words, 'confirm'] : words;
+    const report = await runPresetCommand(confirmed.join(' '), {client, store, roomId: room.roomId, credential, participantId: session.participantId, controllerCredential: session.kind === 'human' ? store.credential(room.roomId, 'controller') : undefined});
+    out(report.replaceAll(/\/preset apply (\S+) confirm/g, 'pairlobby presets apply $1 --yes').replaceAll('/preset', 'pairlobby presets'));
+    return 0;
+}
+
+/** Shows or changes which commands members may use. Only a person's session acts as the owner here; an agent's uses its own membership. */
+async function permissions(store: LocalStore, values: Values, words: string[]): Promise<number> {
+    const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    const context = {client, roomId: room.roomId, credential, participantId: session.participantId, controllerCredential: session.kind === 'human' ? store.credential(room.roomId, 'controller') : undefined};
+    const report = await runPermissionCommand(words.join(' '), context);
+    if (flag(values, 'json')) {
+        const snapshot = await client.snapshot(room.roomId, credential);
+        json({roomId: room.roomId, members: roomPermissions(snapshot.policy.permissions), room: snapshot.policy.permissions ?? {}, participants: snapshot.participants.filter((person) => !person.left && !person.revoked).map((person) => ({participantId: person.participantId, displayName: person.displayName, role: person.role, own: person.permissions ?? {}, effective: effectivePermissions(person, snapshot.policy.permissions)}))});
+        return 0;
+    }
+    out(report);
+    return 0;
+}
+
 async function interruptAgent(store: LocalStore, values: Values, target: string): Promise<number> {
     if (!target) {
         throw new UsageError('pairlobby interrupt needs an agent name or participant id');
     }
     const room = resolveRoom(store, str(values, 'room'));
-    const credential = controllerCredential(store, room);
+    const credential = moderationCredential(store, room, str(values, 'session'));
     const client = new PairLobbyClient(room.serverUrl);
     const snapshot = await client.snapshot(room.roomId, credential);
     if (!snapshot.interruptSupported) {

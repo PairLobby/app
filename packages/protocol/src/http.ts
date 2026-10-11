@@ -9,6 +9,7 @@ import {AttemptId, EventId, ParticipantId, RoomId, SessionId} from './ids.js';
 import {HandoverRecord, RoomSnapshot} from './records.js';
 import {ERROR_CODES} from './errors.js';
 import {AutoClosePolicySchema} from './auto-close.js';
+import {PermissionChange} from './permissions.js';
 
 export const ROUTES = {
     createRoom: {method: 'POST', path: '/v1/rooms'},
@@ -36,6 +37,8 @@ export const ROUTES = {
     setLocked: {method: 'POST', path: '/v1/rooms/:roomId/lock'},
     setMuted: {method: 'POST', path: '/v1/rooms/:roomId/participants/:participantId/mute'},
     setRole: {method: 'POST', path: '/v1/rooms/:roomId/participants/:participantId/role'},
+    setRoomPermissions: {method: 'POST', path: '/v1/rooms/:roomId/permissions'},
+    setParticipantPermissions: {method: 'POST', path: '/v1/rooms/:roomId/participants/:participantId/permissions'},
     setAccess: {method: 'POST', path: '/v1/rooms/:roomId/access'},
     joinAsGuest: {method: 'POST', path: '/v1/rooms/:roomId/guests'},
     closeRoom: {method: 'POST', path: '/v1/rooms/:roomId/close'},
@@ -111,6 +114,8 @@ export type RedeemInviteResponse = z.infer<typeof RedeemInviteResponse>;
 export const SetLockedRequest = z.object({locked: z.boolean()});
 export const SetMutedRequest = z.object({muted: z.boolean()});
 export const SetRoleRequest = z.object({role: z.enum(['member', 'controller'])});
+export const SetPermissionsRequest = z.object({permissions: PermissionChange});
+export type SetPermissionsRequest = z.infer<typeof SetPermissionsRequest>;
 export const TurnClaimRequest = z.object({claimId: z.string().min(16).max(128)});
 export const TurnTokenRequest = z.object({token: z.string().min(16).max(128)});
 export const TurnModeRequest = z.object({mode: z.enum(['sequential', 'parallel'])});

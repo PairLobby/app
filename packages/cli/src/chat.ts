@@ -12,6 +12,8 @@ import {LocalStore, PairLobbyClient} from '@pairlobby/client';
 
 import {pickExpiry} from './picker.js';
 import {isRoomCommand, runRoomCommand} from './chat-commands.js';
+import {isPresetCommand, runPresetCommand} from './presets.js';
+import {authorityFor, describeParticipantPermissionChange, describeRoomPermissionChange, notPermitted} from './permissions.js';
 import {applyMention, commonPrefix, currentMention, hasAgentsToAsk, matchNames, renderSuggestions, routeChatMessage, routeForRoom} from './mentions.js';
 import type {RoutedChatMessage} from './mentions.js';
 import {formatTurnQueue} from './turn-commands.js';
@@ -65,9 +67,9 @@ const HELP = `  <message>          address all eligible agents (same as @all)
   @name anywhere    send to that participant (e.g. Hey @codex, hello)
   @codex @claude    ask multiple agents; @all asks all eligible agents
   /turns            show the speaking queue
-  /turns sequential|parallel  set response mode (owner)
-  /turns skip [name or request]  skip a queued or stalled turn (owner)
-  /turns cancel [request]  cancel the active group round (owner)
+  /turns sequential|parallel  set response mode (owner/admin)
+  /turns skip [name or request]  skip a queued or stalled turn (owner/admin, or members the room allows)
+  /turns cancel [request]  cancel the active group round (owner/admin, or members the room allows)
   /to <name>         address every later message to one participant
   /to                clear the default recipient
   /seen [message]    receipt table (latest sent message; F2 too): a time = received, Read <time> = read
@@ -88,15 +90,20 @@ const HELP = `  <message>          address all eligible agents (same as @all)
   /invite as <name>  create a member invite with a default name
   /invite @handle    hosted rooms: ask an account in by its handle (add observer for read-only); owner and admins
   /invites           hosted rooms: who was invited by handle; /invites revoke @handle withdraws one
-  /lock              block joining, rejoining, and new invites (owner)
-  /unlock            allow joining and invitations again (owner)
-  /kick <name>       remove a participant and disable their invite (owner)
-  /mute <name>       prevent a participant from writing (owner)
-  /unmute <name>     allow them to write again (owner)
+  /lock              block joining, rejoining, and new invites (owner/admin, or members the room allows)
+  /unlock            allow joining and invitations again
+  /kick <name>       remove a participant and disable their invite
+  /mute <name>       prevent a participant from writing
+  /unmute <name>     allow them to write again
+  /permissions       which commands members may use, and who differs
+  /permissions allow|deny|reset <command …|all> [name]  for all members, or for one (owner/admin)
+  /preset save <name>  save this room's permissions, reply mode, invitations and auto-close on this device
+  /preset apply <name>  show what a saved preset would change here; add confirm to apply (owner/admin)
+  /preset [list|show <name>|delete <name>|default <name|none>]  manage presets; default applies to rooms you create
   /expiry            set when this room expires
-  /interrupt <name>  stop one agent's current task and hold its queue (owner/admin)
-  /pause <name>      hold an agent's later work (owner)
-  /resume <name>     release a paused or interrupted agent (owner)
+  /interrupt <name>  stop one agent's current task and hold its queue (owner/admin, or members the room allows)
+  /pause <name>      hold an agent's later work
+  /resume <name>     release a paused or interrupted agent
   /help              this
   /quit              leave (Ctrl+C also works)`;
 
@@ -240,8 +247,9 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         }
 
         async function control(reference: string, paused: boolean): Promise<void> {
-            if (!options.controllerCredential) {
-                emit(`${DIM}  this device does not hold the controller credential for this room${RESET}`);
+            const authority = authorityFor(snapshot, options.participantId, 'pause', options.credential, options.controllerCredential);
+            if (!authority) {
+                emit(`${DIM}  ${notPermitted('pause').message}${RESET}`);
                 return;
             }
             const target = resolveName(reference);
@@ -249,7 +257,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 return;
             }
             try {
-                const result = await client.control(roomId, options.controllerCredential, target.id, paused);
+                const result = await client.control(roomId, authority, target.id, paused);
                 // A request, not a confirmation: what happened is whatever the agent acknowledges.
                 emit(`${DIM}  ${paused ? 'pause' : 'resume'} requested for ${target.name}, revision ${result.revision} — watch for the acknowledgement${RESET}`);
             } catch (error) {
@@ -263,10 +271,9 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             if (!target) {
                 return;
             }
-            const self = snapshot.participants.find((participant) => participant.participantId === options.participantId);
-            const authority = options.controllerCredential ?? (self?.role === 'controller' ? options.credential : undefined);
+            const authority = authorityFor(snapshot, options.participantId, 'pause', options.credential, options.controllerCredential);
             if (!authority) {
-                emit(`${DIM}  only the room owner or an admin can interrupt an agent${RESET}`);
+                emit(`${DIM}  ${notPermitted('pause').message}${RESET}`);
                 return;
             }
             if (!snapshot.interruptSupported) {
@@ -375,6 +382,10 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                         view.restoreReply(reply);
                         emit(`Reply failed: ${error instanceof Error ? error.message : String(error)}`);
                     });
+                return;
+            }
+            if (isPresetCommand(line)) {
+                void runPresetCommand(line.replace(/^\/presets?/, ''), {client, store, roomId, credential, participantId, controllerCredential: options.controllerCredential}).then(emit).catch((error) => emit(error instanceof Error ? error.message : String(error)));
                 return;
             }
             if (isRoomCommand(line)) {
@@ -531,7 +542,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 const page = await client.readEvents(roomId, credential, cursor);
                 if (page.events.length > 0) {
                     const nextCursor = page.events.at(-1)!.seq;
-                    if (page.events.some((event) => event.type === 'participant.joined' || event.type === 'participant.renamed' || event.type === 'participant.left' || event.type === 'participant.revoked' || event.type === 'participant.mute_changed' || event.type === 'participant.role_changed' || event.type === 'room.renamed' || event.type === 'room.expiry_changed' || event.type === 'room.access_changed' || event.type === 'room.auto_close_changed' || event.type === 'room.closed' || event.type === 'room.lock_changed' || event.type === 'control.pause' || event.type === 'control.resume' || event.type === 'control.ack')) {
+                    if (page.events.some((event) => event.type === 'participant.joined' || event.type === 'participant.renamed' || event.type === 'participant.left' || event.type === 'participant.revoked' || event.type === 'participant.mute_changed' || event.type === 'participant.role_changed' || event.type === 'participant.permissions_changed' || event.type === 'room.permissions_changed' || event.type === 'room.renamed' || event.type === 'room.expiry_changed' || event.type === 'room.access_changed' || event.type === 'room.auto_close_changed' || event.type === 'room.closed' || event.type === 'room.lock_changed' || event.type === 'control.pause' || event.type === 'control.resume' || event.type === 'control.ack')) {
                         snapshot = await client.snapshot(roomId, credential);
                         absorbNames(snapshot, names);
                         for (const saved of store.room(roomId)?.sessions ?? []) {
@@ -805,6 +816,10 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
             return `${names.get(event.payload.participantId) ?? event.payload.participantId} was ${event.payload.muted ? 'muted' : 'unmuted'}`;
         case 'participant.role_changed':
             return `${names.get(event.payload.participantId) ?? event.payload.participantId} is now ${event.payload.role === 'controller' ? 'an admin' : 'a member'}`;
+        case 'room.permissions_changed':
+            return `${event.senderId ? sender : 'the owner'} changed command permissions: ${describeRoomPermissionChange(event.payload.permissions, event.payload.previous)}`;
+        case 'participant.permissions_changed':
+            return `${event.senderId ? sender : 'the owner'} changed permissions: ${describeParticipantPermissionChange(names.get(event.payload.participantId) ?? event.payload.participantId, event.payload.permissions, event.payload.previous)}`;
         case 'room.closed':
             return `the room was ${describeCloseReason(event.payload.reason)}`;
         case 'room.auto_close_changed':
