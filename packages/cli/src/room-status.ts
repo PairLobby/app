@@ -53,6 +53,7 @@ export function roomStatusRows(status: RoomStatus): RoomPanelRow[] {
     const entries = turns?.entries.filter((entry) => agentIds.has(entry.participantId)) ?? [];
     const working = new Set(entries.filter((entry) => entry.state === 'answering' && entry.workingAt !== undefined && (entry.expiresAt ?? 0) > at).map((entry) => entry.participantId)).size;
     const waiting = new Set(entries.filter((entry) => entry.state === 'waiting').map((entry) => entry.participantId)).size;
+    const providerWaiting = new Set(entries.filter((entry) => entry.state === 'provider_wait').map((entry) => entry.participantId)).size;
     const stalled = new Set(entries.filter((entry) => entry.state === 'stalled').map((entry) => entry.participantId)).size;
     const cleanName = stripVTControlCharacters(room.name).replace(/[\x00-\x1f\x7f]/g, ' ');
     return [
@@ -75,6 +76,7 @@ export function roomStatusRows(status: RoomStatus): RoomPanelRow[] {
         {id: 'admins', section: 'Members', label: 'Admins', value: String(joined.filter((person) => person.role === 'controller').length), hint: 'Delegated admin memberships; the separate owner credential is not a participant.'},
         {id: 'working', section: 'Activity', label: 'Working agents', value: turns ? String(working) : 'Unavailable'},
         {id: 'waiting', section: 'Activity', label: 'Waiting agents', value: turns ? String(waiting) : 'Unavailable'},
+        {id: 'provider-waiting', section: 'Activity', label: 'Provider-limited agents', value: turns ? String(providerWaiting) : 'Unavailable'},
         {id: 'stalled', section: 'Activity', label: 'Stalled agents', value: turns ? String(stalled) : 'Unavailable'},
         {id: 'failed', section: 'Activity', label: 'Failed requests', value: turns ? String(entries.filter((entry) => entry.state === 'failed').length) : 'Unavailable'},
         {id: 'paused', section: 'Activity', label: 'Paused members', value: String(joined.filter((person) => person.paused).length)},

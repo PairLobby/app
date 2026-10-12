@@ -9,11 +9,12 @@ import {existsSync, linkSync, readFileSync, unlinkSync, writeFileSync} from 'nod
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {newId} from '@pairlobby/protocol';
+import type {ProviderWait} from '@pairlobby/protocol';
 import type {ManagedDeadlineSnapshot} from './managed-deadline.js';
 
 export const RECEIVER_ATTEMPT_SCHEMA_VERSION = 1;
 
-export type AttemptTerminalKind = 'answered' | 'passed' | 'declined' | 'cancelled' | 'interrupted' | 'idle_timeout' | 'absolute_timeout' | 'crash' | 'adapter_error' | 'unavailable';
+export type AttemptTerminalKind = 'answered' | 'passed' | 'declined' | 'cancelled' | 'interrupted' | 'usage_limited' | 'idle_timeout' | 'absolute_timeout' | 'crash' | 'adapter_error' | 'unavailable';
 
 export type AttemptStart = {
     requestEventId: string;
@@ -49,6 +50,7 @@ export type AttemptTerminal = {
     cancellationGraceful?: boolean | null;
     responseEventId?: string;
     deadline?: ManagedDeadlineSnapshot;
+    providerWait?: ProviderWait;
 };
 
 export type ReceiverAttempt = AttemptStart & {
@@ -97,6 +99,7 @@ type TerminalPayload = {
     cancellationGraceful?: boolean | null;
     responseEventId?: string;
     deadline?: ManagedDeadlineSnapshot;
+    providerWait?: ProviderWait;
 };
 
 function parsePayload<T>(row: AttemptEventRow): T {
@@ -243,7 +246,8 @@ export class ReceiverAttemptJournal {
             ...(terminal.failureReason ? {failureReason: terminal.failureReason} : {}),
             ...(terminal.cancellationGraceful !== undefined ? {cancellationGraceful: terminal.cancellationGraceful} : {}),
             ...(terminal.responseEventId ? {responseEventId: terminal.responseEventId} : {}),
-            ...(deadline ? {deadline} : {})
+            ...(deadline ? {deadline} : {}),
+            ...(terminal.providerWait ? {providerWait: terminal.providerWait} : {})
         };
         return this.database.prepare("INSERT OR IGNORE INTO receiver_attempt_events(attempt_id, kind, at, payload_json) VALUES (?, 'terminal', ?, ?)").run(attemptId, terminal.at, JSON.stringify(payload)).changes === 1;
     }
@@ -319,7 +323,7 @@ export class ReceiverAttemptJournal {
                 attempt.answerSaved = true;
             } else if (event.kind === 'terminal') {
                 const payload = parsePayload<TerminalPayload>(event);
-                attempt.terminal = {kind: payload.kind, at: event.at, ...(payload.failureReason ? {failureReason: payload.failureReason} : {}), ...(payload.cancellationGraceful !== undefined ? {cancellationGraceful: payload.cancellationGraceful} : {}), ...(payload.responseEventId ? {responseEventId: payload.responseEventId} : {}), ...(payload.deadline ? {deadline: payload.deadline} : {})};
+                attempt.terminal = {kind: payload.kind, at: event.at, ...(payload.failureReason ? {failureReason: payload.failureReason} : {}), ...(payload.cancellationGraceful !== undefined ? {cancellationGraceful: payload.cancellationGraceful} : {}), ...(payload.responseEventId ? {responseEventId: payload.responseEventId} : {}), ...(payload.deadline ? {deadline: payload.deadline} : {}), ...(payload.providerWait ? {providerWait: payload.providerWait} : {})};
             }
         }
         return attempt;

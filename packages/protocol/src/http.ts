@@ -25,6 +25,8 @@ export const ROUTES = {
     renewTurn: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/renew'},
     declareWorking: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/working'},
     passTurn: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/pass'},
+    deferRequest: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/defer'},
+    resumeRequest: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/resume'},
     resolveRequest: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/resolve'},
     readEvents: {method: 'GET', path: '/v1/rooms/:roomId/events'},
     sendEvent: {method: 'POST', path: '/v1/rooms/:roomId/events'},
@@ -122,6 +124,7 @@ export const TurnModeRequest = z.object({mode: z.enum(['sequential', 'parallel']
 export const TurnActionRequest = z.object({action: z.enum(['skip', 'cancel']), requestId: EventId.optional(), participantId: ParticipantId.optional()});
 export const ResolveRequestRequest = z.object({action: z.enum(['dismiss', 'cancel']), reason: z.string().trim().min(1).max(1024).optional()});
 export type ResolveRequestRequest = z.infer<typeof ResolveRequestRequest>;
+export const ProviderWaitRequest = z.object({provider: z.string().min(1).max(32), model: z.string().min(1).max(128).optional(), limitKind: z.enum(['session', 'weekly', 'unknown']), detectedAt: z.number().int().nonnegative(), retryAt: z.number().int().nonnegative().nullable(), resetTimezone: z.string().min(1).max(128).nullable(), displayMessage: z.string().min(1).max(512), resetActionUrl: z.literal('https://clau.de/reset').nullable(), automaticRetry: z.boolean(), source: z.enum(['result', 'result_errors', 'stderr']).optional(), token: z.string().min(16).max(128)});
 
 export const CreateInviteRequest = z.object({
     defaultName: z.string().trim().min(1).max(64).optional(),

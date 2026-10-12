@@ -7,6 +7,7 @@ import type {
     AdapterCapabilities,
     AutoClosePolicy,
     MessageRequest,
+    ProviderWait,
     MessageAction,
     TurnAction,
     TurnGrant,
@@ -254,6 +255,12 @@ export class PairLobbyClient {
     }
     async passTurn(roomId: string, credential: string, requestId: string, token: string): Promise<void> {
         await this.call('POST', `/v1/rooms/${roomId}/requests/${requestId}/pass`, credential, {token});
+    }
+    async deferForProvider(roomId: string, credential: string, requestId: string, token: string, providerWait: ProviderWait): Promise<void> {
+        await this.call('POST', `/v1/rooms/${roomId}/requests/${requestId}/defer`, credential, {...providerWait, token});
+    }
+    resumeAfterProvider(roomId: string, credential: string, requestId: string): Promise<MessageRequest> {
+        return this.call('POST', `/v1/rooms/${roomId}/requests/${requestId}/resume`, credential, {});
     }
     async pendingRequests(roomId: string, credential: string, recipientId?: string): Promise<MessageRequest[]> {
         const requests: MessageRequest[] = [];

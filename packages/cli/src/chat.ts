@@ -774,7 +774,7 @@ export function formatRequestStatus(request: MessageRequest, names: Map<string, 
         reply_overdue: 'Queued · response overdue',
         answered: 'Answered',
         no_action: 'No action needed',
-        declined: 'Declined',
+        declined: 'Declined', provider_wait: 'Provider limited · waiting to retry',
         failed: failureLabel(request.failureStage), dismissed: 'Failed · dismissed',
         waiting_turn: 'Waiting for a speaking turn', answering: 'Answering', stalled: 'Speaking turn stalled', passed: 'Passed', skipped: 'Skipped', cancelled: 'Cancelled'
     };
@@ -829,7 +829,7 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
             if (event.payload.action === 'mode') {
                 return `reply mode is now ${event.payload.mode}`;
             }
-            return `${agents}: turn ${event.payload.action}`;
+            return `${agents}: ${event.payload.detail ?? `turn ${event.payload.action}`}`;
         }
         case 'room.renamed':
             return `${sender} renamed the room to ${event.payload.name}`;

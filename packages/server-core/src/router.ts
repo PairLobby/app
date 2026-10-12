@@ -29,10 +29,11 @@ import {
     TurnModeRequest,
     TurnActionRequest,
     ResolveRequestRequest,
+    ProviderWaitRequest,
     SetExpiryRequest,
     ControlRequest
 } from '@pairlobby/protocol';
-import type {ErrorCode, LocalRoom} from '@pairlobby/protocol';
+import type {ErrorCode, LocalRoom, ProviderWait} from '@pairlobby/protocol';
 
 import type {RoomService} from './service.js';
 
@@ -223,6 +224,16 @@ async function route(request: Request, service: RoomService): Promise<Response> 
             if (segments[4] && segments[5] === 'pass') {
                 await service.turns.pass(roomId, credential, segments[4], TurnTokenRequest.parse(await request.json()).token);
                 return json({ok: true});
+            }
+            if (segments[4] && segments[5] === 'defer') {
+                const input = ProviderWaitRequest.parse(await request.json());
+                const {token, model, source, ...wait} = input;
+                const providerWait: ProviderWait = {...wait, ...(model ? {model} : {}), ...(source ? {source} : {})};
+                await service.turns.defer(roomId, credential, segments[4], token, providerWait);
+                return json({ok: true});
+            }
+            if (segments[4] && segments[5] === 'resume') {
+                return json(await service.turns.resume(roomId, credential, segments[4]));
             }
             if (segments[4] && segments[5] === 'resolve') {
                 return json(await service.resolveRequest(roomId, credential, segments[4], ResolveRequestRequest.parse(await request.json())));

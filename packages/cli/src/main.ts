@@ -29,7 +29,7 @@ import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, rende
 
 import {acceptInvitation, accountToken, declineInvitation, isOnlineKey, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineOrigin, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
 import type {ReceivedInvitation} from './online.js';
-import {receiverAttempts, receiverStatus, refreshReceivers, runReceiver, startReceiver, stopReceiver, waitAndRefreshReceiver} from './receiver.js';
+import {receiverAttempts, receiverConfiguration, receiverStatus, refreshReceivers, retryProviderNow, runReceiver, startReceiver, stopReceiver, waitAndRefreshReceiver} from './receiver.js';
 import type {ReceiverStartOptions, ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
 import {discoverableNote, joinCommand, localOnlyNote, parseJoinLink, shareTarget} from './share.js';
@@ -171,7 +171,7 @@ const HELP = `pairlobby
   pairlobby profile --username <handle>  choose the handle others invite you by: /invite @handle
   pairlobby join <code> --runtime codex|claude|qwen
                                     join as a managed agent; receive automatically
-  pairlobby receiver status|start|stop|attempts|refresh
+  pairlobby receiver status|start|stop|attempts|refresh|retry-provider
                                     manage automatic receiving for the selected agent
   pairlobby spawn <claude|codex|qwen> [model] [--name name] [--effort level]
                                     create a new background agent in a saved room
@@ -202,6 +202,8 @@ const HELP = `pairlobby
   pairlobby request retry <request-id>
                                     ask again after a request failed; the new attempt inspects the
                                     workspace first, and its answer resolves the original
+  pairlobby request retry-provider <request-id>
+                                    try a provider-limited managed request once now
   pairlobby request reassign <request-id> --to <name>
                                     give a failed request to another participant
   pairlobby request dismiss <request-id>
@@ -307,8 +309,10 @@ async function main(argv: string[]): Promise<number> {
                 json(receiverStatus(store, session.sessionId) ?? {state: 'not-configured'});
             } else if (action === 'attempts') {
                 json({attempts: receiverAttempts(store, session.sessionId, str(values, 'request'))});
+            } else if (action === 'retry-provider') {
+                json(await retryProviderNow(store, room.roomId, session.sessionId));
             } else {
-                throw new UsageError('pairlobby receiver status|start|stop|attempts|refresh');
+                throw new UsageError('pairlobby receiver status|start|stop|attempts|refresh|retry-provider');
             }
             return 0;
         }
@@ -1584,14 +1588,28 @@ async function messageStatusCommand(store: LocalStore, values: Values, eventId?:
 async function requestCommand(store: LocalStore, values: Values, action?: string, requestId?: string): Promise<number> {
     const to = str(values, 'to');
     const recovery = action === 'retry' || action === 'reassign';
+    const providerRetry = action === 'retry-provider';
     const closing = action === 'dismiss' || action === 'cancel';
-    if ((!recovery && !closing) || !requestId || (action === 'reassign') !== !!to) {
-        throw new UsageError('Use request retry <request-id>, request reassign <request-id> --to <name>, request dismiss <request-id>, or request cancel <request-id>.');
+    if ((!recovery && !providerRetry && !closing) || !requestId || (action === 'reassign') !== !!to) {
+        throw new UsageError('Use request retry-provider <request-id>, request retry <request-id>, request reassign <request-id> --to <name>, request dismiss <request-id>, or request cancel <request-id>.');
     }
     const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     try {
         const request = await client.request(room.roomId, credential, requestId);
         const authority = request.from === session.participantId || session.role === 'controller' ? credential : store.credential(room.roomId, 'controller') ?? credential;
+        if (providerRetry) {
+            const target = room.sessions.find((candidate) => candidate.participantId === request.to);
+            if (!target) {
+                throw new UsageError('Retry provider now is available only for a managed receiver on this device. Reassign or cancel this request instead.');
+            }
+            const result = await retryProviderNow(store, room.roomId, target.sessionId, requestId);
+            if (flag(values, 'json')) {
+                json(result);
+            } else {
+                out(`Provider retry requested for ${requestId}. If the limit remains, it will return to provider wait without failing the request.`);
+            }
+            return 0;
+        }
         if (closing) {
             const disposition = await closeRequest({client, roomId: room.roomId, credential: authority}, requestId, action === 'dismiss' ? 'dismiss' : 'cancel', str(values, 'reason'));
             if (flag(values, 'json')) {
@@ -1647,7 +1665,11 @@ async function replyMessage(store: LocalStore, values: Values, eventId: string |
 async function requestStatus(store: LocalStore, values: Values): Promise<number> {
     const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     const page = await client.requests(room.roomId, credential, Number(str(values, 'after') ?? 0));
-    const requests = page.requests.map((request) => ({...request, state: requestState(request), allowedActions: requestRecoveryActions(request, session.participantId, room.controls || session.role === 'controller')}));
+    const requests = page.requests.map((request) => {
+        const target = room.sessions.find((candidate) => candidate.participantId === request.to);
+        const localProviderRetry = Boolean(target && receiverConfiguration(store, target.sessionId));
+        return {...request, state: requestState(request), allowedActions: requestRecoveryActions(request, session.participantId, room.controls || session.role === 'controller', localProviderRetry)};
+    });
     if (flag(values, 'json')) {
         json({requests, hasMore: page.hasMore});
     } else {
@@ -1667,12 +1689,15 @@ async function requestStatus(store: LocalStore, values: Values): Promise<number>
     return 0;
 }
 
-function requestRecoveryActions(request: MessageRequest, participantId: string, canControl: boolean): string[] {
+function requestRecoveryActions(request: MessageRequest, participantId: string, canControl: boolean, localProviderRetry: boolean): string[] {
     if ((request.from !== participantId && !canControl) || request.responseEventId || request.resolution || request.recoveredByEventId) {
         return [];
     }
     if (request.failureAt) {
         return ['retry', 'reassign', 'dismiss', 'cancel'];
+    }
+    if (request.providerWait) {
+        return [...(localProviderRetry ? ['retry-provider'] : []), 'reassign', 'cancel'];
     }
     return request.requiresReply ? ['cancel'] : [];
 }

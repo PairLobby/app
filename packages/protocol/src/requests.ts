@@ -10,7 +10,7 @@ export interface MessageRequest {
     requiresReply: boolean;
     receivedAt: number | null;
     readAt?: number;
-    action?: 'working' | 'waiting' | 'no_action' | 'declined' | 'reply_pending' | 'done';
+    action?: 'working' | 'waiting' | 'provider_wait' | 'no_action' | 'declined' | 'reply_pending' | 'done';
     actionAt?: number;
     actionReason?: string;
     responseEventId: string | null;
@@ -41,14 +41,27 @@ export interface MessageRequest {
     resolutionBy?: string;
     resolutionReason?: string;
     resolutionEventId?: string;
+    providerWait?: ProviderWait;
+}
+export interface ProviderWait {
+    provider: string;
+    model?: string;
+    limitKind: 'session' | 'weekly' | 'unknown';
+    detectedAt: number;
+    retryAt: number | null;
+    resetTimezone: string | null;
+    displayMessage: string;
+    resetActionUrl: string | null;
+    automaticRetry: boolean;
+    source?: 'result' | 'result_errors' | 'stderr';
 }
 export type TurnMode = 'sequential' | 'parallel';
-export type TurnEntry = {requestId: string; conversationId: string; participantId: string; name: string; state: 'waiting' | 'answering' | 'stalled' | 'paused' | 'unavailable' | 'failed'; expiresAt: number | null; workingAt?: number; runtime?: string};
+export type TurnEntry = {requestId: string; conversationId: string; participantId: string; name: string; state: 'waiting' | 'provider_wait' | 'answering' | 'stalled' | 'paused' | 'unavailable' | 'failed'; expiresAt: number | null; workingAt?: number; runtime?: string};
 export type TurnQueue = {mode: TurnMode; entries: TurnEntry[]};
 export type TurnGrant = {state: 'granted' | 'waiting' | 'finished' | 'stalled'; token?: string; expiresAt?: number; request?: MessageRequest};
 export type TurnAction = {action: 'skip' | 'cancel'; requestId?: string | undefined; participantId?: string | undefined};
 export const TURN_LEASE_MS = 90_000;
-export type RequestState = 'awaiting_ack' | 'awaiting_reply' | 'ack_overdue' | 'reply_overdue' | 'answered' | 'no_action' | 'declined' | 'failed' | 'dismissed' | 'waiting_turn' | 'answering' | 'stalled' | 'passed' | 'skipped' | 'cancelled';
+export type RequestState = 'awaiting_ack' | 'awaiting_reply' | 'ack_overdue' | 'reply_overdue' | 'answered' | 'no_action' | 'declined' | 'failed' | 'dismissed' | 'provider_wait' | 'waiting_turn' | 'answering' | 'stalled' | 'passed' | 'skipped' | 'cancelled';
 export const ACK_TIMEOUT_MS = 30_000;
 export const REPLY_TIMEOUT_MS = 5 * 60_000;
 export function requestState(request: MessageRequest, now = Date.now()): RequestState {
@@ -63,6 +76,9 @@ export function requestState(request: MessageRequest, now = Date.now()): Request
     }
     if (request.failureAt) {
         return 'failed';
+    }
+    if (request.providerWait) {
+        return 'provider_wait';
     }
     if (request.turnStatus === 'passed' || request.turnStatus === 'skipped' || request.turnStatus === 'cancelled') {
         return request.turnStatus;
@@ -98,6 +114,9 @@ export function messageActionLabel(request: MessageRequest): string {
     if (request.failureAt) {
         return `${failureLabel(request.failureStage)} · no automatic retry`;
     }
+    if (request.providerWait) {
+        return request.providerWait.retryAt ? `Provider limited · retries ${new Date(request.providerWait.retryAt).toISOString()}` : 'Provider limited · manual retry required';
+    }
     if (request.turnStatus === 'cancelled' || request.turnStatus === 'skipped') {
         return 'Cancelled';
     }
@@ -132,9 +151,10 @@ export interface RequestPage {
 
 export function mergeMessageRequest(previous: MessageRequest | null | undefined, request: MessageRequest): MessageRequest {
     const newerTurn = previous && (previous.turnRevision ?? 0) > (request.turnRevision ?? 0) ? previous : request;
+    const requestAdvancedTurn = Boolean(previous && (request.turnRevision ?? 0) > (previous.turnRevision ?? 0));
     return {
         ...request,
-        ...(previous && (previous.actionAt ?? 0) > (request.actionAt ?? 0) ? {action: previous.action, actionAt: previous.actionAt, actionReason: previous.actionReason, requiresReply: previous.requiresReply} : {}),
+        ...(previous && !requestAdvancedTurn && (previous.actionAt ?? 0) > (request.actionAt ?? 0) ? {action: previous.action, actionAt: previous.actionAt, actionReason: previous.actionReason, requiresReply: previous.requiresReply} : {}),
         readAt: previous?.readAt ?? request.readAt,
         ...(newerTurn.turnRevision === undefined ? {} : {
             turnRevision: newerTurn.turnRevision,
@@ -158,6 +178,7 @@ export function mergeMessageRequest(previous: MessageRequest | null | undefined,
         resolutionBy: previous?.resolutionBy ?? request.resolutionBy,
         resolutionReason: previous?.resolutionReason ?? request.resolutionReason,
         resolutionEventId: previous?.resolutionEventId ?? request.resolutionEventId,
+        providerWait: newerTurn.providerWait,
         progressAt: Math.max(previous?.progressAt ?? 0, request.progressAt ?? 0) || null
     } as MessageRequest;
 }

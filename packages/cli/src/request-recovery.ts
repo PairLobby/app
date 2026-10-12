@@ -35,6 +35,19 @@ export function recoveryText(failed: MessageRequest, previousName: string, reass
     ].join('\n');
 }
 
+/** Safe instruction for another provider invocation of the same logical request. */
+export function providerRetryText(request: MessageRequest): string {
+    return [
+        `Provider recovery attempt ${(request.attempt ?? 1)} for PairLobby request ${request.eventId}.`,
+        'A previous provider invocation stopped at its usage limit and may have changed files or external state before stopping.',
+        'Inspect the workspace and existing state before acting. Do not repeat completed writes, messages, commits, purchases, deployments, or other side effects.',
+        'Finish only what remains, validate the result, and then answer the original request.',
+        '',
+        'Original request:',
+        request.text
+    ].join('\n');
+}
+
 /** Sends the new attempt. `toRef` names another participant to give the work to; without it the same one is asked again. */
 export async function recoverRequest({client, roomId, credential, workspaceForParticipant}: RecoveryTarget, requestId: string, toRef?: string): Promise<Recovery> {
     if (!/^ev_[0-9A-Z]{26}$/.test(requestId)) {
@@ -49,8 +62,11 @@ export async function recoverRequest({client, roomId, credential, workspaceForPa
     if (failed.responseEventId || (!failed.requiresReply && failed.resolution !== 'cancelled')) {
         throw new UsageError(`Request ${requestId} is already resolved.`);
     }
-    if (!failed.failureAt) {
-        throw new UsageError(`Request ${requestId} has not failed. Wait for it, or cancel it first.`);
+    if (!failed.failureAt && !failed.providerWait) {
+        throw new UsageError(`Request ${requestId} has not failed or entered provider wait. Wait for it, or cancel it first.`);
+    }
+    if (failed.providerWait && (!toRef || toRef === failed.to)) {
+        throw new UsageError(`Request ${requestId} is waiting for its provider. Use Retry provider now, or reassign it to another participant.`);
     }
     const active = snapshot.participants.filter((participant) => !participant.left && !participant.revoked);
     const name = (participantId: string) => snapshot.participants.find((participant) => participant.participantId === participantId)?.displayName ?? participantId;

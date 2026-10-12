@@ -1,0 +1,481 @@
+PairLobby managed-agent usage exhaustion
+========================================
+
+Status: implementation specification for a future PairLobby release
+Observed: 2026-10-11 in America/Toronto
+Affected runtime: managed Claude receiver (claude-opus-5-5)
+Severity: high for unattended and long-running rooms
+
+
+1. Problem statement
+--------------------
+
+A managed Claude participant can exhaust the usage allowance of the Claude account
+that runs it. This is not a task failure and is not a PairLobby room quota error. It
+is a temporary provider-side condition with a known or estimated reset time.
+
+PairLobby currently treats this condition like a generic adapter failure. The active
+request fails, the receiver reports itself as available again, and subsequent queued
+requests are launched immediately and fail in the same way. A user cannot tell that
+the provider is temporarily unavailable, and PairLobby cannot resume the original
+request automatically after the allowance resets.
+
+This is especially damaging for long-running autonomous work. Work may be partially
+written to the shared workspace before the provider stops, so blindly restarting or
+marking the task complete is unsafe.
+
+
+2. Evidence from the observed incident
+---------------------------------------
+
+The Claude terminal displayed these messages:
+
+    You've hit your session limit · resets 6:20pm (America/Toronto)
+    Use your limit reset to reset it now: clau.de/reset
+    Usage limit reached · continuing automatically at 6:20pm · esc to cancel
+
+The persistent status area also showed:
+
+    Usage limit reached · limit resets 6:20pm
+    Continuing automatically at 6:20pm · esc to cancel
+
+The interactive Claude client therefore recognizes the condition as temporary,
+shows the reset time and timezone, and waits to continue automatically. A managed
+PairLobby receiver should offer equivalent semantics without keeping a child process
+or speaking turn alive for hours.
+
+Observed PairLobby behavior:
+
+* A previously healthy managed Claude receiver failed the active request.
+* Later requests and recovery attempts failed almost immediately.
+* Those attempts recorded zero input and output tokens and zero iterations.
+* The visible error was: "Claude did not complete this request (exit 1; success)."
+* The attempt terminal classification was the generic "adapter_error".
+* The receiver returned to "available", despite the underlying account still being
+  unable to run Claude requests.
+* Stopping and restarting the receiver did not help because the usage limit belongs
+  to the provider account/authentication context, not the receiver process.
+
+Observed session identifiers, retained only to correlate logs for this incident:
+
+* PairLobby participant: pt_8VRRS4M0CSDXQWCYBFCYPZBK5Z
+* PairLobby managed session: se_VV9XQFCZYHQCXNZTP7QWJH7EF0
+* Claude model: claude-opus-5-5
+* Claude conversation: 697b54bc-fe82-4927-8cef-64c189ad55d1
+
+
+3. Current technical cause
+--------------------------
+
+packages/cli/src/claude-receiver.ts launches Claude in streaming JSON mode and keeps
+the final result object. Its failure check rejects when the child exits nonzero,
+even if Claude emitted a result whose subtype is "success". The resulting message
+combines the two values into the confusing "exit 1; success" error. Provider usage
+information in the structured result, result errors, standard error, or status text
+is not converted into a typed condition.
+
+packages/cli/src/receiver.ts maps unrecognized errors to "adapter_error", calls the
+normal delivery-failed path, and returns the receiver to its available state. There
+is no provider cooldown fence, so the queue can cascade through more requests that
+cannot possibly start successfully.
+
+packages/cli/src/receiver-attempt-journal.ts has no usage-limited terminal/event kind
+and no reset-time fields. Receiver status, protocol request state, and server turn
+state likewise have no representation for provider waiting.
+
+The existing conversation policy is useful and should remain: completed Claude
+conversations may be resumed, while interrupted or incomplete tool work starts a
+fresh recovery attempt. Usage-limit recovery must not blindly resume a possibly
+half-executed tool call.
+
+
+4. Required product behavior
+-----------------------------
+
+When PairLobby detects a managed provider usage limit, it must:
+
+1. Identify it as provider usage exhaustion, not task failure, room quota exhaustion,
+   authentication failure, context-window exhaustion, timeout, or generic crash.
+2. Preserve the original request and its correlation identifiers as unresolved.
+3. Record that the current attempt stopped because of a provider usage limit.
+4. Release any sequential speaking-turn lease. A provider wait of minutes or hours
+   must not prevent other participants from speaking.
+5. Put the affected provider/account profile into a durable cooldown state.
+6. Keep later work for the same provider/account waiting instead of launching it and
+   producing a chain of identical failures.
+7. Allow receivers using other providers or authentication profiles to continue.
+8. Show the reset time, timezone, automatic-retry state, and manual recovery controls.
+9. Wake once after the reset time, revalidate that the request is still actionable,
+   claim a new turn when necessary, and continue with a safe recovery attempt.
+10. Resolve the original request normally when the recovery attempt succeeds.
+
+PairLobby must not automatically open, visit, or activate clau.de/reset. It may show
+the provider link as a user action. Provider billing or limit-reset decisions remain
+under the user's control.
+
+
+5. State model
+--------------
+
+Use explicit states instead of overloading "failed" or "available".
+
+Recommended receiver state:
+
+    provider_wait
+
+Recommended request/job phase:
+
+    provider_wait
+
+Recommended attempt outcome/event kind:
+
+    usage_limited
+
+Recommended structured data:
+
+    provider                 "claude"
+    model                    model reported by the adapter, when known
+    limitKind                "session" | "weekly" | "unknown"
+    detectedAt               absolute UTC timestamp
+    retryAt                  absolute UTC timestamp, when parseable
+    resetTimezone            IANA timezone, when reported
+    displayMessage           short sanitized provider message
+    resetActionUrl           allow-listed provider URL, when reported
+    automaticRetry           boolean
+    source                   "result" | "result_errors" | "stderr"
+
+Do not store raw prompts, full stderr dumps, credentials, tokens, home-directory
+paths, or other sensitive provider state in room-visible events.
+
+An attempt that reaches the usage limit is still terminal as an execution attempt,
+but it does not make the logical request terminal. The attempt journal should record
+the attempt as usage_limited, while the request moves to provider_wait and retains
+its original request/event identity.
+
+
+6. Detection and reset-time parsing
+-----------------------------------
+
+Prefer a stable structured provider error code if Claude exposes one. Until that is
+available, inspect the final structured result first, then result.errors, then a
+sanitized bounded stderr/status buffer.
+
+Positive signals may include combinations of:
+
+* "usage limit reached"
+* "session limit"
+* "you've hit your ... limit"
+* "limit resets <time>"
+* "continuing automatically at <time>"
+* the allow-listed reset link "https://clau.de/reset"
+
+Detection should require a strong usage/limit phrase. A reset time or nonzero exit
+alone is not sufficient.
+
+Do not classify these as usage exhaustion:
+
+* PairLobby room or service quota_exceeded errors
+* invalid or expired provider authentication
+* context-window/token-capacity errors for one conversation
+* ordinary task/tool failures
+* managed receiver inactivity or absolute deadline timeouts
+* a model that is unavailable or does not exist
+* network failure without an explicit provider usage-limit signal
+
+For a time-only reset such as 6:20pm:
+
+1. Use the reported IANA timezone, such as America/Toronto.
+2. Anchor it to the current date in that timezone.
+3. If that local time has already elapsed beyond a small clock-skew allowance, use
+   the next local calendar day.
+4. Convert and store an absolute UTC instant while preserving the source timezone.
+5. Use timezone-aware date arithmetic so daylight-saving transitions are correct.
+
+If no reset time can be parsed confidently, enter provider_wait with automaticRetry
+set to false and present Retry now, Cancel, and Reassign controls. Never invent a
+reset time or retry rapidly.
+
+
+7. Cooldown scope
+-----------------
+
+The cooldown is broader than one room session. Multiple managed Claude receivers can
+share the same Claude account/authentication context and would all fail during the
+same interval.
+
+Maintain a device-local provider cooldown keyed by a non-secret profile identity,
+for example:
+
+    runtime + resolved executable + hash(configuration-directory identity)
+
+The model may be included if provider evidence shows limits are model-specific. Do
+not hash or persist credentials themselves. Receivers for Codex, Qwen, or a distinct
+Claude configuration profile must remain unaffected.
+
+When one receiver detects the limit, all idle receivers sharing that key should show
+provider_wait and stop claiming new work. A receiver already performing useful work
+should only be interrupted if the provider itself returns the usage-limit condition.
+
+
+8. Durable retry scheduling
+----------------------------
+
+Waiting must not consume model turns, hold a Claude child process, hold a server
+speaking lease, or busy-poll.
+
+Persist cooldown and deferred-request metadata in the receiver's durable local store
+(SQLite is appropriate for the existing receiver architecture). Schedule one local
+timer for retryAt plus a small configurable grace period. After process or machine
+restart, reload the cooldown, recompute the remaining delay, and schedule exactly one
+wake-up.
+
+Before automatic retry, verify all of the following:
+
+* the logical request is still unresolved;
+* the user has not cancelled or reassigned it;
+* the room still exists and is open;
+* the participant still belongs to the room and may answer;
+* the receiver is running and not paused or muted;
+* no newer successful recovery already resolved the request;
+* the retry can claim a fresh speaking turn.
+
+The recovery attempt should start a fresh provider invocation with a concise recovery
+instruction that includes the original task and tells the agent to inspect the shared
+workspace and attempt history before acting. It must assume that prior tool calls may
+have completed and avoid duplicate writes, messages, commits, or other side effects.
+
+If the provider still reports a usage limit, update the stored reset information and
+schedule at most one new wake. If there is no later reset time, apply bounded backoff
+and then require manual retry. Never enter a rapid retry loop.
+
+
+9. Turn and protocol semantics
+------------------------------
+
+Sequential rooms require a server-visible defer/yield operation. Marking the request
+failed loses the intended task; retaining the existing turn for hours blocks the
+room. The operation should atomically:
+
+* release the active speaking-turn lease;
+* leave the original request unresolved;
+* set its state to provider_wait/deferred;
+* attach sanitized cooldown metadata;
+* permit unrelated participants and providers to continue;
+* allow the same receiver to reclaim a new turn when recovery begins;
+* reject a late retry if the request was cancelled, resolved, or reassigned.
+
+The server should remain the authority for logical request state and correlation.
+The device-local scheduler is the authority for waking a managed local runtime. This
+split makes the waiting state visible across clients while avoiding a server process
+that attempts to operate the user's local Claude installation.
+
+Older clients must treat the new state as a nonterminal waiting state where possible,
+or render a safe generic deferred status. They must not interpret it as success.
+
+
+10. User experience
+-------------------
+
+Suggested visible copy:
+
+    Claude usage limit reached
+    Waiting until 6:20 PM America/Toronto
+    PairLobby will retry automatically after the limit resets.
+
+Surfaces that should expose the condition:
+
+* Agent roster: "Usage limited until 6:20 PM"
+* Receiver status: provider_wait, never available during the cooldown
+* Working strip: "Deferred · provider usage limit"
+* Request/receipt panel: reset time, automatic retry state, last attempt ID, and
+  Retry now / Cancel / Reassign actions
+* Attempt history: a usage_limited record followed by the eventual recovery attempt
+
+Retry now bypasses the local timer once but must still use all idempotency checks. It
+is useful after the user manually resets their provider limit. If Retry now receives
+the same limit, restore provider_wait without repeated notifications.
+
+Notify the user once when entering a new cooldown and once when work actually resumes.
+Do not notify on every queued request. Stopping, pausing, muting, removing, or revoking
+the participant must cancel or suppress automatic execution until explicitly resumed.
+
+
+11. Queue behavior
+------------------
+
+While a provider profile is cooling down:
+
+* Do not launch queued requests against that profile.
+* Preserve queue order and original request identifiers.
+* Show why each request is waiting and the shared expected retry time.
+* Permit explicit cancellation and reassignment of individual requests.
+* Do not convert every queued item into its own failed attempt.
+* Do not create a separate timer per queued request; use one cooldown wake and normal
+  queue arbitration afterward.
+* Continue processing work assigned to unaffected runtimes/profiles.
+
+If several rooms share one receiver/profile, normal PairLobby priority and turn rules
+should decide which eligible deferred request runs first after the cooldown expires.
+
+
+12. Safety and idempotency
+--------------------------
+
+The usage-limit signal can arrive after an agent has changed files or external state.
+Recovery must therefore be at-least-once scheduling with idempotent execution guards,
+not an assumption that the original attempt did nothing.
+
+Required safeguards:
+
+* Keep the append-only history of the interrupted attempt.
+* Give every recovery attempt a new attempt ID linked to the original request.
+* Recheck whether a reply was delivered before retrying.
+* Tell the recovering agent to inspect the workspace and prior attempt summary.
+* Reuse existing delivery idempotency keys for final answers.
+* Never replay an opaque tool call automatically.
+* If PairLobby cannot determine whether an irreversible side effect occurred, show
+  that uncertainty to the recovering agent and user.
+
+
+13. Suggested implementation map
+--------------------------------
+
+packages/cli/src/claude-receiver.ts
+    Parse the structured Claude result and bounded stderr into a typed
+    ProviderUsageLimited error. Preserve retry time and sanitized evidence. Replace
+    the contradictory generic "exit 1; success" path for this condition.
+
+packages/cli/src/provider-limits.ts (new)
+    Define provider-limit types, time parsing, profile-key generation, persistent
+    cooldown storage, and single-wake scheduling. Keep adapter-independent behavior
+    here so another provider can adopt it later.
+
+packages/cli/src/receiver-runtime.ts
+    Add a typed adapter outcome/error contract for provider_wait instead of matching
+    human-readable messages in the orchestration loop.
+
+packages/cli/src/receiver.ts
+    Catch ProviderUsageLimited, append the attempt record, defer the logical request,
+    publish receiver status, fence the affected queue, release the turn, and arrange
+    durable recovery. Do not call the ordinary deliveryFailed path.
+
+packages/cli/src/receiver-attempt-journal.ts
+    Add usage_limited and the structured cooldown fields. Preserve the prior partial
+    attempt and link later recovery attempts.
+
+packages/protocol/src/requests.ts and packages/protocol/src/events.ts
+    Add the provider_wait/deferred state and a versioned sanitized cooldown payload.
+
+packages/client/src/client.ts
+    Expose defer and recovery/reclaim operations with idempotency identifiers.
+
+packages/server-core/src/service.ts and packages/server-core/src/turns.ts
+    Implement atomic defer/yield and safe turn reclaim without resolving the request.
+
+CLI presentation files, including agent-activity.ts, agent-roster.ts,
+working-strip.ts, receipt-view.ts, request-panel.ts, reply-wait.ts, chat.ts, and
+main.ts
+    Render the new state and manual controls consistently. Do not display a waiting
+    provider as an available agent.
+
+Documentation
+    Explain the distinction among provider usage limit, PairLobby room quota,
+    request deadline, and runtime failure. Document automatic and manual recovery.
+
+
+14. Delivery strategy
+---------------------
+
+An acceptable first slice is:
+
+1. Typed Claude usage-limit detection with robust tests.
+2. A durable device-wide cooldown and truthful receiver status.
+3. Queue fencing so new Claude requests wait rather than fail repeatedly.
+4. A protocol/server defer operation that releases sequential turns.
+5. One-shot automatic recovery of the original request.
+6. Minimal status and Retry now / Cancel controls.
+
+The complete version should add cross-client presentation, reassignment, polished
+notifications, shared cooldown visibility for every local receiver, and comprehensive
+restart/race testing.
+
+
+15. Acceptance tests
+--------------------
+
+Detection
+
+[ ] Given a Claude stream ending with exit code 1, subtype "success", and the observed
+    usage-limit text, the adapter returns ProviderUsageLimited rather than a generic
+    Error.
+[ ] The reset time 6:20pm with America/Toronto is stored as the correct future UTC
+    instant.
+[ ] The parser handles midnight rollover and daylight-saving transitions.
+[ ] Equivalent signals in result.errors or bounded stderr are detected.
+[ ] A normal exit-code-1 task failure is not classified as usage exhaustion.
+[ ] Authentication, context-window, network, room-quota, and timeout fixtures retain
+    their existing distinct classifications.
+[ ] Unparseable usage-limit text produces provider_wait with automaticRetry false.
+
+State and queueing
+
+[ ] The stopped execution attempt is recorded as usage_limited with a new attempt ID.
+[ ] The logical request remains unresolved and enters provider_wait.
+[ ] A sequential room's speaking turn is released immediately.
+[ ] The receiver does not show available while its provider profile is cooling down.
+[ ] Later requests for the same profile stay queued and create no failed attempts.
+[ ] A Codex, Qwen, or distinct Claude profile continues to process work normally.
+[ ] Multiple Claude receivers sharing one auth profile observe one shared cooldown.
+
+Automatic recovery
+
+[ ] No provider child process remains alive during the wait.
+[ ] Waiting produces no model calls and no polling loop.
+[ ] Restarting PairLobby before retryAt restores exactly one scheduled wake-up.
+[ ] At retryAt plus grace, an eligible unresolved request claims a fresh turn and
+    starts one recovery attempt.
+[ ] A successful recovery answers and resolves the original request exactly once.
+[ ] A second usage-limit response updates the cooldown without a tight retry loop.
+[ ] Cancellation, reassignment, participant removal, permission revocation, room
+    closure, pause, and mute each prevent stale automatic execution.
+[ ] Two processes waking concurrently cannot both recover the same request.
+
+Safety
+
+[ ] Recovery receives the original task plus an instruction to inspect prior state
+    and avoid repeating completed side effects.
+[ ] A partial file change from the first attempt is preserved and visible to recovery.
+[ ] Final-answer delivery remains idempotent across disconnect/reconnect races.
+[ ] Raw stderr, prompts, credentials, and configuration paths are not room-visible.
+
+User interface
+
+[ ] The roster, working strip, receiver status, and request panel all distinguish
+    provider_wait from failure and availability.
+[ ] The displayed reset time includes an unambiguous timezone.
+[ ] Retry now performs one immediate guarded attempt.
+[ ] Cancel prevents future automatic retry.
+[ ] Reassign permits another participant/provider to take the unresolved request.
+[ ] The allow-listed reset URL is presented as a user-controlled action and is never
+    opened automatically.
+[ ] One notification is sent on entering cooldown and one on actual resumption, with
+    no notification storm from queued requests.
+
+Compatibility and audit
+
+[ ] Existing managed receiver success, pass, decline, interruption, idle-timeout,
+    absolute-timeout, crash, and unavailable tests continue to pass.
+[ ] Attempt history clearly shows original attempt -> usage_limited -> recovery.
+[ ] Older clients render a safe nonterminal fallback for the new protocol state.
+[ ] Existing completed-conversation resume behavior remains unchanged.
+
+
+16. Definition of done
+----------------------
+
+This issue is complete when the observed screenshot scenario causes PairLobby to
+truthfully show that Claude is waiting for a provider reset, releases the room for
+other participants, preserves all queued work without cascading failures, survives a
+PairLobby restart, and safely resumes the original request once after the reset. The
+behavior must be covered by deterministic adapter, scheduler, protocol, server, and
+end-to-end receiver tests.
