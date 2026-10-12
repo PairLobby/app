@@ -1,7 +1,7 @@
 //! Room operations shared by every transport. The Cloudflare Durable Object and
 //! the Node server both run this; only the store and the socket layer differ.
 
-import {DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_RETAINED_FILE_BYTES, DEFAULT_ROOM_POLICY, ProtocolError, UNATTACHED_FILE_LIFETIME_MS, formatFileSize, hashCredential, newId, newInviteCode, normalizeInviteCode, safeFileName} from '@pairlobby/protocol';
+import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_RETAINED_FILE_BYTES, DEFAULT_ROOM_POLICY, ProtocolError, UNATTACHED_FILE_LIFETIME_MS, formatFileSize, hashCredential, newId, newInviteCode, normalizeInviteCode, safeFileName} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
     Attachment,
@@ -191,7 +191,7 @@ export class RoomService {
         assertRoomWritable(view, now);
         const sender = assertCanWrite(actor);
         assertPermitted(view, actor, 'attach');
-        const limit = view.room.policy.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
+        const limit = Math.min(view.room.policy.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES, ABSOLUTE_MAX_FILE_BYTES);
         const size = upload.bytes.byteLength;
         if (limit === 0) {
             throw new ProtocolError('unsupported_capability', 'this room does not accept files');

@@ -5,6 +5,7 @@ Updated 2026-10-05, for the release after **0.9.2**. `pairlobby --version` says 
 ## What works
 
 - Rooms, reusable/single-use invitations, read-only guests, expiry, handovers, and explicit control state.
+- Local relays carry up to eight inert file attachments per message, with a strict 95 MB single-file ceiling and 512 MB retained per room. Images and videos transfer between joined devices; hosted storage and inline media previews are not implemented.
 - Managed Codex, Claude, and Qwen receivers: detached Node code waits; addressed requests run in separate managed conversations, without listening models or polling subagents.
 - Native Claude-channel reply subscriptions: durable exact-delivery waits, cancellation, pause/mute deferral and restart recovery in the same channel-connected conversation. `wait-reply` provides a bounded manual check whose normal timeout is pending rather than failure.
 - Durable execution/outbox state, serial per-agent dispatch, duplicate suppression, and visible failures instead of blindly replaying uncertain work.
@@ -23,7 +24,7 @@ Updated 2026-10-05, for the release after **0.9.2**. `pairlobby --version` says 
 - Interactive `pairlobby settings` for this device and `/settings` for a room.
 - A second relay implementation on Durable Objects that runs on Celld or Cloudflare and passes the same store contracts. It moved to its own repository, [PairLobby/durable-runtime](https://github.com/PairLobby/durable-runtime), on 2026-10-06.
 
-The latest full local run recorded **641 passing tests** (2026-10-08), including real MCP/HTTP reply-subscription checks, plus terminal tests driven through a real PTY. Spawning/provider-option tests use deterministic provider fixtures. Earlier real Codex and Claude checks, and Qwen's real-CLI/loopback-provider check, are historical evidence described in the [capability matrix](integrations/README.md#capability-evidence). They do not certify new live-provider behavior, every terminal host, overnight idle, or production load.
+The latest full local run recorded **675 passing tests** (2026-10-12), including real MCP/HTTP reply-subscription checks, plus terminal tests driven through a real PTY. Spawning/provider-option tests use deterministic provider fixtures. Earlier real Codex and Claude checks, and Qwen's real-CLI/loopback-provider check, are historical evidence described in the [capability matrix](integrations/README.md#capability-evidence). They do not certify new live-provider behavior, every terminal host, overnight idle, or production load.
 
 ## Read first
 
@@ -50,6 +51,7 @@ These tracked guides are the published references. `.docs/guide.md` is tracked; 
 | Concurrency | Sequential mode locks the whole room; parallel mode allows distinct agents to overlap. Each agent still handles its own queue serially. |
 | Agent table | Snapshot of all currently joined agents. Private remote or unrecorded historical metadata is labelled unavailable. Origin does not identify the physical device. |
 | Clipboard | Native OS tools when available; terminal clipboard fallback reports a request, not confirmed success. Native clipboard behavior on every OS/host is not certified by fixture tests. |
+| Files | Local relays store authenticated room attachments separately from events. Downloads are integrity-checked, forced as inert data, never executable, and never overwrite an existing file. Hosted rooms do not store files yet. |
 | Control | Listing every agent does not grant permission to start/stop agents created by another human session. |
 | Pause/interruption | Pause prevents later dispatch; stop ends a receiver; `/interrupt` cancels the current turn and reports what the runtime acknowledged. None guarantees every running tool descendant stopped, and `/interrupt` is not verified against live inference on every runtime. |
 | Recovery | Spawn retries reuse their saved operation/identity; uncertain inference jobs are not automatically replayed. New managed executions have an append-only local attempt journal, inspectable with `receiver attempts`; older failures receive no fabricated history. Retry/reassign, dismiss and cancel are explicit sender/admin actions. Failed or cancelled turns clear the unproven provider checkpoint before later work. |
@@ -62,6 +64,7 @@ These tracked guides are the published references. `.docs/guide.md` is tracked; 
 
 - Finer-grained command permissions/presets, cross-team account discovery with verified presence, model metadata sharing/name-hover details, runtime model completion, and Qwen effort mapping remain follow-ups.
 - Invitations by email, contacts, organizations, and the website's handle and invitation pages are not built. Inviting by handle is for hosted rooms only.
+- Hosted attachment storage, upload progress, resumable transfer, and inline image/video previews remain follow-ups; local relay transfers are buffered in memory and intended for files below the enforced 95 MB ceiling.
 - Sharing a relay with `network-sharing lan` is plain HTTP; `tailscale` relies on Tailscale's encryption. Finding relays on the local network needs the macOS Local Network permission for the terminal app, and tailnet discovery only tries port 8790. None of this has been exercised across more than two real devices.
 - The Durable Object relay speaks HTTP only and is not qualified on a multi-node Celld fleet.
 - Native graphics in actual iTerm2/Ghostty windows and broader Windows/Warp terminal support still need validation; portable character output and protocol/PTY paths have tests.

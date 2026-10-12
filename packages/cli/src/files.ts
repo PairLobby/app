@@ -23,7 +23,9 @@ const MEDIA_TYPES: Record<string, string> = {
     '.txt': 'text/plain', '.md': 'text/markdown', '.log': 'text/plain', '.csv': 'text/csv', '.json': 'application/json', '.yaml': 'application/yaml', '.yml': 'application/yaml',
     '.toml': 'application/toml', '.xml': 'application/xml', '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.ts': 'text/x-typescript', '.py': 'text/x-python',
     '.rs': 'text/x-rust', '.sh': 'text/x-shellscript', '.diff': 'text/x-diff', '.patch': 'text/x-diff', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-    '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.pdf': 'application/pdf', '.zip': 'application/zip', '.gz': 'application/gzip', '.tar': 'application/x-tar',
+    '.gif': 'image/gif', '.webp': 'image/webp', '.avif': 'image/avif', '.heic': 'image/heic', '.heif': 'image/heif', '.bmp': 'image/bmp', '.tif': 'image/tiff', '.tiff': 'image/tiff', '.svg': 'image/svg+xml',
+    '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm', '.avi': 'video/x-msvideo', '.mkv': 'video/x-matroska',
+    '.pdf': 'application/pdf', '.zip': 'application/zip', '.gz': 'application/gzip', '.tar': 'application/x-tar',
 };
 
 export function mediaTypeFor(name: string): string {

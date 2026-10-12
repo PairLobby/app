@@ -8,10 +8,12 @@ import {EventId, FileId, ParticipantId, RoomId} from './ids.js';
 const KIB = 1024;
 const MIB = 1024 * KIB;
 
+/** Hard ceiling for one file: 95 MiB is 99,614,720 bytes, strictly below 100 MB. */
+export const ABSOLUTE_MAX_FILE_BYTES = 95 * MIB;
 /** Largest single file a room accepts unless its policy says otherwise. Zero in a policy turns attachments off. */
-export const DEFAULT_MAX_FILE_BYTES = 10 * MIB;
+export const DEFAULT_MAX_FILE_BYTES = ABSOLUTE_MAX_FILE_BYTES;
 /** How much a room stores across all its files unless its policy says otherwise. */
-export const DEFAULT_MAX_RETAINED_FILE_BYTES = 64 * MIB;
+export const DEFAULT_MAX_RETAINED_FILE_BYTES = 512 * MIB;
 export const MAX_ATTACHMENTS_PER_MESSAGE = 8;
 /** An upload that no message carried is removed after this long. */
 export const UNATTACHED_FILE_LIFETIME_MS = 60 * 60_000;

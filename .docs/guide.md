@@ -586,7 +586,7 @@ python scripts/test-people-chat.py   # three people, no agent, through the real 
 python scripts/test-network-rooms.py # a room open to the network, joined from the room list
 ```
 
-The last full local run (2026-10-08) recorded **641 passing tests**, plus source and installed-package terminal checks. Spawning, concurrent receivers, argument forwarding, recovery, roster metadata, and clipboard transport use deterministic fixtures; this does not claim new provider-backed acceptance or native clipboard testing on every OS. See [the validation guide](../integrations/SPIKE.md) for targeted commands and remaining gaps.
+The last full local run (2026-10-12) recorded **675 passing tests**, plus source and installed-package terminal checks. Spawning, concurrent receivers, argument forwarding, recovery, roster metadata, and clipboard transport use deterministic fixtures; this does not claim new provider-backed acceptance or native clipboard testing on every OS. See [the validation guide](../integrations/SPIKE.md) for targeted commands and remaining gaps.
 
 `fixtures/src/contract.ts` is the room contract and `fixtures/src/redemption-contract.ts` the invite crash-recovery gate. Both are parameterized by store and run against the in-memory reference and SQLite here, and against Durable Object SQLite in [durable-runtime](https://github.com/PairLobby/durable-runtime), so a behaviour that differs between adapters fails a build. A new storage adapter is expected to call them too.
 
@@ -610,7 +610,15 @@ The `package.json` files in this repository stay `private` with `*` ranges for t
 
 ## What is deliberately not here
 
-No server-side inference hosting, GPU discovery, or generic remote-shell service. The receiver uses the selected locally installed runtime and its authentication; it does not require a new PairLobby provider key. No file transfer, task board, capability advertisement, or account requirements for local rooms. Local workspace planning describes a broader eventual system and is historical context, not a requirement list.
+No server-side inference hosting, GPU discovery, or generic remote-shell service. The receiver uses the selected locally installed runtime and its authentication; it does not require a new PairLobby provider key. Local relays can transfer inert file attachments, but hosted attachment storage, inline media previews, a task board, and capability advertisement are not implemented. Local workspace planning describes a broader eventual system and is historical context, not a requirement list.
+
+### Files, images, and videos on a local relay
+
+A message may carry up to eight files through `pairlobby serve`. The strict ceiling is 95 MB per file—99,614,720 bytes, below 100 MB—and the default retained-file budget is 512 MB per room. The bytes live in the relay's file store; room events contain only sanitized names, sizes, media types, and SHA-256 digests.
+
+Use `/attach <path> [message]`, `/files`, `/open <number-or-name>` for text, and `/save <number-or-name> <directory>`. The shell equivalents are `pairlobby send --file <path>` and `pairlobby files get <name> --out <directory>`. Images and videos are transferred and saved as binary data rather than rendered automatically. Downloads are forced to `application/octet-stream`, checked against their recorded digest, saved under a new non-executable filename, and never replace an existing file. A managed agent receives request attachments under `<workdir>/.pairlobby/files/<message-id>/` with instructions to inspect them as data and never run them.
+
+Cross-device transfer requires both devices to be joined to the same room on a reachable local, LAN, or Tailscale relay. Hosted rooms currently report that file storage is unsupported.
 
 Hosted socket delivery and local polling run in ordinary client code. **Managed Codex, Claude and Qwen agents do not run `read --wait` or keep a subagent listening.** Unconfigured/manual runtimes still need an explicit read and cannot claim automatic availability. Room pause prevents the receiver's next dispatch after current work. `/interrupt` cancels one agent's current turn and reports the outcome its runtime acknowledged; cancellation of every tool it started is not verified. Explicit multi-agent questions and speaking turns are implemented. Automatic response selection for unaddressed chatter and managed-task delegation continuation remain planned. Invite only people and agents authorized for the room; a message cannot broaden runtime permissions.
 

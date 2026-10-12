@@ -7,6 +7,7 @@ import {hostname, networkInterfaces} from 'node:os';
 import {dirname} from 'node:path';
 
 import {RoomService, createRouter} from '@pairlobby/server-core';
+import {ABSOLUTE_MAX_FILE_BYTES} from '@pairlobby/protocol';
 
 import {advertiseRelay, isLocalNetworkAddress, isLoopbackAddress, isTailscaleAddress} from './network.js';
 import {SqliteRoomStore} from './sqlite-store.js';
@@ -39,8 +40,15 @@ export interface RunningServer {
     close(): Promise<void>;
 }
 
-/** The most one request may carry. Above any file a room accepts by default; nothing reads an unbounded body into memory. */
-const MAX_REQUEST_BYTES = 32 * 1024 * 1024;
+/** Non-file endpoints retain the smaller bound; the file-upload route may use the explicit file ceiling. */
+const DEFAULT_MAX_REQUEST_BYTES = 32 * 1024 * 1024;
+
+class RequestBodyTooLarge extends Error {}
+
+function requestBodyLimit(incoming: IncomingMessage): number {
+    const path = (incoming.url ?? '').split('?', 1)[0];
+    return incoming.method === 'POST' && /^\/v1\/rooms\/[^/]+\/files$/.test(path ?? '') ? ABSOLUTE_MAX_FILE_BYTES : DEFAULT_MAX_REQUEST_BYTES;
+}
 
 /** The port a relay listens on unless told otherwise, and the one other devices try when searching a tailnet. */
 export const DEFAULT_PORT = 8790;
@@ -214,30 +222,36 @@ function shareUrls(host: string, port: number, publicUrl: string | undefined, ta
 }
 
 async function respond(handle: (request: Request) => Promise<Response>, incoming: IncomingMessage, outgoing: ServerResponse, origin: string, peerAddresses: WeakMap<Request, string>): Promise<void> {
+    const bodyLimit = requestBodyLimit(incoming);
     try {
-        if (Number(incoming.headers['content-length'] ?? 0) > MAX_REQUEST_BYTES) {
+        if (Number(incoming.headers['content-length'] ?? 0) > bodyLimit) {
             outgoing.writeHead(413, {'content-type': 'application/json', connection: 'close'});
             outgoing.end(JSON.stringify({error: {code: 'payload_too_large', message: 'this request is larger than the relay accepts'}}));
             return;
         }
-        const request = await toRequest(incoming, origin);
+        const request = await toRequest(incoming, origin, bodyLimit);
         peerAddresses.set(request, incoming.socket.remoteAddress ?? '');
         const response = await handle(request);
         outgoing.writeHead(response.status, Object.fromEntries(response.headers));
         outgoing.end(response.body ? Buffer.from(await response.arrayBuffer()) : undefined);
-    } catch {
+    } catch (error) {
+        if (error instanceof RequestBodyTooLarge) {
+            outgoing.writeHead(413, {'content-type': 'application/json', connection: 'close'});
+            outgoing.end(JSON.stringify({error: {code: 'payload_too_large', message: 'this request is larger than the relay accepts'}}));
+            return;
+        }
         outgoing.writeHead(503, {'content-type': 'application/json'});
         outgoing.end(JSON.stringify({error: {code: 'server_unavailable', message: 'the server could not complete this request'}}));
     }
 }
 
-async function toRequest(incoming: IncomingMessage, origin: string): Promise<Request> {
+async function toRequest(incoming: IncomingMessage, origin: string, bodyLimit: number): Promise<Request> {
     const chunks: Buffer[] = [];
     let received = 0;
     for await (const chunk of incoming) {
         received += (chunk as Buffer).byteLength;
-        if (received > MAX_REQUEST_BYTES) {
-            throw new Error('request body too large');
+        if (received > bodyLimit) {
+            throw new RequestBodyTooLarge();
         }
         chunks.push(chunk as Buffer);
     }

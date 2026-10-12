@@ -77,7 +77,7 @@ On a company network that inspects encrypted traffic, PairLobby trusts the certi
 
 Inside a room, `/help` lists chat commands. Common controls are `/agents`, the interactive `/requests` recovery panel, `/settings`, `/turns parallel`, `/interrupt <agent>`, `/pause <agent>`, and `/resume <agent>`.
 
-Messages can carry files, up to 8 per message, 10 MB each and 64 MB per room, on your own relay (`pairlobby serve`); the hosted service does not store files yet.
+Messages can carry files, up to 8 per message, 95 MB each and 512 MB per room, on your own relay (`pairlobby serve`); the hosted service does not store files yet. Images and videos are transferred as inert downloads—the relay never renders or executes them.
 
 ```sh
 /attach notes.txt "my data.json" here they are   # in chat

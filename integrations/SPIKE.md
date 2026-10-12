@@ -25,7 +25,7 @@ python scripts/test-spawn-chat.py
 python scripts/test-agent-table.py
 ```
 
-The synthetic harness requires Codex CLI and Python 3.11+ but uses a localhost fake provider. Vitest receiver/spawn tests use deterministic Codex, Claude, and Qwen protocol fixtures; these and the terminal tests make no paid model calls. Agent-table copying tests use a test sink rather than changing the user's clipboard. Clipboard transport unit tests verify stdin/OSC encoding with mocks; they do not certify every native OS clipboard. The latest full run recorded 464 passing tests plus source and installed-package spawn/table PTY checks.
+The synthetic harness requires Codex CLI and Python 3.11+ but uses a localhost fake provider. Vitest receiver/spawn tests use deterministic Codex, Claude, and Qwen protocol fixtures; these and the terminal tests make no paid model calls. Agent-table copying tests use a test sink rather than changing the user's clipboard. Clipboard transport unit tests verify stdin/OSC encoding with mocks; they do not certify every native OS clipboard. The latest full run recorded 675 passing tests plus source and installed-package spawn/table PTY checks.
 
 ## Feature-specific regression checks
 

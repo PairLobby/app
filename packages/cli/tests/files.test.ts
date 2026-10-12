@@ -11,11 +11,11 @@ import type {CreatedRoom} from '@pairlobby/client';
 import {MemoryStore} from '@pairlobby/fixtures';
 import {SqliteRoomStore, startServer} from '@pairlobby/local-server';
 import type {RunningServer} from '@pairlobby/local-server';
-import {DEFAULT_ROOM_POLICY, formatFileSize, newCredential, newId, safeFileName} from '@pairlobby/protocol';
+import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_RETAINED_FILE_BYTES, DEFAULT_ROOM_POLICY, RoomPolicySchema, formatFileSize, newCredential, newId, safeFileName} from '@pairlobby/protocol';
 import type {Attachment} from '@pairlobby/protocol';
 import {RoomService} from '@pairlobby/server-core';
 
-import {decodeText, findRoomFile, previewFile, splitAttachCommand, writeReceivedFile} from '../src/files.js';
+import {decodeText, findRoomFile, mediaTypeFor, previewFile, splitAttachCommand, writeReceivedFile} from '../src/files.js';
 
 const execute = promisify(execFile);
 const directory = mkdtempSync(join(tmpdir(), 'pairlobby-files-'));
@@ -48,7 +48,15 @@ test('test_file_names_sizes_and_text_detection', () => {
     expect(safeFileName('a\u0000b\n.txt')).toBe('ab.txt');
     expect(safeFileName('   ')).toBe('file');
     expect(safeFileName('x'.repeat(400)).length).toBe(255);
-    expect([0, 999, 1536, 10 * 1024 * 1024, 64 * 1024 * 1024].map(formatFileSize)).toEqual(['0 B', '999 B', '1.5 KB', '10 MB', '64 MB']);
+    expect([0, 999, 1536, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_RETAINED_FILE_BYTES].map(formatFileSize)).toEqual(['0 B', '999 B', '1.5 KB', '95 MB', '512 MB']);
+    expect(DEFAULT_MAX_FILE_BYTES).toBe(ABSOLUTE_MAX_FILE_BYTES);
+    expect(ABSOLUTE_MAX_FILE_BYTES).toBeLessThan(100_000_000);
+    expect(() => RoomPolicySchema.parse({...DEFAULT_ROOM_POLICY, maxFileBytes: ABSOLUTE_MAX_FILE_BYTES + 1})).toThrow();
+    expect(mediaTypeFor('photo.avif')).toBe('image/avif');
+    expect(mediaTypeFor('photo.heic')).toBe('image/heic');
+    expect(mediaTypeFor('clip.mp4')).toBe('video/mp4');
+    expect(mediaTypeFor('clip.mov')).toBe('video/quicktime');
+    expect(mediaTypeFor('clip.webm')).toBe('video/webm');
     expect(decodeText(text('héllo'))).toBe('héllo');
     expect(decodeText(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00]))).toBeNull();
     expect(decodeText(new Uint8Array([0xff, 0xfe, 0xfd]))).toBeNull();
@@ -194,18 +202,22 @@ test('test_a_room_can_turn_files_off_and_a_store_without_files_says_so', async (
     await expect(plain.send(created.roomId, owner.participantCredential, message('with a file', [claimed]))).rejects.toThrow('this relay does not store files');
 });
 
-test('test_a_ten_megabyte_file_round_trips_through_the_relay_in_chunks_and_a_larger_one_is_refused', async () => {
+test('test_a_video_larger_than_the_general_request_limit_and_an_image_round_trip_as_inert_files', async () => {
     const room = await client.createRoom('large', {displayName: 'owner', kind: 'human'});
-    const bytes = new Uint8Array(10 * 1024 * 1024);
+    const bytes = new Uint8Array(33 * 1024 * 1024);
     for (let index = 0; index < bytes.byteLength; index += 4096) {
         bytes[index] = index % 251;
     }
-    const uploaded = await client.uploadFile(room.roomId, room.participantCredential, 'build.tar', bytes);
-    await client.send(room.roomId, room.participantCredential, message('The build', [uploaded]));
+    const uploaded = await client.uploadFile(room.roomId, room.participantCredential, 'clip.mp4', bytes, mediaTypeFor('clip.mp4'));
+    const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3]);
+    const image = await client.uploadFile(room.roomId, room.participantCredential, 'frame.png', imageBytes, mediaTypeFor('frame.png'));
+    await client.send(room.roomId, room.participantCredential, message('Video and frame', [uploaded, image]));
+    expect(uploaded).toMatchObject({name: 'clip.mp4', size: bytes.byteLength, mediaType: 'video/mp4'});
+    expect(image).toMatchObject({name: 'frame.png', size: imageBytes.byteLength, mediaType: 'image/png'});
     const back = await client.downloadFile(room.roomId, room.participantCredential, uploaded.fileId);
     expect(back.byteLength).toBe(bytes.byteLength);
     expect(Buffer.compare(Buffer.from(back), Buffer.from(bytes))).toBe(0);
-    await expect(client.uploadFile(room.roomId, room.participantCredential, 'too-big.tar', new Uint8Array(10 * 1024 * 1024 + 1))).rejects.toThrow('this room accepts files up to 10 MB');
+    expect(await client.downloadFile(room.roomId, room.participantCredential, image.fileId)).toEqual(imageBytes);
 });
 
 test('test_the_shell_sends_lists_and_saves_files_and_the_text_transcript_names_them', async () => {
