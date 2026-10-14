@@ -369,8 +369,8 @@ export class RoomBrowser {
     }
 
     /**
-     * Deleting is the one action here that cannot be undone, so it always asks, whatever
-     * the device's confirmDelete setting says: one stray key must not cost a room's history.
+     * Deleting cannot be undone, so it asks first, unless this device turned the
+     * confirmDelete setting off (`pairlobby settings confirm-delete off`).
      */
     private confirmDelete(): void {
         const row = this.rows[this.selected];
@@ -394,16 +394,38 @@ export class RoomBrowser {
         const description = owner
             ? `Delete ${name} (${row.roomId}) and its history for everyone? This cannot be undone.`
             : `Remove ${name} (${row.roomId}) from this device? You leave the room and your receivers stop. The room carries on for everyone else. To come back you join again, which needs an invite if the room is invite-only.`;
-        const page: RoomPanelPage = {id: 'delete-selection', closeOnCancel: true, title: owner ? 'Delete room for everyone' : 'Remove room from this device', note: description, reload: async () => page, rows: [{id: 'confirm', label: owner ? 'Delete room' : 'Remove room', value: name ?? '', section: 'Confirm', action: {kind: 'command', confirm: description, closeAfterSave: true, run: async () => {
+        const remove = async () => {
             if (owner) {
                 this.actionNotice = (await deleteListedRoom(this.store, row.roomId)) === 'deleted' ? `Deleted ${name} for everyone.` : `${name} was already gone; removed it from this device.`;
             } else {
                 await forgetListedRoom(this.store, row.roomId);
                 this.actionNotice = `Removed ${name} from this device. The room itself is unchanged.`;
             }
-        }}}]};
+        };
+        if (!this.store.settings().confirmDelete) {
+            void this.deleteWithoutAsking(owner ? `Deleting ${name}…` : `Removing ${name}…`, remove);
+            return;
+        }
+        const page: RoomPanelPage = {id: 'delete-selection', closeOnCancel: true, title: owner ? 'Delete room for everyone' : 'Remove room from this device', note: description, reload: async () => page, rows: [{id: 'confirm', label: owner ? 'Delete room' : 'Remove room', value: name ?? '', section: 'Confirm', action: {kind: 'command', confirm: description, closeAfterSave: true, run: remove}}]};
         this.details.show(page);
         this.details.key(undefined, {name: 'enter'});
+    }
+
+    private async deleteWithoutAsking(progress: string, remove: () => Promise<void>): Promise<void> {
+        this.loading = true;
+        this.note = progress;
+        this.render();
+        try {
+            await remove();
+        } catch (error) {
+            this.loading = false;
+            this.note = `Delete failed: ${error instanceof Error ? error.message : String(error)}`;
+            this.render();
+            return;
+        }
+        const notice = this.actionNotice;
+        this.actionNotice = '';
+        await this.refresh(notice);
     }
 
     private showSession(): void {

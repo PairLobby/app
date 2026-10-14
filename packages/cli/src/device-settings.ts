@@ -30,7 +30,7 @@ export const SETTING_KEYS: Record<string, SettingDefinition> = {
     'auto-close': {field: 'defaultAutoClose', kind: 'auto-close', label: 'Auto-close discussions', section: 'New rooms', help: `when rooms you create close themselves: ${AUTO_CLOSE_USAGE}`, choices: AUTO_CLOSE_CHOICES},
     'default-expiry': {field: 'defaultRoomLifetimeMs', kind: 'duration', label: 'Room expiry', section: 'New rooms', help: 'how long a new room lives: never, or a duration like 24h'},
     'default-invite-expiry': {field: 'defaultInviteLifetimeMs', kind: 'duration', label: 'Invite expiry', section: 'New rooms', help: 'how long a new invite code lasts: never, or a duration like 10m'},
-    'confirm-delete': {field: 'confirmDelete', kind: 'boolean', label: 'Confirm deletes', section: 'Terminal', help: 'ask before deleting a room'},
+    'confirm-delete': {field: 'confirmDelete', kind: 'boolean', label: 'Confirm deletes', section: 'Terminal', help: 'ask before deleting a room, or removing one from this device'},
     'show-ids': {field: 'showIds', kind: 'boolean', label: 'Show IDs', section: 'Terminal', help: 'print ids next to names in the live room'},
     'poll-interval': {field: 'pollIntervalMs', kind: 'number', label: 'Poll interval (ms)', section: 'Terminal', help: 'milliseconds between live-room polls'},
     'update-check': {field: 'updateCheck', kind: 'boolean', label: 'Check for updates', section: 'Updates', help: 'check GitHub whenever an interactive room or chat opens; other commands check daily in the background'},
