@@ -29,7 +29,7 @@ import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, rende
 
 import {acceptInvitation, accountToken, declineInvitation, isOnlineKey, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineOrigin, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
 import type {ReceivedInvitation} from './online.js';
-import {receiverAttempts, receiverConfiguration, receiverStatus, refreshReceivers, retryProviderNow, runReceiver, startReceiver, stopReceiver, waitAndRefreshReceiver} from './receiver.js';
+import {receiverAttempts, receiverConfiguration, receiverStatus, refreshReceivers, retryProviderNow, runReceiver, startReceiver, stopReceiver, waitAndRefreshReceiver, wakeOfflineReceivers} from './receiver.js';
 import type {ReceiverStartOptions, ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
 import {discoverableNote, joinCommand, localOnlyNote, parseJoinLink, shareTarget} from './share.js';
@@ -1489,6 +1489,13 @@ async function sendMessage(store: LocalStore, values: Values, text: string): Pro
         ...(recipientId ? {recipientId} : {}),
         ...(allRecipients ? {allRecipients: true} : recipientIds ? {recipientIds} : {})
     });
+    const {woken, failed} = await wakeOfflineReceivers(store, room.roomId, session.sessionId);
+    if (woken.length) {
+        note(`started ${woken.map((agent) => agent.displayName).join(', ')} again; ${woken.length === 1 ? 'its receiver was' : 'their receivers were'} not running`);
+    }
+    for (const {session: agent, reason} of failed) {
+        note(`could not start ${agent.displayName}: ${reason}`);
+    }
 
     const seconds = flag(values, 'no-wait') ? 0 : Number(str(values, 'wait-for-ack') ?? 30);
     if (!Number.isFinite(seconds) || seconds < 0 || seconds > 300) {

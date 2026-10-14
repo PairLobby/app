@@ -1,8 +1,8 @@
 import type {MessageRequest, RoomEvent, RoomSnapshot, TurnQueue} from '@pairlobby/protocol';
 
-export type AgentActivityState = 'idle' | 'unread' | 'clear' | 'failed' | 'working' | 'preparing' | 'provider_wait' | 'waiting' | 'stalled' | 'paused' | 'muted' | 'unknown';
+export type AgentActivityState = 'idle' | 'unread' | 'clear' | 'failed' | 'working' | 'preparing' | 'provider_wait' | 'waiting' | 'stalled' | 'paused' | 'muted' | 'offline' | 'unknown';
 export type AgentActivity = {participantId: string; name: string; state: AgentActivityState};
-export type AgentActivityContext = {participants: RoomSnapshot['participants']; requests: MessageRequest[]; queue: TurnQueue | null; complete: boolean; available: boolean};
+export type AgentActivityContext = {participants: RoomSnapshot['participants']; requests: MessageRequest[]; queue: TurnQueue | null; complete: boolean; available: boolean; offline?: Set<string>};
 type ActivityEvidence = {latestMessage: RoomEvent | undefined; acknowledged: Set<string>; settled?: Set<string>; now?: number};
 
 /** Transport receipts cannot establish model reading or a deliberate idle decision. */
@@ -16,6 +16,8 @@ export function agentActivities(context: AgentActivityContext, evidence: Activit
             state = 'unknown';
         } else if (entries.some((entry) => entry.state === 'answering' && entry.workingAt !== undefined && (entry.expiresAt ?? 0) > now)) {
             state = 'working';
+        } else if (context.offline?.has(person.participantId)) {
+            state = 'offline';
         } else if (person.paused) {
             state = 'paused';
         } else if (person.muted) {
@@ -50,7 +52,7 @@ export function activitySummary(agents: AgentActivity[]): string {
     if (agents.every((agent) => agent.state === 'idle')) {
         return `All agents idle (${agents.length}) · no further action declared`;
     }
-    const states: AgentActivityState[] = ['working', 'preparing', 'provider_wait', 'waiting', 'stalled', 'failed', 'unread', 'idle', 'clear', 'paused', 'muted', 'unknown'];
+    const states: AgentActivityState[] = ['working', 'preparing', 'provider_wait', 'waiting', 'stalled', 'failed', 'unread', 'idle', 'clear', 'paused', 'muted', 'offline', 'unknown'];
     return 'Agents: ' + states.flatMap((state) => {
         const count = agents.filter((agent) => agent.state === state).length;
         return count ? [`${count} ${state === 'clear' ? 'no queued task' : state === 'unread' ? 'receipt unconfirmed' : state === 'provider_wait' ? 'provider limited' : state}`] : [];

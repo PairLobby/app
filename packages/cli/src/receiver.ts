@@ -3,7 +3,7 @@ import {closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, 
 import {join, resolve} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {setTimeout as sleep} from 'node:timers/promises';
-import type {LocalStore} from '@pairlobby/client';
+import type {LocalStore, SessionEntry} from '@pairlobby/client';
 import {ProtocolError, newId} from '@pairlobby/protocol';
 import type {MessageRequest, ProviderWait} from '@pairlobby/protocol';
 import {select, UsageError} from './context.js';
@@ -27,6 +27,7 @@ import {providerRetryText} from './request-recovery.js';
 export type ReceiverStatus = {pid: number; state: string; runtime: string; version?: string; entrypoint?: string; restartRequired?: boolean; threadId?: string; model?: string; eventId?: string; attempt?: number | null; attemptId?: string | null; detail?: string; receiptError?: string; usage?: unknown; providerWait?: ProviderWait | null; idleTimeoutMs?: number; absoluteTimeoutMs?: number; requestStartedAt?: number | null; lastActivityAt?: number | null; idleDeadlineAt?: number | null; absoluteDeadlineAt?: number | null; idleRemainingMs?: number | null; absoluteRemainingMs?: number | null};
 export type ReceiverStartOptions = {model?: string; workdir?: string; effort?: string; executable?: string; idleTimeoutMs?: number; absoluteTimeoutMs?: number};
 export type ReceiverRefreshResult = {restarted: string[]; scheduled: string[]; current: string[]; stopped: string[]; failed: {sessionId: string; reason: string}[]};
+export type ReceiverWakeResult = {woken: SessionEntry[]; failed: {session: SessionEntry; reason: string}[]};
 export type ProviderRetryResult = {scheduled: string[]; status: ReceiverStatus | null};
 type Job = {event_id: string; phase: string; acknowledged: number; answer: string | null; failure: string | null; attempt_id: string | null};
 type ReceiverConfiguration = {runtime: ReceiverRuntimeName; cwd: string; model?: string; effort?: string; executable?: string; idleTimeoutMs: number; absoluteTimeoutMs: number};
@@ -249,6 +250,28 @@ export async function refreshReceivers(store: LocalStore): Promise<ReceiverRefre
             } catch (error) {
                 result.failed.push({sessionId: session.sessionId, reason: error instanceof Error ? error.message : String(error)});
             }
+        }
+    }
+    return result;
+}
+
+/**
+ * This device's agents in a room whose receiver died without being stopped, as after
+ * the computer restarts. A receiver stopped on purpose is not listed.
+ */
+export function offlineReceivers(store: LocalStore, roomId: string, exceptSessionId?: string): SessionEntry[] {
+    return (store.room(roomId)?.sessions ?? []).filter((session) => session.kind === 'agent' && session.sessionId !== exceptSessionId && receiverConfiguration(store, session.sessionId) !== null && receiverStatus(store, session.sessionId)?.state === 'offline');
+}
+
+/** Starts every offline receiver of this device's agents in a room again; each resumes its saved conversation. */
+export async function wakeOfflineReceivers(store: LocalStore, roomId: string, exceptSessionId?: string): Promise<ReceiverWakeResult> {
+    const result: ReceiverWakeResult = {woken: [], failed: []};
+    for (const session of offlineReceivers(store, roomId, exceptSessionId)) {
+        try {
+            await startReceiver(store, roomId, session.sessionId);
+            result.woken.push(session);
+        } catch (error) {
+            result.failed.push({session, reason: error instanceof Error ? error.message : String(error)});
         }
     }
     return result;

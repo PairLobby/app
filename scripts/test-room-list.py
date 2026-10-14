@@ -151,12 +151,24 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-room-browser-') as directory:
         assert next(p for p in remaining['participants'] if p['participantId']==visitor['participantId'])['left'] is True
         keys(b'\x1b'); terminal.wait(timeout=5)
         assert terminal.returncode==0, 'Escape still quits from the room list'
+        # With confirm-delete off, Backspace deletes or removes at once, without the dialog.
+        subprocess.check_output(cli+['settings', 'confirm-delete', 'off'], env=env, text=True, timeout=10)
+        quick = run('create', '--name', 'Room 40', '--human', '--as', 'Owner', '--server', server)
+        hosted = json.loads(subprocess.check_output(cli+['create', '--name', 'Room 50', '--human', '--as', 'Host', '--server', server, '--json'], env=other, text=True, timeout=10))
+        run('join', hosted['invite']['code'], '--human', '--as', 'Visitor', '--server', server)
         master2, slave2 = pty.openpty()
         fcntl.ioctl(slave2, termios.TIOCSWINSZ, struct.pack('HHHH', 28, 140, 0, 0))
         os.close(master); master = master2
         terminal = subprocess.Popen(cli+['list'], stdin=slave2, stdout=slave2, stderr=slave2, env=env)
         os.close(slave2)
         screen.reset(); wait_for('PairLobby rooms'); wait_for('Room 2')
+        choose('Room 40'); keys(b'\x7f'); wait_for('Deleted Room 40 for everyone')
+        assert 'Delete room for everyone' not in text(), text()
+        assert all(room['roomId']!=quick['roomId'] for room in run('list')['rooms'])
+        choose('Room 50'); keys(b'\x7f'); wait_for('Removed Room 50 from this device')
+        assert 'Remove room from this device' not in text(), text()
+        assert all(room['roomId']!=hosted['roomId'] for room in run('list')['rooms'])
+        assert json.loads(subprocess.check_output(cli+['status', '--room', hosted['roomId'], '--session', hosted['sessionId'], '--json'], env=other, text=True, timeout=10))['lifecycle']=='open'
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH',18,62,0,0))
         screen.resize(18,62); terminal.send_signal(signal.SIGWINCH); pump(.4)
         keys(b'\x1b[C\x1b[C\x1b[C\x1b[C\x1b[C\x1b[C\x1b[C')
@@ -164,7 +176,7 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-room-browser-') as directory:
         keys(b'q')
         terminal.wait(timeout=5)
         assert terminal.returncode==0
-        print('PASS Backspace deletes an owned room after asking and only removes one that is not owned, pure JSON in a TTY, natural sorting and clickable headers, Enter-to-chat including an agent-only room, I session inspection, close cancellation, exact-session leave, repeated chat/rejoin/return, owner room close and narrow-screen navigation.')
+        print('PASS Backspace deletes an owned room after asking (or at once with confirm-delete off) and only removes one that is not owned, pure JSON in a TTY, natural sorting and clickable headers, Enter-to-chat including an agent-only room, I session inspection, close cancellation, exact-session leave, repeated chat/rejoin/return, owner room close and narrow-screen navigation.')
     finally:
         if terminal and terminal.poll() is None:
             terminal.kill(); terminal.wait(timeout=5)

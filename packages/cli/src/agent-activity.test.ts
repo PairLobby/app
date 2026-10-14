@@ -36,3 +36,10 @@ test('partial history, unavailable data and paused members cannot produce all-id
     expect(activitySummary([])).toBe('No agents in the room');
     expect(agentActivities(context, {...caughtUp, latestMessage: {...message, senderId: 'agent'}, acknowledged: new Set()})[0]!.state).toBe('clear');
 });
+
+test('an agent whose receiver on this device is not running counts as offline, even with a request waiting', () => {
+    const offline = {...context, requests: [request], offline: new Set(['agent'])};
+    expect(agentActivities(offline, caughtUp)[0]!.state).toBe('offline');
+    expect(activitySummary(agentActivities(offline, caughtUp))).toBe('Agents: 1 offline');
+    expect(agentActivities({...context, requests: [request], offline: new Set(['someone else'])}, caughtUp)[0]!.state).toBe('waiting');
+});
