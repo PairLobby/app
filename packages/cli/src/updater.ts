@@ -210,6 +210,16 @@ function defaultLauncher(root: string): string {
     return join(bin, windows ? 'pairlobby.cmd' : 'pairlobby');
 }
 
+/** The installer's launcher on this device, whichever build asks; null when the installer never put one there. */
+export function installedLauncher(): string | null {
+    const launcher = defaultLauncher(defaultInstallRoot());
+    try {
+        return readFileSync(launcher, 'utf8').includes(LAUNCHER_MARKER) ? launcher : null;
+    } catch {
+        return null;
+    }
+}
+
 /**
  * The installer's layout when this process runs from it: `<root>/releases/<id>/dist/main.mjs`
  * behind a managed launcher. A checkout or npm link is not ours to replace, so it returns null.
@@ -354,13 +364,24 @@ export async function installRelease(latest: LatestRelease, install: ManagedInst
         } catch (error) {
             say(`Receiver refresh needs attention: ${error instanceof Error ? error.message : String(error)}`);
         }
+        // A relay kept running by `pairlobby service` follows the launcher, but only once it restarts.
+        try {
+            const relay = JSON.parse(execFileSync(process.execPath, [entry, 'service', 'refresh'], {encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: {...process.env}})) as {restarted: boolean; reason: string};
+            if (relay.restarted) {
+                say(`Relay restarted on ${latest.version}.`);
+            } else if (relay.reason !== 'not installed') {
+                say(`The background relay was not restarted: ${relay.reason}.`);
+            }
+        } catch {
+            // Not macOS, or no relay service: nothing runs the relay in the background.
+        }
         return releaseDirectory;
     } finally {
         rmSync(work, {recursive: true, force: true});
     }
 }
 
-const NEVER_CHECK = new Set(['update', 'receiver-run', 'receiver-tools', 'receiver-refresh', 'receiver-refresh-one', 'channel', 'guard-stop']);
+const NEVER_CHECK = new Set(['update', 'receiver-run', 'receiver-tools', 'receiver-refresh', 'receiver-refresh-one', 'channel', 'guard-stop', 'serve', 'service']);
 
 /** Starts a detached day-old check (and install, with auto-update) without delaying this command. */
 export function scheduleBackgroundCheck(store: LocalStore, command: string): void {

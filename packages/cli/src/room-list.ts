@@ -1,10 +1,13 @@
+import {platform} from 'node:os';
+
 import {PairLobbyClient} from '@pairlobby/client';
 import type {LocalStore, RoomEntry, SessionEntry} from '@pairlobby/client';
 import {ProtocolError} from '@pairlobby/protocol';
 import type {RoomListEntry} from './render.js';
 import {receiverConfiguration, receiverStatus, stopReceiver} from './receiver.js';
 import {modelId, savedSessionModel} from './model-metadata.js';
-import {UsageError} from './context.js';
+import {DEFAULT_RELAY_PORT, UsageError} from './context.js';
+import {serviceCovers} from './relay-service.js';
 
 export type ListColumn = {key: string; label: string; width: number};
 export type ListSortValue = string | number | null;
@@ -52,7 +55,29 @@ export async function loadRoomList(store: LocalStore, signal?: AbortSignal): Pro
     }));
 }
 
+function relayDown(entry: RoomListEntry): boolean {
+    return !entry.reachable && entry.why === 'server_unavailable' && /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/|$)/.test(entry.room.serverUrl);
+}
+
+/**
+ * What to do when this device's own relay is down, which takes every room on it
+ * offline at once; null when it is not. Remote relays are someone else's to run.
+ */
+export function relayAdvice(entries: RoomListEntry[], covered: (port: number) => boolean = serviceCovers): string | null {
+    const down = [...new Set(entries.filter(relayDown).map((entry) => entry.room.serverUrl))];
+    if (!down.length) {
+        return null;
+    }
+    const port = Number(new URL(down[0]!).port || 80);
+    const option = port !== DEFAULT_RELAY_PORT ? ` --port ${port}` : '';
+    const fix = covered(port) ? `Its service restarts it within 10 seconds; pairlobby service status${option} says why it stopped.` : platform() === 'darwin' ? `Start it with pairlobby service install${option}, which also keeps it running at login and after a crash.` : `Start it with pairlobby serve${option}.`;
+    return `The relay at ${down.join(' and ')} is not running, so its rooms cannot be reached. ${fix}`;
+}
+
 function roomState(entry: RoomListEntry): string {
+    if (relayDown(entry)) {
+        return 'relay down';
+    }
     return entry.snapshot?.lifecycle ?? ({room_expired: 'expired', room_not_found: 'missing', unauthorized: 'no access', participant_revoked: 'no access', no_saved_credential: 'no credential'}[entry.why ?? ''] || 'unreachable');
 }
 

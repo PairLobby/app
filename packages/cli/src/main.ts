@@ -39,6 +39,8 @@ import {routeForRoom} from './mentions.js';
 import type {RoutedChatMessage} from './mentions.js';
 import {tailscaleNames, tailscaleView} from './tailscale.js';
 import {VERSION} from './version.js';
+import {formatServiceStatus, installService, refreshService, requireServicePlatform, restartService, serviceLog, serviceProgram, serviceStatus, uninstallService} from './relay-service.js';
+import type {ServiceStatus} from './relay-service.js';
 import {NETWORK_SHARING_RESTART, SETTING_KEYS, describeSettingValue, parseLifetime, parseManagedDuration, parseSettingValue, validateManagedSettings} from './device-settings.js';
 import {applyAutoCloseToRooms, parseAutoClose, summarizeBulk} from './auto-close.js';
 import {runSettingsMenu} from './settings-menu.js';
@@ -52,7 +54,7 @@ import {spawnAgent, formatSpawnResult} from './spawn-agent.js';
 import {parseSpawnOptions, SPAWN_HELP} from './spawn-options.js';
 import {RoomBrowser} from './room-browser.js';
 import type {RoomBrowserOptions} from './room-browser.js';
-import {ROOM_COLUMNS, deleteListedRoom, loadRoomList, roomListJson, roomRows, sortListRows} from './room-list.js';
+import {ROOM_COLUMNS, deleteListedRoom, loadRoomList, relayAdvice, roomListJson, roomRows, sortListRows} from './room-list.js';
 import {closeRequest, recoverRequest} from './request-recovery.js';
 import {waitForReply} from './reply-wait.js';
 import {trustLocalCertificates} from './trust.js';
@@ -232,6 +234,8 @@ const HELP = `pairlobby
   pairlobby serve --tailscale        also accept your Tailscale devices (encrypted by Tailscale)
   pairlobby serve --lan              also accept devices on your network (unencrypted HTTP)
   pairlobby serve --public-url <url> advertise this address in invites (Tailscale, proxy)
+  pairlobby service install          keep the relay running at login and after a crash, on the installed release (macOS)
+  pairlobby service status|restart|logs|uninstall
 
 Common options
   --room <name|id>      required when this device holds more than one room
@@ -490,6 +494,8 @@ async function main(argv: string[]): Promise<number> {
             return closeRoom(store, values);
         case 'serve':
             return serve(store, values);
+        case 'service':
+            return service(values, positionals[1] ?? 'status');
         case 'help':
             out(HELP);
             return 0;
@@ -616,6 +622,10 @@ async function listRooms(store: LocalStore, values: Values): Promise<number> {
         }
     }
     const entries = await loadRoomList(store);
+    const advice = relayAdvice(entries);
+    if (advice) {
+        note(advice);
+    }
     if (flag(values, 'json')) {
         json(roomListJson(store, entries, sort));
     } else {
@@ -2444,9 +2454,14 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     const publicUrl = str(values, 'public-url') !== undefined ? parsePublicUrl(str(values, 'public-url')!) : undefined;
     // Tailnet devices may address this one by its MagicDNS names, which are not interface addresses.
     const tailnet = host === '127.0.0.1' ? null : await tailscaleView();
+    // A relay started from an agent's shell belongs to that session's process tree and dies with it, taking every room with it.
+    const runtime = detectRuntime().runtime;
+    if (runtime) {
+        note(`this relay runs inside a ${runtime} session and stops when that session ends, taking its rooms offline. pairlobby service install keeps one running on its own.`);
+    }
     let running;
     try {
-        running = await startServer({host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
+        running = await startServer({version: VERSION, host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
     } catch (error) {
         // Say what is wrong and what to do, rather than surfacing a raw errno. The
         // occupant is never probed: something else owning the port is not ours to poke.
@@ -2489,6 +2504,50 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
         process.once('SIGTERM', stop);
     });
     return 0;
+}
+
+async function service(values: Values, action: string): Promise<number> {
+    // Refresh runs after every update on every system, and simply finds nothing installed elsewhere.
+    if (action !== 'refresh') {
+        requireServicePlatform();
+    }
+    // PAIRLOBBY_PORT and PAIRLOBBY_HOST are what the earlier repository script read.
+    const port = Number(str(values, 'port') ?? process.env['PAIRLOBBY_PORT'] ?? DEFAULT_RELAY_PORT);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new UsageError('--port must be a port number');
+    }
+    const show = (status: ServiceStatus) => flag(values, 'json') ? json(status) : out(formatServiceStatus(status, VERSION));
+    switch (action) {
+        case 'install': {
+            const program = serviceProgram();
+            const environment: Record<string, string> = {PAIRLOBBY_NO_UPDATE_CHECK: '1', PATH: process.env['PATH'] ?? '/usr/bin:/bin:/usr/sbin:/sbin'};
+            if (process.env['PAIRLOBBY_DATA_DIR']) {
+                environment['PAIRLOBBY_DATA_DIR'] = process.env['PAIRLOBBY_DATA_DIR'];
+            }
+            if (!program.followsUpdates) {
+                note('PairLobby was not installed with its installer here, so the service runs this build and updates will not reach it. Install with the installer (or npm run install:local in a checkout) and run this again to fix that.');
+            }
+            show(await installService({port, host: str(values, 'host') ?? process.env['PAIRLOBBY_HOST'], environment}, program));
+            return 0;
+        }
+        case 'status':
+            show(await serviceStatus(port));
+            return 0;
+        case 'restart':
+            show(await restartService(port));
+            return 0;
+        case 'refresh':
+            json(await refreshService(port));
+            return 0;
+        case 'logs':
+            out(serviceLog(40));
+            return 0;
+        case 'uninstall':
+            out(uninstallService() ? 'Removed the relay service. The relay stops now and no longer starts at login; rooms and credentials are untouched.' : 'The relay service was not installed.');
+            return 0;
+        default:
+            throw new UsageError('pairlobby service install|status|restart|logs|uninstall [--port 8790]');
+    }
 }
 
 /** Reminds a person at a terminal about a newer release once the command is done; never agents or scripts. */

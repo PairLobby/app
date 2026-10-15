@@ -48,6 +48,14 @@ try {
     } catch (error) {
         console.log(`Receiver refresh needs attention: ${error instanceof Error ? error.message : String(error)}`);
     }
+    try {
+        const relay = JSON.parse(execFileSync(process.execPath, [cli, 'service', 'refresh'], {encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: {...process.env}}));
+        if (relay.restarted || relay.reason !== 'not installed') {
+            console.log(`Relay: ${relay.reason}.`);
+        }
+    } catch {
+        // Not macOS: there is no relay service to restart.
+    }
     if (!(process.env.PATH ?? '').split(':').includes(dirname(launcher))) {
         console.log(`\n${dirname(launcher)} is not on your PATH. Add it, then open a new terminal:\n  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.${(process.env.SHELL ?? '').endsWith('zsh') ? 'zshrc' : 'profile'}`);
     }

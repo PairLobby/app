@@ -18,7 +18,8 @@ if (!COMMANDS.includes(command)) {
 }
 
 const runner = {
-    darwin: () => ({file: 'bash', args: [join(HERE, 'relay-service.sh'), command]}),
+    // The CLI writes the LaunchAgent itself, pointed at the installed release; see `pairlobby service`.
+    darwin: () => ({file: process.execPath, args: [join(HERE, '..', 'packages', 'cli', 'dist', 'main.js'), 'service', command]}),
     win32: () => ({file: 'powershell.exe', args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(HERE, 'relay-service.ps1'), command]}),
 }[process.platform];
 

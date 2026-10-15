@@ -3,7 +3,7 @@ import type {Key} from 'node:readline';
 import {PairLobbyClient} from '@pairlobby/client';
 import type {LocalStore} from '@pairlobby/client';
 import type {RoomListEntry} from './render.js';
-import {INVITED_STATE, NETWORK_STATE, ROOM_COLUMNS, SESSION_COLUMNS, closeListedRoom, deleteListedRoom, forgetListedRoom, invitationRows, administersListedRoom, leaveListedSession, loadRoomList, networkRows, roomRows, sessionRows, sortListRows} from './room-list.js';
+import {INVITED_STATE, NETWORK_STATE, ROOM_COLUMNS, SESSION_COLUMNS, closeListedRoom, deleteListedRoom, forgetListedRoom, invitationRows, administersListedRoom, leaveListedSession, loadRoomList, networkRows, relayAdvice, roomRows, sessionRows, sortListRows} from './room-list.js';
 import type {ListColumn, ListRow, ListSort, NetworkRoom, RoomInvite} from './room-list.js';
 import {RoomPanel} from './room-panel.js';
 import type {RoomPanelPage} from './room-panel.js';
@@ -180,7 +180,7 @@ export class RoomBrowser {
             }
             this.entries = entries;
             this.network = this.network.filter((found) => !entries.some((entry) => entry.room.roomId === found.room.roomId));
-            this.note = notice || 'Snapshot updated. Listing does not join rooms or start agents.';
+            this.note = notice || relayAdvice(entries) || 'Snapshot updated. Listing does not join rooms or start agents.';
             this.loading = false;
             this.rebuildRows(selected);
             this.invited = this.invited.filter((invitation) => !entries.some((entry) => entry.room.roomId === invitation.roomId));
