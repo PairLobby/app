@@ -75,7 +75,7 @@ async function authorizedSnapshot(store: LocalStore, room: RoomEntry, client: Pa
 }
 
 /** Search backwards through retained history, bounded by the room's deadline and snapshot watermark. */
-async function lastMessage(client: PairLobbyClient, credential: string, snapshot: RoomSnapshot): Promise<LastMessage | null> {
+export async function lastMessage(client: PairLobbyClient, credential: string, snapshot: RoomSnapshot): Promise<LastMessage | null> {
     const floor = Math.max(0, snapshot.earliestSeq - 1);
     let end = snapshot.latestSeq;
     while (end > floor) {

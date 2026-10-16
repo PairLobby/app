@@ -109,6 +109,8 @@ export interface RoomListEntry {
     room: RoomEntry;
     reachable: boolean;
     snapshot?: RoomSnapshot;
+    /** When the newest message was sent, or null when the room has none; absent when the room could not be read. */
+    lastMessageAt?: number | null;
     why?: string;
 }
 

@@ -70,6 +70,8 @@ export interface ServerInfo {
     shareUrls: string[];
     /** True when a device on the same network or tailnet can find this server from an invite code alone. */
     discoverable?: boolean;
+    /** The relay's own version, so a client can tell when it runs an older build than the CLI. */
+    version?: string;
 }
 
 const JSON_HEADERS = {'content-type': 'application/json; charset=utf-8', [PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)};

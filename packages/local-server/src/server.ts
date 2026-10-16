@@ -25,6 +25,8 @@ export interface ServeOptions {
     hostnames?: string[];
     /** Announce this relay on the local network over mDNS, so `pairlobby join <code>` there can find it. */
     advertise?: boolean;
+    /** Reported by `GET /v1/server`, so a client can tell which build this relay runs. */
+    version?: string;
 }
 
 export interface RunningServer {
@@ -64,7 +66,7 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
     const acceptHost = (value: string) => allowedHosts.includes(value) || (!isLoopback(host) && isOwnHost(value, boundPort, extraNames));
     // Found by mDNS when advertised, or by a tailnet device trying the default port on this one's Tailscale address.
     const discoverable = () => !options.publicUrl && !isLoopback(host) && (options.advertise === true || (boundPort === DEFAULT_PORT && (wildcard || isTailscaleAddress(host))));
-    const serverInfo = () => ({shareUrls: shareUrls(host, boundPort, options.publicUrl, tailscaleOnly), discoverable: discoverable()});
+    const serverInfo = () => ({shareUrls: shareUrls(host, boundPort, options.publicUrl, tailscaleOnly), discoverable: discoverable(), ...(options.version ? {version: options.version} : {})});
     const inviteProbe = async (prefix: string) => store.hasInviteDigestPrefix(prefix);
     // Where each request's connection came from, read off the socket: no header can claim it.
     const peerAddresses = new WeakMap<Request, string>();
