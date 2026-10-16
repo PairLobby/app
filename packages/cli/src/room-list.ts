@@ -3,13 +3,18 @@ import {platform} from 'node:os';
 import {PairLobbyClient} from '@pairlobby/client';
 import type {LocalStore, RoomEntry, SessionEntry} from '@pairlobby/client';
 import {ProtocolError} from '@pairlobby/protocol';
+import type {RoomSnapshot} from '@pairlobby/protocol';
+import {lastMessage} from './find.js';
 import type {RoomListEntry} from './render.js';
 import {receiverConfiguration, receiverStatus, stopReceiver} from './receiver.js';
 import {modelId, savedSessionModel} from './model-metadata.js';
 import {DEFAULT_RELAY_PORT, UsageError} from './context.js';
 import {serviceCovers} from './relay-service.js';
+import {isHostedUrl, isLoopbackUrl} from './share.js';
+import type {IconSet} from './terminal-icons.js';
 
-export type ListColumn = {key: string; label: string; width: number};
+/** `name` says what the column is where its label is only an icon. */
+export type ListColumn = {key: string; label: string; width: number; name?: string};
 export type ListSortValue = string | number | null;
 export type ListRow = {id: string; roomId: string; sessionId?: string; values: Record<string, string>; sortValues: Record<string, ListSortValue>};
 export type ListSort = {key: string; descending: boolean};
@@ -18,11 +23,11 @@ export type ListedRoom = Omit<RoomEntry, 'sessions'> & {sessions: ListedSession[
 export type RoomListJson = {count: number; rooms: ListedRoom[]};
 
 export const ROOM_COLUMNS: ListColumn[] = [
-    {key: 'name', label: 'Room', width: 26}, {key: 'state', label: 'State', width: 14},
-    {key: 'agents', label: 'Agents', width: 8}, {key: 'people', label: 'People', width: 8},
-    {key: 'sessions', label: 'Local sessions', width: 15}, {key: 'created', label: 'Created (UTC)', width: 25},
-    {key: 'expires', label: 'Expires (UTC)', width: 25}, {key: 'id', label: 'Room ID', width: 30},
-    {key: 'relay', label: 'Relay', width: 36}
+    {key: 'where', label: '', width: 2}, {key: 'name', label: 'Room', width: 26},
+    {key: 'state', label: 'State', width: 14}, {key: 'agents', label: 'Agents', width: 8, name: 'Agents'},
+    {key: 'people', label: 'People', width: 8, name: 'People'}, {key: 'latest', label: 'Latest message', width: 16},
+    {key: 'created', label: 'Created (UTC)', width: 17}, {key: 'expires', label: 'Expires (UTC)', width: 17},
+    {key: 'id', label: 'Room ID', width: 30}, {key: 'relay', label: 'Relay', width: 36}
 ];
 export const SESSION_COLUMNS: ListColumn[] = [
     {key: 'name', label: 'Name', width: 24}, {key: 'kind', label: 'Kind', width: 8},
@@ -40,7 +45,8 @@ export async function loadRoomList(store: LocalStore, signal?: AbortSignal): Pro
         try {
             for (const credential of credentials) {
                 try {
-                    return {room, reachable: true, snapshot: await client.snapshot(room.roomId, credential)};
+                    const snapshot = await client.snapshot(room.roomId, credential);
+                    return {room, reachable: true, snapshot, lastMessageAt: snapshot.lastMessageAt ?? await latestMessageAt(client, credential, snapshot)};
                 } catch (error) {
                     why = error instanceof ProtocolError ? error.code : 'unreachable';
                     if (!['unauthorized', 'participant_revoked', 'room_locked'].includes(why) || signal?.aborted) {
@@ -53,6 +59,63 @@ export async function loadRoomList(store: LocalStore, signal?: AbortSignal): Pro
             client.closeLive();
         }
     }));
+}
+
+/** Where a room lives: on a hosted or cloud relay, on a relay other devices on the network reach, or on this device only. */
+export type RoomLocation = 'online' | 'network' | 'device';
+
+export const LOCATION_ICONS: Record<IconSet, Record<RoomLocation, string>> = {
+    nerd: {online: '\uf0c2', network: '\uf1eb', device: '\uf108'},
+    emoji: {online: '🌐', network: '📶', device: '💻'},
+    symbols: {online: '◎', network: '≈', device: '▪'},
+};
+/** The Agents and People headers, as icons where the set has them. */
+export const MEMBER_ICONS: Record<IconSet, {agents: string; people: string}> = {
+    nerd: {agents: '\uee0d', people: '\uf007'},
+    emoji: {agents: '🤖', people: '👤'},
+    symbols: {agents: 'Agents', people: 'People'},
+};
+
+export const LOCATION_LABELS: Record<RoomLocation, string> = {online: 'online, on a hosted relay', network: 'on the local network or tailnet', device: 'on this device only'};
+
+/** A loopback room counts as on the network once its owner lets the network join it by name. */
+export function roomLocation(serverUrl: string, localJoin = false): RoomLocation {
+    if (isHostedUrl(serverUrl) || new URL(serverUrl).protocol === 'https:') {
+        return 'online';
+    }
+    return isLoopbackUrl(serverUrl) && !localJoin ? 'device' : 'network';
+}
+
+/** A room list date: UTC to the minute, which is all a list needs. */
+export function listDate(ms: number): string {
+    return new Date(ms).toISOString().slice(0, 16).replace('T', ' ');
+}
+
+/** The relay's address without the scheme, which the Where column already says. */
+export function relayLabel(serverUrl: string): string {
+    return serverUrl.replace(/^https?:\/\//, '');
+}
+
+/** Relays record when the last message arrived only since auto-close; before that, the time comes from the newest retained message. */
+async function latestMessageAt(client: PairLobbyClient, credential: string, snapshot: RoomSnapshot): Promise<number | null> {
+    if (snapshot.latestSeq === 0) {
+        return null;
+    }
+    try {
+        return (await lastMessage(client, credential, snapshot))?.sentAt ?? null;
+    } catch {
+        return null;
+    }
+}
+
+/** How long ago something happened, in the largest whole unit: just now, 12 minutes ago, 5 hours ago, 3 days ago. */
+export function timeAgo(at: number, now = Date.now()): string {
+    const minutes = Math.floor(Math.max(0, now - at) / 60_000);
+    const [amount, unit] = minutes < 60 ? [minutes, 'minute'] : minutes < 24 * 60 ? [Math.floor(minutes / 60), 'hour'] : [Math.floor(minutes / (24 * 60)), 'day'];
+    if (amount === 0) {
+        return 'just now';
+    }
+    return `${amount} ${unit}${amount === 1 ? '' : 's'} ago`;
 }
 
 function relayDown(entry: RoomListEntry): boolean {
@@ -81,16 +144,18 @@ function roomState(entry: RoomListEntry): string {
     return entry.snapshot?.lifecycle ?? ({room_expired: 'expired', room_not_found: 'missing', unauthorized: 'no access', participant_revoked: 'no access', no_saved_credential: 'no credential'}[entry.why ?? ''] || 'unreachable');
 }
 
-export function roomRows(entries: RoomListEntry[]): ListRow[] {
+export function roomRows(entries: RoomListEntry[], icons: IconSet = 'symbols', now = Date.now()): ListRow[] {
     return entries.map((entry) => {
-        const {room, snapshot} = entry;
+        const {room, snapshot, lastMessageAt} = entry;
+        const latest = !snapshot ? 'Unknown' : lastMessageAt ? timeAgo(lastMessageAt, now) : 'None';
         const active = snapshot?.participants.filter((person) => !person.left && !person.revoked);
         const agents = active?.filter((person) => person.kind === 'agent').length ?? null;
         const people = active?.filter((person) => person.kind === 'human').length ?? null;
         const created = snapshot?.createdAt ?? room.createdAt;
         const expires = snapshot ? snapshot.expiresAt : room.expiresAt;
-        const values = {name: snapshot?.name ?? room.name, state: roomState(entry), agents: agents === null ? 'Unknown' : String(agents), people: people === null ? 'Unknown' : String(people), sessions: String(room.sessions.length), created: new Date(created).toISOString(), expires: expires === null ? 'Never' : new Date(expires).toISOString(), id: room.roomId, relay: room.serverUrl};
-        return {id: room.roomId, roomId: room.roomId, values, sortValues: {...values, agents, people, sessions: room.sessions.length, created, expires: expires ?? Number.POSITIVE_INFINITY}};
+        const location = roomLocation(room.serverUrl, snapshot?.policy.localJoin);
+        const values = {where: LOCATION_ICONS[icons][location], name: snapshot?.name ?? room.name, state: roomState(entry), agents: agents === null ? 'Unknown' : String(agents), people: people === null ? 'Unknown' : String(people), latest, created: listDate(created), expires: expires === null ? 'Never' : listDate(expires), id: room.roomId, relay: relayLabel(room.serverUrl)};
+        return {id: room.roomId, roomId: room.roomId, values, sortValues: {...values, where: location, agents, people, latest: lastMessageAt ?? null, created, expires: expires ?? Number.POSITIVE_INFINITY}};
     });
 }
 
@@ -100,10 +165,11 @@ export type NetworkRoom = {url: string; label: string; room: {roomId: string; na
 export const NETWORK_STATE = 'on network';
 
 /** Rows for rooms not saved here: the relay tells only a name, an age and a head count before joining. */
-export function networkRows(found: NetworkRoom[]): ListRow[] {
+export function networkRows(found: NetworkRoom[], icons: IconSet = 'symbols'): ListRow[] {
     return found.map(({url, label, room}) => {
-        const values = {name: room.name, state: NETWORK_STATE, agents: 'Unknown', people: `${room.participantCount} in room`, sessions: 'Not joined', created: new Date(room.createdAt).toISOString(), expires: 'Unknown', id: room.roomId, relay: label === url || label === 'local network' ? url : `${url} (${label})`};
-        return {id: room.roomId, roomId: room.roomId, values, sortValues: {...values, agents: null, people: room.participantCount, sessions: 0, created: room.createdAt, expires: null}};
+        const location = roomLocation(url, true);
+        const values = {where: LOCATION_ICONS[icons][location], name: room.name, state: NETWORK_STATE, agents: 'Unknown', people: `${room.participantCount} in room`, latest: 'Unknown', created: listDate(room.createdAt), expires: 'Unknown', id: room.roomId, relay: label === url || label === 'local network' ? relayLabel(url) : `${relayLabel(url)} (${label})`};
+        return {id: room.roomId, roomId: room.roomId, values, sortValues: {...values, where: location, agents: null, people: room.participantCount, latest: null, created: room.createdAt, expires: null}};
     });
 }
 
@@ -113,10 +179,10 @@ export type RoomInvite = {id: string; roomId: string; roomName: string; invitedB
 export const INVITED_STATE = 'invited';
 
 /** Rows for rooms this account was invited into and has not answered; nothing from inside the room is known yet. */
-export function invitationRows(invitations: RoomInvite[]): ListRow[] {
+export function invitationRows(invitations: RoomInvite[], icons: IconSet = 'symbols'): ListRow[] {
     return invitations.map((invitation) => {
-        const values = {name: invitation.roomName, state: INVITED_STATE, agents: 'Unknown', people: `by ${invitation.invitedBy}`, sessions: 'Not joined', created: new Date(invitation.createdAt).toISOString(), expires: 'Unknown', id: invitation.roomId, relay: `answer by ${new Date(invitation.expiresAt).toISOString().slice(0, 10)}`};
-        return {id: invitation.roomId, roomId: invitation.roomId, values, sortValues: {...values, agents: null, people: null, sessions: 0, created: invitation.createdAt, expires: null}};
+        const values = {where: LOCATION_ICONS[icons].online, name: invitation.roomName, state: INVITED_STATE, agents: 'Unknown', people: `by ${invitation.invitedBy}`, latest: 'Unknown', created: listDate(invitation.createdAt), expires: 'Unknown', id: invitation.roomId, relay: `answer by ${new Date(invitation.expiresAt).toISOString().slice(0, 10)}`};
+        return {id: invitation.roomId, roomId: invitation.roomId, values, sortValues: {...values, where: 'online', agents: null, people: null, latest: null, created: invitation.createdAt, expires: null}};
     });
 }
 
