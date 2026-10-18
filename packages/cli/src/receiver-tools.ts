@@ -5,7 +5,9 @@ import {Server} from '@modelcontextprotocol/sdk/server/index.js';
 import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
 import {CallToolRequestSchema, ListToolsRequestSchema} from '@modelcontextprotocol/sdk/types.js';
 import type {LocalStore} from '@pairlobby/client';
+import {stageAnswerFile} from './answer-files.js';
 import {select, UsageError} from './context.js';
+import {receiverConfiguration} from './receiver.js';
 
 /** Scoped acknowledgement and pass tools, without notifications or inbox polling. */
 export async function runReceiverTools(store: LocalStore, roomRef: string, sessionRef: string, eventId: string): Promise<number> {
@@ -30,13 +32,17 @@ export async function runReceiverTools(store: LocalStore, roomRef: string, sessi
         description: 'Declare waiting (with dependency), no_action, or declined with a reason. For no_action/declined, end the turn; no extra answer is posted.',
         inputSchema: {type: 'object', properties: {state: {type: 'string', enum: ['waiting', 'no_action', 'declined']}, reason: {type: 'string', minLength: 1, maxLength: 1024}}, required: ['state', 'reason'], additionalProperties: false}
     }, {
+        name: 'attach_file',
+        description: 'Send a file from the working directory with your final answer. Call once per file, at most 8; only files inside the working directory can be attached.',
+        inputSchema: {type: 'object', properties: {path: {type: 'string', minLength: 1, maxLength: 4096}}, required: ['path'], additionalProperties: false}
+    }, {
         name: 'pass_message',
         description: 'Pass the current speaking turn when you have nothing to add. End your turn after this; no public answer is posted.',
         inputSchema: {type: 'object', properties: {}, additionalProperties: false}
     }]}));
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
         try {
-            if (!['acknowledge_message', 'working_message', 'pass_message', 'message_status'].includes(request.params.name) || (request.params.name !== 'message_status' && Object.keys(request.params.arguments ?? {}).length)) {
+            if (!['acknowledge_message', 'working_message', 'pass_message', 'message_status', 'attach_file'].includes(request.params.name) || (!['message_status', 'attach_file'].includes(request.params.name) && Object.keys(request.params.arguments ?? {}).length)) {
                 throw new Error('Only the current request can be acknowledged');
             }
             const pid = Number(readFileSync(join(directory, 'owner.lock'), 'utf8'));
@@ -50,6 +56,13 @@ export async function runReceiverTools(store: LocalStore, roomRef: string, sessi
             }
             const snapshot = await client.snapshot(room.roomId, credential);
             const input = request.params.arguments ?? {};
+            if (request.params.name === 'attach_file') {
+                const workdir = receiverConfiguration(store, session.sessionId)?.cwd;
+                if (!snapshot.filesSupported || !workdir || typeof input.path !== 'string') {
+                    throw new Error('Attaching files is not available here; describe the file in your answer instead.');
+                }
+                return {content: [{type: 'text', text: stageAnswerFile(database, eventId, workdir, input.path)}]};
+            }
             if (request.params.name === 'message_status' && (!['waiting', 'no_action', 'declined'].includes(String(input.state)) || typeof input.reason !== 'string' || !input.reason.trim() || input.reason.length > 1024 || !snapshot.messageStagesSupported)) {
                 throw new Error('Choose waiting, no_action or declined with a reason; update the relay if necessary.');
             }

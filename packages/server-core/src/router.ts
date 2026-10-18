@@ -7,6 +7,7 @@ import {
     CreateRoomRequest,
     PROTOCOL_VERSION,
     PROTOCOL_VERSION_HEADER,
+    FileId,
     ProtocolError,
     ReadEventsQuery,
     RedeemInviteRequest,
@@ -251,6 +252,22 @@ async function route(request: Request, service: RoomService): Promise<Response> 
             }
             const query = ReadEventsQuery.parse(Object.fromEntries(url.searchParams));
             return json(await service.requests(roomId, credential, query.after, query.limit, url.searchParams.get('to') ?? undefined, url.searchParams.get('turns') === '1'));
+        }
+        case 'POST files': {
+            const name = url.searchParams.get('name') ?? '';
+            if (!name.trim() || name.length > 1024) {
+                return errorResponse('invalid_request', 'name the file with ?name=', 400);
+            }
+            const bytes = new Uint8Array(await request.arrayBuffer());
+            return json({file: await service.uploadFile(roomId, credential, {name, mediaType: request.headers.get('content-type') ?? '', bytes})}, 201);
+        }
+        case 'GET files': {
+            if (!segments[4]) {
+                return json(await service.listFiles(roomId, credential));
+            }
+            const {file, bytes} = await service.downloadFile(roomId, credential, FileId.parse(segments[4]));
+            // Always a download, never something a browser would render or run: the name and type came from another participant.
+            return new Response(bytes as Uint8Array<ArrayBuffer>, {status: 200, headers: {'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`, 'content-length': String(bytes.byteLength), 'x-content-type-options': 'nosniff', 'cache-control': 'private, no-store', 'pairlobby-file-sha256': file.sha256, [PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)}});
         }
         case 'GET events': {
             const query = ReadEventsQuery.parse(Object.fromEntries(new URL(request.url).searchParams));

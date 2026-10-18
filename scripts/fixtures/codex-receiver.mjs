@@ -46,9 +46,25 @@ for await (const line of createInterface({input: process.stdin})) {
     } else if (message.id === 'approval') {
         appendFileSync(process.env.PAIRLOBBY_TEST_RECORD, `approval:${message.result.decision}\n`);
         send({id: 'ack', method: 'item/tool/call', params: {threadId: 'test-thread', turnId: turn, tool: 'pairlobby_acknowledge', arguments: {}}});
+    } else if (typeof message.id === 'string' && message.id.startsWith('attach-')) {
+        // Each `attach-fixture:<path>` in the request asks to attach that file, one call at a time.
+        appendFileSync(process.env.PAIRLOBBY_TEST_RECORD, `attach:${message.result.success}:${message.result.contentItems[0].text}\n`);
+        const paths = [...text.matchAll(/attach-fixture:(\S+)/g)].map((match) => match[1]);
+        const next = Number(message.id.slice('attach-'.length)) + 1;
+        if (next < paths.length) {
+            send({id: `attach-${next}`, method: 'item/tool/call', params: {threadId: 'test-thread', turnId: turn, tool: 'pairlobby_attach_file', arguments: {path: paths[next]}}});
+            continue;
+        }
+        send({method: 'item/completed', params: {threadId: 'test-thread', turnId: turn, item: {type: 'agentMessage', phase: 'final_answer', text: 'Fixture answer: ' + text}}});
+        send({method: 'turn/completed', params: {threadId: 'test-thread', turn: {id: turn, status: 'completed'}}});
     } else if (message.id === 'ack' || message.id === 'pass' || message.id === 'working' || message.id === 'decision') {
         if (!message.result.success) {
             throw new Error('Acknowledgement failed');
+        }
+        const attach = /attach-fixture:(\S+)/.exec(text);
+        if (message.id === 'ack' && attach) {
+            send({id: 'attach-0', method: 'item/tool/call', params: {threadId: 'test-thread', turnId: turn, tool: 'pairlobby_attach_file', arguments: {path: attach[1]}}});
+            continue;
         }
         if (message.id === 'ack' && text.includes('no-action-fixture')) {
             send({id: 'decision', method: 'item/tool/call', params: {threadId: 'test-thread', turnId: turn, tool: 'pairlobby_message_status', arguments: {state: 'no_action', reason: 'No further work needed'}}});

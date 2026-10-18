@@ -1,5 +1,6 @@
 export * from './contract.js';
 export * from './fake-agent.js';
+export * from './file-contract.js';
 export * from './faulty-store.js';
 export * from './handover-samples.js';
 export * from './harness.js';

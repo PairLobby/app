@@ -3,11 +3,12 @@
 //! lands every part of a mutation or throws before touching anything.
 
 import {ProtocolError, mergeMessageRequest} from '@pairlobby/protocol';
-import type {HandoverRecord, MessageRequest, RequestPage, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
+import type {FileRecord, HandoverRecord, MessageRequest, RequestPage, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
-import type {EventPage, IdempotencyRecord, RoomStore} from '@pairlobby/server-core';
+import type {EventPage, FileStore, IdempotencyRecord, RoomStore} from '@pairlobby/server-core';
 
 type IdempotencyKey = {key: string; requestDigest: string} | null;
+type StoredFile = {file: FileRecord; bytes: Uint8Array};
 
 interface RoomTable {
     room: RoomRecord;
@@ -23,6 +24,33 @@ export class MemoryStore implements RoomStore {
     private rooms = new Map<string, RoomTable>();
     private requests = new Map<string, MessageRequest>();
     private invites = new Map<string, InviteRecord>();
+    private stored = new Map<string, StoredFile>();
+    readonly files: FileStore = {
+        putFile: async (file, bytes, limitBytes) => {
+            const held = [...this.stored.values()].filter((entry) => entry.file.roomId === file.roomId).reduce((total, entry) => total + entry.file.size, 0);
+            if (held + file.size > limitBytes) {
+                return false;
+            }
+            this.stored.set(file.fileId, {file, bytes: bytes.slice()});
+            return true;
+        },
+        file: async (roomId, fileId) => this.inRoom(roomId, fileId)?.file ?? null,
+        fileBytes: async (roomId, fileId) => this.inRoom(roomId, fileId)?.bytes.slice() ?? null,
+        attachedFiles: async (roomId) => [...this.stored.values()].map((entry) => entry.file).filter((file) => file.roomId === roomId && file.eventId !== null).sort((a, b) => a.createdAt - b.createdAt || a.fileId.localeCompare(b.fileId)),
+        usedBytes: async (roomId) => [...this.stored.values()].filter((entry) => entry.file.roomId === roomId).reduce((total, entry) => total + entry.file.size, 0),
+        deleteUnattachedFiles: async (roomId, before) => {
+            for (const [fileId, {file}] of this.stored) {
+                if (file.roomId === roomId && file.eventId === null && file.createdAt < before) {
+                    this.stored.delete(fileId);
+                }
+            }
+        },
+    };
+
+    private inRoom(roomId: string, fileId: string): StoredFile | undefined {
+        const entry = this.stored.get(fileId);
+        return entry?.file.roomId === roomId ? entry : undefined;
+    }
 
     async createRoom(room: RoomRecord, participant: ParticipantRecord, event: RoomEvent): Promise<void> {
         this.rooms.set(room.roomId, {room, participants: [participant], handovers: [], controls: [], events: [event], idempotency: new Map(), earliestSeq: 1});
@@ -43,6 +71,13 @@ export class MemoryStore implements RoomStore {
         }
         if (table.room.nextSeq !== mutation.appendEvent.seq) {
             throw new ProtocolError(mutation.expectedTurnRevision === undefined ? 'server_unavailable' : 'turn_conflict', 'concurrent room mutation; retry with the same idempotency key');
+        }
+        const attaching = (mutation.attachFiles ?? []).map((fileId) => this.inRoom(mutation.room.roomId, fileId));
+        if (attaching.some((entry) => !entry || entry.file.eventId !== null)) {
+            throw new ProtocolError('invalid_request', 'an attached file is no longer available; upload it again');
+        }
+        for (const entry of attaching) {
+            entry!.file = {...entry!.file, eventId: mutation.appendEvent.eventId};
         }
         table.room = mutation.room;
         for (const participant of mutation.upsertParticipants) table.participants = upsert(table.participants, participant, 'participantId');
@@ -166,6 +201,11 @@ export class MemoryStore implements RoomStore {
             if (request.roomId === roomId) {
                 this.requests.delete(id);
             }
+        for (const [fileId, {file}] of this.stored) {
+            if (file.roomId === roomId) {
+                this.stored.delete(fileId);
+            }
+        }
         table.events = [];
         table.handovers = [];
     }

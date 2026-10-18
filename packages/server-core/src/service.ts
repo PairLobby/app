@@ -1,13 +1,16 @@
 //! Room operations shared by every transport. The Cloudflare Durable Object and
 //! the Node server both run this; only the store and the socket layer differ.
 
-import {DEFAULT_ROOM_POLICY, ProtocolError, hashCredential, newId, newInviteCode, normalizeInviteCode} from '@pairlobby/protocol';
+import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_RETAINED_FILE_BYTES, DEFAULT_ROOM_POLICY, ProtocolError, UNATTACHED_FILE_LIFETIME_MS, formatFileSize, hashCredential, newId, newInviteCode, normalizeInviteCode, safeFileName} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
+    Attachment,
     AutoClosePolicy,
+    FileRecord,
     MessageRequest,
     RequestPage,
     ExportResponse,
+    ListFilesResponse,
     ParticipantKind,
     PermissionChange,
     PermissionSet,
@@ -20,6 +23,7 @@ import type {
     RoomPolicy,
     RoomSnapshot,
     ResolveRequestRequest,
+    RoomFile,
     SendEventRequest
 } from '@pairlobby/protocol';
 import {
@@ -62,7 +66,7 @@ import type {Mutation, RoomView} from '@pairlobby/room-core';
 
 import {stableStringify} from './stable-json.js';
 import {TurnCoordinator, assertTurn} from './turns.js';
-import type {RoomStore} from './store.js';
+import type {FileStore, RoomStore} from './store.js';
 import {AutoCloseStore} from './auto-close-store.js';
 
 type InviteDirectory = {
@@ -132,6 +136,9 @@ export interface RedeemResult {
     snapshot: RoomSnapshot;
 }
 
+export type FileUpload = {name: string; mediaType: string; bytes: Uint8Array};
+export type FileDownload = {file: FileRecord; bytes: Uint8Array};
+
 export type Clock = () => number;
 
 export class RoomService {
@@ -161,6 +168,102 @@ export class RoomService {
         return view;
     }
 
+    /** What the room looks like, plus what this relay can do that depends on its store rather than on the room. */
+    private snapshotOf(view: RoomView): RoomSnapshot {
+        return {...toSnapshot(view), filesSupported: this.store.files !== undefined};
+    }
+
+    private fileStore(): FileStore {
+        if (!this.store.files) {
+            throw new ProtocolError('unsupported_capability', 'this relay does not store files');
+        }
+        return this.store.files;
+    }
+
+    /**
+     * Stores a file so a later message can carry it. Nothing is in the room until
+     * that message is sent; an upload nobody sends is removed after an hour.
+     */
+    async uploadFile(roomId: string, credential: string, upload: FileUpload): Promise<Attachment> {
+        const files = this.fileStore();
+        const view = await this.view(roomId);
+        const now = this.now();
+        const actor = authenticate(view, await hashCredential(credential), now);
+        assertRoomWritable(view, now);
+        const sender = assertCanWrite(actor);
+        assertPermitted(view, actor, 'attach');
+        const limit = Math.min(view.room.policy.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES, ABSOLUTE_MAX_FILE_BYTES);
+        const size = upload.bytes.byteLength;
+        if (limit === 0) {
+            throw new ProtocolError('unsupported_capability', 'this room does not accept files');
+        }
+        if (size === 0) {
+            throw new ProtocolError('invalid_request', 'an empty file cannot be attached');
+        }
+        if (size > limit) {
+            throw new ProtocolError('payload_too_large', `this file is ${formatFileSize(size)}; this room accepts files up to ${formatFileSize(limit)}`);
+        }
+        await files.deleteUnattachedFiles(roomId, now - UNATTACHED_FILE_LIFETIME_MS);
+        const digest = await globalThis.crypto.subtle.digest('SHA-256', upload.bytes as Uint8Array<ArrayBuffer>);
+        const sha256 = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+        const mediaType = /^[\w.+-]{1,60}\/[\w.+-]{1,60}$/.test(upload.mediaType.split(';')[0]!.trim()) ? upload.mediaType.split(';')[0]!.trim().toLowerCase() : 'application/octet-stream';
+        const file: FileRecord = {fileId: newId('file'), roomId, uploaderId: sender.participantId, name: safeFileName(upload.name), size, mediaType, sha256, createdAt: now, eventId: null};
+        const retained = view.room.policy.maxRetainedFileBytes ?? DEFAULT_MAX_RETAINED_FILE_BYTES;
+        if (!(await files.putFile(file, upload.bytes, retained))) {
+            throw new ProtocolError('quota_exceeded', `this room has reached its file storage limit of ${formatFileSize(retained)}`);
+        }
+        return toAttachment(file);
+    }
+
+    /** Every file a message in this room carries, and how much of its storage they take. Anyone who can read the room can list and fetch them. */
+    async listFiles(roomId: string, credential: string): Promise<ListFilesResponse> {
+        const files = this.fileStore();
+        const view = await this.view(roomId);
+        authenticate(view, await hashCredential(credential), this.now());
+        const policy = view.room.policy;
+        const usage = {usedBytes: await files.usedBytes(roomId), limitBytes: policy.maxRetainedFileBytes ?? DEFAULT_MAX_RETAINED_FILE_BYTES, maxFileBytes: Math.min(policy.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES, ABSOLUTE_MAX_FILE_BYTES)};
+        return {files: await this.roomFiles(files, roomId), usage};
+    }
+
+    private async roomFiles(files: FileStore, roomId: string): Promise<RoomFile[]> {
+        return (await files.attachedFiles(roomId)).map((file) => ({...toAttachment(file), uploaderId: file.uploaderId, createdAt: file.createdAt, eventId: file.eventId!}));
+    }
+
+    async downloadFile(roomId: string, credential: string, fileId: string): Promise<FileDownload> {
+        const files = this.fileStore();
+        const actor = authenticate(await this.view(roomId), await hashCredential(credential), this.now());
+        const file = await files.file(roomId, fileId);
+        // An upload not yet sent is visible to its uploader only, and says no more than a missing file does.
+        const visible = file && (file.eventId !== null || (actor.kind === 'participant' && actor.participant.participantId === file.uploaderId));
+        const bytes = visible ? await files.fileBytes(roomId, fileId) : null;
+        if (!file || !bytes) {
+            throw new ProtocolError('invalid_request', 'no such file in this room');
+        }
+        return {file, bytes};
+    }
+
+    /** Replaces what the client said about each file with the relay's own record of it. */
+    private async attachments(view: RoomView, actor: ReturnType<typeof authenticate>, claimed: Attachment[]): Promise<Attachment[]> {
+        const files = this.fileStore();
+        const sender = assertCanWrite(actor);
+        assertPermitted(view, actor, 'attach');
+        if (new Set(claimed.map((file) => file.fileId)).size !== claimed.length) {
+            throw new ProtocolError('invalid_request', 'the same file is attached twice');
+        }
+        const carried: Attachment[] = [];
+        for (const {fileId} of claimed) {
+            const file = await files.file(view.room.roomId, fileId);
+            if (!file || file.uploaderId !== sender.participantId) {
+                throw new ProtocolError('invalid_request', `no upload of yours has the id ${fileId}`);
+            }
+            if (file.eventId !== null) {
+                throw new ProtocolError('invalid_request', `${file.name} was already sent with another message; upload it again to send it again`);
+            }
+            carried.push(toAttachment(file));
+        }
+        return carried;
+    }
+
     async createRoom(input: CreateRoomInput): Promise<CreatedRoom> {
         const created = createRoom(
             {
@@ -181,7 +284,7 @@ export class RoomService {
         await this.store.createRoom(created.mutation.room, created.participant, created.mutation.appendEvent);
         const invite = await this.mintInvite(created.room.roomId, input.controllerCredential, 'member');
         const view = await this.view(created.room.roomId);
-        return {roomId: created.room.roomId, participantId: created.participant.participantId, invite, snapshot: toSnapshot(view)};
+        return {roomId: created.room.roomId, participantId: created.participant.participantId, invite, snapshot: this.snapshotOf(view)};
     }
 
     async mintInvite(roomId: string, credential: string, role: ParticipantRole, reusable = true, expiresAt?: number | null, defaultName?: string): Promise<MintedInvite> {
@@ -263,7 +366,7 @@ export class RoomService {
                     throw new ProtocolError('unauthorized', 'this join attempt belongs to another participant');
                 }
                 assertActiveMember(actor);
-                return {roomId: invite.roomId, participantId: invite.redeemedParticipantId!, role: actor.participant.role, replayed: true, snapshot: toSnapshot(view)};
+                return {roomId: invite.roomId, participantId: invite.redeemedParticipantId!, role: actor.participant.role, replayed: true, snapshot: this.snapshotOf(view)};
             }
             if (!invite.reusable) {
                 throw new ProtocolError('invite_already_redeemed', 'that invite code was already used');
@@ -295,7 +398,7 @@ export class RoomService {
         if (existing) {
             assertActiveMember(authenticate(view, credentialHash, now));
             await this.store.completeInvite(digest, existing.participantId);
-            return {roomId: invite.roomId, participantId: existing.participantId, role: existing.role, replayed: true, snapshot: toSnapshot(await this.view(invite.roomId))};
+            return {roomId: invite.roomId, participantId: existing.participantId, role: existing.role, replayed: true, snapshot: this.snapshotOf(await this.view(invite.roomId))};
         }
 
         const previousOccupant = view.participants.find((participant) => participant.participantId === invite.redeemedParticipantId);
@@ -324,7 +427,7 @@ export class RoomService {
         }
         await this.store.apply(joined.mutation, null);
         await this.store.completeInvite(digest, joined.participant.participantId);
-        return {roomId: invite.roomId, participantId: joined.participant.participantId, role: admissionRole, replayed: false, snapshot: toSnapshot(await this.view(invite.roomId))};
+        return {roomId: invite.roomId, participantId: joined.participant.participantId, role: admissionRole, replayed: false, snapshot: this.snapshotOf(await this.view(invite.roomId))};
     }
 
     async send(roomId: string, credential: string, request: SendEventRequest): Promise<SentEventResult> {
@@ -511,8 +614,17 @@ export class RoomService {
                 throw new ProtocolError('quota_exceeded', 'answer or resolve pending requests before creating more');
             }
         }
+        let attached: string[] = [];
+        if (request.type === 'message' && request.payload.attachments) {
+            const carried = await this.attachments(view, actor, request.payload.attachments);
+            request = {...request, payload: {...request.payload, attachments: carried}};
+            attached = carried.map((file) => file.fileId);
+        }
         const outgoing = replyTarget?.conversationId ? {...request, replyTo: replyTarget.conversationId} : request;
         const mutation = sendEvent(view, await hashCredential(credential), outgoing, {now, newEventId: () => newId('event')});
+        if (attached.length) {
+            mutation.attachFiles = attached;
+        }
         if (group) {
             mutation.appendEvent.recipientIds = recipients;
             mutation.appendEvent.allRecipients = request.allRecipients === true;
@@ -550,7 +662,8 @@ export class RoomService {
                     from: mutation.appendEvent.senderId!, to: recipient, text: quoteContext + request.payload.text, at: mutation.appendEvent.at,
                     requiresReply: !request.replyTo, receivedAt: null, responseEventId: null, respondedAt: null, progressAt: null,
                     ...(group ? {conversationId: mutation.appendEvent.eventId, turnRequired: true} : {}),
-                    ...(recovered ? {recoversEventId: recovered.eventId, attempt: (recovered.attempt ?? 1) + 1} : {})
+                    ...(recovered ? {recoversEventId: recovered.eventId, attempt: (recovered.attempt ?? 1) + 1} : {}),
+                    ...(request.payload.attachments ? {attachments: request.payload.attachments} : {})
                 });
             }
             mutation.room.nextRequestSeq = seq;
@@ -726,7 +839,7 @@ export class RoomService {
         if (mutation) {
             await this.applyOne(mutation);
         }
-        return toSnapshot(await this.view(roomId));
+        return this.snapshotOf(await this.view(roomId));
     }
 
     async setRoomPermissions(roomId: string, credential: string, change: PermissionChange): Promise<RoomSnapshot> {
@@ -734,7 +847,7 @@ export class RoomService {
         if (mutation) {
             await this.applyOne(mutation);
         }
-        return toSnapshot(await this.view(roomId));
+        return this.snapshotOf(await this.view(roomId));
     }
 
     async setParticipantPermissions(roomId: string, credential: string, participantId: string, change: PermissionChange): Promise<RoomSnapshot> {
@@ -742,7 +855,7 @@ export class RoomService {
         if (mutation) {
             await this.applyOne(mutation);
         }
-        return toSnapshot(await this.view(roomId));
+        return this.snapshotOf(await this.view(roomId));
     }
 
     async control(roomId: string, credential: string, targetParticipantId: string, paused: boolean): Promise<RoomEvent> {
@@ -776,7 +889,7 @@ export class RoomService {
             throw new ProtocolError('unauthorized', 'rejoining requires the saved participant credential');
         }
         if (actor.participant.leftAt === null) {
-            return toSnapshot(view);
+            return this.snapshotOf(view);
         }
         await this.applyOne(rejoinRoom(view, hash, this.ctx()));
         return this.snapshot(roomId, credential);
@@ -833,7 +946,7 @@ export class RoomService {
         const existing = await this.store.participantByCredential(roomId, credentialHash);
         if (existing) {
             authenticate(view, credentialHash, this.now());
-            return {roomId, participantId: existing.participantId, role: existing.role, replayed: true, snapshot: toSnapshot(view)};
+            return {roomId, participantId: existing.participantId, role: existing.role, replayed: true, snapshot: this.snapshotOf(view)};
         }
 
         const joined = admit(
@@ -849,7 +962,7 @@ export class RoomService {
             this.ctx()
         );
         await this.store.apply(joined.mutation, null);
-        return {roomId, participantId: joined.participant.participantId, role: joined.participant.role, replayed: false, snapshot: toSnapshot(await this.view(roomId))};
+        return {roomId, participantId: joined.participant.participantId, role: joined.participant.role, replayed: false, snapshot: this.snapshotOf(await this.view(roomId))};
     }
 
     async setExpiry(roomId: string, credential: string, expiresAt: number | null): Promise<RoomEvent> {
@@ -914,7 +1027,7 @@ export class RoomService {
     async snapshot(roomId: string, credential: string): Promise<RoomSnapshot> {
         const view = await this.view(roomId);
         authenticate(view, await hashCredential(credential), this.now());
-        return toSnapshot(view);
+        return this.snapshotOf(view);
     }
 
     /** Returns the history the caller's room still retains, and says so when retention already dropped some. */
@@ -931,7 +1044,8 @@ export class RoomService {
             }
             after = page.events.at(-1)!.seq;
         }
-        return {room: toSnapshot(view), events: collected, handovers: await this.store.handovers(roomId), exportedAt: this.now(), complete: view.earliestSeq <= 1};
+        const files = this.store.files ? {files: await this.roomFiles(this.store.files, roomId)} : {};
+        return {room: this.snapshotOf(view), events: collected, handovers: await this.store.handovers(roomId), exportedAt: this.now(), complete: view.earliestSeq <= 1, ...files};
     }
 
     /** Makes the room inaccessible immediately; physical cleanup may lag. */
@@ -949,6 +1063,10 @@ export class RoomService {
         await this.store.apply(mutation, null);
         return mutation.appendEvent;
     }
+}
+
+function toAttachment(file: FileRecord): Attachment {
+    return {fileId: file.fileId, name: file.name, size: file.size, mediaType: file.mediaType, sha256: file.sha256};
 }
 
 function refusedPermissions(permissions: PermissionSet | undefined): PermissionSet | null {

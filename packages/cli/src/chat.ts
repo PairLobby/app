@@ -7,11 +7,12 @@ import type {Interface} from 'node:readline';
 import {ChatTerminal} from './chat-terminal.js';
 
 import {ProtocolError, requestState, newId, messageActionLabel, failureLabel} from '@pairlobby/protocol';
-import type {MessageRequest, RoomEvent, RoomSnapshot, TurnQueue} from '@pairlobby/protocol';
+import type {Attachment, MessageRequest, RoomEvent, RoomSnapshot, TurnQueue} from '@pairlobby/protocol';
 import {LocalStore, PairLobbyClient} from '@pairlobby/client';
 
 import {pickExpiry} from './picker.js';
 import {isRoomCommand, runRoomCommand} from './chat-commands.js';
+import {attachmentLabel, attachmentText, expandPath, filesReport, findRoomFile, previewFile, saveFile, splitAttachCommand, uploadFiles} from './files.js';
 import {isPresetCommand, runPresetCommand} from './presets.js';
 import {authorityFor, describeParticipantPermissionChange, describeRoomPermissionChange, notPermitted} from './permissions.js';
 import {applyMention, commonPrefix, currentMention, hasAgentsToAsk, matchNames, renderSuggestions, routeChatMessage, routeForRoom} from './mentions.js';
@@ -96,6 +97,10 @@ const HELP = `  <message>          address all eligible agents (same as @all)
   /kick <name>       remove a participant and disable their invite
   /mute <name>       prevent a participant from writing
   /unmute <name>     allow them to write again
+  /attach <path> [message]  send one or more files with a message; quote a path that has spaces
+  /files             files sent in this room, numbered
+  /open <file>       show a text or JSON file here (number, name or id from /files)
+  /save <file> [folder]  save a file to a folder (this one by default); never replaces a file
   /permissions       which commands members may use, and who differs
   /permissions allow|deny|reset <command …|all> [name]  for all members, or for one (owner/admin)
   /preset save <name>  save this room's permissions, reply mode, invitations and auto-close on this device
@@ -226,16 +231,59 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
 
         header(snapshot, participantId, sessionId, emit);
 
+        /** `/attach <path …> [message]`: stores the files on the relay, then sends one message that carries them. */
+        async function attach(argument: string): Promise<void> {
+            try {
+                const {paths, text} = splitAttachCommand(argument);
+                if (paths.length === 0) {
+                    emit('Usage: /attach <path> [more paths] [message]');
+                    return;
+                }
+                const attachments = await uploadFiles({client, roomId, credential}, paths, snapshot);
+                await send(routeForRoom(routeChatMessage(text || attachmentText(attachments), snapshot.participants, recipient?.id ?? null), snapshot.participants, participantId), attachments);
+            } catch (error) {
+                emit(`${DIM}  not sent — ${error instanceof Error ? error.message : String(error)}${RESET}`);
+            }
+        }
+
+        /** `/files`, `/open <file>` and `/save <file> [folder]`; a file is named by its number in `/files`, its name or its id. */
+        async function fileCommand(command: string, argument: string): Promise<void> {
+            try {
+                if (!snapshot.filesSupported) {
+                    throw new Error('This relay does not store files.');
+                }
+                const {files, usage} = await client.fileList(roomId, credential);
+                if (command === '/files') {
+                    emit(filesReport(files, names, usage));
+                    return;
+                }
+                const [reference, ...rest] = argument.split(/\s+/).filter(Boolean);
+                if (!reference) {
+                    emit(`Usage: ${command} <number, name or id from /files>${command === '/save' ? ' [folder]' : ''}`);
+                    return;
+                }
+                const file = findRoomFile(files, reference);
+                if (command === '/open') {
+                    emit(formatMessageText(previewFile(file, await client.downloadFile(roomId, credential, file.fileId))));
+                    return;
+                }
+                const path = await saveFile({client, roomId, credential}, file, expandPath(rest.join(' ') || '.'));
+                emit(`Saved ${attachmentLabel(file)} to ${path}`);
+            } catch (error) {
+                emit(`${DIM}  ${error instanceof Error ? error.message : String(error)}${RESET}`);
+            }
+        }
+
         let waking = false;
 
-        async function send(routed: RoutedChatMessage): Promise<void> {
+        async function send(routed: RoutedChatMessage, attachments: Attachment[] = []): Promise<void> {
             try {
                 if ((routed.recipientIds || routed.allRecipients) && !snapshot.groupTurnsSupported) {
                     throw new Error('Update this relay before sending to multiple agents.');
                 }
                 const result = await client.send(roomId, credential, {
                     type: 'message',
-                    payload: {text: routed.text, priority: 'normal'},
+                    payload: {text: routed.text, priority: 'normal', ...(attachments.length ? {attachments} : {})},
                     idempotencyKey: newId('event'),
                     ...(routed.recipientId ? {recipientId: routed.recipientId} : {}),
                     ...(routed.recipientIds ? {recipientIds: routed.recipientIds} : {}),
@@ -506,6 +554,11 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             }
             if (line.startsWith('/resume ')) {
                 void control(line.slice(8).trim(), false);
+                return;
+            }
+            if (/^\/(attach|files|open|save)(?:\s|$)/.test(line)) {
+                const command = line.split(/\s+/)[0]!;
+                void (command === '/attach' ? attach(line.slice(command.length)) : fileCommand(command, line.slice(command.length).trim()));
                 return;
             }
             if (line.startsWith('/')) {
@@ -781,7 +834,8 @@ export function format(event: RoomEvent, names: Map<string, string>, meParticipa
         const thread = !showIds ? '' : event.replyTo
             ? `${event.payload.responseStage === 'progress' ? 'progress' : 'reply'} to ${event.replyTo}`
             : event.recipientId ? `request ${event.eventId}` : '';
-        return `${time}  ${who}${id}${to}${thread ? `  [${thread}]` : ''}  ${collapsed ? collapseMessage(event.payload.text).line : styled ? formatMessageText(event.payload.text) : event.payload.text}`;
+        const files = (event.payload.attachments ?? []).map((file) => `\n       ${DIM}▪${RESET} ${attachmentLabel(file)}`).join('');
+        return `${time}  ${who}${id}${to}${thread ? `  [${thread}]` : ''}  ${collapsed ? collapseMessage(event.payload.text).line : styled ? formatMessageText(event.payload.text) : event.payload.text}${files}`;
     }
     return `${time}  ${DIM}· ${systemLine(event, names, sender, showIds)}${RESET}`;
 }

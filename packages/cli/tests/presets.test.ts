@@ -57,7 +57,7 @@ test('test_a_preset_saves_configuration_only_and_shows_its_changes_before_applyi
 
     const target = await client.createRoom('target', {displayName: 'owner', kind: 'human'});
     const proposal = await runPresetCommand('apply strict', ownerContext(target));
-    expect(proposal).toContain('Command permissions: members may invite → members may mute');
+    expect(proposal).toContain('Command permissions: members may invite, attach → members may attach, mute');
     expect(proposal).toContain('Reply mode: sequential → parallel');
     expect(proposal).toContain('Run /preset apply strict confirm to apply.');
     expect((await client.snapshot(target.roomId, target.participantCredential)).policy.permissions).toBeUndefined();
@@ -105,7 +105,7 @@ test('test_a_default_preset_starts_new_rooms_and_never_changes_existing_ones', a
     expect(untouched.turnMode).toBe('sequential');
     await expect(cli('create', '--name', 'nope', '--server', server.url, '--preset', 'missing')).rejects.toThrow('no preset named missing');
 
-    expect(await cli('presets', 'show', 'strict')).toContain('Command permissions  members may mute');
+    expect(await cli('presets', 'show', 'strict')).toContain('Command permissions  members may attach, mute');
     expect(await runPresetCommand('delete strict', ownerContext(existing))).toContain('Preset strict deleted');
     expect(store.defaultPreset()).toBeUndefined();
     expect(await runPresetCommand('default none', ownerContext(existing))).toContain('built-in defaults');

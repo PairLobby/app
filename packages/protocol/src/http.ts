@@ -8,6 +8,7 @@ import {AdapterCapabilities, ParticipantKind, ParticipantRole, RoomEvent, SendEv
 import {AttemptId, EventId, ParticipantId, RoomId, SessionId} from './ids.js';
 import {HandoverRecord, RoomSnapshot} from './records.js';
 import {ERROR_CODES} from './errors.js';
+import {RoomFile} from './files.js';
 import {AutoClosePolicySchema} from './auto-close.js';
 import {PermissionChange} from './permissions.js';
 
@@ -38,6 +39,9 @@ export const ROUTES = {
     setExpiry: {method: 'POST', path: '/v1/rooms/:roomId/expiry'},
     setLocked: {method: 'POST', path: '/v1/rooms/:roomId/lock'},
     setMuted: {method: 'POST', path: '/v1/rooms/:roomId/participants/:participantId/mute'},
+    uploadFile: {method: 'POST', path: '/v1/rooms/:roomId/files'},
+    listFiles: {method: 'GET', path: '/v1/rooms/:roomId/files'},
+    downloadFile: {method: 'GET', path: '/v1/rooms/:roomId/files/:fileId'},
     setRole: {method: 'POST', path: '/v1/rooms/:roomId/participants/:participantId/role'},
     setRoomPermissions: {method: 'POST', path: '/v1/rooms/:roomId/permissions'},
     setParticipantPermissions: {method: 'POST', path: '/v1/rooms/:roomId/participants/:participantId/permissions'},
@@ -214,7 +218,9 @@ export const ExportResponse = z.object({
     handovers: z.array(HandoverRecord),
     exportedAt: z.number().int().nonnegative(),
     /** False when retention already dropped events older than `room.earliestSeq`. */
-    complete: z.boolean()
+    complete: z.boolean(),
+    /** Every file a message carries, on a relay that stores files. Fetch the bytes with the download route. */
+    files: z.array(RoomFile).optional()
 });
 export type ExportResponse = z.infer<typeof ExportResponse>;
 

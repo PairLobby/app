@@ -6,15 +6,15 @@
 //! prints registry metadata only — credentials live in a separate store, so
 //! listing a room can never disclose one.
 
-import {readFileSync} from 'node:fs';
-import {join} from 'node:path';
+import {mkdirSync, readFileSync, writeFileSync} from 'node:fs';
+import {join, relative} from 'node:path';
 import {spawn} from 'node:child_process';
 import {userInfo} from 'node:os';
 import {parseArgs} from 'node:util';
 
 import {LocalStore, PairLobbyClient, openRequests, owedByMe, unreceipted} from '@pairlobby/client';
 import type {JoinedRoom, RoomEntry, RoomPreset, Settings} from '@pairlobby/client';
-import {ParticipantName, ProtocolError, effectivePermissions, requestState, newId, normalizeInviteCode, MessageAction, roomPermissions} from '@pairlobby/protocol';
+import {ParticipantName, ProtocolError, effectivePermissions, requestState, newId, normalizeInviteCode, MessageAction, roomPermissions, safeFileName} from '@pairlobby/protocol';
 import type {AdapterCapabilities, MessageRequest} from '@pairlobby/protocol';
 
 import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
@@ -47,6 +47,7 @@ import {runSettingsMenu} from './settings-menu.js';
 import {checkForInteractiveUpdate, checkForUpdate, installRelease, managedInstall, parseUpdateChoice, runBackgroundUpdate, scheduleBackgroundCheck, shouldOfferUpdate, updateNotice, writeUpdateState} from './updater.js';
 import type {LatestRelease, UpdateCheck, UpdateChoice} from './updater.js';
 import {findRooms, formatFoundRooms} from './find.js';
+import {attachmentLabel, attachmentText, expandPath, filesReport, findRoomFile, saveFile, uploadFiles} from './files.js';
 import {runPermissionCommand} from './permissions.js';
 import {applyPresetChanges, presetChanges, runPresetCommand, runPresetLibraryCommand} from './presets.js';
 import {formatTurnQueue, runTurnCommand} from './turn-commands.js';
@@ -92,7 +93,6 @@ const OPTIONS = {
     room: {type: 'string'},
     session: {type: 'string'},
     to: {type: 'string'},
-    file: {type: 'string'},
     server: {type: 'string'},
     local: {type: 'boolean'},
     json: {type: 'boolean'},
@@ -108,6 +108,8 @@ const OPTIONS = {
     clear: {type: 'boolean'},
     force: {type: 'boolean'},
     preset: {type: 'string'},
+    file: {type: 'string', multiple: true},
+    out: {type: 'string'},
     reset: {type: 'boolean'},
     once: {type: 'boolean'},
     off: {type: 'boolean'},
@@ -223,6 +225,9 @@ const HELP = `pairlobby
   pairlobby invite                   mint an invite code (a reusable seat; --once for single use)
   pairlobby invite --expires-in 10m  mint one that stops working after a while
   pairlobby ack --outcome <outcome>  report what a pause actually did
+  pairlobby send "<text>" --file <path>  send files with a message (repeat --file, up to 8); reply takes --file too
+  pairlobby files                    files sent in a room; files get <number|name|id> [--out <folder>] saves one
+  pairlobby export [--out <folder>]  save a room's history and its files into a new folder
   pairlobby permissions              which commands members may use in a room, and who differs
   pairlobby permissions allow|deny|reset <command …|all> [name]  for all members, or one (owner/admin)
   pairlobby interrupt <agent>        stop one agent's current task, hold its queue (owner/admin, or members the room allows)
@@ -479,6 +484,11 @@ async function main(argv: string[]): Promise<number> {
             return resolveHandover(store, values, positionals[1], false);
         case 'ack':
             return acknowledge(store, values);
+        case 'file':
+        case 'files':
+            return roomFiles(store, values, positionals.slice(1));
+        case 'export':
+            return exportRoom(store, values);
         case 'permissions':
             return permissions(store, values, positionals.slice(1));
         case 'preset':
@@ -504,11 +514,17 @@ async function main(argv: string[]): Promise<number> {
     }
 }
 
-type Values = Partial<Record<keyof typeof OPTIONS, string | boolean>>;
+type Values = Partial<Record<keyof typeof OPTIONS, string | boolean | string[]>>;
 
 function str(values: Values, key: keyof typeof OPTIONS): string | undefined {
     const value = values[key];
     return typeof value === 'string' ? value : undefined;
+}
+
+/** Every value of an option that may be given more than once. */
+function list(values: Values, key: keyof typeof OPTIONS): string[] {
+    const value = values[key];
+    return Array.isArray(value) ? value : [];
 }
 
 function flag(values: Values, key: keyof typeof OPTIONS): boolean {
@@ -1461,7 +1477,8 @@ async function finishJoin(store: LocalStore, values: Values, joined: JoinedRoom,
 }
 
 async function sendMessage(store: LocalStore, values: Values, text: string): Promise<number> {
-    if (text.trim().length === 0) {
+    const paths = list(values, 'file');
+    if (text.trim().length === 0 && paths.length === 0) {
         throw new UsageError('pairlobby send needs a message');
     }
     const wait = Number(str(values, 'wait-for-ack') ?? 30);
@@ -1474,7 +1491,9 @@ async function sendMessage(store: LocalStore, values: Values, text: string): Pro
     if (replyTo) {
         return replyMessage(store, values, replyTo, text);
     }
-    const snapshot = recipient ? await client.snapshot(room.roomId, credential) : undefined;
+    const snapshot = recipient || paths.length ? await client.snapshot(room.roomId, credential) : undefined;
+    const attachments = paths.length ? await uploadFiles({client, roomId: room.roomId, credential}, paths, snapshot!) : [];
+    text = text.trim().length === 0 ? attachmentText(attachments) : text;
     const references = recipient?.split(',').map((name) => name.trim().replace(/^@/, '')).filter(Boolean) ?? [];
     if (recipient && !references.length) {
         throw new UsageError('--to needs one or more names, or all');
@@ -1482,7 +1501,7 @@ async function sendMessage(store: LocalStore, values: Values, text: string): Pro
     const everyone = references.length === 1 && references[0]!.toLowerCase() === 'all';
     const selected = everyone ? [] : [...new Set(references.map((reference) => resolveRecipient(snapshot!.participants, reference)))];
     const requested: RoutedChatMessage = everyone ? {text, recipientId: null, allRecipients: true} : selected.length > 1 ? {text, recipientId: null, recipientIds: selected} : {text, recipientId: selected[0] ?? null};
-    const routed = snapshot ? routeForRoom(requested, snapshot.participants, session.participantId) : requested;
+    const routed = snapshot && recipient ? routeForRoom(requested, snapshot.participants, session.participantId) : requested;
     const {recipientId, recipientIds, allRecipients} = routed;
     const group = Boolean(allRecipients || recipientIds);
     if (group && !snapshot?.groupTurnsSupported) {
@@ -1494,7 +1513,7 @@ async function sendMessage(store: LocalStore, values: Values, text: string): Pro
     // The key is generated once so a retry after a lost response is a replay, not a second message.
     const result = await client.send(room.roomId, credential, {
         type: 'message',
-        payload: {text, priority: 'normal'},
+        payload: {text, priority: 'normal', ...(attachments.length ? {attachments} : {})},
         idempotencyKey: newId('event'),
         ...(recipientId ? {recipientId} : {}),
         ...(allRecipients ? {allRecipients: true} : recipientIds ? {recipientIds} : {})
@@ -1667,13 +1686,15 @@ async function receiptMessage(store: LocalStore, values: Values, eventId?: strin
     return 0;
 }
 async function replyMessage(store: LocalStore, values: Values, eventId: string | undefined, text: string): Promise<number> {
-    if (!eventId || !text.trim()) {
+    const paths = list(values, 'file');
+    if (!eventId || (!text.trim() && paths.length === 0)) {
         throw new UsageError('reply needs an event id and a non-empty answer (a refusal or unknown answer is valid)');
     }
     const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
-    const result = await client.reply(room.roomId, credential, eventId, text, flag(values, 'progress'), str(values, 'turn-token'));
+    const attachments = paths.length ? await uploadFiles({client, roomId: room.roomId, credential}, paths, await client.snapshot(room.roomId, credential)) : [];
+    const result = await client.reply(room.roomId, credential, eventId, text.trim() ? text : attachmentText(attachments), flag(values, 'progress'), str(values, 'turn-token'), attachments);
     if (flag(values, 'json')) {
-        json({eventId: result.event.eventId, replyTo: eventId, final: !flag(values, 'progress')});
+        json({eventId: result.event.eventId, replyTo: eventId, final: !flag(values, 'progress'), ...(attachments.length ? {attachments} : {})});
     } else {
         note(`${flag(values, 'progress') ? 'progress' : 'answer'} recorded for ${eventId}`);
     }
@@ -2110,7 +2131,7 @@ async function offerHandover(store: LocalStore, values: Values): Promise<number>
         out(HANDOVER_TEMPLATE);
         return 0;
     }
-    const file = str(values, 'file');
+    const file = list(values, 'file')[0];
     const recipient = str(values, 'to');
     if (!file) {
         throw new UsageError('pairlobby handover needs --file (or --template to print a starting point)');
@@ -2220,6 +2241,91 @@ async function setPaused(store: LocalStore, values: Values, target: string | und
     // The request is recorded; what actually happened is whatever the adapter acknowledges.
     note('this is a request, not a confirmation — run "pairlobby status" to see what the adapter acknowledged');
     return 0;
+}
+
+/** `pairlobby files` lists what was sent in a room; `files get <file>` saves one, into this folder unless `--out` names another. */
+async function roomFiles(store: LocalStore, values: Values, words: string[]): Promise<number> {
+    const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    const snapshot = await client.snapshot(room.roomId, credential);
+    if (!snapshot.filesSupported) {
+        throw new UsageError('this relay does not store files');
+    }
+    const {files, usage} = await client.fileList(room.roomId, credential);
+    const [action, ...reference] = words;
+    if (action === undefined || action === 'list') {
+        if (flag(values, 'json')) {
+            json({files, ...(usage ? {usage} : {})});
+            return 0;
+        }
+        out(filesReport(files, new Map(snapshot.participants.map((person) => [person.participantId, person.displayName])), usage).replace('/attach <path>', 'pairlobby send --file <path>'));
+        return 0;
+    }
+    if (action !== 'get' || reference.length === 0) {
+        throw new UsageError('Usage: pairlobby files [list], or pairlobby files get <number, name or id> [--out <folder>]');
+    }
+    const file = findRoomFile(files, reference.join(' '));
+    const path = await saveFile({client, roomId: room.roomId, credential}, file, expandPath(str(values, 'out') ?? '.'));
+    if (flag(values, 'json')) {
+        json({file, path});
+        return 0;
+    }
+    out(`Saved ${attachmentLabel(file)} to ${path}`);
+    return 0;
+}
+
+/**
+ * `pairlobby export` writes what the relay still retains of a room into a new
+ * folder: `room.json` (the replayable event log, handovers and file list) and
+ * every file under `files/`. A file that cannot be fetched is listed as missing
+ * in `files.json` rather than stopping the export.
+ */
+async function exportRoom(store: LocalStore, values: Values): Promise<number> {
+    const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    const exported = await client.export(room.roomId, credential);
+    const folder = newExportFolder(expandPath(str(values, 'out') ?? '.'), `${safeFileName(exported.room.name)}-${new Date(exported.exportedAt).toISOString().slice(0, 10)}`);
+    writeFileSync(join(folder, 'room.json'), JSON.stringify(exported, null, 2) + '\n');
+    const saved: {fileId: string; name: string; path?: string; error?: string}[] = [];
+    for (const file of exported.files ?? []) {
+        try {
+            const path = await saveFile({client, roomId: room.roomId, credential}, file, join(folder, 'files'));
+            saved.push({fileId: file.fileId, name: file.name, path: relative(folder, path)});
+        } catch (error) {
+            saved.push({fileId: file.fileId, name: file.name, error: error instanceof Error ? error.message : String(error)});
+        }
+    }
+    if (saved.length) {
+        writeFileSync(join(folder, 'files.json'), JSON.stringify(saved, null, 2) + '\n');
+    }
+    const missing = saved.filter((file) => file.error);
+    if (flag(values, 'json')) {
+        json({folder, events: exported.events.length, complete: exported.complete, files: saved});
+        return missing.length ? 1 : 0;
+    }
+    out(`Exported ${exported.room.name} to ${folder}: ${exported.events.length} events${saved.length ? `, ${saved.length - missing.length} of ${saved.length} files` : ''}.`);
+    if (!exported.complete) {
+        note('older events were already removed by the room\'s retention and are not in the export');
+    }
+    for (const file of missing) {
+        note(`${file.name} was not saved: ${file.error}`);
+    }
+    return missing.length ? 1 : 0;
+}
+
+/** A folder that did not exist before: `name`, or `name (2)` and so on. */
+function newExportFolder(parent: string, name: string): string {
+    mkdirSync(parent, {recursive: true});
+    for (let attempt = 1; attempt < 1000; attempt++) {
+        const folder = join(parent, attempt === 1 ? name : `${name} (${attempt})`);
+        try {
+            mkdirSync(folder);
+            return folder;
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+                throw error;
+            }
+        }
+    }
+    throw new UsageError(`too many exports named ${name} in ${parent}`);
 }
 
 /** Saved room setups. Listing, showing, deleting and choosing a default need no room; saving and applying act on one. */

@@ -6,7 +6,7 @@ import {mkdtempSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
-import {runRedemptionContract, runRoomContract} from '@pairlobby/fixtures';
+import {runFileContract, runRedemptionContract, runRoomContract} from '@pairlobby/fixtures';
 import {afterAll} from 'vitest';
 
 import {SqliteRoomStore} from './sqlite-store.js';
@@ -52,3 +52,4 @@ test('migration restores every retained unanswered request without inventing rec
         store.close();
     }
 });
+runFileContract('file store / sqlite store', makeStore);

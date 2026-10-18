@@ -3,7 +3,7 @@ import type {ManagedDeadlinePolicy, ManagedDeadlineSnapshot} from './managed-dea
 
 export type RuntimeOptions = {cwd: string; threadId?: string; model?: string; effort?: string; executable?: string; args?: string[]; roomId?: string; sessionId?: string; deadline?: ManagedDeadlinePolicy};
 export type RuntimeMessageStatus = 'waiting' | 'no_action' | 'declined';
-export type RuntimeHooks = {acknowledge: () => Promise<void>; pass?: () => Promise<void>; working?: () => Promise<void>; messageStatus?: (state: RuntimeMessageStatus, reason: string) => Promise<void>; started: (turnId: string, processId?: number) => void; activity?: (snapshot: ManagedDeadlineSnapshot) => void; usage: (value: unknown) => void; model?: (model: string) => void};
+export type RuntimeHooks = {acknowledge: () => Promise<void>; pass?: () => Promise<void>; working?: () => Promise<void>; messageStatus?: (state: RuntimeMessageStatus, reason: string) => Promise<void>; attach?: (path: string) => Promise<string>; started: (turnId: string, processId?: number) => void; activity?: (snapshot: ManagedDeadlineSnapshot) => void; usage: (value: unknown) => void; model?: (model: string) => void};
 
 /** What an interrupt really stopped; never more than the runtime confirmed. */
 export type InterruptOutcome = 'current_turn_cancelled' | 'tool_cancellation_unknown' | 'paused_between_turns';

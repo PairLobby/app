@@ -43,6 +43,10 @@ export interface RoomPolicy {
      * (`pairlobby serve`) admits these joins; others refuse them. Absent means off.
      */
     localJoin?: boolean;
+    /** Largest file a message may carry, in bytes. Absent means the default; zero turns attachments off. */
+    maxFileBytes?: number;
+    /** Bytes the room stores across all its files. Absent means the default. */
+    maxRetainedFileBytes?: number;
     maxParticipants: number;
     maxEventPayloadBytes: number;
     maxRetainedEventBytes: number;

@@ -57,7 +57,7 @@ export function assertController(actor: Actor): void {
     throw new ProtocolError('unauthorized', 'this action requires the room controller credential');
 }
 
-const PERMISSION_LABELS: Record<RoomPermission, string> = {invite: 'create invites', rename: 'rename the room', lock: 'lock or unlock the room', mute: 'mute or unmute participants', kick: 'remove participants', pause: 'pause, resume or interrupt agents', turns: 'skip or cancel speaking turns'};
+const PERMISSION_LABELS: Record<RoomPermission, string> = {invite: 'create invites', attach: 'send files', rename: 'rename the room', lock: 'lock or unlock the room', mute: 'mute or unmute participants', kick: 'remove participants', pause: 'pause, resume or interrupt agents', turns: 'skip or cancel speaking turns'};
 
 /** Owner and admins always pass. A member passes when their own decision, or else the room's, allows the command. */
 export function assertPermitted(view: RoomView, actor: Actor, permission: RoomPermission): void {
