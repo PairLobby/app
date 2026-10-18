@@ -10,6 +10,7 @@ import type {
     MessageRequest,
     RequestPage,
     ExportResponse,
+    ListFilesResponse,
     ParticipantKind,
     PermissionChange,
     PermissionSet,
@@ -214,10 +215,17 @@ export class RoomService {
         return toAttachment(file);
     }
 
-    /** Every file a message in this room carries. Anyone who can read the room can list and fetch them. */
-    async listFiles(roomId: string, credential: string): Promise<RoomFile[]> {
+    /** Every file a message in this room carries, and how much of its storage they take. Anyone who can read the room can list and fetch them. */
+    async listFiles(roomId: string, credential: string): Promise<ListFilesResponse> {
         const files = this.fileStore();
-        authenticate(await this.view(roomId), await hashCredential(credential), this.now());
+        const view = await this.view(roomId);
+        authenticate(view, await hashCredential(credential), this.now());
+        const policy = view.room.policy;
+        const usage = {usedBytes: await files.usedBytes(roomId), limitBytes: policy.maxRetainedFileBytes ?? DEFAULT_MAX_RETAINED_FILE_BYTES, maxFileBytes: Math.min(policy.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES, ABSOLUTE_MAX_FILE_BYTES)};
+        return {files: await this.roomFiles(files, roomId), usage};
+    }
+
+    private async roomFiles(files: FileStore, roomId: string): Promise<RoomFile[]> {
         return (await files.attachedFiles(roomId)).map((file) => ({...toAttachment(file), uploaderId: file.uploaderId, createdAt: file.createdAt, eventId: file.eventId!}));
     }
 
@@ -482,8 +490,8 @@ export class RoomService {
             if (recovered.responseEventId || (!recovered.requiresReply && recovered.resolution !== 'cancelled')) {
                 throw new ProtocolError('invalid_request', 'this request is already resolved');
             }
-            if (!recovered.failureAt) {
-                throw new ProtocolError('invalid_request', 'this request has not failed; wait for it or cancel it');
+            if (!recovered.failureAt && !recovered.providerWait) {
+                throw new ProtocolError('invalid_request', 'this request has not failed or entered provider wait; wait for it or cancel it');
             }
             if (recovered.recoveredByEventId) {
                 throw new ProtocolError('invalid_request', `this attempt is already being recovered as ${recovered.recoveredByEventId}; retry that one if it failed`);
@@ -1036,7 +1044,8 @@ export class RoomService {
             }
             after = page.events.at(-1)!.seq;
         }
-        return {room: this.snapshotOf(view), events: collected, handovers: await this.store.handovers(roomId), exportedAt: this.now(), complete: view.earliestSeq <= 1};
+        const files = this.store.files ? {files: await this.roomFiles(this.store.files, roomId)} : {};
+        return {room: this.snapshotOf(view), events: collected, handovers: await this.store.handovers(roomId), exportedAt: this.now(), complete: view.earliestSeq <= 1, ...files};
     }
 
     /** Makes the room inaccessible immediately; physical cleanup may lag. */

@@ -30,10 +30,11 @@ import {
     TurnModeRequest,
     TurnActionRequest,
     ResolveRequestRequest,
+    ProviderWaitRequest,
     SetExpiryRequest,
     ControlRequest
 } from '@pairlobby/protocol';
-import type {ErrorCode, LocalRoom} from '@pairlobby/protocol';
+import type {ErrorCode, LocalRoom, ProviderWait} from '@pairlobby/protocol';
 
 import type {RoomService} from './service.js';
 
@@ -70,6 +71,8 @@ export interface ServerInfo {
     shareUrls: string[];
     /** True when a device on the same network or tailnet can find this server from an invite code alone. */
     discoverable?: boolean;
+    /** The relay's own version, so a client can tell when it runs an older build than the CLI. */
+    version?: string;
 }
 
 const JSON_HEADERS = {'content-type': 'application/json; charset=utf-8', [PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)};
@@ -225,6 +228,16 @@ async function route(request: Request, service: RoomService): Promise<Response> 
                 await service.turns.pass(roomId, credential, segments[4], TurnTokenRequest.parse(await request.json()).token);
                 return json({ok: true});
             }
+            if (segments[4] && segments[5] === 'defer') {
+                const input = ProviderWaitRequest.parse(await request.json());
+                const {token, model, source, ...wait} = input;
+                const providerWait: ProviderWait = {...wait, ...(model ? {model} : {}), ...(source ? {source} : {})};
+                await service.turns.defer(roomId, credential, segments[4], token, providerWait);
+                return json({ok: true});
+            }
+            if (segments[4] && segments[5] === 'resume') {
+                return json(await service.turns.resume(roomId, credential, segments[4]));
+            }
             if (segments[4] && segments[5] === 'resolve') {
                 return json(await service.resolveRequest(roomId, credential, segments[4], ResolveRequestRequest.parse(await request.json())));
             }
@@ -250,7 +263,7 @@ async function route(request: Request, service: RoomService): Promise<Response> 
         }
         case 'GET files': {
             if (!segments[4]) {
-                return json({files: await service.listFiles(roomId, credential)});
+                return json(await service.listFiles(roomId, credential));
             }
             const {file, bytes} = await service.downloadFile(roomId, credential, FileId.parse(segments[4]));
             // Always a download, never something a browser would render or run: the name and type came from another participant.

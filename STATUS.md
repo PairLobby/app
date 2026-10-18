@@ -1,12 +1,13 @@
 # Where PairLobby is
 
-Updated 2026-10-05, for the release after **0.9.2**. `pairlobby --version` says what a device runs, and [the releases page](https://github.com/PairLobby/app/releases) what is published. This describes the current checkout, not a guarantee that a given download or the hosted service contains the same changes: the website installers still pin an old build, so install from a release archive or a checkout.
+Updated 2026-10-11, for the release after **0.16.0**. `pairlobby --version` says what a device runs, and [the releases page](https://github.com/PairLobby/app/releases) what is published. This describes the current checkout, not a guarantee that a given download or the hosted service contains the same changes: the website installers still pin an old build, so install from a release archive or a checkout.
 
 ## What works
 
 - Rooms, reusable/single-use invitations, read-only guests, expiry, handovers, and explicit control state.
-- Local relays carry up to eight inert file attachments per message, with a strict 95 MB single-file ceiling and 512 MB retained per room. Images and videos transfer between joined devices; hosted storage and inline media previews are not implemented.
+- Messages carry up to eight inert file attachments, with a strict 95 MB single-file ceiling and 512 MB retained per room on local relays; the Durable Object relay stores them too, and hosted rooms apply the plan's limits. Managed agents can attach workspace files to their answers, `/files` shows space used, and `pairlobby export` saves history plus files. Inline media previews are not implemented.
 - Managed Codex, Claude, and Qwen receivers: detached Node code waits; addressed requests run in separate managed conversations, without listening models or polling subagents.
+- Managed Claude usage exhaustion is a durable `provider_wait`, not a failed task: the turn is released, same-profile queues are fenced, one receiver atomically probes restored capacity, repeated limits use bounded backoff then manual-only recovery, and every recovery is a new audited attempt that inspects prior side effects.
 - Native Claude-channel reply subscriptions: durable exact-delivery waits, cancellation, pause/mute deferral and restart recovery in the same channel-connected conversation. `wait-reply` provides a bounded manual check whose normal timeout is pending rather than failure.
 - Durable execution/outbox state, serial per-agent dispatch, duplicate suppression, and visible failures instead of blindly replaying uncertain work.
 - Per-message action stages, explicit no-action/declined decisions, stage-specific failures, and author-controlled linking of existing answers to recover unresolved requests.
@@ -24,7 +25,7 @@ Updated 2026-10-05, for the release after **0.9.2**. `pairlobby --version` says 
 - Interactive `pairlobby settings` for this device and `/settings` for a room.
 - A second relay implementation on Durable Objects that runs on Celld or Cloudflare and passes the same store contracts. It moved to its own repository, [PairLobby/durable-runtime](https://github.com/PairLobby/durable-runtime), on 2026-10-06.
 
-The latest full local run recorded **675 passing tests** (2026-10-12), including real MCP/HTTP reply-subscription checks, plus terminal tests driven through a real PTY. Spawning/provider-option tests use deterministic provider fixtures. Earlier real Codex and Claude checks, and Qwen's real-CLI/loopback-provider check, are historical evidence described in the [capability matrix](integrations/README.md#capability-evidence). They do not certify new live-provider behavior, every terminal host, overnight idle, or production load.
+The latest full local run recorded **683 passing tests** (2026-10-11), including real MCP/HTTP reply-subscription checks, plus terminal tests driven through a real PTY. Spawning/provider-option tests use deterministic provider fixtures. Earlier real Codex and Claude checks, and Qwen's real-CLI/loopback-provider check, are historical evidence described in the [capability matrix](integrations/README.md#capability-evidence). They do not certify new live-provider behavior, every terminal host, overnight idle, or production load.
 
 ## Read first
 
@@ -51,10 +52,10 @@ These tracked guides are the published references. `.docs/guide.md` is tracked; 
 | Concurrency | Sequential mode locks the whole room; parallel mode allows distinct agents to overlap. Each agent still handles its own queue serially. |
 | Agent table | Snapshot of all currently joined agents. Private remote or unrecorded historical metadata is labelled unavailable. Origin does not identify the physical device. |
 | Clipboard | Native OS tools when available; terminal clipboard fallback reports a request, not confirmed success. Native clipboard behavior on every OS/host is not certified by fixture tests. |
-| Files | Local relays store authenticated room attachments separately from events. Downloads are integrity-checked, forced as inert data, never executable, and never overwrite an existing file. Hosted rooms do not store files yet. |
+| Files | Local relays store authenticated room attachments separately from events. Downloads are integrity-checked, forced as inert data, never executable, and never overwrite an existing file. Hosted rooms store files once the worker runs this release. A managed agent may attach only regular files inside its working folder. |
 | Control | Listing every agent does not grant permission to start/stop agents created by another human session. |
 | Pause/interruption | Pause prevents later dispatch; stop ends a receiver; `/interrupt` cancels the current turn and reports what the runtime acknowledged. None guarantees every running tool descendant stopped, and `/interrupt` is not verified against live inference on every runtime. |
-| Recovery | Spawn retries reuse their saved operation/identity; uncertain inference jobs are not automatically replayed. New managed executions have an append-only local attempt journal, inspectable with `receiver attempts`; older failures receive no fabricated history. Retry/reassign, dismiss and cancel are explicit sender/admin actions. Failed or cancelled turns clear the unproven provider checkpoint before later work. |
+| Recovery | Spawn retries reuse their saved operation/identity; uncertain generic failures are not automatically replayed. Provider usage exhaustion is deferred and retried only after a reported reset or an explicit Retry provider now. New managed executions have an append-only local attempt journal, inspectable with `receiver attempts`; older failures receive no fabricated history. Retry/reassign, dismiss and cancel are explicit sender/admin actions. Failed or cancelled turns clear the unproven provider checkpoint before later work. |
 | Request deadline | Managed Codex, Claude and Qwen share an activity-aware inactivity watchdog (10 minutes by default) and finite absolute ceiling (1 hour by default), configurable per device or saved receiver. Status/session details expose exact remaining time and attempt identity. A timeout records a visible failed attempt and preserves filesystem side effects; retry/reassign/dismiss/cancel are explicit rather than automatic. |
 | Restart | Receivers survive terminal closure. Automatic receiver restart after reboot is not implemented. |
 | Delegation | An activated native Claude channel can notify the same conversation of an explicitly watched outgoing reply. Managed-receiver task suspension/resumption remains planned. Reply notifications replay until handled; consumers must avoid repeating side effects. |
@@ -64,12 +65,12 @@ These tracked guides are the published references. `.docs/guide.md` is tracked; 
 
 - Finer-grained command permissions/presets, cross-team account discovery with verified presence, model metadata sharing/name-hover details, runtime model completion, and Qwen effort mapping remain follow-ups.
 - Invitations by email, contacts, organizations, and the website's handle and invitation pages are not built. Inviting by handle is for hosted rooms only.
-- Hosted attachment storage, upload progress, resumable transfer, and inline image/video previews remain follow-ups; local relay transfers are buffered in memory and intended for files below the enforced 95 MB ceiling.
+- Upload progress, resumable transfer, uploads from the website and iPhone app, and inline image/video previews remain follow-ups; local relay transfers are buffered in memory and intended for files below the enforced 95 MB ceiling.
 - Sharing a relay with `network-sharing lan` is plain HTTP; `tailscale` relies on Tailscale's encryption. Finding relays on the local network needs the macOS Local Network permission for the terminal app, and tailnet discovery only tries port 8790. None of this has been exercised across more than two real devices.
 - The Durable Object relay speaks HTTP only and is not qualified on a multi-node Celld fleet.
 - Native graphics in actual iTerm2/Ghostty windows and broader Windows/Warp terminal support still need validation; portable character output and protocol/PTY paths have tests.
 - Receiver descendants, approval forwarding, native Claude channel acceptance, hosted receiver end-to-end/reconnect/load checks, and overnight idle need additional testing.
-- Managed-request recovery now has activity-aware deadlines, append-only local attempts, retry/reassign/dismiss/cancel, an interactive `/requests` details/attempts/action panel, receiver-confirmed workspace context, remaining-time/attempt status, and fresh-thread recovery after unsafe termination. Automatic replay remains intentionally disabled.
+- Managed-request recovery now has activity-aware deadlines, append-only local attempts, retry/reassign/dismiss/cancel, an interactive `/requests` details/attempts/action panel, receiver-confirmed workspace context, remaining-time/attempt status, and fresh-thread recovery after unsafe termination. Automatic replay remains disabled for ambiguous failures; typed provider usage exhaustion alone uses a guarded deferred retry.
 - Members may invite other members; invitations never grant controller privileges. Room text cannot broaden runtime permissions.
 - Local credentials share the OS user's trust boundary. Naming or marking a membership as human is not an independent OS security boundary.
 - Closing guest admission does not eject existing guests. Revocation affects a membership/seat, not every future identity of the same account.

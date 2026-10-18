@@ -134,7 +134,7 @@ export class WorkingStrip {
     }
 
     private activeSignature(): string {
-        return this.state.active().map((entry) => entry.requestId).sort().join(',');
+        return this.state.visible().map((entry) => `${entry.requestId}:${entry.state}`).sort().join(',');
     }
 
     rebuild(bottom: number): number {
@@ -143,7 +143,7 @@ export class WorkingStrip {
         this.signature = this.activeSignature();
         const width = Math.max(1, Math.floor(Number(this.options.screen.width) / Math.max(1, groups.length)));
         const compact = width < 10 || Number(this.options.screen.height) < 14;
-        const layout = JSON.stringify([groups.map((group) => group.provider), this.options.screen.width, this.options.screen.height, bottom, compact]);
+        const layout = JSON.stringify([groups.map((group) => `${group.provider}:${group.state}`), this.options.screen.width, this.options.screen.height, bottom, compact]);
         if (layout === this.layout) {
             this.badges.forEach((badge, index) => {
                 badge.group = groups[index]!;
@@ -173,9 +173,14 @@ export class WorkingStrip {
             const icon = blessed.box({parent: box, top: 0, left: 0, width: compact ? 1 : 6, height: compact ? 1 : 3, tags: false, style: {fg: logoColor(group.provider)}});
             const label = blessed.box({parent: box, top: compact ? 0 : 1, left: compact ? 2 : 7, right: 0, height: 1, tags: false, wrap: false, style: {fg: 'cyan'}});
             this.badges.push({group, box, icon, label, compact});
-            this.bind(box, `provider:${group.provider}`);
+            this.bind(box, `group:${group.provider}:${group.state}`);
         });
-        if (!this.timer) {
+        const animated = groups.some((group) => group.state === 'working');
+        if (!animated && this.timer) {
+            clearInterval(this.timer);
+            this.timer = undefined;
+        }
+        if (!this.timer && animated) {
             this.timer = setInterval(() => {
                 if (this.suspended) {
                     return;
@@ -196,16 +201,16 @@ export class WorkingStrip {
         for (const badge of this.badges) {
             const frame = logoFrame(badge.group.provider, this.frame);
             const spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'][this.frame % 8]!;
-            badge.icon.setContent(badge.compact || !frame ? spinner : this.graphics === 'cells' ? frame.cells : '');
-            badge.label.setContent(`${PROVIDER_LABELS[badge.group.provider]} ×${badge.group.count}`);
+            badge.icon.setContent(badge.group.state === 'provider_wait' ? '⏳' : badge.compact || !frame ? spinner : this.graphics === 'cells' ? frame.cells : '');
+            badge.label.setContent(`${PROVIDER_LABELS[badge.group.provider]}${badge.group.state === 'provider_wait' ? ' limited' : ''} ×${badge.group.count}`);
         }
         if (this.options.obscured()) {
             this.popup.hide();
             return;
         }
         if (this.selection) {
-            const entries = this.selection === 'all' ? this.state.active() : this.selection.startsWith('provider:')
-                ? this.state.groups().find((group) => `provider:${group.provider}` === this.selection)?.entries ?? []
+            const entries = this.selection === 'all' ? this.state.visible() : this.selection.startsWith('group:')
+                ? this.state.groups().find((group) => `group:${group.provider}:${group.state}` === this.selection)?.entries ?? []
                 : this.state.forMessage(this.selection);
             const people = new Map<string, TurnEntry[]>();
             for (const entry of entries) {
@@ -214,10 +219,12 @@ export class WorkingStrip {
             const lines = [...people].map(([id, requests]) => {
                 const name = requests[0]!.name;
                 const duplicate = entries.some((entry) => entry.participantId !== id && entry.name === name);
-                const seconds = Math.max(0, Math.floor((Date.now() - Math.min(...requests.map((entry) => entry.workingAt!))) / 1000));
-                return `${stripVTControlCharacters(name)}${duplicate ? ` (${id.slice(-6)})` : ''} — ${seconds}s${requests.length > 1 ? ` · ${requests.length} requests` : ''}`;
+                const deferred = requests.every((entry) => entry.state === 'provider_wait');
+                const seconds = deferred ? null : Math.max(0, Math.floor((Date.now() - Math.min(...requests.flatMap((entry) => entry.workingAt === undefined ? [] : [entry.workingAt]))) / 1000));
+                return `${stripVTControlCharacters(name)}${duplicate ? ` (${id.slice(-6)})` : ''} — ${deferred ? 'Deferred · provider usage limit' : `${seconds}s`}${requests.length > 1 ? ` · ${requests.length} requests` : ''}`;
             });
-            fitPopup(this.popup, ['Working on an answer', ...(lines.length ? lines : ['No agents are currently declaring work.'])], this.options.screen);
+            const heading = entries.length && entries.every((entry) => entry.state === 'provider_wait') ? 'Waiting for provider reset' : 'Working on an answer';
+            fitPopup(this.popup, [heading, ...(lines.length ? lines : ['No agents are currently working or provider-limited.'])], this.options.screen);
             this.popup.top = Math.max(0, Number(this.options.screen.height) - Number(this.bar.bottom) - Number(this.bar.height) - Number(this.popup.height) - 1);
             this.popup.show();
             this.popup.setFront();
@@ -229,7 +236,7 @@ export class WorkingStrip {
             this.clearGraphics();
             return;
         }
-        const placements = this.badges.filter((badge) => !badge.compact && badge.group.provider !== 'other').map((badge) => ({provider: badge.group.provider, row: Number(badge.icon.atop), column: Number(badge.icon.aleft)}));
+        const placements = this.badges.filter((badge) => badge.group.state === 'working' && !badge.compact && badge.group.provider !== 'other').map((badge) => ({provider: badge.group.provider, row: Number(badge.icon.atop), column: Number(badge.icon.aleft)}));
         if (this.graphics === 'iterm2') {
             // The terminal owns the animation. Replace the image only when it moved, changed
             // provider or was cleared (resize, popup, suspend, completion); never on a tick.

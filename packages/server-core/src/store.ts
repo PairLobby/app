@@ -33,6 +33,8 @@ export interface FileStore {
     attachedFiles(roomId: string): Promise<FileRecord[]>;
     /** Removes uploads older than `before` that no message carried. */
     deleteUnattachedFiles(roomId: string, before: number): Promise<void>;
+    /** Bytes the room's files take, sent or still pending: what `putFile` checks against its limit. */
+    usedBytes(roomId: string): Promise<number>;
 }
 
 export interface RoomStore {

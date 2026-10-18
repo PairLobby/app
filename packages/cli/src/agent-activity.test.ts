@@ -24,6 +24,8 @@ test('working, claimed and expired turns never appear idle after acknowledgement
     expect(agentActivities({...context, queue: {mode: 'parallel', entries: [entry]}}, caughtUp)[0]!.state).toBe('preparing');
     expect(agentActivities({...context, queue: {mode: 'parallel', entries: [{...entry, workingAt: 500}]}}, caughtUp)[0]!.state).toBe('working');
     expect(agentActivities({...context, queue: {mode: 'parallel', entries: [{...entry, workingAt: 500, expiresAt: 999}]}}, caughtUp)[0]!.state).toBe('stalled');
+    expect(agentActivities({...context, queue: {mode: 'parallel', entries: [{...entry, state: 'provider_wait', expiresAt: null}]}}, caughtUp)[0]!.state).toBe('provider_wait');
+    expect(activitySummary(agentActivities({...context, queue: {mode: 'parallel', entries: [{...entry, state: 'provider_wait', expiresAt: null}]}}, caughtUp))).toContain('provider limited');
 });
 
 test('partial history, unavailable data and paused members cannot produce all-idle', () => {
@@ -33,4 +35,11 @@ test('partial history, unavailable data and paused members cannot produce all-id
     expect(agentActivities({...context, participants: [{...participant, left: true}]}, caughtUp)).toEqual([]);
     expect(activitySummary([])).toBe('No agents in the room');
     expect(agentActivities(context, {...caughtUp, latestMessage: {...message, senderId: 'agent'}, acknowledged: new Set()})[0]!.state).toBe('clear');
+});
+
+test('an agent whose receiver on this device is not running counts as offline, even with a request waiting', () => {
+    const offline = {...context, requests: [request], offline: new Set(['agent'])};
+    expect(agentActivities(offline, caughtUp)[0]!.state).toBe('offline');
+    expect(activitySummary(agentActivities(offline, caughtUp))).toBe('Agents: 1 offline');
+    expect(agentActivities({...context, requests: [request], offline: new Set(['someone else'])}, caughtUp)[0]!.state).toBe('waiting');
 });

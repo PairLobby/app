@@ -1,7 +1,8 @@
 import {execFile, spawn} from 'node:child_process';
-import {chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync} from 'node:fs';
+import {chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
 import {setTimeout as sleep} from 'node:timers/promises';
 import {promisify} from 'node:util';
 
@@ -15,7 +16,8 @@ import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_RETAINED_FI
 import type {Attachment} from '@pairlobby/protocol';
 import {RoomService} from '@pairlobby/server-core';
 
-import {decodeText, findRoomFile, mediaTypeFor, previewFile, splitAttachCommand, writeReceivedFile} from '../src/files.js';
+import {answerFilePath, clearAnswerFiles, stageAnswerFile, stagedAnswerFiles} from '../src/answer-files.js';
+import {decodeText, fileUsageLine, findRoomFile, mediaTypeFor, previewFile, splitAttachCommand, writeReceivedFile} from '../src/files.js';
 
 const execute = promisify(execFile);
 const directory = mkdtempSync(join(tmpdir(), 'pairlobby-files-'));
@@ -170,7 +172,7 @@ test.each(['memory', 'sqlite'])('test_%s_store_enforces_file_and_room_limits_exp
     await expect(service.downloadFile(room.roomId, owner.participantCredential, unsent.fileId)).rejects.toThrow('no such file');
     await expect(send([unsent])).rejects.toThrow('no upload of yours');
     await send([later]);
-    expect((await service.listFiles(room.roomId, owner.participantCredential)).map((file) => file.name)).toEqual(['kept.bin', 'later.bin']);
+    expect((await service.listFiles(room.roomId, owner.participantCredential)).files.map((file) => file.name)).toEqual(['kept.bin', 'later.bin']);
     expect(new Uint8Array((await service.downloadFile(room.roomId, owner.participantCredential, kept.fileId)).bytes)).toEqual(new Uint8Array(1000).fill(7));
 
     await service.setRoomPermissions(room.roomId, owner.controllerCredential, {attach: false});
@@ -245,6 +247,8 @@ test('test_the_shell_sends_lists_and_saves_files_and_the_text_transcript_names_t
     const listed = JSON.parse(await cli('files', '--json')).files as Attachment[];
     expect(listed.map((file) => file.name)).toEqual(['notes.txt', 'data.json', 'notes.txt']);
     expect(await cli('files')).toMatch(/1 {2}notes\.txt · 11 B · from owner/);
+    expect(await cli('files')).toContain('33 B of 512 MB used · up to 95 MB per file');
+    expect(JSON.parse(await cli('files', '--json')).usage).toEqual({usedBytes: 33, limitBytes: DEFAULT_MAX_RETAINED_FILE_BYTES, maxFileBytes: DEFAULT_MAX_FILE_BYTES});
     expect(findRoomFile(listed as never, 'notes.txt').fileId).toBe(listed[2]!.fileId);
 
     const out = join(directory, 'downloads');
@@ -292,3 +296,109 @@ test('test_a_managed_agent_gets_a_requests_files_saved_in_its_working_folder', a
         rmSync(home, {recursive: true, force: true});
     }
 }, 60_000);
+
+test('test_an_agent_may_attach_only_regular_files_inside_its_workspace', () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'pairlobby-answer-files-')));
+    try {
+        const workdir = join(home, 'project');
+        mkdirSync(join(workdir, 'out'), {recursive: true});
+        writeFileSync(join(workdir, 'out', 'report.txt'), 'done');
+        writeFileSync(join(workdir, '..notes'), 'dots in a name are fine');
+        writeFileSync(join(workdir, 'empty.txt'), '');
+        writeFileSync(join(home, 'secret.txt'), 'not for the room');
+        symlinkSync(join(home, 'secret.txt'), join(workdir, 'link.txt'));
+
+        expect(answerFilePath('out/report.txt', workdir)).toBe(join(workdir, 'out', 'report.txt'));
+        expect(answerFilePath(join(workdir, '..notes'), workdir)).toBe(join(workdir, '..notes'));
+        expect(() => answerFilePath('../secret.txt', workdir)).toThrow('outside the workspace');
+        expect(() => answerFilePath(join(home, 'secret.txt'), workdir)).toThrow('outside the workspace');
+        expect(() => answerFilePath('link.txt', workdir)).toThrow('outside the workspace');
+        expect(() => answerFilePath('out', workdir)).toThrow('is not a file');
+        expect(() => answerFilePath('empty.txt', workdir)).toThrow('is empty');
+        expect(() => answerFilePath('missing.txt', workdir)).toThrow('No file at missing.txt');
+
+        const database = new DatabaseSync(':memory:');
+        database.exec('CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+        expect(stageAnswerFile(database, 'ev_A', workdir, 'out/report.txt')).toContain('report.txt will be sent with your final answer (1 of at most 8)');
+        expect(stageAnswerFile(database, 'ev_A', workdir, join(workdir, 'out', 'report.txt'))).toContain('already attached');
+        for (let index = 2; index <= 8; index++) {
+            writeFileSync(join(workdir, `part-${index}.txt`), String(index));
+            stageAnswerFile(database, 'ev_A', workdir, `part-${index}.txt`);
+        }
+        writeFileSync(join(workdir, 'part-9.txt'), '9');
+        expect(() => stageAnswerFile(database, 'ev_A', workdir, 'part-9.txt')).toThrow('at most 8 files');
+        expect(stagedAnswerFiles(database, 'ev_A')).toHaveLength(8);
+        expect(stagedAnswerFiles(database, 'ev_B')).toEqual([]);
+        clearAnswerFiles(database, 'ev_A');
+        expect(stagedAnswerFiles(database, 'ev_A')).toEqual([]);
+        database.close();
+    } finally {
+        rmSync(home, {recursive: true, force: true});
+    }
+});
+
+test('test_a_managed_agent_sends_workspace_files_with_its_answer_and_nothing_from_outside', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pairlobby-agent-sends-'));
+    const executable = join(home, 'codex');
+    copyFileSync(resolve('scripts/fixtures/codex-receiver.mjs'), executable);
+    chmodSync(executable, 0o755);
+    mkdirSync(join(home, 'project'));
+    const workdir = realpathSync(join(home, 'project'));
+    writeFileSync(join(workdir, 'report.txt'), 'all tests pass\n');
+    writeFileSync(join(home, 'secret.txt'), 'never sent');
+    const record = join(home, 'calls.txt');
+    const environment = {...process.env, PATH: `${home}:${process.env['PATH']}`, PAIRLOBBY_DATA_DIR: join(home, 'device'), PAIRLOBBY_NO_UPDATE_CHECK: '1', PAIRLOBBY_TEST_RECORD: record};
+    const cli = process.env['PAIRLOBBY_TEST_CLI'] ?? resolve('packages/cli/dist/main.js');
+    const room = await client.createRoom('agent sends files', {displayName: 'owner', kind: 'human'});
+    let joined: {roomId: string; sessionId: string; participantId: string} | undefined;
+    try {
+        joined = JSON.parse((await execute(process.execPath, [cli, 'join', room.invite.code, '--server', server.url, '--runtime', 'codex', '--as', 'codex', '--workdir', workdir, '--json'], {env: environment})).stdout);
+        const sent = await client.send(room.roomId, room.participantCredential, {type: 'message', recipientId: joined!.participantId, payload: {text: 'Report back attach-fixture:report.txt attach-fixture:../secret.txt', priority: 'normal'}, idempotencyKey: newId('event')});
+        let responseEventId: string | null = null;
+        for (let attempt = 0; attempt < 150 && !responseEventId; attempt++) {
+            await sleep(100);
+            responseEventId = (await client.request(room.roomId, room.participantCredential, sent.event.eventId)).responseEventId;
+        }
+        const reply = (await client.readEvents(room.roomId, room.participantCredential, 0)).events.find((event) => event.eventId === responseEventId);
+        expect(reply?.payload).toMatchObject({text: expect.stringContaining('Report back attach-fixture:report.txt'), attachments: [{name: 'report.txt', size: 15, mediaType: 'text/plain'}]});
+        const attachment = (reply!.payload as {attachments: Attachment[]}).attachments[0]!;
+        expect(new TextDecoder().decode(await client.downloadFile(room.roomId, room.participantCredential, attachment.fileId))).toBe('all tests pass\n');
+        const calls = readFileSync(record, 'utf8');
+        expect(calls).toContain('attach:true:report.txt will be sent with your final answer');
+        expect(calls).toMatch(/attach:false:\.\.\/secret\.txt is outside the workspace/);
+        expect((await client.files(room.roomId, room.participantCredential)).map((file) => file.name)).toEqual(['report.txt']);
+    } finally {
+        if (joined) {
+            await new Promise((done) => spawn(process.execPath, [cli, 'receiver', 'stop', '--room', joined!.roomId, '--session', joined!.sessionId], {env: environment, stdio: 'ignore'}).on('exit', done));
+        }
+        rmSync(home, {recursive: true, force: true});
+    }
+}, 60_000);
+
+test('test_export_saves_the_history_and_every_file_into_a_new_folder', async () => {
+    const room = await client.createRoom('export me', {displayName: 'owner', kind: 'human'});
+    const device = join(directory, 'export-device');
+    const work = join(directory, 'export-work');
+    mkdirSync(work);
+    const local = new LocalStore(device);
+    const sessionId = newId('session');
+    local.upsertRoom({roomId: room.roomId, name: 'export me', serverUrl: server.url, createdAt: Date.now(), expiresAt: null, controls: true, sessions: []});
+    local.addSession(room.roomId, {sessionId, participantId: room.participantId, displayName: 'owner', kind: 'human', role: 'member', joinedAt: Date.now(), lastReadSeq: 0, cwd: work});
+    local.putCredential(room.roomId, sessionId, room.participantCredential);
+    const first = await client.uploadFile(room.roomId, room.participantCredential, 'notes.txt', text('one'), 'text/plain');
+    const second = await client.uploadFile(room.roomId, room.participantCredential, 'notes.txt', text('two'), 'text/plain');
+    await client.send(room.roomId, room.participantCredential, message('two versions', [first, second]));
+    const cli = async (...args: string[]) => (await execute(process.execPath, [process.env['PAIRLOBBY_TEST_CLI'] ?? resolve('packages/cli/dist/main.js'), ...args, '--room', room.roomId, '--session', sessionId], {cwd: work, env: {...process.env, PAIRLOBBY_DATA_DIR: device, PAIRLOBBY_NO_UPDATE_CHECK: '1'}})).stdout;
+
+    const result = JSON.parse(await cli('export', '--out', 'exports', '--json'));
+    expect(result.folder).toMatch(/exports\/export me-\d{4}-\d{2}-\d{2}$/);
+    const exported = JSON.parse(readFileSync(join(result.folder, 'room.json'), 'utf8'));
+    expect(exported.events.some((event: {payload?: {text?: string}}) => event.payload?.text === 'two versions')).toBe(true);
+    expect(exported.files.map((file: Attachment) => file.fileId)).toEqual([first.fileId, second.fileId]);
+    expect(readdirSync(join(result.folder, 'files')).sort()).toEqual(['notes (1).txt', 'notes.txt']);
+    expect(readFileSync(join(result.folder, 'files', 'notes (1).txt'), 'utf8')).toBe('two');
+    expect(JSON.parse(readFileSync(join(result.folder, 'files.json'), 'utf8'))).toEqual([{fileId: first.fileId, name: 'notes.txt', path: join('files', 'notes.txt')}, {fileId: second.fileId, name: 'notes.txt', path: join('files', 'notes (1).txt')}]);
+
+    expect(await cli('export', '--out', 'exports')).toMatch(/Exported export me to .*export me-\d{4}-\d{2}-\d{2} \(2\): \d+ events, 2 of 2 files\./);
+    expect(fileUsageLine({usedBytes: 1536, limitBytes: 512 * 1024 * 1024, maxFileBytes: 95 * 1024 * 1024})).toBe('1.5 KB of 512 MB used · up to 95 MB per file');
+});

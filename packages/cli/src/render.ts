@@ -109,6 +109,8 @@ export interface RoomListEntry {
     room: RoomEntry;
     reachable: boolean;
     snapshot?: RoomSnapshot;
+    /** When the newest message was sent, or null when the room has none; absent when the room could not be read. */
+    lastMessageAt?: number | null;
     why?: string;
 }
 
@@ -274,7 +276,7 @@ function describe(event: RoomEvent): string {
         case 'message.received':
             return `${event.payload.stage === 'read' ? 'read' : 'received'} ${event.payload.eventId}${event.payload.action ? ` · ${event.payload.action.replaceAll('_', ' ')}` : ''}`;
         case 'conversation.turn_changed':
-            return `speaking turns: ${event.payload.action} (${event.payload.mode})`;
+            return event.payload.detail ?? `speaking turns: ${event.payload.action} (${event.payload.mode})`;
     }
 }
 

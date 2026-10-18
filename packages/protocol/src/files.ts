@@ -46,7 +46,11 @@ export type UploadFileResponse = z.infer<typeof UploadFileResponse>;
 export const RoomFile = Attachment.extend({uploaderId: ParticipantId, createdAt: z.number().int().nonnegative(), eventId: EventId});
 export type RoomFile = z.infer<typeof RoomFile>;
 
-export const ListFilesResponse = z.object({files: z.array(RoomFile)});
+/** How much of the room's file storage is taken. Pending uploads count, because the limit counts them. */
+export const FileUsage = z.object({usedBytes: z.number().int().nonnegative(), limitBytes: z.number().int().nonnegative(), maxFileBytes: z.number().int().nonnegative()});
+export type FileUsage = z.infer<typeof FileUsage>;
+
+export const ListFilesResponse = z.object({files: z.array(RoomFile), usage: FileUsage.optional()});
 export type ListFilesResponse = z.infer<typeof ListFilesResponse>;
 
 /**

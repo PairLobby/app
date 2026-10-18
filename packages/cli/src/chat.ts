@@ -25,6 +25,7 @@ import {commandHint, completeChatCommand} from './chat-completion.js';
 import {settingsPage, statusPage} from './room-settings.js';
 import {describeAutoClose, describeCloseReason} from './auto-close.js';
 import {loadAgentRoster} from './agent-roster.js';
+import {offlineReceivers, wakeOfflineReceivers} from './receiver.js';
 import {invitationTerms} from './render.js';
 import {closeRequest, recoverRequest} from './request-recovery.js';
 import {requestsPage} from './request-panel.js';
@@ -251,9 +252,9 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 if (!snapshot.filesSupported) {
                     throw new Error('This relay does not store files.');
                 }
-                const files = await client.files(roomId, credential);
+                const {files, usage} = await client.fileList(roomId, credential);
                 if (command === '/files') {
-                    emit(filesReport(files, names));
+                    emit(filesReport(files, names, usage));
                     return;
                 }
                 const [reference, ...rest] = argument.split(/\s+/).filter(Boolean);
@@ -273,6 +274,8 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             }
         }
 
+        let waking = false;
+
         async function send(routed: RoutedChatMessage, attachments: Attachment[] = []): Promise<void> {
             try {
                 if ((routed.recipientIds || routed.allRecipients) && !snapshot.groupTurnsSupported) {
@@ -289,9 +292,26 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 // Shown immediately and marked seen, so the poll does not print it twice.
                 seen.add(result.event.eventId);
                 view.addEvent(result.event);
+                wakeAgents();
             } catch (error) {
                 emit(`${DIM}  not sent — ${error instanceof ProtocolError ? error.message : String(error)}${RESET}`);
             }
+        }
+
+        /** A message is the moment an agent is needed, so this device's agents whose receiver died start again and resume their conversation. */
+        function wakeAgents(): void {
+            if (waking || options.readOnly || offlineReceivers(store, roomId).length === 0) {
+                return;
+            }
+            waking = true;
+            void wakeOfflineReceivers(store, roomId).then(({woken, failed}) => {
+                if (woken.length) {
+                    emit(`${DIM}  started ${woken.map((session) => session.displayName).join(', ')} again; ${woken.length === 1 ? 'its receiver was' : 'their receivers were'} not running${RESET}`);
+                }
+                for (const {session, reason} of failed) {
+                    emit(`${DIM}  could not start ${session.displayName}: ${reason}${RESET}`);
+                }
+            }).finally(() => { waking = false; });
         }
 
         async function control(reference: string, paused: boolean): Promise<void> {
@@ -425,6 +445,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                     .then((result) => {
                         seen.add(result.event.eventId);
                         view.addEvent(result.event);
+                        wakeAgents();
                     })
                     .catch((error) => {
                         view.restoreReply(reply);
@@ -640,7 +661,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                     const attention = state === 'failed' || state === 'stalled' || (state.includes('overdue') && request.action !== 'waiting' && request.action !== 'reply_pending');
                     return showIds || attention ? [{requestId: request.eventId, text: formatRequestStatus(request, names, showIds)}] : [];
                 }));
-                view.setAgentActivity({participants: snapshot.participants, requests: pendingRequests, queue, complete: !page.hasMore, available: true});
+                view.setAgentActivity({participants: snapshot.participants, requests: pendingRequests, queue, complete: !page.hasMore, available: true, offline: new Set(offlineReceivers(store, roomId).map((session) => session.participantId))});
                 if (outageSince !== null) {
                     emit(`${DIM}  relay is back${RESET}`);
                     outageSince = null;
@@ -828,7 +849,7 @@ export function formatRequestStatus(request: MessageRequest, names: Map<string, 
         reply_overdue: 'Queued · response overdue',
         answered: 'Answered',
         no_action: 'No action needed',
-        declined: 'Declined',
+        declined: 'Declined', provider_wait: 'Provider limited · waiting to retry',
         failed: failureLabel(request.failureStage), dismissed: 'Failed · dismissed',
         waiting_turn: 'Waiting for a speaking turn', answering: 'Answering', stalled: 'Speaking turn stalled', passed: 'Passed', skipped: 'Skipped', cancelled: 'Cancelled'
     };
@@ -883,7 +904,7 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
             if (event.payload.action === 'mode') {
                 return `reply mode is now ${event.payload.mode}`;
             }
-            return `${agents}: turn ${event.payload.action}`;
+            return `${agents}: ${event.payload.detail ?? `turn ${event.payload.action}`}`;
         }
         case 'room.renamed':
             return `${sender} renamed the room to ${event.payload.name}`;

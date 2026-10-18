@@ -3,15 +3,20 @@ import type {Key} from 'node:readline';
 import {PairLobbyClient} from '@pairlobby/client';
 import type {LocalStore} from '@pairlobby/client';
 import type {RoomListEntry} from './render.js';
-import {INVITED_STATE, NETWORK_STATE, ROOM_COLUMNS, SESSION_COLUMNS, closeListedRoom, deleteListedRoom, forgetListedRoom, invitationRows, administersListedRoom, leaveListedSession, loadRoomList, networkRows, roomRows, sessionRows, sortListRows} from './room-list.js';
-import type {ListColumn, ListRow, ListSort, NetworkRoom, RoomInvite} from './room-list.js';
+import {INVITED_STATE, LOCATION_LABELS, MEMBER_ICONS, NETWORK_STATE, ROOM_COLUMNS, SESSION_COLUMNS, closeListedRoom, deleteListedRoom, forgetListedRoom, invitationRows, administersListedRoom, leaveListedSession, loadRoomList, networkRows, relayAdvice, relayLabel, roomRows, sessionRows, sortListRows} from './room-list.js';
+import type {ListColumn, ListRow, ListSort, NetworkRoom, RoomInvite, RoomLocation} from './room-list.js';
 import {RoomPanel} from './room-panel.js';
 import type {RoomPanelPage} from './room-panel.js';
 import {plainCell} from './agent-roster.js';
 import {receiverConfiguration, receiverStatus, startReceiver, stopReceiver} from './receiver.js';
 import {copyToClipboard} from './clipboard.js';
 import {createTerminalProgram} from './terminal-program.js';
+import {iconSet} from './terminal-icons.js';
+import type {IconSet} from './terminal-icons.js';
 import {formatDuration} from './when.js';
+
+/** The room list opens on Room, past the icon column. */
+const ROOM_HOME_COLUMN = ROOM_COLUMNS.findIndex((column) => column.key === 'name');
 
 /** A saved room or session to chat in, a network room to join, or an invitation to accept and join. */
 export type RoomBrowserSelection = {roomId: string; openChat: true} | {roomId: string; sessionId: string} | {roomId: string; joinAt: string} | {roomId: string; invitationId: string};
@@ -35,7 +40,8 @@ export class RoomBrowser {
     private rows: ListRow[] = [];
     private roomId: string | undefined;
     private selected = 0;
-    private column = 0;
+    private column = ROOM_HOME_COLUMN;
+    private icons?: IconSet;
     private top = 0;
     private firstColumn = 0;
     private roomSort: ListSort;
@@ -110,7 +116,8 @@ export class RoomBrowser {
             if (this.roomId) {
                 const id = this.roomId;
                 this.roomId = undefined;
-                this.column = this.top = this.firstColumn = 0;
+                this.top = this.firstColumn = 0;
+                this.column = ROOM_HOME_COLUMN;
                 this.rebuildRows(id);
             } else {
                 this.close();
@@ -153,7 +160,15 @@ export class RoomBrowser {
     }
 
     private columns(): ListColumn[] {
-        return this.roomId ? SESSION_COLUMNS : ROOM_COLUMNS;
+        if (this.roomId) {
+            return SESSION_COLUMNS;
+        }
+        const members = MEMBER_ICONS[this.iconSet()];
+        return ROOM_COLUMNS.map((column) => column.key === 'agents' || column.key === 'people' ? {...column, label: members[column.key]} : column);
+    }
+
+    private iconSet(): IconSet {
+        return this.icons ??= iconSet(this.store.settings().icons);
     }
 
     private sort(): ListSort {
@@ -180,7 +195,7 @@ export class RoomBrowser {
             }
             this.entries = entries;
             this.network = this.network.filter((found) => !entries.some((entry) => entry.room.roomId === found.room.roomId));
-            this.note = notice || 'Snapshot updated. Listing does not join rooms or start agents.';
+            this.note = notice || relayAdvice(entries) || 'Snapshot updated. Listing does not join rooms or start agents.';
             this.loading = false;
             this.rebuildRows(selected);
             this.invited = this.invited.filter((invitation) => !entries.some((entry) => entry.room.roomId === invitation.roomId));
@@ -237,10 +252,12 @@ export class RoomBrowser {
         const room = this.entries.find((entry) => entry.room.roomId === this.roomId);
         if (this.roomId && !room) {
             this.roomId = undefined;
-            this.column = this.firstColumn = 0;
+            this.firstColumn = 0;
+            this.column = ROOM_HOME_COLUMN;
         }
+        const icons = this.iconSet();
         // Invitations wait for an answer, so they stay on top whatever the sort.
-        this.rows = room && this.roomId ? sortListRows(sessionRows(this.store, room), this.sort()) : [...sortListRows(invitationRows(this.invited), this.sort()), ...sortListRows([...roomRows(this.entries), ...networkRows(this.network)], this.sort())];
+        this.rows = room && this.roomId ? sortListRows(sessionRows(this.store, room), this.sort()) : [...sortListRows(invitationRows(this.invited, icons), this.sort()), ...sortListRows([...roomRows(this.entries, icons), ...networkRows(this.network, icons)], this.sort())];
         this.selected = selectedId ? Math.max(0, this.rows.findIndex((row) => row.id === selectedId)) : Math.max(0, Math.min(this.selected, this.rows.length - 1));
         this.render();
     }
@@ -369,8 +386,8 @@ export class RoomBrowser {
     }
 
     /**
-     * Deleting is the one action here that cannot be undone, so it always asks, whatever
-     * the device's confirmDelete setting says: one stray key must not cost a room's history.
+     * Deleting cannot be undone, so it asks first, unless this device turned the
+     * confirmDelete setting off (`pairlobby settings confirm-delete off`).
      */
     private confirmDelete(): void {
         const row = this.rows[this.selected];
@@ -387,23 +404,49 @@ export class RoomBrowser {
             this.render();
             return;
         }
-        // The owner's device, or an admin's, deletes the room itself. Anyone else only takes it off their own list.
+        // The owner's device, or an admin's, deletes the room itself. Anyone else only takes it off their own list,
+        // and so does an owner whose relay cannot be reached, since nothing can be deleted there.
         const entry = this.entries.find((candidate) => candidate.room.roomId === row.roomId);
-        const owner = entry ? administersListedRoom(this.store, entry) : false;
+        const offline = entry !== undefined && !entry.reachable && ['server_unavailable', 'unreachable'].includes(entry.why ?? '');
+        const owner = entry && !offline ? administersListedRoom(this.store, entry) : false;
         const name = row.values['name'];
         const description = owner
             ? `Delete ${name} (${row.roomId}) and its history for everyone? This cannot be undone.`
-            : `Remove ${name} (${row.roomId}) from this device? You leave the room and your receivers stop. The room carries on for everyone else. To come back you join again, which needs an invite if the room is invite-only.`;
-        const page: RoomPanelPage = {id: 'delete-selection', closeOnCancel: true, title: owner ? 'Delete room for everyone' : 'Remove room from this device', note: description, reload: async () => page, rows: [{id: 'confirm', label: owner ? 'Delete room' : 'Remove room', value: name ?? '', section: 'Confirm', action: {kind: 'command', confirm: description, closeAfterSave: true, run: async () => {
+            : offline
+                ? `Remove ${name} (${row.roomId}) from this device? Its relay at ${relayLabel(entry.room.serverUrl)} cannot be reached, so the room is not deleted there; this device only forgets it and stops its receivers.`
+                : `Remove ${name} (${row.roomId}) from this device? You leave the room and your receivers stop. The room carries on for everyone else. To come back you join again, which needs an invite if the room is invite-only.`;
+        const remove = async () => {
             if (owner) {
                 this.actionNotice = (await deleteListedRoom(this.store, row.roomId)) === 'deleted' ? `Deleted ${name} for everyone.` : `${name} was already gone; removed it from this device.`;
             } else {
                 await forgetListedRoom(this.store, row.roomId);
-                this.actionNotice = `Removed ${name} from this device. The room itself is unchanged.`;
+                this.actionNotice = offline ? `Removed ${name} from this device. Its relay could not be reached, so the room was not deleted there.` : `Removed ${name} from this device. The room itself is unchanged.`;
             }
-        }}}]};
+        };
+        if (!this.store.settings().confirmDelete) {
+            void this.deleteWithoutAsking(owner ? `Deleting ${name}…` : `Removing ${name}…`, remove);
+            return;
+        }
+        const page: RoomPanelPage = {id: 'delete-selection', closeOnCancel: true, title: owner ? 'Delete room for everyone' : 'Remove room from this device', note: description, reload: async () => page, rows: [{id: 'confirm', label: owner ? 'Delete room' : 'Remove room', value: name ?? '', section: 'Confirm', action: {kind: 'command', confirm: description, closeAfterSave: true, run: remove}}]};
         this.details.show(page);
         this.details.key(undefined, {name: 'enter'});
+    }
+
+    private async deleteWithoutAsking(progress: string, remove: () => Promise<void>): Promise<void> {
+        this.loading = true;
+        this.note = progress;
+        this.render();
+        try {
+            await remove();
+        } catch (error) {
+            this.loading = false;
+            this.note = `Delete failed: ${error instanceof Error ? error.message : String(error)}`;
+            this.render();
+            return;
+        }
+        const notice = this.actionNotice;
+        this.actionNotice = '';
+        await this.refresh(notice);
     }
 
     private showSession(): void {
@@ -501,8 +544,9 @@ export class RoomBrowser {
         return out + '…';
     }
 
-    private cell(top: number, left: number, width: number, value: string, selected = false): blessed.Widgets.BoxElement {
-        const cell = blessed.box({parent: this.surface, top, left, width, height: 1, tags: false, wrap: false, mouse: true, content: this.text(value, width), style: {fg: selected ? 'black' : 'white', bg: selected ? 'cyan' : 'black'}});
+    /** A bare cell keeps the terminal's own background, even on the selected row. */
+    private cell(top: number, left: number, width: number, value: string, selected = false, bare = false): blessed.Widgets.BoxElement {
+        const cell = blessed.box({parent: this.surface, top, left, width, height: 1, tags: false, wrap: false, mouse: true, content: this.text(value, width), style: bare ? {} : {fg: selected ? 'black' : 'white', bg: selected ? 'cyan' : 'black'}});
         cell.on('wheelup', () => { this.selected = Math.max(0, this.selected - 1); this.render(); });
         cell.on('wheeldown', () => { this.selected = Math.max(0, Math.min(this.rows.length - 1, this.selected + 1)); this.render(); });
         this.cells.push(cell);
@@ -545,10 +589,10 @@ export class RoomBrowser {
         for (let index = this.firstColumn; index < columns.length && left < width; index++) {
             const column = columns[index]!;
             const size = Math.min(column.width, width - left + 1);
-            if (size < 3) {
+            if (size < Math.min(3, column.width)) {
                 break;
             }
-            const header = this.cell(3, left, size, column.label + (this.sort().key === column.key ? this.sort().descending ? ' ↓' : ' ↑' : ''), index === this.column);
+            const header = this.cell(3, left, size, column.label + (this.sort().key === column.key ? this.sort().descending ? ' ↓' : ' ↑' : ''), index === this.column, column.key === 'where');
             header.on('mousedown', (event: BrowserMouse) => {
                 if (event.button === 'left') {
                     this.column = index;
@@ -557,7 +601,7 @@ export class RoomBrowser {
             });
             this.rows.slice(this.top, this.top + this.pageSize()).forEach((row, offset) => {
                 const rowIndex = this.top + offset;
-                const cell = this.cell(4 + offset, left, size, row.values[column.key] ?? '', rowIndex === this.selected);
+                const cell = this.cell(4 + offset, left, size, row.values[column.key] ?? '', rowIndex === this.selected, column.key === 'where');
                 cell.on('mousedown', (event: BrowserMouse) => {
                     if (event.button === 'left') {
                         this.selected = rowIndex;
@@ -573,7 +617,8 @@ export class RoomBrowser {
         }
         const row = this.rows[this.selected];
         const column = columns[this.column]!;
-        this.cell(height - 3, 1, width, row ? `${column.label}: ${row.values[column.key] ?? ''}` : '');
+        const where = row && column.key === 'where' ? `${row.values['where']} ${LOCATION_LABELS[row.sortValues['where'] as RoomLocation]}` : undefined;
+        this.cell(height - 3, 1, width, row ? where ?? `${column.name ?? column.label}: ${row.values[column.key] ?? ''}` : '');
         this.cell(height - 2, 1, width, this.note);
         this.screen.render();
     }

@@ -7,7 +7,7 @@ import {homedir} from 'node:os';
 import {basename, extname, join, resolve} from 'node:path';
 
 import {MAX_ATTACHMENTS_PER_MESSAGE, ProtocolError, formatFileSize, safeFileName} from '@pairlobby/protocol';
-import type {Attachment, RoomFile, RoomSnapshot} from '@pairlobby/protocol';
+import type {Attachment, FileUsage, RoomFile, RoomSnapshot} from '@pairlobby/protocol';
 import type {PairLobbyClient} from '@pairlobby/client';
 
 export type FileContext = {client: PairLobbyClient; roomId: string; credential: string};
@@ -97,12 +97,18 @@ export function findRoomFile(files: RoomFile[], reference: string): RoomFile {
     return found;
 }
 
-export function filesReport(files: RoomFile[], names: Map<string, string>): string {
+/** "12 MB of 512 MB used · up to 95 MB per file". */
+export function fileUsageLine(usage: FileUsage): string {
+    return `${formatFileSize(usage.usedBytes)} of ${formatFileSize(usage.limitBytes)} used · up to ${formatFileSize(usage.maxFileBytes)} per file`;
+}
+
+export function filesReport(files: RoomFile[], names: Map<string, string>, usage?: FileUsage): string {
+    const footer = usage ? `\n${fileUsageLine(usage)}` : '';
     if (files.length === 0) {
-        return 'No files have been sent in this room. Send one with /attach <path>.';
+        return `No files have been sent in this room. Send one with /attach <path>.${footer}`;
     }
     const width = String(files.length).length;
-    return files.map((file, index) => `${String(index + 1).padStart(width)}  ${attachmentLabel(file)} · from ${names.get(file.uploaderId) ?? file.uploaderId} · ${new Date(file.createdAt).toLocaleString()}`).join('\n');
+    return files.map((file, index) => `${String(index + 1).padStart(width)}  ${attachmentLabel(file)} · from ${names.get(file.uploaderId) ?? file.uploaderId} · ${new Date(file.createdAt).toLocaleString()}`).join('\n') + footer;
 }
 
 /**

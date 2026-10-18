@@ -1,10 +1,10 @@
 import {ACK_TIMEOUT_MS, ProtocolError, TURN_LEASE_MS, hashCredential, newCredential, newId} from '@pairlobby/protocol';
-import type {MessageRequest, TurnAction, TurnGrant, TurnMode, TurnQueue} from '@pairlobby/protocol';
+import type {MessageRequest, ProviderWait, TurnAction, TurnGrant, TurnMode, TurnQueue} from '@pairlobby/protocol';
 import {appendEvent, assertCanWrite, assertController, assertMayTarget, assertPermitted, assertRoomWritable, authenticate, emptyMutation} from '@pairlobby/room-core';
 import type {Actor, RoomView} from '@pairlobby/room-core';
 import type {RoomStore} from './store.js';
 
-type TurnChange = 'claimed' | 'working' | 'passed' | 'skipped' | 'cancelled' | 'mode';
+type TurnChange = 'claimed' | 'working' | 'deferred' | 'resumed' | 'passed' | 'skipped' | 'cancelled' | 'mode';
 
 export function assertTurn(request: MessageRequest, token: string | undefined, now: number): void {
     if (!request.turnRequired) {
@@ -43,17 +43,20 @@ export class TurnCoordinator {
     }
 
     private eligible(view: RoomView, request: MessageRequest): boolean {
+        if (request.providerWait) {
+            return false;
+        }
         const participant = view.participants.find((member) => member.participantId === request.to);
         return Boolean(participant && participant.kind === 'agent' && participant.leftAt === null && participant.revokedAt === null && participant.role !== 'guest' && !participant.muted && !view.controls.find((control) => control.targetParticipantId === participant.participantId)?.paused);
     }
 
-    private async change(view: RoomView, actor: Actor, requests: MessageRequest[], action: TurnChange, mode = view.room.turnMode ?? 'sequential'): Promise<void> {
+    private async change(view: RoomView, actor: Actor, requests: MessageRequest[], action: TurnChange, mode = view.room.turnMode ?? 'sequential', detail?: string): Promise<void> {
         const revision = view.room.turnRevision ?? 0;
         const roomState = {...view.room, turnRevision: revision + 1, turnChangedAt: this.now(), turnMode: mode};
         const {room, event} = appendEvent(roomState, {
             senderId: actor.kind === 'participant' ? actor.participant.participantId : null,
             idempotencyKey: null, recipientId: null, replyTo: null,
-            body: {type: 'conversation.turn_changed', payload: {action, mode, requestIds: requests.map((request) => request.eventId), participantIds: requests.map((request) => request.to)}}
+            body: {type: 'conversation.turn_changed', payload: {action, mode, requestIds: requests.map((request) => request.eventId), participantIds: requests.map((request) => request.to), ...(detail ? {detail} : {})}}
         }, {now: this.now(), newEventId: () => newId('event')});
         await this.store.apply({...emptyMutation(room, event), expectedTurnRevision: revision, upsertRequests: requests.map((request) => ({...request, turnRevision: revision + 1}))}, null);
     }
@@ -74,7 +77,7 @@ export class TurnCoordinator {
                 return {
                     requestId: request.eventId, conversationId: request.conversationId ?? request.eventId,
                     participantId: request.to, name: participant?.displayName ?? request.to,
-                    state: request.failureAt ? 'failed' : request.turnStatus === 'running' ? ((request.turnExpiresAt ?? 0) <= this.now() ? 'stalled' : request.action === 'waiting' || request.action === 'reply_pending' ? 'waiting' : 'answering') : unavailable ? 'unavailable' : paused ? 'paused' : overdue ? 'stalled' : 'waiting',
+                    state: request.failureAt ? 'failed' : request.providerWait ? 'provider_wait' : request.turnStatus === 'running' ? ((request.turnExpiresAt ?? 0) <= this.now() ? 'stalled' : request.action === 'waiting' || request.action === 'reply_pending' ? 'waiting' : 'answering') : unavailable ? 'unavailable' : paused ? 'paused' : overdue ? 'stalled' : 'waiting',
                     ...(request.workingAt !== undefined && !unavailable && !paused ? {workingAt: request.workingAt} : {}),
                     ...(participant?.capabilities?.runtime ? {runtime: participant.capabilities.runtime} : {}),
                     expiresAt: request.turnExpiresAt ?? null
@@ -212,6 +215,60 @@ export class TurnCoordinator {
         }
         assertTurn(request, token, this.now());
         await this.change(view, actor, [{...request, requiresReply: false, turnStatus: 'passed', turnToken: '', turnExpiresAt: 0}], 'passed');
+    }
+
+    async defer(roomId: string, credential: string, requestId: string, token: string, providerWait: ProviderWait): Promise<void> {
+        const view = await this.view(roomId);
+        const actor = authenticate(view, await hashCredential(credential), this.now());
+        const participant = assertCanWrite(actor);
+        assertRoomWritable(view, this.now());
+        const request = await this.resolve(roomId, requestId, participant.participantId);
+        if (!request || request.to !== participant.participantId) {
+            throw new ProtocolError('unauthorized', 'this request belongs to another participant');
+        }
+        if (request.providerWait) {
+            return;
+        }
+        if (!request.turnRequired || request.turnStatus !== 'running' || !token || request.turnToken !== token) {
+            throw new ProtocolError('turn_required', 'only the receiver holding this speaking turn may defer it');
+        }
+        const next: MessageRequest = {...request, providerWait, action: 'provider_wait', actionAt: this.now(), actionReason: providerWait.displayMessage, turnToken: '', turnExpiresAt: 0};
+        delete next.workingAt;
+        delete next.turnStatus;
+        delete next.turnClaimId;
+        await this.change(view, actor, [next], 'deferred', view.room.turnMode ?? 'sequential', providerWait.displayMessage);
+    }
+
+    async resume(roomId: string, credential: string, requestId: string): Promise<MessageRequest> {
+        const view = await this.view(roomId);
+        const actor = authenticate(view, await hashCredential(credential), this.now());
+        const participant = assertCanWrite(actor);
+        assertRoomWritable(view, this.now());
+        const request = await this.resolve(roomId, requestId, participant.participantId);
+        if (!request || request.to !== participant.participantId) {
+            throw new ProtocolError('unauthorized', 'this request belongs to another participant');
+        }
+        if (!request.providerWait) {
+            return request;
+        }
+        if (!request.requiresReply || request.responseEventId || request.resolution || request.recoveredByEventId) {
+            throw new ProtocolError('invalid_request', 'this request is no longer actionable');
+        }
+        if (view.controls.find((control) => control.targetParticipantId === participant.participantId)?.paused) {
+            throw new ProtocolError('invalid_request', 'provider retry is held while this participant is paused');
+        }
+        const next: MessageRequest = {...request, attempt: (request.attempt ?? 1) + 1};
+        delete next.providerWait;
+        delete next.action;
+        delete next.actionAt;
+        delete next.actionReason;
+        delete next.turnStatus;
+        delete next.turnToken;
+        delete next.turnExpiresAt;
+        delete next.turnClaimId;
+        delete next.workingAt;
+        await this.change(view, actor, [next], 'resumed', view.room.turnMode ?? 'sequential', 'Provider capacity retry started.');
+        return next;
     }
 
     async mode(roomId: string, credential: string, mode: TurnMode): Promise<TurnQueue> {

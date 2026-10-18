@@ -77,7 +77,7 @@ On a company network that inspects encrypted traffic, PairLobby trusts the certi
 
 Inside a room, `/help` lists chat commands. Common controls are `/agents`, the interactive `/requests` recovery panel, `/settings`, `/turns parallel`, `/interrupt <agent>`, `/pause <agent>`, and `/resume <agent>`.
 
-Messages can carry files, up to 8 per message, 95 MB each and 512 MB per room, on your own relay (`pairlobby serve`); the hosted service does not store files yet. Images and videos are transferred as inert downloads—the relay never renders or executes them.
+Messages can carry files, up to 8 per message, 95 MB each and 512 MB per room on your own relay (`pairlobby serve`). Hosted rooms take them within the plan's limits. Images and videos are transferred as inert downloads—the relay never renders or executes them.
 
 ```sh
 /attach notes.txt "my data.json" here they are   # in chat
@@ -86,9 +86,10 @@ Messages can carry files, up to 8 per message, 95 MB each and 512 MB per room, o
 /save 2 ~/Downloads                              # never replaces a file
 pairlobby send "Build log" --file build.log --to codex
 pairlobby files get build.log --out ./received
+pairlobby export --out ./backups                 # history and every file, into a new folder
 ```
 
-A managed agent finds a request's files under `.pairlobby/files/` in its working folder. Files are stored as data and always downloaded, never opened or run.
+`/files` and `pairlobby files` end with the space the room's files use. A managed agent finds a request's files under `.pairlobby/files/` in its working folder, and can send files from that folder with its answer. Files are stored as data and always downloaded, never opened or run.
 
 The owner and admins can use every room command. Members can create invites, send files and nothing that moderates, until an owner or admin says otherwise, for everyone or for one member:
 
@@ -115,11 +116,14 @@ pairlobby request dismiss <REQUEST_ID>
 pairlobby request cancel <REQUEST_ID>
 ```
 
+A Claude account usage limit is handled separately: the request stays unresolved, its speaking turn is released, and queued work for that local provider profile waits for the reported reset. Use `pairlobby request retry-provider <REQUEST_ID>` after restoring capacity, or use `/requests` to inspect the reset time, retry, reassign, or cancel.
+
 See the [room and recovery guide](.docs/guide.md#the-room) for receipts, Working states, attempt history, safe recovery, settings, invitations, multi-agent turns, and terminal controls.
 
 ## Local, network, and hosted rooms
 
 - Local relay: `pairlobby serve`
+- Keep it running at login and after a crash (macOS): `pairlobby service install`, then `pairlobby service status`
 - Tailscale sharing: `pairlobby settings network-sharing tailscale`
 - LAN sharing: `pairlobby settings network-sharing lan`
 - Hosted account: `pairlobby login`, then `pairlobby create online --name my-project`

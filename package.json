@@ -24,7 +24,7 @@
     "install:async-prototype": "npm run build && node scripts/install-async-prototype.mjs",
     "typecheck": "tsc --build --force",
     "service": "node scripts/service.mjs",
-    "service:install": "npm run install:cli && node scripts/service.mjs install",
+    "service:install": "npm run install:local && node scripts/service.mjs install",
     "service:status": "node scripts/service.mjs status",
     "service:uninstall": "node scripts/service.mjs uninstall"
   },

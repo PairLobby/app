@@ -8,6 +8,7 @@ import {AdapterCapabilities, ParticipantKind, ParticipantRole, RoomEvent, SendEv
 import {AttemptId, EventId, ParticipantId, RoomId, SessionId} from './ids.js';
 import {HandoverRecord, RoomSnapshot} from './records.js';
 import {ERROR_CODES} from './errors.js';
+import {RoomFile} from './files.js';
 import {AutoClosePolicySchema} from './auto-close.js';
 import {PermissionChange} from './permissions.js';
 
@@ -25,6 +26,8 @@ export const ROUTES = {
     renewTurn: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/renew'},
     declareWorking: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/working'},
     passTurn: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/pass'},
+    deferRequest: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/defer'},
+    resumeRequest: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/resume'},
     resolveRequest: {method: 'POST', path: '/v1/rooms/:roomId/requests/:eventId/resolve'},
     readEvents: {method: 'GET', path: '/v1/rooms/:roomId/events'},
     sendEvent: {method: 'POST', path: '/v1/rooms/:roomId/events'},
@@ -125,6 +128,7 @@ export const TurnModeRequest = z.object({mode: z.enum(['sequential', 'parallel']
 export const TurnActionRequest = z.object({action: z.enum(['skip', 'cancel']), requestId: EventId.optional(), participantId: ParticipantId.optional()});
 export const ResolveRequestRequest = z.object({action: z.enum(['dismiss', 'cancel']), reason: z.string().trim().min(1).max(1024).optional()});
 export type ResolveRequestRequest = z.infer<typeof ResolveRequestRequest>;
+export const ProviderWaitRequest = z.object({provider: z.string().min(1).max(32), model: z.string().min(1).max(128).optional(), limitKind: z.enum(['session', 'weekly', 'unknown']), detectedAt: z.number().int().nonnegative(), retryAt: z.number().int().nonnegative().nullable(), resetTimezone: z.string().min(1).max(128).nullable(), displayMessage: z.string().min(1).max(512), resetActionUrl: z.literal('https://clau.de/reset').nullable(), automaticRetry: z.boolean(), source: z.enum(['result', 'result_errors', 'stderr']).optional(), token: z.string().min(16).max(128)});
 
 export const CreateInviteRequest = z.object({
     defaultName: z.string().trim().min(1).max(64).optional(),
@@ -214,7 +218,9 @@ export const ExportResponse = z.object({
     handovers: z.array(HandoverRecord),
     exportedAt: z.number().int().nonnegative(),
     /** False when retention already dropped events older than `room.earliestSeq`. */
-    complete: z.boolean()
+    complete: z.boolean(),
+    /** Every file a message carries, on a relay that stores files. Fetch the bytes with the download route. */
+    files: z.array(RoomFile).optional()
 });
 export type ExportResponse = z.infer<typeof ExportResponse>;
 

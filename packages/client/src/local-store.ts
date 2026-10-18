@@ -114,6 +114,8 @@ export interface Settings {
     relayNetwork: 'off' | 'tailscale' | 'lan';
     /** Show rooms open to the local network or tailnet in the room list, which searches the network on each refresh. */
     networkRooms: boolean;
+    /** How the room list marks where a room lives: Nerd Font icons where this terminal is known to draw them and emoji elsewhere, or always one set. */
+    icons: 'auto' | 'nerd' | 'emoji' | 'symbols';
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -133,6 +135,7 @@ export const DEFAULT_SETTINGS: Settings = {
     defaultAutoClose: 'off',
     relayNetwork: 'off',
     networkRooms: true,
+    icons: 'auto',
 };
 
 export function dataDirectory(): string {

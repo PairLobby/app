@@ -54,6 +54,7 @@ export class SqliteRoomStore implements RoomStore {
             return offset === bytes.byteLength ? bytes : null;
         },
         attachedFiles: async (roomId) => (this.db.prepare('SELECT body FROM files WHERE room_id = ? AND event_id IS NOT NULL ORDER BY created_at, file_id').all(roomId) as unknown as BodyRow[]).map((row) => JSON.parse(row.body) as FileRecord),
+        usedBytes: async (roomId) => Number((this.db.prepare('SELECT coalesce(sum(size), 0) AS total FROM files WHERE room_id = ?').get(roomId) as {total: number}).total),
         deleteUnattachedFiles: async (roomId, before) => this.transaction(() => {
             this.db.prepare('DELETE FROM file_chunks WHERE file_id IN (SELECT file_id FROM files WHERE room_id = ? AND event_id IS NULL AND created_at < ?)').run(roomId, before);
             this.db.prepare('DELETE FROM files WHERE room_id = ? AND event_id IS NULL AND created_at < ?').run(roomId, before);

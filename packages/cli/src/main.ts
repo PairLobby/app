@@ -6,15 +6,15 @@
 //! prints registry metadata only — credentials live in a separate store, so
 //! listing a room can never disclose one.
 
-import {readFileSync} from 'node:fs';
-import {join} from 'node:path';
+import {mkdirSync, readFileSync, writeFileSync} from 'node:fs';
+import {join, relative} from 'node:path';
 import {spawn} from 'node:child_process';
 import {userInfo} from 'node:os';
 import {parseArgs} from 'node:util';
 
 import {LocalStore, PairLobbyClient, openRequests, owedByMe, unreceipted} from '@pairlobby/client';
 import type {JoinedRoom, RoomEntry, RoomPreset, Settings} from '@pairlobby/client';
-import {ParticipantName, ProtocolError, effectivePermissions, requestState, newId, normalizeInviteCode, MessageAction, roomPermissions} from '@pairlobby/protocol';
+import {ParticipantName, ProtocolError, effectivePermissions, requestState, newId, normalizeInviteCode, MessageAction, roomPermissions, safeFileName} from '@pairlobby/protocol';
 import type {AdapterCapabilities, MessageRequest} from '@pairlobby/protocol';
 
 import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
@@ -29,7 +29,7 @@ import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, rende
 
 import {acceptInvitation, accountToken, declineInvitation, isOnlineKey, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineOrigin, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
 import type {ReceivedInvitation} from './online.js';
-import {receiverAttempts, receiverStatus, refreshReceivers, runReceiver, startReceiver, stopReceiver, waitAndRefreshReceiver} from './receiver.js';
+import {receiverAttempts, receiverConfiguration, receiverStatus, refreshReceivers, retryProviderNow, runReceiver, startReceiver, stopReceiver, waitAndRefreshReceiver, wakeOfflineReceivers} from './receiver.js';
 import type {ReceiverStartOptions, ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
 import {discoverableNote, joinCommand, localOnlyNote, parseJoinLink, shareTarget} from './share.js';
@@ -39,6 +39,8 @@ import {routeForRoom} from './mentions.js';
 import type {RoutedChatMessage} from './mentions.js';
 import {tailscaleNames, tailscaleView} from './tailscale.js';
 import {VERSION} from './version.js';
+import {formatServiceStatus, installService, refreshService, requireServicePlatform, restartService, serviceLog, serviceProgram, serviceStatus, uninstallService} from './relay-service.js';
+import type {ServiceStatus} from './relay-service.js';
 import {NETWORK_SHARING_RESTART, SETTING_KEYS, describeSettingValue, parseLifetime, parseManagedDuration, parseSettingValue, validateManagedSettings} from './device-settings.js';
 import {applyAutoCloseToRooms, parseAutoClose, summarizeBulk} from './auto-close.js';
 import {runSettingsMenu} from './settings-menu.js';
@@ -53,7 +55,7 @@ import {spawnAgent, formatSpawnResult} from './spawn-agent.js';
 import {parseSpawnOptions, SPAWN_HELP} from './spawn-options.js';
 import {RoomBrowser} from './room-browser.js';
 import type {RoomBrowserOptions} from './room-browser.js';
-import {ROOM_COLUMNS, deleteListedRoom, loadRoomList, roomListJson, roomRows, sortListRows} from './room-list.js';
+import {ROOM_COLUMNS, deleteListedRoom, loadRoomList, relayAdvice, roomListJson, roomRows, sortListRows} from './room-list.js';
 import {closeRequest, recoverRequest} from './request-recovery.js';
 import {waitForReply} from './reply-wait.js';
 import {trustLocalCertificates} from './trust.js';
@@ -173,7 +175,7 @@ const HELP = `pairlobby
   pairlobby profile --username <handle>  choose the handle others invite you by: /invite @handle
   pairlobby join <code> --runtime codex|claude|qwen
                                     join as a managed agent; receive automatically
-  pairlobby receiver status|start|stop|attempts|refresh
+  pairlobby receiver status|start|stop|attempts|refresh|retry-provider
                                     manage automatic receiving for the selected agent
   pairlobby spawn <claude|codex|qwen> [model] [--name name] [--effort level]
                                     create a new background agent in a saved room
@@ -204,6 +206,8 @@ const HELP = `pairlobby
   pairlobby request retry <request-id>
                                     ask again after a request failed; the new attempt inspects the
                                     workspace first, and its answer resolves the original
+  pairlobby request retry-provider <request-id>
+                                    try a provider-limited managed request once now
   pairlobby request reassign <request-id> --to <name>
                                     give a failed request to another participant
   pairlobby request dismiss <request-id>
@@ -223,6 +227,7 @@ const HELP = `pairlobby
   pairlobby ack --outcome <outcome>  report what a pause actually did
   pairlobby send "<text>" --file <path>  send files with a message (repeat --file, up to 8); reply takes --file too
   pairlobby files                    files sent in a room; files get <number|name|id> [--out <folder>] saves one
+  pairlobby export [--out <folder>]  save a room's history and its files into a new folder
   pairlobby permissions              which commands members may use in a room, and who differs
   pairlobby permissions allow|deny|reset <command …|all> [name]  for all members, or one (owner/admin)
   pairlobby interrupt <agent>        stop one agent's current task, hold its queue (owner/admin, or members the room allows)
@@ -234,6 +239,8 @@ const HELP = `pairlobby
   pairlobby serve --tailscale        also accept your Tailscale devices (encrypted by Tailscale)
   pairlobby serve --lan              also accept devices on your network (unencrypted HTTP)
   pairlobby serve --public-url <url> advertise this address in invites (Tailscale, proxy)
+  pairlobby service install          keep the relay running at login and after a crash, on the installed release (macOS)
+  pairlobby service status|restart|logs|uninstall
 
 Common options
   --room <name|id>      required when this device holds more than one room
@@ -311,8 +318,10 @@ async function main(argv: string[]): Promise<number> {
                 json(receiverStatus(store, session.sessionId) ?? {state: 'not-configured'});
             } else if (action === 'attempts') {
                 json({attempts: receiverAttempts(store, session.sessionId, str(values, 'request'))});
+            } else if (action === 'retry-provider') {
+                json(await retryProviderNow(store, room.roomId, session.sessionId));
             } else {
-                throw new UsageError('pairlobby receiver status|start|stop|attempts|refresh');
+                throw new UsageError('pairlobby receiver status|start|stop|attempts|refresh|retry-provider');
             }
             return 0;
         }
@@ -478,6 +487,8 @@ async function main(argv: string[]): Promise<number> {
         case 'file':
         case 'files':
             return roomFiles(store, values, positionals.slice(1));
+        case 'export':
+            return exportRoom(store, values);
         case 'permissions':
             return permissions(store, values, positionals.slice(1));
         case 'preset':
@@ -493,6 +504,8 @@ async function main(argv: string[]): Promise<number> {
             return closeRoom(store, values);
         case 'serve':
             return serve(store, values);
+        case 'service':
+            return service(values, positionals[1] ?? 'status');
         case 'help':
             out(HELP);
             return 0;
@@ -625,6 +638,10 @@ async function listRooms(store: LocalStore, values: Values): Promise<number> {
         }
     }
     const entries = await loadRoomList(store);
+    const advice = relayAdvice(entries);
+    if (advice) {
+        note(advice);
+    }
     if (flag(values, 'json')) {
         json(roomListJson(store, entries, sort));
     } else {
@@ -1501,6 +1518,13 @@ async function sendMessage(store: LocalStore, values: Values, text: string): Pro
         ...(recipientId ? {recipientId} : {}),
         ...(allRecipients ? {allRecipients: true} : recipientIds ? {recipientIds} : {})
     });
+    const {woken, failed} = await wakeOfflineReceivers(store, room.roomId, session.sessionId);
+    if (woken.length) {
+        note(`started ${woken.map((agent) => agent.displayName).join(', ')} again; ${woken.length === 1 ? 'its receiver was' : 'their receivers were'} not running`);
+    }
+    for (const {session: agent, reason} of failed) {
+        note(`could not start ${agent.displayName}: ${reason}`);
+    }
 
     const seconds = flag(values, 'no-wait') ? 0 : Number(str(values, 'wait-for-ack') ?? 30);
     if (!Number.isFinite(seconds) || seconds < 0 || seconds > 300) {
@@ -1600,14 +1624,28 @@ async function messageStatusCommand(store: LocalStore, values: Values, eventId?:
 async function requestCommand(store: LocalStore, values: Values, action?: string, requestId?: string): Promise<number> {
     const to = str(values, 'to');
     const recovery = action === 'retry' || action === 'reassign';
+    const providerRetry = action === 'retry-provider';
     const closing = action === 'dismiss' || action === 'cancel';
-    if ((!recovery && !closing) || !requestId || (action === 'reassign') !== !!to) {
-        throw new UsageError('Use request retry <request-id>, request reassign <request-id> --to <name>, request dismiss <request-id>, or request cancel <request-id>.');
+    if ((!recovery && !providerRetry && !closing) || !requestId || (action === 'reassign') !== !!to) {
+        throw new UsageError('Use request retry-provider <request-id>, request retry <request-id>, request reassign <request-id> --to <name>, request dismiss <request-id>, or request cancel <request-id>.');
     }
     const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     try {
         const request = await client.request(room.roomId, credential, requestId);
         const authority = request.from === session.participantId || session.role === 'controller' ? credential : store.credential(room.roomId, 'controller') ?? credential;
+        if (providerRetry) {
+            const target = room.sessions.find((candidate) => candidate.participantId === request.to);
+            if (!target) {
+                throw new UsageError('Retry provider now is available only for a managed receiver on this device. Reassign or cancel this request instead.');
+            }
+            const result = await retryProviderNow(store, room.roomId, target.sessionId, requestId);
+            if (flag(values, 'json')) {
+                json(result);
+            } else {
+                out(`Provider retry requested for ${requestId}. If the limit remains, it will return to provider wait without failing the request.`);
+            }
+            return 0;
+        }
         if (closing) {
             const disposition = await closeRequest({client, roomId: room.roomId, credential: authority}, requestId, action === 'dismiss' ? 'dismiss' : 'cancel', str(values, 'reason'));
             if (flag(values, 'json')) {
@@ -1665,7 +1703,11 @@ async function replyMessage(store: LocalStore, values: Values, eventId: string |
 async function requestStatus(store: LocalStore, values: Values): Promise<number> {
     const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
     const page = await client.requests(room.roomId, credential, Number(str(values, 'after') ?? 0));
-    const requests = page.requests.map((request) => ({...request, state: requestState(request), allowedActions: requestRecoveryActions(request, session.participantId, room.controls || session.role === 'controller')}));
+    const requests = page.requests.map((request) => {
+        const target = room.sessions.find((candidate) => candidate.participantId === request.to);
+        const localProviderRetry = Boolean(target && receiverConfiguration(store, target.sessionId));
+        return {...request, state: requestState(request), allowedActions: requestRecoveryActions(request, session.participantId, room.controls || session.role === 'controller', localProviderRetry)};
+    });
     if (flag(values, 'json')) {
         json({requests, hasMore: page.hasMore});
     } else {
@@ -1685,12 +1727,15 @@ async function requestStatus(store: LocalStore, values: Values): Promise<number>
     return 0;
 }
 
-function requestRecoveryActions(request: MessageRequest, participantId: string, canControl: boolean): string[] {
+function requestRecoveryActions(request: MessageRequest, participantId: string, canControl: boolean, localProviderRetry: boolean): string[] {
     if ((request.from !== participantId && !canControl) || request.responseEventId || request.resolution || request.recoveredByEventId) {
         return [];
     }
     if (request.failureAt) {
         return ['retry', 'reassign', 'dismiss', 'cancel'];
+    }
+    if (request.providerWait) {
+        return [...(localProviderRetry ? ['retry-provider'] : []), 'reassign', 'cancel'];
     }
     return request.requiresReply ? ['cancel'] : [];
 }
@@ -2205,14 +2250,14 @@ async function roomFiles(store: LocalStore, values: Values, words: string[]): Pr
     if (!snapshot.filesSupported) {
         throw new UsageError('this relay does not store files');
     }
-    const files = await client.files(room.roomId, credential);
+    const {files, usage} = await client.fileList(room.roomId, credential);
     const [action, ...reference] = words;
     if (action === undefined || action === 'list') {
         if (flag(values, 'json')) {
-            json({files});
+            json({files, ...(usage ? {usage} : {})});
             return 0;
         }
-        out(filesReport(files, new Map(snapshot.participants.map((person) => [person.participantId, person.displayName]))).replace('/attach <path>', 'pairlobby send --file <path>'));
+        out(filesReport(files, new Map(snapshot.participants.map((person) => [person.participantId, person.displayName])), usage).replace('/attach <path>', 'pairlobby send --file <path>'));
         return 0;
     }
     if (action !== 'get' || reference.length === 0) {
@@ -2226,6 +2271,61 @@ async function roomFiles(store: LocalStore, values: Values, words: string[]): Pr
     }
     out(`Saved ${attachmentLabel(file)} to ${path}`);
     return 0;
+}
+
+/**
+ * `pairlobby export` writes what the relay still retains of a room into a new
+ * folder: `room.json` (the replayable event log, handovers and file list) and
+ * every file under `files/`. A file that cannot be fetched is listed as missing
+ * in `files.json` rather than stopping the export.
+ */
+async function exportRoom(store: LocalStore, values: Values): Promise<number> {
+    const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    const exported = await client.export(room.roomId, credential);
+    const folder = newExportFolder(expandPath(str(values, 'out') ?? '.'), `${safeFileName(exported.room.name)}-${new Date(exported.exportedAt).toISOString().slice(0, 10)}`);
+    writeFileSync(join(folder, 'room.json'), JSON.stringify(exported, null, 2) + '\n');
+    const saved: {fileId: string; name: string; path?: string; error?: string}[] = [];
+    for (const file of exported.files ?? []) {
+        try {
+            const path = await saveFile({client, roomId: room.roomId, credential}, file, join(folder, 'files'));
+            saved.push({fileId: file.fileId, name: file.name, path: relative(folder, path)});
+        } catch (error) {
+            saved.push({fileId: file.fileId, name: file.name, error: error instanceof Error ? error.message : String(error)});
+        }
+    }
+    if (saved.length) {
+        writeFileSync(join(folder, 'files.json'), JSON.stringify(saved, null, 2) + '\n');
+    }
+    const missing = saved.filter((file) => file.error);
+    if (flag(values, 'json')) {
+        json({folder, events: exported.events.length, complete: exported.complete, files: saved});
+        return missing.length ? 1 : 0;
+    }
+    out(`Exported ${exported.room.name} to ${folder}: ${exported.events.length} events${saved.length ? `, ${saved.length - missing.length} of ${saved.length} files` : ''}.`);
+    if (!exported.complete) {
+        note('older events were already removed by the room\'s retention and are not in the export');
+    }
+    for (const file of missing) {
+        note(`${file.name} was not saved: ${file.error}`);
+    }
+    return missing.length ? 1 : 0;
+}
+
+/** A folder that did not exist before: `name`, or `name (2)` and so on. */
+function newExportFolder(parent: string, name: string): string {
+    mkdirSync(parent, {recursive: true});
+    for (let attempt = 1; attempt < 1000; attempt++) {
+        const folder = join(parent, attempt === 1 ? name : `${name} (${attempt})`);
+        try {
+            mkdirSync(folder);
+            return folder;
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+                throw error;
+            }
+        }
+    }
+    throw new UsageError(`too many exports named ${name} in ${parent}`);
 }
 
 /** Saved room setups. Listing, showing, deleting and choosing a default need no room; saving and applying act on one. */
@@ -2460,9 +2560,14 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     const publicUrl = str(values, 'public-url') !== undefined ? parsePublicUrl(str(values, 'public-url')!) : undefined;
     // Tailnet devices may address this one by its MagicDNS names, which are not interface addresses.
     const tailnet = host === '127.0.0.1' ? null : await tailscaleView();
+    // A relay started from an agent's shell belongs to that session's process tree and dies with it, taking every room with it.
+    const runtime = detectRuntime().runtime;
+    if (runtime) {
+        note(`this relay runs inside a ${runtime} session and stops when that session ends, taking its rooms offline. pairlobby service install keeps one running on its own.`);
+    }
     let running;
     try {
-        running = await startServer({host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
+        running = await startServer({version: VERSION, host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
     } catch (error) {
         // Say what is wrong and what to do, rather than surfacing a raw errno. The
         // occupant is never probed: something else owning the port is not ours to poke.
@@ -2505,6 +2610,50 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
         process.once('SIGTERM', stop);
     });
     return 0;
+}
+
+async function service(values: Values, action: string): Promise<number> {
+    // Refresh runs after every update on every system, and simply finds nothing installed elsewhere.
+    if (action !== 'refresh') {
+        requireServicePlatform();
+    }
+    // PAIRLOBBY_PORT and PAIRLOBBY_HOST are what the earlier repository script read.
+    const port = Number(str(values, 'port') ?? process.env['PAIRLOBBY_PORT'] ?? DEFAULT_RELAY_PORT);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new UsageError('--port must be a port number');
+    }
+    const show = (status: ServiceStatus) => flag(values, 'json') ? json(status) : out(formatServiceStatus(status, VERSION));
+    switch (action) {
+        case 'install': {
+            const program = serviceProgram();
+            const environment: Record<string, string> = {PAIRLOBBY_NO_UPDATE_CHECK: '1', PATH: process.env['PATH'] ?? '/usr/bin:/bin:/usr/sbin:/sbin'};
+            if (process.env['PAIRLOBBY_DATA_DIR']) {
+                environment['PAIRLOBBY_DATA_DIR'] = process.env['PAIRLOBBY_DATA_DIR'];
+            }
+            if (!program.followsUpdates) {
+                note('PairLobby was not installed with its installer here, so the service runs this build and updates will not reach it. Install with the installer (or npm run install:local in a checkout) and run this again to fix that.');
+            }
+            show(await installService({port, host: str(values, 'host') ?? process.env['PAIRLOBBY_HOST'], environment}, program));
+            return 0;
+        }
+        case 'status':
+            show(await serviceStatus(port));
+            return 0;
+        case 'restart':
+            show(await restartService(port));
+            return 0;
+        case 'refresh':
+            json(await refreshService(port));
+            return 0;
+        case 'logs':
+            out(serviceLog(40));
+            return 0;
+        case 'uninstall':
+            out(uninstallService() ? 'Removed the relay service. The relay stops now and no longer starts at login; rooms and credentials are untouched.' : 'The relay service was not installed.');
+            return 0;
+        default:
+            throw new UsageError('pairlobby service install|status|restart|logs|uninstall [--port 8790]');
+    }
 }
 
 /** Reminds a person at a terminal about a newer release once the command is done; never agents or scripts. */

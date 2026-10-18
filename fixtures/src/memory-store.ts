@@ -37,6 +37,7 @@ export class MemoryStore implements RoomStore {
         file: async (roomId, fileId) => this.inRoom(roomId, fileId)?.file ?? null,
         fileBytes: async (roomId, fileId) => this.inRoom(roomId, fileId)?.bytes.slice() ?? null,
         attachedFiles: async (roomId) => [...this.stored.values()].map((entry) => entry.file).filter((file) => file.roomId === roomId && file.eventId !== null).sort((a, b) => a.createdAt - b.createdAt || a.fileId.localeCompare(b.fileId)),
+        usedBytes: async (roomId) => [...this.stored.values()].filter((entry) => entry.file.roomId === roomId).reduce((total, entry) => total + entry.file.size, 0),
         deleteUnattachedFiles: async (roomId, before) => {
             for (const [fileId, {file}] of this.stored) {
                 if (file.roomId === roomId && file.eventId === null && file.createdAt < before) {

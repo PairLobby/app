@@ -5,7 +5,7 @@ import type {RoomCommandContext} from './chat-commands.js';
 import {authorityFor, notPermitted} from './permissions.js';
 
 export function formatTurnQueue(queue: TurnQueue, details = false): string {
-    const priorities = {answering: 0, stalled: 1, waiting: 2, paused: 3, unavailable: 4, failed: 5};
+    const priorities = {answering: 0, stalled: 1, provider_wait: 2, waiting: 3, paused: 4, unavailable: 5, failed: 6};
     const shown = [...queue.entries].sort((a, b) => priorities[a.state] - priorities[b.state]).slice(0, details ? 50 : 4);
     const entries = shown.map((entry) => `${stripVTControlCharacters(entry.name)}: ${entry.state}${details ? ` [${entry.requestId}] round ${entry.conversationId}` : ''}`);
     const more = queue.entries.length > shown.length ? ` | +${queue.entries.length - shown.length} more` : '';

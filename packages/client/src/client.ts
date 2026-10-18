@@ -8,6 +8,7 @@ import type {
     Attachment,
     AutoClosePolicy,
     MessageRequest,
+    ProviderWait,
     MessageAction,
     TurnAction,
     TurnGrant,
@@ -17,6 +18,7 @@ import type {
     CreateInviteResponse,
     ErrorCode,
     ExportResponse,
+    ListFilesResponse,
     LocalRoom,
     ParticipantKind,
     NameSource,
@@ -219,7 +221,12 @@ export class PairLobbyClient {
     }
 
     async files(roomId: string, credential: string): Promise<RoomFile[]> {
-        return (await this.call<{files: RoomFile[]}>('GET', `/v1/rooms/${roomId}/files`, credential)).files;
+        return (await this.fileList(roomId, credential)).files;
+    }
+
+    /** The room's files and, from a relay that reports it, how much of its file storage they take. */
+    fileList(roomId: string, credential: string): Promise<ListFilesResponse> {
+        return this.call<ListFilesResponse>('GET', `/v1/rooms/${roomId}/files`, credential);
     }
 
     /** The file's bytes, checked against the digest the relay recorded for it. */
@@ -297,6 +304,12 @@ export class PairLobbyClient {
     }
     async passTurn(roomId: string, credential: string, requestId: string, token: string): Promise<void> {
         await this.call('POST', `/v1/rooms/${roomId}/requests/${requestId}/pass`, credential, {token});
+    }
+    async deferForProvider(roomId: string, credential: string, requestId: string, token: string, providerWait: ProviderWait): Promise<void> {
+        await this.call('POST', `/v1/rooms/${roomId}/requests/${requestId}/defer`, credential, {...providerWait, token});
+    }
+    resumeAfterProvider(roomId: string, credential: string, requestId: string): Promise<MessageRequest> {
+        return this.call('POST', `/v1/rooms/${roomId}/requests/${requestId}/resume`, credential, {});
     }
     async pendingRequests(roomId: string, credential: string, recipientId?: string): Promise<MessageRequest[]> {
         const requests: MessageRequest[] = [];

@@ -139,7 +139,7 @@ export const EventBody = z.discriminatedUnion('type', [
     z.object({type: z.literal('participant.role_changed'), payload: z.object({participantId: ParticipantId, role: ParticipantRole, previousRole: ParticipantRole})}),
     z.object({type: z.literal('room.permissions_changed'), payload: z.object({permissions: PermissionSet, previous: PermissionSet})}),
     z.object({type: z.literal('participant.permissions_changed'), payload: z.object({participantId: ParticipantId, permissions: PermissionSet, previous: PermissionSet})}),
-    z.object({type: z.literal('conversation.turn_changed'), payload: z.object({action: z.enum(['claimed', 'working', 'passed', 'skipped', 'cancelled', 'mode']), requestIds: z.array(EventId).max(32), participantIds: z.array(ParticipantId).max(32), mode: z.enum(['sequential', 'parallel'])})})
+    z.object({type: z.literal('conversation.turn_changed'), payload: z.object({action: z.enum(['claimed', 'working', 'deferred', 'resumed', 'passed', 'skipped', 'cancelled', 'mode']), requestIds: z.array(EventId).max(32), participantIds: z.array(ParticipantId).max(32), mode: z.enum(['sequential', 'parallel']), detail: z.string().max(512).optional()})})
 ]);
 export type EventBody = z.infer<typeof EventBody>;
 export type EventType = EventBody['type'];

@@ -101,6 +101,8 @@ test('only an explicit working declaration produces Working, and local flags do 
     await client.acknowledgeMessage(context.roomId, agent.participantCredential, request.event.eventId);
     await client.declareWorking(context.roomId, agent.participantCredential, request.event.eventId, grant.token!);
     expect((await loadAgentRoster(context)).rows[0]?.status).toBe('Working');
+    await client.deferForProvider(context.roomId, agent.participantCredential, request.event.eventId, grant.token!, {provider: 'qwen', limitKind: 'unknown', detectedAt: Date.now(), retryAt: null, resetTimezone: null, displayMessage: 'Provider usage limit reached.', resetActionUrl: null, automaticRetry: false});
+    expect((await loadAgentRoster(context)).rows[0]?.status).toBe('Usage limited');
     await client.setMuted(context.roomId, controller, agent.participantId, true);
     expect((await loadAgentRoster(context)).rows[0]?.status).toBe('Muted');
 });

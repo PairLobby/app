@@ -17,7 +17,7 @@ export class ReceiptView {
         }
         if (event.type === 'message.received' && event.senderId) {
             this.add(event.payload.eventId, event.senderId, event.at);
-            const labels = {working: 'Working', waiting: 'Waiting', no_action: 'No action needed', declined: 'Declined', reply_pending: 'Answer saved · posting pending', done: 'Done · answer linked'};
+            const labels = {working: 'Working', waiting: 'Waiting', provider_wait: 'Provider limited · waiting to retry', no_action: 'No action needed', declined: 'Declined', reply_pending: 'Answer saved · posting pending', done: 'Done · answer linked'};
             this.stage(event.payload.eventId, event.senderId, {...(event.payload.stage === 'read' ? {readAt: event.at} : {}), ...(event.payload.action ? {action: labels[event.payload.action], actionAt: event.at, reason: event.payload.reason ?? ''} : {})});
             const originalSender = this.senders.get(event.payload.eventId);
             if (event.payload.action === 'done' && event.payload.responseEventId && originalSender) {

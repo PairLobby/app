@@ -40,6 +40,7 @@ test('listing is read-only, JSON retains saved sessions without credentials, and
         expect((await client.snapshot(created.roomId, created.participantCredential)).latestSeq).toBe(before.latestSeq);
         expect(store.room(created.roomId)!.sessions.every((session) => session.lastReadSeq === 0)).toBe(true);
         expect(roomRows(entries)[0]!.sortValues['people']).toBe(2);
+        expect(roomRows(entries)[0]!.values['latest']).toBe('None');
         await expect(closeListedRoom(store, created.roomId)).rejects.toThrow('owner or admin');
         await leaveListedSession(store, created.roomId, memberSession);
         const after = await client.snapshot(created.roomId, created.participantCredential);
@@ -64,7 +65,7 @@ test('missing credentials and unreachable rooms are unknown, never zero-member e
     try {
         store.upsertRoom({roomId: newId('room'), name: 'No access', serverUrl: 'http://127.0.0.1:1', createdAt: 1, expiresAt: null, controls: false, sessions: []});
         const entries = await loadRoomList(store);
-        expect(roomRows(entries)[0]!.values).toMatchObject({state: 'no credential', agents: 'Unknown', people: 'Unknown'});
+        expect(roomRows(entries)[0]!.values).toMatchObject({where: '▪', state: 'no credential', agents: 'Unknown', people: 'Unknown', relay: '127.0.0.1:1'});
         expect(roomListJson(store, entries, {key: 'name', descending: false}).rooms[0]).toMatchObject({reachable: false, live: null, error: 'no_saved_credential'});
     } finally {
         rmSync(directory, {recursive: true, force: true});
@@ -75,7 +76,7 @@ test('network rooms are listed as not joined, with only what the relay tells bef
     const {networkRows} = await import('./room-list.js');
     const [row] = networkRows([{url: 'http://100.111.208.123:8790', label: 'desktop', room: {roomId: 'rm_A', name: 'tower-test', createdAt: 0, participantCount: 3}}]);
     expect(row).toMatchObject({id: 'rm_A', roomId: 'rm_A'});
-    expect(row!.values).toMatchObject({name: 'tower-test', state: 'on network', people: '3 in room', sessions: 'Not joined', relay: 'http://100.111.208.123:8790 (desktop)'});
+    expect(row!.values).toMatchObject({name: 'tower-test', state: 'on network', people: '3 in room', latest: 'Unknown', where: '≈', relay: '100.111.208.123:8790 (desktop)'});
     expect(row!.sessionId).toBeUndefined();
 });
 
@@ -83,7 +84,7 @@ test('invitations are listed as invited, with who asked and nothing from inside 
     const {invitationRows} = await import('./room-list.js');
     const [row] = invitationRows([{id: 'i1', roomId: 'rm_A', roomName: 'Design review', invitedBy: '@maria', role: 'member', agents: 1, createdAt: 0, expiresAt: Date.UTC(2026, 9, 12)}]);
     expect(row).toMatchObject({id: 'rm_A', roomId: 'rm_A'});
-    expect(row!.values).toMatchObject({name: 'Design review', state: 'invited', people: 'by @maria', sessions: 'Not joined', agents: 'Unknown', relay: 'answer by 2026-10-12'});
+    expect(row!.values).toMatchObject({name: 'Design review', state: 'invited', people: 'by @maria', latest: 'Unknown', agents: 'Unknown', where: '◎', relay: 'answer by 2026-10-12'});
     expect(row!.sessionId).toBeUndefined();
 });
 
@@ -164,3 +165,48 @@ test('test_deleting_a_listed_room_needs_its_owner_and_removing_one_leaves_the_ro
         rmSync(directory, {recursive: true, force: true});
     }
 }, 30_000);
+
+test('test_the_where_column_tells_hosted_network_and_device_only_rooms_apart', async () => {
+    const {listDate, networkRows, relayLabel, roomLocation, timeAgo} = await import('./room-list.js');
+    expect(roomLocation('https://pairlobby.com/relay/abc')).toBe('online');
+    expect(roomLocation('https://rooms.example.workers.dev')).toBe('online');
+    expect(roomLocation('http://100.111.208.123:8790')).toBe('network');
+    expect(roomLocation('http://192.168.1.20:8790')).toBe('network');
+    expect(roomLocation('http://127.0.0.1:8790')).toBe('device');
+    expect(roomLocation('http://localhost:8790')).toBe('device');
+    expect(roomLocation('http://127.0.0.1:8790', true)).toBe('network');
+    expect(relayLabel('http://127.0.0.1:8790')).toBe('127.0.0.1:8790');
+    expect(listDate(Date.parse('2026-10-16T00:32:11.703Z'))).toBe('2026-10-16 00:32');
+    const now = Date.parse('2026-10-16T12:00:00Z');
+    expect([30_000, 60_000, 12 * 60_000, 60 * 60_000, 5 * 3_600_000 + 59 * 60_000, 86_400_000, 3 * 86_400_000].map((ago) => timeAgo(now - ago, now))).toEqual(['just now', '1 minute ago', '12 minutes ago', '1 hour ago', '5 hours ago', '1 day ago', '3 days ago']);
+    expect(networkRows([{url: 'http://10.0.0.5:8790', label: 'local network', room: {roomId: 'rm_B', name: 'n', createdAt: 0, participantCount: 1}}], 'nerd')[0]!.values['where']).toBe('\uf1eb');
+    expect(relayLabel('https://pairlobby.com/relay/abc')).toBe('pairlobby.com/relay/abc');
+});
+
+test('test_the_latest_message_comes_from_the_relay_or_else_from_retained_history', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'pairlobby-list-latest-'));
+    const relay = await startServer({port: 0, dataFile: join(directory, 'relay.sqlite')});
+    const client = new PairLobbyClient(relay.url);
+    const store = new LocalStore(join(directory, 'device'));
+    try {
+        const created = await client.createRoom('Talk', {displayName: 'Owner', kind: 'human'});
+        const sessionId = newId('session');
+        store.upsertRoom({roomId: created.roomId, name: 'Talk', serverUrl: relay.url, createdAt: created.room.createdAt, expiresAt: null, controls: true, sessions: []});
+        store.addSession(created.roomId, {sessionId, participantId: created.participantId, displayName: 'Owner', kind: 'human', role: 'member', joinedAt: Date.now(), lastReadSeq: 0, cwd: directory});
+        store.putCredential(created.roomId, sessionId, created.participantCredential);
+        const before = Date.now();
+        await client.send(created.roomId, created.participantCredential, {type: 'message', payload: {text: 'hello', priority: 'normal'}, idempotencyKey: newId('event')});
+        const [entry] = await loadRoomList(store);
+        expect(entry!.lastMessageAt).toBeGreaterThanOrEqual(before);
+        expect(roomRows([entry!])[0]!.values['latest']).toBe('just now');
+
+        // A relay from before lastMessageAt existed: the newest retained message gives the time.
+        const old = {...entry!.snapshot!, lastMessageAt: undefined};
+        const {lastMessage} = await import('./find.js');
+        expect((await lastMessage(client, created.participantCredential, old))?.sentAt).toBe(entry!.lastMessageAt);
+    } finally {
+        client.closeLive();
+        await relay.close();
+        rmSync(directory, {recursive: true, force: true});
+    }
+});

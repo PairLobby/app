@@ -3,11 +3,12 @@ import {closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, 
 import {join, resolve} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {setTimeout as sleep} from 'node:timers/promises';
-import type {LocalStore} from '@pairlobby/client';
+import type {LocalStore, SessionEntry} from '@pairlobby/client';
 import {ProtocolError, newId} from '@pairlobby/protocol';
-import type {Attachment, MessageRequest} from '@pairlobby/protocol';
+import type {Attachment, MessageRequest, ProviderWait} from '@pairlobby/protocol';
 import {select, UsageError} from './context.js';
 import {CodexReceiver} from './codex-receiver.js';
+import {clearAnswerFiles, stageAnswerFile, stagedAnswerFiles, uploadAnswerFiles} from './answer-files.js';
 import {attachmentLabel, saveForAgent} from './files.js';
 import type {FileContext} from './files.js';
 import {ClaudeReceiver} from './claude-receiver.js';
@@ -23,13 +24,17 @@ import type {ManagedDeadlinePolicy, ManagedDeadlineSnapshot} from './managed-dea
 import {ReceiverAttemptJournal, initializeReceiverDatabase, localDeviceId} from './receiver-attempt-journal.js';
 import type {AttemptTerminal, AttemptTerminalKind} from './receiver-attempt-journal.js';
 import {VERSION} from './version.js';
+import {ProviderCooldownStore, ProviderUsageLimited, providerProfileKey, publicProviderLimit, reconcileProviderCooldown} from './provider-limits.js';
+import {providerRetryText} from './request-recovery.js';
 
-export type ReceiverStatus = {pid: number; state: string; runtime: string; version?: string; entrypoint?: string; restartRequired?: boolean; threadId?: string; model?: string; eventId?: string; attempt?: number | null; attemptId?: string | null; detail?: string; receiptError?: string; usage?: unknown; idleTimeoutMs?: number; absoluteTimeoutMs?: number; requestStartedAt?: number | null; lastActivityAt?: number | null; idleDeadlineAt?: number | null; absoluteDeadlineAt?: number | null; idleRemainingMs?: number | null; absoluteRemainingMs?: number | null};
+export type ReceiverStatus = {pid: number; state: string; runtime: string; version?: string; entrypoint?: string; restartRequired?: boolean; threadId?: string; model?: string; eventId?: string; attempt?: number | null; attemptId?: string | null; detail?: string; receiptError?: string; usage?: unknown; providerWait?: ProviderWait | null; idleTimeoutMs?: number; absoluteTimeoutMs?: number; requestStartedAt?: number | null; lastActivityAt?: number | null; idleDeadlineAt?: number | null; absoluteDeadlineAt?: number | null; idleRemainingMs?: number | null; absoluteRemainingMs?: number | null};
 export type ReceiverStartOptions = {model?: string; workdir?: string; effort?: string; executable?: string; idleTimeoutMs?: number; absoluteTimeoutMs?: number};
 export type ReceiverRefreshResult = {restarted: string[]; scheduled: string[]; current: string[]; stopped: string[]; failed: {sessionId: string; reason: string}[]};
+export type ReceiverWakeResult = {woken: SessionEntry[]; failed: {session: SessionEntry; reason: string}[]};
+export type ProviderRetryResult = {scheduled: string[]; status: ReceiverStatus | null};
 type Job = {event_id: string; phase: string; acknowledged: number; answer: string | null; failure: string | null; attempt_id: string | null};
 type ReceiverConfiguration = {runtime: ReceiverRuntimeName; cwd: string; model?: string; effort?: string; executable?: string; idleTimeoutMs: number; absoluteTimeoutMs: number};
-type ReceiverPaths = {directory: string; status: string; lock: string; stop: string; log: string; config: string; database: string};
+type ReceiverPaths = {directory: string; status: string; lock: string; stop: string; wake: string; log: string; config: string; database: string};
 const JOURNAL_ACTIVITY_INTERVAL_MS = 5_000;
 
 function paths(store: LocalStore, sessionId: string): ReceiverPaths {
@@ -38,7 +43,7 @@ function paths(store: LocalStore, sessionId: string): ReceiverPaths {
     }
     const directory = join(store.directory, 'receivers', sessionId);
     mkdirSync(directory, {recursive: true, mode: 0o700});
-    return {directory, status: join(directory, 'status.json'), lock: join(directory, 'owner.lock'), stop: join(directory, 'stop'), log: join(directory, 'receiver.log'), config: join(directory, 'config.json'), database: join(directory, 'inbox.sqlite')};
+    return {directory, status: join(directory, 'status.json'), lock: join(directory, 'owner.lock'), stop: join(directory, 'stop'), wake: join(directory, 'wake'), log: join(directory, 'receiver.log'), config: join(directory, 'config.json'), database: join(directory, 'inbox.sqlite')};
 }
 
 function alive(pid: number): boolean {
@@ -167,6 +172,9 @@ export async function startReceiver(store: LocalStore, roomRef: string, sessionR
     if (existsSync(location.stop)) {
         unlinkSync(location.stop);
     }
+    if (existsSync(location.wake)) {
+        unlinkSync(location.wake);
+    }
     const log = openSync(location.log, 'a', 0o600);
     const child = spawn(process.execPath, [resolve(process.argv[1]!), 'receiver-run', '--room', room.roomId, '--session', session.sessionId], {
         cwd,
@@ -250,6 +258,28 @@ export async function refreshReceivers(store: LocalStore): Promise<ReceiverRefre
     return result;
 }
 
+/**
+ * This device's agents in a room whose receiver died without being stopped, as after
+ * the computer restarts. A receiver stopped on purpose is not listed.
+ */
+export function offlineReceivers(store: LocalStore, roomId: string, exceptSessionId?: string): SessionEntry[] {
+    return (store.room(roomId)?.sessions ?? []).filter((session) => session.kind === 'agent' && session.sessionId !== exceptSessionId && receiverConfiguration(store, session.sessionId) !== null && receiverStatus(store, session.sessionId)?.state === 'offline');
+}
+
+/** Starts every offline receiver of this device's agents in a room again; each resumes its saved conversation. */
+export async function wakeOfflineReceivers(store: LocalStore, roomId: string, exceptSessionId?: string): Promise<ReceiverWakeResult> {
+    const result: ReceiverWakeResult = {woken: [], failed: []};
+    for (const session of offlineReceivers(store, roomId, exceptSessionId)) {
+        try {
+            await startReceiver(store, roomId, session.sessionId);
+            result.woken.push(session);
+        } catch (error) {
+            result.failed.push({session, reason: error instanceof Error ? error.message : String(error)});
+        }
+    }
+    return result;
+}
+
 /** Detached ordinary-code waiter used only when an updated receiver is still executing. */
 export async function waitAndRefreshReceiver(store: LocalStore, roomId: string, sessionId: string): Promise<number> {
     for (let checked = 0; checked < 86_400; checked++) {
@@ -268,6 +298,52 @@ export async function waitAndRefreshReceiver(store: LocalStore, roomId: string, 
         await sleep(1_000);
     }
     return 1;
+}
+
+function wakeProviderReceivers(store: LocalStore, profileKey: string, excludeSessionId?: string): void {
+    for (const entry of store.rooms()) {
+        for (const candidate of entry.sessions) {
+            const candidateConfig = receiverConfiguration(store, candidate.sessionId);
+            if (candidate.sessionId !== excludeSessionId && candidateConfig && providerProfileKey(candidateConfig.runtime, candidateConfig.executable) === profileKey) {
+                writeFileSync(paths(store, candidate.sessionId).wake, 'retry\n', {mode: 0o600});
+            }
+        }
+    }
+}
+
+export async function retryProviderNow(store: LocalStore, roomRef: string, sessionRef: string, requestId?: string): Promise<ProviderRetryResult> {
+    const {room, session, credential, client} = select(store, roomRef, sessionRef);
+    const config = receiverConfiguration(store, session.sessionId);
+    if (!config) {
+        throw new UsageError('This session has no managed receiver configuration.');
+    }
+    const scheduled: string[] = [];
+    const profileKey = providerProfileKey(config.runtime, config.executable);
+    try {
+        const requests = await client.pendingRequests(room.roomId, credential, session.participantId);
+        const selected = requestId ? requests.filter((request) => request.eventId === requestId) : requests;
+        if (requestId && !selected.some((request) => request.providerWait)) {
+            throw new UsageError(`Request ${requestId} is not waiting on this managed receiver's provider.`);
+        }
+        const requested = selected.find((request) => request.providerWait);
+        if (!requested) {
+            throw new UsageError('This managed receiver has no provider-waiting request to retry.');
+        }
+        const cooldowns = ProviderCooldownStore.inDirectory(store.directory);
+        try {
+            const due = cooldowns.requestRetry(profileKey, {roomId: room.roomId, participantId: session.participantId, requestId: requested.eventId});
+            if (!due) {
+                throw new UsageError('The local provider cooldown is missing. Restart the receiver to reconcile it before retrying.');
+            }
+            scheduled.push(requested.eventId);
+        } finally {
+            cooldowns.close();
+        }
+        wakeProviderReceivers(store, profileKey);
+    } finally {
+        client.closeLive();
+    }
+    return {scheduled, status: receiverStatus(store, session.sessionId)};
 }
 
 /** One ordinary process owns the participant; neither timers nor empty reads start a turn. */
@@ -299,13 +375,17 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         database.prepare("DELETE FROM metadata WHERE key='thread'").run();
     }
     const ownerDeviceId = localDeviceId(store.directory);
+    const cooldowns = ProviderCooldownStore.inDirectory(store.directory);
+    const profileKey = providerProfileKey(config.runtime, config.executable);
+    const configuredGraceMs = Number(process.env['PAIRLOBBY_TEST_PROVIDER_GRACE_MS'] ?? 5_000);
+    const providerGraceMs = Number.isFinite(configuredGraceMs) && configuredGraceMs >= 0 ? configuredGraceMs : 5_000;
     const savedThread = database.prepare("SELECT value FROM metadata WHERE key='thread'").get() as {value: string} | undefined;
     const savedModel = database.prepare("SELECT value FROM metadata WHERE key='model'").get() as {value: string} | undefined;
     const recoveredModel = modelId(savedModel?.value) ?? (savedThread ? savedSessionModel({runtime: config.runtime, threadId: savedThread.value, cwd: config.cwd}) : undefined);
     if (recoveredModel && savedModel?.value !== recoveredModel) {
         database.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('model',?)").run(recoveredModel);
     }
-    let state: ReceiverStatus = {pid: process.pid, state: 'starting', runtime: config.runtime, version: process.env['PAIRLOBBY_TEST_RECEIVER_VERSION'] ?? VERSION, entrypoint: process.env['PAIRLOBBY_TEST_RECEIVER_ENTRYPOINT'] ?? currentEntrypoint(), restartRequired: false, idleTimeoutMs: config.idleTimeoutMs, absoluteTimeoutMs: config.absoluteTimeoutMs, attempt: null, attemptId: null, requestStartedAt: null, lastActivityAt: null, idleDeadlineAt: null, absoluteDeadlineAt: null, ...(savedThread ? {threadId: savedThread.value} : {}), ...(recoveredModel ? {model: recoveredModel} : {})};
+    let state: ReceiverStatus = {pid: process.pid, state: 'starting', runtime: config.runtime, version: process.env['PAIRLOBBY_TEST_RECEIVER_VERSION'] ?? VERSION, entrypoint: process.env['PAIRLOBBY_TEST_RECEIVER_ENTRYPOINT'] ?? currentEntrypoint(), restartRequired: false, providerWait: null, idleTimeoutMs: config.idleTimeoutMs, absoluteTimeoutMs: config.absoluteTimeoutMs, attempt: null, attemptId: null, requestStartedAt: null, lastActivityAt: null, idleDeadlineAt: null, absoluteDeadlineAt: null, ...(savedThread ? {threadId: savedThread.value} : {}), ...(recoveredModel ? {model: recoveredModel} : {})};
     const status = (update: Partial<ReceiverStatus>) => {
         const next = {...state, ...update};
         if (JSON.stringify(next) !== JSON.stringify(state) || !existsSync(location.status)) {
@@ -316,15 +396,21 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
     let stopped = false;
     let receipts: ReceiptMonitor | undefined;
     let runtime: ReceiverRuntime | undefined;
+    let wakeReceiver: (() => void) | undefined;
     const stop = () => {
         stopped = true;
         runtime?.close();
         client.closeLive();
+        wakeReceiver?.();
         void receipts?.stop();
     };
     const timer = setInterval(() => {
         if (existsSync(location.stop)) {
             stop();
+        } else if (existsSync(location.wake)) {
+            unlinkSync(location.wake);
+            client.closeLive();
+            wakeReceiver?.();
         }
     }, 250);
     process.once('SIGTERM', stop);
@@ -342,13 +428,27 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         database.prepare('DELETE FROM metadata WHERE key=?').run(key);
     }
 
+    async function waitForProviderWake(waitMs: number): Promise<void> {
+        await new Promise<void>((resolveWake) => {
+            const done = () => {
+                clearTimeout(timeout);
+                if (wakeReceiver === done) {
+                    wakeReceiver = undefined;
+                }
+                resolveWake();
+            };
+            const timeout = setTimeout(done, waitMs);
+            wakeReceiver = done;
+        });
+    }
+
     /** Reports what an interrupt really stopped. The revision makes a retry or a late report harmless. */
     async function acknowledgeControl(revision: number, outcome: InterruptOutcome): Promise<void> {
         await client.send(room.roomId, credential, {type: 'control.ack', payload: {targetParticipantId: session.participantId, revision, outcome}, idempotencyKey: `control-ack-${session.participantId}-${revision}`});
     }
 
     async function flush(): Promise<void> {
-        const jobs = database.prepare("SELECT * FROM jobs WHERE phase IN ('reply', 'failed', 'pass', 'decision')").all() as Job[];
+        const jobs = database.prepare("SELECT * FROM jobs WHERE phase IN ('reply', 'failed', 'pass', 'decision', 'provider_wait')").all() as Job[];
         if (jobs.length === 0) {
             return;
         }
@@ -361,7 +461,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
             const token = savedValue(`turn:${job.event_id}`);
             try {
                 const current = await client.request(room.roomId, credential, job.event_id);
-                if (current.responseEventId || !current.requiresReply) {
+                if (current.responseEventId || !current.requiresReply || current.recoveredByEventId) {
                     if (job.attempt_id) {
                         attemptJournal.terminal(job.attempt_id, current.responseEventId
                             ? {kind: 'answered', at: current.respondedAt ?? Date.now(), responseEventId: current.responseEventId}
@@ -370,11 +470,24 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                     database.prepare("UPDATE jobs SET phase='done' WHERE event_id=?").run(job.event_id);
                     continue;
                 }
-                if (job.phase === 'reply') {
+                if (job.phase === 'provider_wait') {
+                    if (!current.providerWait) {
+                        continue;
+                    }
+                    const limit = cooldowns.get(profileKey);
+                    if (!limit || !token) {
+                        continue;
+                    }
+                    const providerWait: ProviderWait = {...publicProviderLimit(limit)};
+                    await client.deferForProvider(room.roomId, credential, job.event_id, token, providerWait);
+                    continue;
+                } else if (job.phase === 'reply') {
                     if (snapshot.messageStagesSupported && current.action !== 'reply_pending') {
                         await client.reportMessageStatus(room.roomId, credential, job.event_id, 'reply_pending', token ? {turnToken: token} : {});
                     }
-                    const response = await client.reply(room.roomId, credential, job.event_id, job.answer!, false, token);
+                    const {attachments, problems} = await uploadAnswerFiles({client, roomId: room.roomId, credential}, stagedAnswerFiles(database, job.event_id), config.cwd, snapshot.filesSupported === true);
+                    const response = await client.reply(room.roomId, credential, job.event_id, problems.length ? `${job.answer!}\n\n${problems.join('\n')}` : job.answer!, false, token, attachments);
+                    clearAnswerFiles(database, job.event_id);
                     if (job.attempt_id) {
                         attemptJournal.terminal(job.attempt_id, {kind: 'answered', at: response.event.at, responseEventId: response.event.eventId});
                     }
@@ -411,21 +524,28 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         }
     }
 
-    async function execute(request: MessageRequest): Promise<void> {
+    async function execute(request: MessageRequest): Promise<'not_started' | 'provider_wait' | 'finished'> {
         // Re-read authorization and obligation immediately before dispatch.
         const snapshot = await client.snapshot(room.roomId, credential);
         const member = snapshot.participants.find((participant) => participant.participantId === session.participantId);
         if (!member || member.paused || member.muted || member.revoked || member.left) {
-            return;
+            return 'not_started';
         }
         let current = await client.request(room.roomId, credential, request.eventId);
-        if (current.responseEventId || current.failureAt || !current.requiresReply) {
-            return;
+        if (current.responseEventId || current.failureAt || current.recoveredByEventId || !current.requiresReply) {
+            return 'not_started';
         }
         database.prepare("INSERT OR IGNORE INTO jobs(event_id, phase) VALUES (?, 'queued')").run(request.eventId);
-        const job = database.prepare('SELECT * FROM jobs WHERE event_id=?').get(request.eventId) as Job;
+        let job = database.prepare('SELECT * FROM jobs WHERE event_id=?').get(request.eventId) as Job;
+        const providerRecovery = job.phase === 'provider_wait';
+        if (providerRecovery && !current.providerWait) {
+            database.prepare("UPDATE jobs SET phase='queued', answer=NULL, failure=NULL, turn_id=NULL, attempt_id=NULL WHERE event_id=?").run(request.eventId);
+            deleteValue(`claim:${request.eventId}`);
+            deleteValue(`turn:${request.eventId}`);
+            job = database.prepare('SELECT * FROM jobs WHERE event_id=?').get(request.eventId) as Job;
+        }
         if (job.phase !== 'queued') {
-            return;
+            return 'not_started';
         }
         let token: string | undefined;
         if (snapshot.groupTurnsSupported) {
@@ -434,7 +554,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
             const grant = await client.claimTurn(room.roomId, credential, request.eventId, claimId);
             if (grant.state !== 'granted') {
                 status({state: grant.state === 'stalled' ? 'stalled' : 'waiting', eventId: request.eventId, detail: 'Waiting for a speaking turn.'});
-                return;
+                return 'not_started';
             }
             token = grant.token!;
             saveValue(`turn:${request.eventId}`, token);
@@ -465,14 +585,15 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         }, 10_000) : undefined;
         const previousThreadId = savedValue('thread');
         const startedAt = Date.now();
-        const recoverySourceAttemptId = current.recoversEventId ? attemptJournal.latestAttemptId(current.recoversEventId) : undefined;
+        const recoverySourceAttemptId = providerRecovery ? attemptJournal.latestAttemptId(current.eventId) : current.recoversEventId ? attemptJournal.latestAttemptId(current.recoversEventId) : undefined;
         let attemptId: string;
         database.exec('BEGIN IMMEDIATE');
         try {
             attemptId = attemptJournal.start({
                 requestEventId: current.eventId,
                 ordinal: current.attempt ?? 1,
-                ...(current.recoversEventId ? {recoversEventId: current.recoversEventId, ...(recoverySourceAttemptId ? {recoverySourceAttemptId} : {})} : {}),
+                ...(current.recoversEventId ? {recoversEventId: current.recoversEventId} : {}),
+                ...(recoverySourceAttemptId ? {recoverySourceAttemptId} : {}),
                 roomId: room.roomId,
                 participantId: session.participantId,
                 sessionId: session.sessionId,
@@ -500,6 +621,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         let lastDeadlineSnapshot: ManagedDeadlineSnapshot | undefined;
         let terminal: AttemptTerminal | undefined;
         let attemptModel: string | undefined;
+        let providerDeferred = false;
         try {
             if (!runtime) {
                 const saved = database.prepare("SELECT value FROM metadata WHERE key='thread'").get() as {value: string} | undefined;
@@ -559,7 +681,11 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                 }
             })().catch((error: unknown) => status({detail: `Interrupt watch: ${error instanceof Error ? error.message : String(error)}`}));
             const received = current.attachments?.length ? await receivedFilesNote({client, roomId: room.roomId, credential}, current.attachments, config.cwd, current.conversationId ?? current.eventId) : '';
-            const runtimeRequest = current.recoversEventId || received ? {...current, text: `${current.text}${received}${current.recoversEventId ? `\n\nReceiver-confirmed workspace: ${config.cwd}` : ''}`} : current;
+            const runtimeRequest = current.recoversEventId
+                ? {...current, text: `${current.text}${received}\n\nReceiver-confirmed workspace: ${config.cwd}`}
+                : providerRecovery ? {...current, text: `${providerRetryText(current)}${received}`} : received ? {...current, text: `${current.text}${received}`} : current;
+            // Files named by an earlier, unfinished attempt at this request are not sent with this one.
+            clearAnswerFiles(database, request.eventId);
             const answer = await runtime.execute(runtimeRequest, {
                 acknowledge: async () => {
                     await client.acknowledgeMessage(room.roomId, credential, request.eventId);
@@ -588,6 +714,12 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                     } else {
                         saveValue(`decision:${request.eventId}`, JSON.stringify({state, reason}));
                     }
+                },
+                attach: async (path) => {
+                    if (!snapshot.filesSupported) {
+                        throw new Error('This relay does not store files; describe the file in your answer instead.');
+                    }
+                    return stageAnswerFile(database, request.eventId, config.cwd, path);
                 },
                 pass: async () => {
                     if (!token) {
@@ -650,15 +782,32 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
             }
         } catch (error) {
             const reason = requestCancelled ? 'Request cancelled by its sender or a room admin; no answer was posted.' : error instanceof Error ? error.message : 'Runtime failed';
-            // An interrupted turn is not a failure to report: the relay already fenced it.
-            database.prepare('UPDATE jobs SET phase=?, failure=? WHERE event_id=?').run(requestCancelled ? 'cancelled' : error instanceof RuntimeInterrupted ? 'interrupted' : 'failed', reason, request.eventId);
-            terminal = {kind: requestCancelled ? 'cancelled' : attemptTerminalKind(error), at: Date.now(), failureReason: reason, ...(lastDeadlineSnapshot ? {deadline: lastDeadlineSnapshot} : {})};
+            if (error instanceof ProviderUsageLimited && token && snapshot.providerWaitSupported) {
+                const limitedModel = attemptModel ?? config.model;
+                const detected = {...error.limit, ...(limitedModel ? {model: limitedModel} : {})};
+                const backoffMs = Number(process.env['PAIRLOBBY_TEST_PROVIDER_BACKOFF_MS'] ?? 60_000);
+                const cooldown = reconcileProviderCooldown(cooldowns.get(profileKey), detected, Date.now(), Number.isFinite(backoffMs) && backoffMs > 0 ? backoffMs : 60_000, providerGraceMs);
+                const providerWait: ProviderWait = {...publicProviderLimit(cooldown)};
+                cooldowns.set(profileKey, cooldown);
+                wakeProviderReceivers(store, profileKey);
+                database.prepare('UPDATE jobs SET phase=?, failure=? WHERE event_id=?').run('provider_wait', reason, request.eventId);
+                terminal = {kind: 'usage_limited', at: Date.now(), failureReason: reason, providerWait, ...(lastDeadlineSnapshot ? {deadline: lastDeadlineSnapshot} : {})};
+                providerDeferred = true;
+                status({state: 'provider_wait', providerWait, detail: providerWait.displayMessage});
+                await client.deferForProvider(room.roomId, credential, request.eventId, token, providerWait).catch((deferError: unknown) => {
+                    status({detail: `${providerWait.displayMessage} PairLobby will keep retrying the room defer: ${deferError instanceof Error ? deferError.message : String(deferError)}`});
+                });
+            } else {
+                // An interrupted turn is not a failure to report: the relay already fenced it.
+                database.prepare('UPDATE jobs SET phase=?, failure=? WHERE event_id=?').run(requestCancelled ? 'cancelled' : error instanceof RuntimeInterrupted ? 'interrupted' : 'failed', reason, request.eventId);
+                terminal = {kind: requestCancelled ? 'cancelled' : attemptTerminalKind(error), at: Date.now(), failureReason: reason, ...(lastDeadlineSnapshot ? {deadline: lastDeadlineSnapshot} : {})};
+                status({detail: reason});
+            }
             // A failed or cancelled turn is not a proven provider checkpoint. The
             // next request starts a fresh conversation instead of resuming it.
             deleteValue('thread');
             runtime?.close();
             runtime = undefined;
-            status({detail: reason});
         } finally {
             watching = false;
             clearInterval(heartbeat);
@@ -671,8 +820,12 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
             }
             attemptJournal.terminal(attemptId, terminal);
         }
+        if (providerDeferred) {
+            return 'provider_wait';
+        }
         await flush();
-        status({state: 'available', eventId: '', attempt: null, attemptId: null, requestStartedAt: null, lastActivityAt: null, idleDeadlineAt: null, absoluteDeadlineAt: null});
+        status({state: 'available', eventId: '', attempt: null, attemptId: null, providerWait: null, requestStartedAt: null, lastActivityAt: null, idleDeadlineAt: null, absoluteDeadlineAt: null});
+        return 'finished';
     }
 
     try {
@@ -685,6 +838,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         }});
         status({state: 'available'});
         let failures = 0;
+        const probeOwner = `${session.sessionId}:${process.pid}`;
         while (!stopped) {
             try {
                 await flush();
@@ -693,28 +847,90 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                 if (!member || member.revoked || member.left) {
                     break;
                 }
-                let waiting = false;
                 // An interrupt that arrived between turns stopped nothing; say so once.
                 if (member.paused && member.interruptRequested && (member.acknowledgedRevision ?? 0) < member.controlRevision) {
                     await acknowledgeControl(member.controlRevision, 'paused_between_turns').catch(() => {});
                 }
-                if (!member.paused && !member.muted) {
-                    const requests = await client.pendingRequests(room.roomId, credential, session.participantId);
-                    for (const request of requests) {
+                const cooldown = cooldowns.get(profileKey);
+                let probeClaimed = false;
+                let probeResolved = false;
+                let claimedCooldown = cooldown;
+                if (cooldown) {
+                    const providerWait: ProviderWait = {...publicProviderLimit(cooldown)};
+                    if (member.paused || member.muted) {
+                        status({state: 'paused', providerWait, eventId: '', detail: `Provider retry held while this participant is ${member.paused ? 'paused' : 'muted'}.`});
+                        failures = 0;
+                        await client.waitForChange(room.roomId, credential, snapshot.latestSeq, 300_000, 1000);
+                        continue;
+                    }
+                    const due = Boolean(cooldown.manualTarget) || (cooldown.automaticRetry && cooldown.wakeAt !== null && Date.now() >= cooldown.wakeAt);
+                    if (!due) {
+                        status({state: 'provider_wait', providerWait, eventId: '', detail: providerWait.displayMessage, requestStartedAt: null, lastActivityAt: null, idleDeadlineAt: null, absoluteDeadlineAt: null});
+                        failures = 0;
+                        const waitMs = cooldown.wakeAt === null ? 24 * 60 * 60_000 : Math.max(50, cooldown.wakeAt - Date.now());
+                        await waitForProviderWake(waitMs);
+                        continue;
+                    }
+                    claimedCooldown = cooldowns.claimDue({profileKey, owner: probeOwner, pid: process.pid, now: Date.now(), leaseMs: config.absoluteTimeoutMs + 60_000, roomId: room.roomId, participantId: session.participantId});
+                    if (!claimedCooldown) {
+                        const current = cooldowns.get(profileKey);
+                        const waitMs = current?.probeExpiresAt ? Math.max(1_000, current.probeExpiresAt - Date.now()) : 60_000;
+                        status({state: 'provider_wait', providerWait, eventId: '', detail: current?.manualTarget ? 'Provider retry is reserved for another waiting request on this device.' : 'Another receiver is checking whether provider capacity has returned.'});
+                        await waitForProviderWake(waitMs);
+                        continue;
+                    }
+                    probeClaimed = true;
+                    status({state: 'provider_retry', providerWait, eventId: claimedCooldown.manualTarget?.requestId ?? '', detail: 'Provider reset time reached; starting one guarded recovery attempt.'});
+                }
+                let waiting = false;
+                let providerWaiting = false;
+                try {
+                    let requests = await client.pendingRequests(room.roomId, credential, session.participantId);
+                    if (claimedCooldown?.manualTarget) {
+                        const manualRequestId = claimedCooldown.manualTarget.requestId;
+                        if (!requests.some((request) => request.eventId === manualRequestId && !request.failureAt && !request.recoveredByEventId && !request.resolution)) {
+                            cooldowns.clearManualTarget(profileKey, probeOwner);
+                            wakeProviderReceivers(store, profileKey, session.sessionId);
+                            probeResolved = true;
+                            providerWaiting = true;
+                            requests = [];
+                        } else {
+                            requests = [...requests].sort((left, right) => Number(right.eventId === manualRequestId) - Number(left.eventId === manualRequestId));
+                        }
+                    }
+                    for (let request of requests) {
                         if (stopped) {
                             break;
                         }
-                        if (request.failureAt) {
+                        if (request.failureAt || request.recoveredByEventId || request.resolution) {
                             continue;
                         }
-                        await execute(request);
+                        if (request.providerWait) {
+                            request = await client.resumeAfterProvider(room.roomId, credential, request.eventId);
+                        }
+                        const outcome = await execute(request);
+                        if (outcome === 'provider_wait') {
+                            providerWaiting = true;
+                            probeResolved = probeClaimed;
+                            break;
+                        }
+                        if (outcome === 'finished' && probeClaimed) {
+                            cooldowns.clear(profileKey);
+                            wakeProviderReceivers(store, profileKey);
+                            probeResolved = true;
+                        }
                         if (['waiting', 'stalled'].includes(state.state) && state.eventId === request.eventId) {
                             waiting = true;
                             break;
                         }
                     }
+                } finally {
+                    if (probeClaimed && !probeResolved) {
+                        cooldowns.releaseProbe(profileKey, probeOwner);
+                        wakeProviderReceivers(store, profileKey, session.sessionId);
+                    }
                 }
-                status({state: member.paused || member.muted ? 'paused' : waiting ? state.state : 'available', eventId: waiting ? state.eventId ?? '' : '', detail: !waiting && state.detail === 'Waiting for a speaking turn.' ? '' : state.detail ?? ''});
+                status({state: member.paused || member.muted ? 'paused' : providerWaiting ? 'provider_wait' : waiting ? state.state : 'available', eventId: providerWaiting || waiting ? state.eventId ?? '' : '', detail: !providerWaiting && !waiting && state.detail === 'Waiting for a speaking turn.' ? '' : state.detail ?? ''});
                 failures = 0;
                 await client.waitForChange(room.roomId, credential, snapshot.latestSeq, 300_000, 1000);
             } catch (error) {
@@ -740,6 +956,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         clearInterval(timer);
         process.removeListener('SIGTERM', stop);
         process.removeListener('SIGINT', stop);
+        cooldowns.close();
         database.close();
         unlinkSync(location.lock);
     }

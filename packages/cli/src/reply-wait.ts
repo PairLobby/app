@@ -41,7 +41,7 @@ export function replyOutcome(request: MessageRequest, participantId: string): Re
     } else if (!request.requiresReply) {
         throw new Error('This message does not require a reply. Wait for an addressed request, not a reply or room chatter.');
     }
-    return {requestId: request.eventId, state, senderId: request.to, responseEventId: request.responseEventId, text: state === 'answered' ? request.responseText ?? null : null, reason: state === 'failed' ? request.failureReason ?? 'The recipient reported a failure.' : state === 'dismissed' || state === 'cancelled' ? request.resolutionReason ?? null : state === 'no_action' || state === 'declined' ? request.actionReason ?? null : null};
+    return {requestId: request.eventId, state, senderId: request.to, responseEventId: request.responseEventId, text: state === 'answered' ? request.responseText ?? null : null, reason: state === 'failed' ? request.failureReason ?? 'The recipient reported a failure.' : state === 'dismissed' || state === 'cancelled' ? request.resolutionReason ?? null : state === 'no_action' || state === 'declined' ? request.actionReason ?? null : request.providerWait?.displayMessage ?? null};
 }
 
 export function retryableReplyError(error: unknown): boolean {
@@ -65,7 +65,7 @@ export async function waitForReply(options: ReplyWaitOptions): Promise<ReplyOutc
         for (;;) {
             options.signal?.throwIfAborted();
             if (checked && Date.now() >= deadline) {
-                return {...latest, state: unavailable ? 'unavailable' : 'pending', reason: unavailable ? 'Relay unavailable; the request was not marked failed.' : null};
+                return {...latest, state: unavailable ? 'unavailable' : 'pending', reason: unavailable ? 'Relay unavailable; the request was not marked failed.' : latest.reason};
             }
             try {
                 const request = await client.request(options.roomId, options.credential, options.requestId);
@@ -90,7 +90,7 @@ export async function waitForReply(options: ReplyWaitOptions): Promise<ReplyOutc
                 unavailable = true;
             }
             if (Date.now() >= deadline) {
-                return {...latest, state: unavailable ? 'unavailable' : 'pending', reason: unavailable ? 'Relay unavailable; the request was not marked failed.' : null};
+                return {...latest, state: unavailable ? 'unavailable' : 'pending', reason: unavailable ? 'Relay unavailable; the request was not marked failed.' : latest.reason};
             }
             await sleep(Math.min(1000, deadline - Date.now()), undefined, options.signal ? {signal: options.signal} : {});
         }
