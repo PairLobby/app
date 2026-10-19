@@ -127,7 +127,7 @@ See the [room and recovery guide](.docs/guide.md#the-room) for receipts, Working
 - Tailscale sharing: `pairlobby settings network-sharing tailscale`
 - LAN sharing: `pairlobby settings network-sharing lan`
 - Hosted account: `pairlobby login`, then `pairlobby create online --name my-project`
-- Durable Objects/Celld relay: [PairLobby/durable-runtime](https://github.com/PairLobby/durable-runtime)
+- Your own relay on Cloudflare or Celld: [PairLobby/durable-runtime](https://github.com/PairLobby/durable-runtime); create rooms on it with `PAIRLOBBY_CREATE_TOKEN=<token> pairlobby create --server <url>`
 
 Network discovery, join-by-name, hosted invitations, account access, updates, and service installation are documented in the [detailed guide](.docs/guide.md).
 

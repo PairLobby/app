@@ -386,6 +386,8 @@ test('test_export_saves_the_history_and_every_file_into_a_new_folder', async () 
     local.addSession(room.roomId, {sessionId, participantId: room.participantId, displayName: 'owner', kind: 'human', role: 'member', joinedAt: Date.now(), lastReadSeq: 0, cwd: work});
     local.putCredential(room.roomId, sessionId, room.participantCredential);
     const first = await client.uploadFile(room.roomId, room.participantCredential, 'notes.txt', text('one'), 'text/plain');
+    // Files are listed by upload time, then by their random id, so the second must come a millisecond later to keep its place.
+    await new Promise((settle) => setTimeout(settle, 5));
     const second = await client.uploadFile(room.roomId, room.participantCredential, 'notes.txt', text('two'), 'text/plain');
     await client.send(room.roomId, room.participantCredential, message('two versions', [first, second]));
     const cli = async (...args: string[]) => (await execute(process.execPath, [process.env['PAIRLOBBY_TEST_CLI'] ?? resolve('packages/cli/dist/main.js'), ...args, '--room', room.roomId, '--session', sessionId], {cwd: work, env: {...process.env, PAIRLOBBY_DATA_DIR: device, PAIRLOBBY_NO_UPDATE_CHECK: '1'}})).stdout;
