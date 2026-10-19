@@ -1260,7 +1260,8 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
     }
     const serverUrl = online ? (await onlineAccount(store)).server : resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')});
     const identity = identityFrom(store, values, 'agent');
-    const client = new PairLobbyClient(serverUrl, online ? accountToken(store) : process.env['PAIRLOBBY_ACCOUNT_TOKEN']);
+    // A self-hosted relay may ask for its create token; it travels where an account token would.
+    const client = new PairLobbyClient(serverUrl, online ? accountToken(store) : (process.env['PAIRLOBBY_CREATE_TOKEN'] ?? process.env['PAIRLOBBY_ACCOUNT_TOKEN']));
     const lifetime = settings.defaultRoomLifetimeMs;
     const expiresAt = str(values, 'expiry') !== undefined ? parseExpirySpec(str(values, 'expiry')!) : lifetime === null ? null : Date.now() + lifetime;
     const created = await client.createRoom(
