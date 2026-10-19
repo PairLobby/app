@@ -350,6 +350,72 @@ describe('local server joins by name', () => {
     });
 });
 
+describe('local server reachable from a network', () => {
+    type CreateAttempt = {status: number; body: {error?: {code: string; message: string; retryAfterMs?: number}; invite?: {code: string}}};
+
+    async function tryCreate(baseUrl: string, headers: Record<string, string> = {}): Promise<CreateAttempt> {
+        const response = await fetch(`${baseUrl}/v1/rooms`, {method: 'POST', headers: {'content-type': 'application/json', ...headers}, body: JSON.stringify({name: 'team', displayName: 'hugo', kind: 'human', controllerCredential: newCredential('controller'), participantCredential: newCredential('participant')})});
+        return {status: response.status, body: (await response.json()) as CreateAttempt['body']};
+    }
+
+    test('test_a_relay_with_a_create_token_needs_it_to_create_but_not_to_join', async () => {
+        const relay = await startServer({port: 0, dataFile: join(directory, 'token.sqlite'), createToken: 'team-secret'});
+        try {
+            const refused = await tryCreate(relay.url);
+            expect(refused.status).toBe(401);
+            expect(refused.body.error?.message).toBe('this relay needs its create token to start a room; set PAIRLOBBY_CREATE_TOKEN');
+            expect((await tryCreate(relay.url, {'x-pairlobby-account-token': 'wrong'})).status).toBe(401);
+            const created = await tryCreate(relay.url, {'x-pairlobby-account-token': 'team-secret'});
+            expect(created.status).toBe(201);
+            const joined = await fetch(`${relay.url}/v1/invites/redeem`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({code: created.body.invite!.code, displayName: 'codex', kind: 'agent', participantCredential: newCredential('participant'), attemptId: newId('attempt'), attemptSecret: newCredential('attempt')})});
+            expect(joined.status).toBe(200);
+        } finally {
+            await relay.close();
+        }
+    });
+
+    test('test_behind_a_public_url_or_proxy_nobody_joins_by_name_even_from_this_device', async () => {
+        for (const options of [{publicUrl: 'https://relay.example.com'}, {trustedProxyHeader: 'x-forwarded-for'}]) {
+            const relay = await startServer({port: 0, dataFile: join(directory, `proxied-local-${Object.keys(options)[0]}.sqlite`), ...options});
+            try {
+                const base = `http://127.0.0.1:${relay.port}`;
+                const created = await tryCreate(base);
+                expect(created.status).toBe(201);
+                expect((await fetch(`${base}/v1/rooms/local?name=team`)).status).toBe(401);
+            } finally {
+                await relay.close();
+            }
+        }
+    });
+
+    test('test_behind_a_proxy_each_forwarded_address_is_limited_on_its_own', async () => {
+        const relay = await startServer({port: 0, dataFile: join(directory, 'limited.sqlite'), trustedProxyHeader: 'x-forwarded-for', limits: {createPerMinutePerAddress: 2}});
+        try {
+            const from = (address: string) => ({'x-forwarded-for': `198.51.100.7, ${address}`});
+            expect((await tryCreate(relay.url, from('10.0.0.1'))).status).toBe(201);
+            expect((await tryCreate(relay.url, from('10.0.0.1'))).status).toBe(201);
+            const limited = await tryCreate(relay.url, from('10.0.0.1'));
+            expect(limited.status).toBe(429);
+            expect(limited.body.error?.code).toBe('rate_limited');
+            expect(limited.body.error?.retryAfterMs).toBeGreaterThan(0);
+            expect((await tryCreate(relay.url, from('10.0.0.2'))).status).toBe(201);
+        } finally {
+            await relay.close();
+        }
+    });
+
+    test('test_this_device_is_not_rate_limited_on_a_relay_without_a_proxy', async () => {
+        const relay = await startServer({port: 0, dataFile: join(directory, 'loopback-unlimited.sqlite'), limits: {createPerMinutePerAddress: 1}});
+        try {
+            for (let attempt = 0; attempt < 3; attempt++) {
+                expect((await tryCreate(relay.url)).status).toBe(201);
+            }
+        } finally {
+            await relay.close();
+        }
+    });
+});
+
 describe('local server auto-close timer', () => {
     test('test_the_relay_closes_an_idle_room_on_its_own_without_a_request', async () => {
         const dataFile = join(directory, 'auto-close.sqlite');

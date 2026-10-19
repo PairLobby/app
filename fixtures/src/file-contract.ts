@@ -61,7 +61,8 @@ export function runFileContract(label: string, makeStore: StoreFactory) {
             await sendWith([file]);
             const fetched = await service.downloadFile(roomId, bob, file.fileId);
             expect(fetched.bytes.byteLength).toBe(bytes.byteLength);
-            expect(fetched.bytes).toEqual(bytes);
+            // A deep toEqual over 3 MB takes seconds on a slow runner; the first differing byte says the same.
+            expect(fetched.bytes.findIndex((byte, index) => byte !== bytes[index])).toBe(-1);
             expect(fetched.file.sha256).toBe(file.sha256);
         });
 

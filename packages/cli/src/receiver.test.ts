@@ -1,5 +1,5 @@
 import {spawn} from 'node:child_process';
-import {chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {setTimeout as sleep} from 'node:timers/promises';
@@ -23,9 +23,9 @@ test.each(['codex', 'claude', 'qwen'])('%s CLI joins receive asynchronously and 
     const cli = process.env['PAIRLOBBY_TEST_CLI'] ?? resolve('packages/cli/dist/main.js');
     let joined: Joined | undefined;
 
-    async function command(args: string[]): Promise<any> {
+    async function command(args: string[], extra: NodeJS.ProcessEnv = {}): Promise<any> {
         return new Promise((done, reject) => {
-            const child = spawn(process.execPath, [cli, ...args], {env: environment, stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000});
+            const child = spawn(process.execPath, [cli, ...args], {env: {...environment, ...extra}, stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000});
             let output = '', errors = '';
             child.stdout.on('data', (chunk) => { output += chunk; });
             child.stderr.on('data', (chunk) => { errors += chunk; });
@@ -52,15 +52,12 @@ test.each(['codex', 'claude', 'qwen'])('%s CLI joins receive asynchronously and 
 
     const calls = () => existsSync(record) ? readFileSync(record, 'utf8').split('\n') : [];
     try {
-        joined = await command(['join', host.invite.code, '--server', relay.url, '--runtime', runtime, '--as', runtime, '--workdir', directory, '--model', 'fixture-model', '--task-idle-timeout', '12m', '--task-timeout', '2h', '--json']) as Joined;
+        joined = await command(['join', host.invite.code, '--server', relay.url, '--runtime', runtime, '--as', runtime, '--workdir', directory, '--model', 'fixture-model', '--task-idle-timeout', '12m', '--task-timeout', '2h', '--json'], {PAIRLOBBY_TEST_RECEIVER_VERSION: '0.0.0-stale'}) as Joined;
         expect(joined.receiver.state).toBe('available');
         expect(joined.receiver).toMatchObject({idleTimeoutMs: 720_000, absoluteTimeoutMs: 7_200_000});
         const scope = ['--room', joined.roomId, '--session', joined.sessionId];
-        const statusFile = join(environment.PAIRLOBBY_DATA_DIR, 'receivers', joined.sessionId, 'status.json');
-        const stale = JSON.parse(readFileSync(statusFile, 'utf8'));
-        delete stale.version;
-        delete stale.entrypoint;
-        writeFileSync(statusFile, JSON.stringify(stale) + '\n');
+        // The receiver reports an old release, as one left running across an update does, so refresh must restart it.
+        expect((await command(['receiver', 'status', ...scope]))).toMatchObject({restartRequired: true});
         const refreshed = await command(['receiver', 'refresh']);
         expect(refreshed.restarted).toContain(joined.sessionId);
         expect((await command(['receiver', 'status', ...scope]))).toMatchObject({restartRequired: false, version: expect.any(String), entrypoint: expect.stringContaining('main.js')});

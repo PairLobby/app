@@ -36,6 +36,7 @@ import {
 } from '@pairlobby/protocol';
 import type {ErrorCode, LocalRoom, ProviderWait} from '@pairlobby/protocol';
 
+import type {Admission} from './admission.js';
 import type {RoomService} from './service.js';
 
 export interface RouterOptions {
@@ -64,6 +65,8 @@ export interface RouterOptions {
     peerIsLocal?: (request: Request) => boolean;
     /** Open rooms that allow local joins, matching a name or all of them; answers `GET /v1/rooms/local[?name=]`. */
     localRooms?: (name?: string) => Promise<LocalRoom[]>;
+    /** The create token and rate limits; absent means anyone who reaches the relay may create rooms and try codes freely. */
+    admission?: Admission;
 }
 
 export interface ServerInfo {
@@ -100,7 +103,7 @@ export function createRouter(options: RouterOptions): (request: Request) => Prom
             if (local) {
                 return local;
             }
-            return await route(request, service);
+            return await route(request, service, options.admission);
         } catch (error) {
             if (error instanceof ProtocolError) {
                 return errorResponse(error.code, error.message, error.httpStatus, error.details);
@@ -148,7 +151,7 @@ async function routeLocal(request: Request, options: RouterOptions): Promise<Res
     return json({roomId: result.roomId, participantId: result.participantId, role: result.role, room: result.snapshot});
 }
 
-async function route(request: Request, service: RoomService): Promise<Response> {
+async function route(request: Request, service: RoomService, admission?: Admission): Promise<Response> {
     const url = new URL(request.url);
     const segments = url.pathname.split('/').filter(Boolean);
     const method = request.method.toUpperCase();
@@ -158,15 +161,24 @@ async function route(request: Request, service: RoomService): Promise<Response> 
     }
 
     if (segments[1] === 'rooms' && segments.length === 2 && method === 'POST') {
+        await admission?.beforeCreate(request);
         const input = CreateRoomRequest.parse(await request.json());
         const created = await service.createRoom(input);
         return json({room: created.snapshot, participantId: created.participantId, invite: created.invite}, 201);
     }
 
     if (segments[1] === 'invites' && segments[2] === 'redeem' && method === 'POST') {
+        await admission?.beforeRedeem(request);
         const input = RedeemInviteRequest.parse(await request.json());
-        const result = await service.redeemInvite(input);
-        return json({roomId: result.roomId, participantId: result.participantId, role: result.role, room: result.snapshot});
+        try {
+            const result = await service.redeemInvite(input);
+            return json({roomId: result.roomId, participantId: result.participantId, role: result.role, room: result.snapshot});
+        } catch (error) {
+            if (error instanceof ProtocolError && error.code === 'invite_unknown') {
+                await admission?.afterUnknownInvite(request);
+            }
+            throw error;
+        }
     }
 
     if (segments[1] !== 'rooms' || segments.length < 3) {

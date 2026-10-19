@@ -4,7 +4,7 @@ A durable room where people and locally installed AI agents coordinate work.
 
 PairLobby provides ordered conversations, addressed requests, acknowledgements, handovers, speaking turns, interruption, and explicit recovery. The relay stores coordination state; Codex, Claude Code, and Qwen Code run locally with their own authentication and permissions.
 
-See [current status](STATUS.md), the [detailed guide](.docs/guide.md), and the [runtime capability matrix](integrations/README.md).
+See [current status](STATUS.md), the [detailed guide](GUIDE.md), and the [runtime capability matrix](integrations/README.md).
 
 ## Install
 
@@ -35,7 +35,7 @@ npm install
 npm run install:local
 ```
 
-Updates and background-relay setup are covered in [installation and relay operation](.docs/guide.md#try-it).
+Updates and background-relay setup are covered in [installation and relay operation](GUIDE.md#try-it).
 
 ## Start a room
 
@@ -118,7 +118,7 @@ pairlobby request cancel <REQUEST_ID>
 
 A Claude account usage limit is handled separately: the request stays unresolved, its speaking turn is released, and queued work for that local provider profile waits for the reported reset. Use `pairlobby request retry-provider <REQUEST_ID>` after restoring capacity, or use `/requests` to inspect the reset time, retry, reassign, or cancel.
 
-See the [room and recovery guide](.docs/guide.md#the-room) for receipts, Working states, attempt history, safe recovery, settings, invitations, multi-agent turns, and terminal controls.
+See the [room and recovery guide](GUIDE.md#the-room) for receipts, Working states, attempt history, safe recovery, settings, invitations, multi-agent turns, and terminal controls.
 
 ## Local, network, and hosted rooms
 
@@ -127,9 +127,10 @@ See the [room and recovery guide](.docs/guide.md#the-room) for receipts, Working
 - Tailscale sharing: `pairlobby settings network-sharing tailscale`
 - LAN sharing: `pairlobby settings network-sharing lan`
 - Hosted account: `pairlobby login`, then `pairlobby create online --name my-project`
-- Durable Objects/Celld relay: [PairLobby/durable-runtime](https://github.com/PairLobby/durable-runtime)
+- Your own relay on Cloudflare or Celld: [PairLobby/durable-runtime](https://github.com/PairLobby/durable-runtime); create rooms on it with `PAIRLOBBY_CREATE_TOKEN=<token> pairlobby create --server <url>`
+- A relay for a team: `PAIRLOBBY_CREATE_TOKEN=<token> pairlobby serve --host 0.0.0.0`, with `--public-url` and `--trusted-proxy-header` behind a load balancer ([guide](GUIDE.md#a-relay-for-a-team))
 
-Network discovery, join-by-name, hosted invitations, account access, updates, and service installation are documented in the [detailed guide](.docs/guide.md).
+Network discovery, join-by-name, hosted invitations, account access, updates, and service installation are documented in the [detailed guide](GUIDE.md).
 
 ## Repository
 
@@ -154,7 +155,7 @@ npm test
 npm run serve
 ```
 
-Storage adapters run the same parameterized room and redemption contracts. Additional validation procedures are in [integrations/SPIKE.md](integrations/SPIKE.md); release, packaging, resource measurements, and test details are in the [development reference](.docs/guide.md#resource-usage).
+Storage adapters run the same parameterized room and redemption contracts. Additional validation procedures are in [integrations/SPIKE.md](integrations/SPIKE.md); release, packaging, resource measurements, and test details are in the [development reference](GUIDE.md#resource-usage).
 
 ## License
 

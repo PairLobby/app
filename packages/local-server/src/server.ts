@@ -6,7 +6,8 @@ import {mkdirSync} from 'node:fs';
 import {hostname, networkInterfaces} from 'node:os';
 import {dirname} from 'node:path';
 
-import {RoomService, createRouter} from '@pairlobby/server-core';
+import {RoomService, createAdmission, createRouter, memoryRateLimiter, proxiedAddress} from '@pairlobby/server-core';
+import type {AdmissionLimits} from '@pairlobby/server-core';
 import {ABSOLUTE_MAX_FILE_BYTES} from '@pairlobby/protocol';
 
 import {advertiseRelay, isLocalNetworkAddress, isLoopbackAddress, isTailscaleAddress} from './network.js';
@@ -28,6 +29,16 @@ export interface ServeOptions {
     advertise?: boolean;
     /** Reported by `GET /v1/server`, so a client can tell which build this relay runs. */
     version?: string;
+    /** When set, creating a room needs this token; joining with an invite never does. Read it from the environment, never a command line. */
+    createToken?: string;
+    /**
+     * The header a load balancer in front of this relay puts the caller's address in, such as
+     * `x-forwarded-for`. Only set it when every request comes through that proxy: a caller
+     * reaching the relay directly could write the header themselves.
+     */
+    trustedProxyHeader?: string;
+    /** Rate limits on creating rooms and redeeming invites; callers on this device are exempt unless the relay is behind a proxy. */
+    limits?: Partial<AdmissionLimits>;
 }
 
 export interface RunningServer {
@@ -76,14 +87,21 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
     const extraNames = (options.hostnames ?? []).map((name) => name.toLowerCase());
     const acceptHost = (value: string) => allowedHosts.includes(value) || (!isLoopback(host) && isOwnHost(value, boundPort, extraNames));
     // Found by mDNS when advertised, or by a tailnet device trying the default port on this one's Tailscale address.
-    const discoverable = () => !options.publicUrl && !isLoopback(host) && (options.advertise === true || (boundPort === DEFAULT_PORT && (wildcard || isTailscaleAddress(host))));
+    // Behind a proxy every caller arrives from the proxy's address, which looks local, so the
+    // socket can no longer vouch that a caller is on this network.
+    const behindProxy = Boolean(options.publicUrl || options.trustedProxyHeader);
+    const discoverable = () => !behindProxy && !isLoopback(host) && (options.advertise === true || (boundPort === DEFAULT_PORT && (wildcard || isTailscaleAddress(host))));
     const serverInfo = () => ({shareUrls: shareUrls(host, boundPort, options.publicUrl, tailscaleOnly), discoverable: discoverable(), ...(options.version ? {version: options.version} : {})});
     const inviteProbe = async (prefix: string) => store.hasInviteDigestPrefix(prefix);
     // Where each request's connection came from, read off the socket: no header can claim it.
     const peerAddresses = new WeakMap<Request, string>();
-    const peerIsLocal = (request: Request) => isLocalNetworkAddress(peerAddresses.get(request) ?? '');
+    const peerIsLocal = (request: Request) => !behindProxy && isLocalNetworkAddress(peerAddresses.get(request) ?? '');
     const localRooms = async (name?: string) => store.localJoinRooms(name);
-    const route = createRouter({service, allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo, inviteProbe, peerIsLocal, localRooms});
+    const header = options.trustedProxyHeader;
+    const clientAddress = (request: Request) => (header ? proxiedAddress(request, header) : undefined) ?? peerAddresses.get(request);
+    const exempt = (request: Request) => !behindProxy && isLoopbackAddress(peerAddresses.get(request) ?? '');
+    const admission = createAdmission({...(options.createToken ? {createToken: options.createToken} : {}), limiter: memoryRateLimiter(), ...(options.limits ? {limits: options.limits} : {}), clientAddress, exempt});
+    const route = createRouter({service, allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo, inviteProbe, peerIsLocal, localRooms, admission});
 
     // One local relay owns this store. Serialize mutating requests so two
     // async service calls cannot both choose the same next event sequence.

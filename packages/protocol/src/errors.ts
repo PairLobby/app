@@ -16,6 +16,7 @@ export const ERROR_CODES = [
     'turn_expired',
     'room_not_found',
     'quota_exceeded',
+    'rate_limited',
     'cursor_gap',
     'stale_handover_revision',
     'handover_already_resolved',
@@ -56,6 +57,7 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
     turn_expired: 409,
     room_not_found: 404,
     quota_exceeded: 429,
+    rate_limited: 429,
     cursor_gap: 410,
     stale_handover_revision: 409,
     handover_already_resolved: 409,
@@ -91,5 +93,5 @@ export function httpStatusFor(code: ErrorCode): number {
 
 /** True when the same request, unchanged, could succeed later. */
 export function isRetryable(code: ErrorCode): boolean {
-    return code === 'server_unavailable' || code === 'quota_exceeded';
+    return code === 'server_unavailable' || code === 'quota_exceeded' || code === 'rate_limited';
 }
