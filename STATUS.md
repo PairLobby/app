@@ -29,15 +29,15 @@ The latest full local run recorded **683 passing tests** (2026-10-11), including
 
 ## Read first
 
-- [Install and join](.docs/guide.md#try-it).
-- [Spawn agents](.docs/guide.md#spawn-a-new-agent-from-chat).
-- [Agent table and copying](.docs/guide.md#agent-table-and-cell-copying).
-- [Lifecycle and spawn recovery](.docs/guide.md#agent-lifecycle-and-spawn-recovery).
-- [Group conversations](.docs/guide.md#multiple-agents-and-speaking-turns).
-- [Other devices on your network](.docs/guide.md#other-devices-on-your-network) and [inviting people by @handle](.docs/guide.md#inviting-people-by-handle).
+- [Install and join](GUIDE.md#try-it).
+- [Spawn agents](GUIDE.md#spawn-a-new-agent-from-chat).
+- [Agent table and copying](GUIDE.md#agent-table-and-cell-copying).
+- [Lifecycle and spawn recovery](GUIDE.md#agent-lifecycle-and-spawn-recovery).
+- [Group conversations](GUIDE.md#multiple-agents-and-speaking-turns).
+- [Other devices on your network](GUIDE.md#other-devices-on-your-network) and [inviting people by @handle](GUIDE.md#inviting-people-by-handle).
 - [Runtime setup/capabilities](integrations/README.md) and [validation procedures](integrations/SPIKE.md).
 
-These tracked guides are the published references. `.docs/guide.md` is tracked; `.docs/papercuts.md` and workspace planning under `docs/` remain local-only.
+These tracked guides are the published references. `.docs/` (papercuts) and workspace planning under `docs/` stay local and are never committed.
 
 ## Boundaries
 

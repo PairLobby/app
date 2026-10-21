@@ -134,6 +134,7 @@ const OPTIONS = {
     background: {type: 'boolean'},
     'no-browser': {type: 'boolean'},
     'public-url': {type: 'string'},
+    'trusted-proxy-header': {type: 'string'},
     port: {type: 'string'},
     'data-dir': {type: 'string'},
     help: {type: 'boolean'}
@@ -238,7 +239,11 @@ const HELP = `pairlobby
   pairlobby update --check           only report; --yes installs without asking
   pairlobby serve --tailscale        also accept your Tailscale devices (encrypted by Tailscale)
   pairlobby serve --lan              also accept devices on your network (unencrypted HTTP)
-  pairlobby serve --public-url <url> advertise this address in invites (Tailscale, proxy)
+  pairlobby serve --public-url <url> advertise this address in invites (Tailscale, proxy); joining by name is then off
+  pairlobby serve --trusted-proxy-header x-forwarded-for
+                                    behind a load balancer: read callers' addresses from that header for rate limits
+  PAIRLOBBY_CREATE_TOKEN=<token> pairlobby serve
+                                    only callers sending the same token may create rooms; invites still join without it
   pairlobby service install          keep the relay running at login and after a crash, on the installed release (macOS)
   pairlobby service status|restart|logs|uninstall
 
@@ -2559,6 +2564,12 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     const host = str(values, 'host') ?? (network === 'off' ? '127.0.0.1' : '0.0.0.0');
     const port = str(values, 'port') !== undefined ? Number(str(values, 'port')) : DEFAULT_RELAY_PORT;
     const publicUrl = str(values, 'public-url') !== undefined ? parsePublicUrl(str(values, 'public-url')!) : undefined;
+    const trustedProxyHeader = str(values, 'trusted-proxy-header')?.trim().toLowerCase();
+    if (trustedProxyHeader !== undefined && !/^[a-z0-9-]+$/.test(trustedProxyHeader)) {
+        throw new UsageError('--trusted-proxy-header must be a header name such as x-forwarded-for');
+    }
+    // From the environment only: a command line shows up in every process listing.
+    const createToken = process.env['PAIRLOBBY_CREATE_TOKEN'] || undefined;
     // Tailnet devices may address this one by its MagicDNS names, which are not interface addresses.
     const tailnet = host === '127.0.0.1' ? null : await tailscaleView();
     // A relay started from an agent's shell belongs to that session's process tree and dies with it, taking every room with it.
@@ -2568,7 +2579,7 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     }
     let running;
     try {
-        running = await startServer({version: VERSION, host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
+        running = await startServer({version: VERSION, host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), ...(trustedProxyHeader ? {trustedProxyHeader} : {}), ...(createToken ? {createToken} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
     } catch (error) {
         // Say what is wrong and what to do, rather than surfacing a raw errno. The
         // occupant is never probed: something else owning the port is not ours to poke.
@@ -2599,6 +2610,11 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     }
     if (network !== 'tailscale' && running.shareUrls.some((url) => url.startsWith('http:'))) {
         note('Room traffic, including credentials, crosses the network unencrypted. Share on the local network only if you trust it; network-sharing tailscale keeps traffic inside Tailscale\'s encryption.');
+    }
+    if (createToken) {
+        out('Creating rooms needs the create token (PAIRLOBBY_CREATE_TOKEN); invites join without it.');
+    } else if (running.host !== '127.0.0.1' && running.host !== '::1' && running.host !== 'localhost') {
+        note('anyone who can reach this relay can create rooms on it. To require a token, start it with PAIRLOBBY_CREATE_TOKEN set, and give the same variable to the people who create rooms.');
     }
     out(`Data: ${running.dataFile}`);
     out('Press Ctrl+C to stop.');
