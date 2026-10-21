@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Publishes the shared @pairlobby packages to npm, so other repositories can depend
-// on them instead of vendoring: protocol, room-core, server-core, client, fixtures.
+// on them instead of vendoring: protocol, room-core, server-core, local-server (with the
+// `pairlobby-relay` command a container runs), client, fixtures.
 //
 //   node scripts/publish-packages.mjs            # dry run: builds, stages and shows what would be published
 //   node scripts/publish-packages.mjs --pack DIR # write the exact tarballs to DIR, to inspect or install
@@ -25,7 +26,7 @@ import {fileURLToPath} from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // Dependency order: each package only depends on those before it.
-const PACKAGES = ['packages/protocol', 'packages/room-core', 'packages/server-core', 'packages/client', 'fixtures'];
+const PACKAGES = ['packages/protocol', 'packages/room-core', 'packages/server-core', 'packages/local-server', 'packages/client', 'fixtures'];
 const publish = process.argv.includes('--publish');
 const listMissing = process.argv.includes('--missing');
 const packTo = process.argv.includes('--pack') ? resolve(process.argv[process.argv.indexOf('--pack') + 1] ?? '') : null;
@@ -94,6 +95,7 @@ function stage(relativePath, outRoot) {
         main: manifest.main,
         types: manifest.types,
         exports: manifest.exports,
+        ...(manifest.bin ? {bin: manifest.bin} : {}),
         files: ['dist', 'LICENSE', 'README.md'],
         repository: {type: 'git', url: 'git+https://github.com/PairLobby/app.git', directory: relativePath},
         homepage: 'https://pairlobby.com',

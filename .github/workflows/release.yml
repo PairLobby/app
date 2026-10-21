@@ -5,8 +5,9 @@ name: Release
 # at that version, each only when it is missing:
 #   - the GitHub release with the packaged CLI, tagged v<version> on the merged commit.
 #     Installed CLIs check this repository's latest release for updates.
-#   - the shared @pairlobby packages on npm (protocol, room-core, server-core, client,
-#     fixtures), which other repositories depend on. Needs the NPM_TOKEN secret.
+#   - the shared @pairlobby packages on npm (protocol, room-core, server-core, local-server,
+#     client, fixtures), which other repositories and the relay container depend on. Needs
+#     the NPM_TOKEN secret.
 # A merge that does not bump the version (chore:) publishes nothing, unless an earlier
 # run left one of the two unfinished.
 on:

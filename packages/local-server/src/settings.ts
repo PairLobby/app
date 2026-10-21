@@ -1,12 +1,21 @@
-//! `pairlobby serve` settings from flags and the environment. A container or a service
-//! manager configures the relay through PAIRLOBBY_* variables; a flag wins over its variable.
+//! Relay settings from flags and the environment, shared by `pairlobby serve` and
+//! `pairlobby-relay`. A container or a service manager configures the relay through
+//! PAIRLOBBY_* variables; a flag wins over its variable. Nothing here opens a database,
+//! so a command can check its settings without loading the relay.
 
 import {readFileSync, statSync} from 'node:fs';
 
 import type {AdmissionLimits} from '@pairlobby/server-core';
-import type {RequestLogMode} from '@pairlobby/local-server';
 
-import {UsageError} from './context.js';
+import type {RequestLogMode} from './request-log.js';
+
+/** A setting the relay cannot start with; the message names the flag or variable that holds it. */
+export class RelaySettingsError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'RelaySettingsError';
+    }
+}
 
 export type RelayFlags = {host?: string; port?: string; publicUrl?: string; trustedProxyHeader?: string; requestLog?: string; backup?: string; noRestore?: boolean};
 
@@ -25,8 +34,10 @@ export type RelaySettings = {
     backup?: RelayBackupSettings;
 };
 
-/** Where and how often to copy the database; `url` is checked against the relay's own parser when the relay starts. */
-export type RelayBackupSettings = {url: string; intervalMs: number; keep: number; restore: boolean};
+/** Where and how often to copy the database. */
+export type RelayBackupSettings = {location: BackupLocation; intervalMs: number; keep: number; restore: boolean};
+
+export type BackupLocation = {kind: 'folder'; path: string} | {kind: 's3'; bucket: string; prefix: string};
 
 type Source = {flag?: string; variable: string};
 
@@ -53,10 +64,10 @@ export function parsePublicUrl(value: string, source: Source = {flag: 'public-ur
     try {
         url = new URL(value);
     } catch {
-        throw new UsageError(`${described(source)} must be a full address such as https://laptop.tailnet.ts.net, not "${value}"`);
+        throw new RelaySettingsError(`${described(source)} must be a full address such as https://laptop.tailnet.ts.net, not "${value}"`);
     }
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
-        throw new UsageError(`${described(source)} must be an http(s) origin with no path, credentials, query or fragment`);
+        throw new RelaySettingsError(`${described(source)} must be an http(s) origin with no path, credentials, query or fragment`);
     }
     return url.origin;
 }
@@ -64,7 +75,7 @@ export function parsePublicUrl(value: string, source: Source = {flag: 'public-ur
 function wholeNumber(value: string, source: Source, minimum: number, maximum: number): number {
     const parsed = Number(value);
     if (!/^\d+$/.test(value) || parsed < minimum || parsed > maximum) {
-        throw new UsageError(`${described(source)} must be a whole number from ${minimum} to ${maximum}, not "${value}"`);
+        throw new RelaySettingsError(`${described(source)} must be a whole number from ${minimum} to ${maximum}, not "${value}"`);
     }
     return parsed;
 }
@@ -74,7 +85,7 @@ function createToken(environment: RelayEnvironment): string | undefined {
     const inline = environment['PAIRLOBBY_CREATE_TOKEN'] || undefined;
     const file = environment['PAIRLOBBY_CREATE_TOKEN_FILE']?.trim() || undefined;
     if (inline && file) {
-        throw new UsageError('set PAIRLOBBY_CREATE_TOKEN or PAIRLOBBY_CREATE_TOKEN_FILE, not both');
+        throw new RelaySettingsError('set PAIRLOBBY_CREATE_TOKEN or PAIRLOBBY_CREATE_TOKEN_FILE, not both');
     }
     if (!file) {
         return inline;
@@ -83,14 +94,14 @@ function createToken(environment: RelayEnvironment): string | undefined {
     try {
         mode = statSync(file).mode;
     } catch {
-        throw new UsageError(`PAIRLOBBY_CREATE_TOKEN_FILE names ${file}, which cannot be read`);
+        throw new RelaySettingsError(`PAIRLOBBY_CREATE_TOKEN_FILE names ${file}, which cannot be read`);
     }
     if (process.platform !== 'win32' && (mode & 0o077) !== 0) {
-        throw new UsageError(`${file} must be readable only by its owner: chmod 600 ${file}`);
+        throw new RelaySettingsError(`${file} must be readable only by its owner: chmod 600 ${file}`);
     }
     const token = readFileSync(file, 'utf8').trim();
     if (!token) {
-        throw new UsageError(`${file} is empty; put the create token in it`);
+        throw new RelaySettingsError(`${file} is empty; put the create token in it`);
     }
     return token;
 }
@@ -101,12 +112,12 @@ export function relaySettings(flags: RelayFlags, environment: RelayEnvironment):
     const publicUrl = pick(flags.publicUrl, environment, 'PAIRLOBBY_PUBLIC_URL');
     const proxyHeader = pick(flags.trustedProxyHeader, environment, 'PAIRLOBBY_TRUSTED_PROXY_HEADER')?.trim().toLowerCase();
     if (proxyHeader !== undefined && !/^[a-z0-9-]+$/.test(proxyHeader)) {
-        throw new UsageError(`${described({flag: 'trusted-proxy-header', variable: 'PAIRLOBBY_TRUSTED_PROXY_HEADER'})} must be a header name such as x-forwarded-for`);
+        throw new RelaySettingsError(`${described({flag: 'trusted-proxy-header', variable: 'PAIRLOBBY_TRUSTED_PROXY_HEADER'})} must be a header name such as x-forwarded-for`);
     }
     const allowedHosts = (environment['PAIRLOBBY_ALLOWED_HOSTS'] ?? '').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean);
     for (const value of allowedHosts) {
         if (!/^[a-z0-9.-]+(:\d{1,5})?$/.test(value)) {
-            throw new UsageError(`PAIRLOBBY_ALLOWED_HOSTS takes Host values such as relay.internal or relay.internal:8790, not "${value}"`);
+            throw new RelaySettingsError(`PAIRLOBBY_ALLOWED_HOSTS takes Host values such as relay.internal or relay.internal:8790, not "${value}"`);
         }
     }
     const limits: Partial<AdmissionLimits> = {};
@@ -118,7 +129,7 @@ export function relaySettings(flags: RelayFlags, environment: RelayEnvironment):
     }
     const requestLog = pick(flags.requestLog, environment, 'PAIRLOBBY_REQUEST_LOG');
     if (requestLog !== undefined && !['all', 'writes', 'off'].includes(requestLog)) {
-        throw new UsageError(`${described({flag: 'request-log', variable: 'PAIRLOBBY_REQUEST_LOG'})} must be all, writes or off, not "${requestLog}"`);
+        throw new RelaySettingsError(`${described({flag: 'request-log', variable: 'PAIRLOBBY_REQUEST_LOG'})} must be all, writes or off, not "${requestLog}"`);
     }
     const token = createToken(environment);
     const backup = backupSettings(flags, environment);
@@ -143,21 +154,36 @@ function backupSettings(flags: RelayFlags, environment: RelayEnvironment): Relay
     const endpoint = environment['PAIRLOBBY_BACKUP_S3_ENDPOINT']?.trim();
     const noRestore = environment['PAIRLOBBY_NO_RESTORE']?.trim().toLowerCase();
     if (noRestore && !['1', 'true', '0', 'false'].includes(noRestore)) {
-        throw new UsageError(`PAIRLOBBY_NO_RESTORE must be 1 or 0, not "${noRestore}"`);
+        throw new RelaySettingsError(`PAIRLOBBY_NO_RESTORE must be 1 or 0, not "${noRestore}"`);
     }
     if (endpoint && !/^https?:\/\/[^/]+\/?$/.test(endpoint)) {
-        throw new UsageError(`PAIRLOBBY_BACKUP_S3_ENDPOINT must be an http(s) origin such as https://<account>.r2.cloudflarestorage.com, not "${endpoint}"`);
+        throw new RelaySettingsError(`PAIRLOBBY_BACKUP_S3_ENDPOINT must be an http(s) origin such as https://<account>.r2.cloudflarestorage.com, not "${endpoint}"`);
     }
     if (!url) {
         if (interval || keep || endpoint || flags.noRestore) {
-            throw new UsageError('backup settings need a place to back up to: set --backup (PAIRLOBBY_BACKUP) to s3://bucket/prefix or a folder');
+            throw new RelaySettingsError('backup settings need a place to back up to: set --backup (PAIRLOBBY_BACKUP) to s3://bucket/prefix or a folder');
         }
         return undefined;
     }
+    const location = parseBackupLocation(url);
+    if (!location) {
+        throw new RelaySettingsError(`${described({flag: 'backup', variable: 'PAIRLOBBY_BACKUP'})} must be s3://bucket/prefix or an absolute folder path, not "${url}"`);
+    }
     return {
-        url,
+        location,
         intervalMs: interval ? wholeNumber(interval, {variable: 'PAIRLOBBY_BACKUP_INTERVAL'}, 10, 86_400) * 1000 : 60_000,
         keep: keep ? wholeNumber(keep, {variable: 'PAIRLOBBY_BACKUP_KEEP'}, 1, 10_000) : 48,
         restore: !(flags.noRestore || noRestore === '1' || noRestore === 'true')
     };
+}
+
+/** `s3://bucket/prefix` or an absolute folder path (`file://` allowed); null for anything else. */
+export function parseBackupLocation(value: string): BackupLocation | null {
+    if (value.startsWith('s3://')) {
+        const [bucket = '', ...rest] = value.slice('s3://'.length).split('/');
+        const prefix = rest.filter(Boolean).join('/');
+        return /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket) ? {kind: 's3', bucket, prefix: prefix ? `${prefix}/` : ''} : null;
+    }
+    const path = value.startsWith('file://') ? decodeURIComponent(new URL(value).pathname) : value;
+    return path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path) ? {kind: 'folder', path} : null;
 }

@@ -129,6 +129,7 @@ See the [room and recovery guide](GUIDE.md#the-room) for receipts, Working state
 - Hosted account: `pairlobby login`, then `pairlobby create online --name my-project`
 - Your own relay on Cloudflare or Celld: [PairLobby/durable-runtime](https://github.com/PairLobby/durable-runtime); create rooms on it with `PAIRLOBBY_CREATE_TOKEN=<token> pairlobby create --server <url>`
 - A relay for a team: `PAIRLOBBY_CREATE_TOKEN=<token> pairlobby serve --host 0.0.0.0`, with `--public-url` and `--trusted-proxy-header` behind a load balancer ([guide](GUIDE.md#a-relay-for-a-team))
+- A relay in a container: `pairlobby-relay` from `@pairlobby/local-server` ([deploy/relay](deploy/relay))
 
 Network discovery, join-by-name, hosted invitations, account access, updates, and service installation are documented in the [detailed guide](GUIDE.md).
 
@@ -138,11 +139,12 @@ Network discovery, join-by-name, hosted invitations, account access, updates, an
 packages/protocol/       wire schemas and errors
 packages/room-core/      authorization and state transitions
 packages/server-core/    shared room service and storage contract
-packages/local-server/   SQLite relay
+packages/local-server/   SQLite relay and the pairlobby-relay command
 packages/client/         HTTP client and local registry
 packages/cli/            terminal application and managed receivers
 fixtures/                reference store and contract suites
 integrations/            agent instructions and capability evidence
+deploy/relay/            example Dockerfile for the relay
 ```
 
 The hosted account service and website are separate repositories. PairLobby does not host inference, expose a generic remote shell, or share runtime credentials through a room.
