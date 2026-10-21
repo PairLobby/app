@@ -25,6 +25,8 @@ import {WhenError, formatDuration, parseDuration, parseExpiry} from './when.js';
 import {pickExpiry} from './picker.js';
 import {DEFAULT_LOCAL_SERVER, DEFAULT_RELAY_PORT, UsageError, controllerCredential, moderationCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
 import type {Selection} from './context.js';
+import {relaySettings} from './relay-settings.js';
+import type {RelayFlags} from './relay-settings.js';
 import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
 import {acceptInvitation, accountToken, declineInvitation, isOnlineKey, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineOrigin, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
@@ -135,6 +137,7 @@ const OPTIONS = {
     'no-browser': {type: 'boolean'},
     'public-url': {type: 'string'},
     'trusted-proxy-header': {type: 'string'},
+    'request-log': {type: 'string'},
     port: {type: 'string'},
     'data-dir': {type: 'string'},
     help: {type: 'boolean'}
@@ -244,6 +247,9 @@ const HELP = `pairlobby
                                     behind a load balancer: read callers' addresses from that header for rate limits
   PAIRLOBBY_CREATE_TOKEN=<token> pairlobby serve
                                     only callers sending the same token may create rooms; invites still join without it
+  pairlobby serve --request-log writes
+                                    one JSON line per request on standard output: all, writes (skips successful reads) or off
+  PAIRLOBBY_* variables             every serve flag also reads from the environment, for containers; see GUIDE.md
   pairlobby service install          keep the relay running at login and after a crash, on the installed release (macOS)
   pairlobby service status|restart|logs|uninstall
 
@@ -2528,21 +2534,8 @@ async function updateCommand(store: LocalStore, values: Values): Promise<number>
     return (await installUpdate(store, check.latest)) ? 0 : 1;
 }
 
-function parsePublicUrl(value: string): string {
-    let url: URL;
-    try {
-        url = new URL(value);
-    } catch {
-        throw new UsageError(`--public-url must be a full address such as https://laptop.tailnet.ts.net, not "${value}"`);
-    }
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
-        throw new UsageError('--public-url must be an http(s) origin with no path, credentials, query or fragment');
-    }
-    return url.origin;
-}
-
 /** --lan or --tailscale on the command line, else --host alone (sharing as the address allows), else the device setting. */
-function relayNetwork(store: LocalStore, values: Values): 'off' | 'tailscale' | 'lan' {
+function relayNetwork(store: LocalStore, values: Values, hostGiven: boolean): 'off' | 'tailscale' | 'lan' {
     if (flag(values, 'lan') && flag(values, 'tailscale')) {
         throw new UsageError('use either --lan or --tailscale, not both');
     }
@@ -2552,7 +2545,7 @@ function relayNetwork(store: LocalStore, values: Values): 'off' | 'tailscale' | 
     if (flag(values, 'tailscale')) {
         return 'tailscale';
     }
-    return str(values, 'host') !== undefined ? 'off' : store.settings().relayNetwork;
+    return hostGiven ? 'off' : store.settings().relayNetwork;
 }
 
 async function serve(store: LocalStore, values: Values): Promise<number> {
@@ -2560,16 +2553,14 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     const {dataDirectory} = await import('@pairlobby/client');
     const {join} = await import('node:path');
     const dataDir = str(values, 'data-dir') ?? dataDirectory();
-    const network = relayNetwork(store, values);
-    const host = str(values, 'host') ?? (network === 'off' ? '127.0.0.1' : '0.0.0.0');
-    const port = str(values, 'port') !== undefined ? Number(str(values, 'port')) : DEFAULT_RELAY_PORT;
-    const publicUrl = str(values, 'public-url') !== undefined ? parsePublicUrl(str(values, 'public-url')!) : undefined;
-    const trustedProxyHeader = str(values, 'trusted-proxy-header')?.trim().toLowerCase();
-    if (trustedProxyHeader !== undefined && !/^[a-z0-9-]+$/.test(trustedProxyHeader)) {
-        throw new UsageError('--trusted-proxy-header must be a header name such as x-forwarded-for');
-    }
-    // From the environment only: a command line shows up in every process listing.
-    const createToken = process.env['PAIRLOBBY_CREATE_TOKEN'] || undefined;
+    // Flags win over PAIRLOBBY_* variables; the create token only ever comes from the environment, since a command line shows in every process listing.
+    const flagNames: [keyof RelayFlags, 'host' | 'port' | 'public-url' | 'trusted-proxy-header' | 'request-log'][] = [['host', 'host'], ['port', 'port'], ['publicUrl', 'public-url'], ['trustedProxyHeader', 'trusted-proxy-header'], ['requestLog', 'request-log']];
+    const flags: RelayFlags = Object.fromEntries(flagNames.flatMap(([key, name]) => (str(values, name) === undefined ? [] : [[key, str(values, name)]])));
+    const settings = relaySettings(flags, process.env);
+    const network = relayNetwork(store, values, settings.host !== undefined);
+    const host = settings.host ?? (network === 'off' ? '127.0.0.1' : '0.0.0.0');
+    const port = settings.port ?? DEFAULT_RELAY_PORT;
+    const {publicUrl, trustedProxyHeader, createToken, allowedHosts, limits, requestLog} = settings;
     // Tailnet devices may address this one by its MagicDNS names, which are not interface addresses.
     const tailnet = host === '127.0.0.1' ? null : await tailscaleView();
     // A relay started from an agent's shell belongs to that session's process tree and dies with it, taking every room with it.
@@ -2579,7 +2570,7 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     }
     let running;
     try {
-        running = await startServer({version: VERSION, host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), ...(trustedProxyHeader ? {trustedProxyHeader} : {}), ...(createToken ? {createToken} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
+        running = await startServer({version: VERSION, host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), ...(trustedProxyHeader ? {trustedProxyHeader} : {}), ...(createToken ? {createToken} : {}), allowedHosts, limits, ...(requestLog ? {requestLog: {mode: requestLog, write: (line: string) => process.stdout.write(`${line}\n`)}} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
     } catch (error) {
         // Say what is wrong and what to do, rather than surfacing a raw errno. The
         // occupant is never probed: something else owning the port is not ours to poke.

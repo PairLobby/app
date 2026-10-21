@@ -191,6 +191,27 @@ pairlobby serve --host 0.0.0.0 --public-url https://pairlobby.example.com --trus
 
 Only set `--trusted-proxy-header` when every request comes through that proxy, since a caller reaching the relay directly could write the header. The relay reads the right-most address, the one the proxy added. With `--public-url` or `--trusted-proxy-header`, joining by name is off.
 
+#### Running the relay as a service or in a container
+
+Every `serve` flag also reads from a `PAIRLOBBY_*` variable, so a container or a service manager needs no command line; a flag wins over its variable.
+
+| Variable | Flag | Meaning |
+|---|---|---|
+| `PAIRLOBBY_HOST` | `--host` | address to listen on; `0.0.0.0` in a container |
+| `PAIRLOBBY_PORT` | `--port` | default 8790 |
+| `PAIRLOBBY_DATA_DIR` | `--data-dir` | where `rooms.sqlite` lives; put it on a volume |
+| `PAIRLOBBY_PUBLIC_URL` | `--public-url` | the address invites show, such as `https://pairlobby.example.com`; its host is accepted |
+| `PAIRLOBBY_TRUSTED_PROXY_HEADER` | `--trusted-proxy-header` | header with the caller's address, such as `x-forwarded-for` |
+| `PAIRLOBBY_ALLOWED_HOSTS` | | more exact `Host` values to accept, comma separated, such as `relay.internal` |
+| `PAIRLOBBY_CREATE_TOKEN` | | token needed to create rooms (environment only) |
+| `PAIRLOBBY_CREATE_TOKEN_FILE` | | the same token read from a file only its owner can read (`chmod 600`); not with the variable |
+| `PAIRLOBBY_REQUEST_LOG` | `--request-log` | `all`, `writes` (skips successful reads, which waiting clients repeat every second) or `off` (default) |
+| `PAIRLOBBY_LIMIT_CREATE_PER_MIN_IP` | | rooms one caller may create a minute (10) |
+| `PAIRLOBBY_LIMIT_REDEEM_PER_MIN_IP` | | invite codes one caller may try a minute (20) |
+| `PAIRLOBBY_LIMIT_REDEEM_PER_MIN_GLOBAL` | | invite codes the whole relay accepts a minute (300) |
+
+`GET /health` answers `{"service":"pairlobby-relay","ready":true}` for a load balancer's health check, whatever `Host` it sends. Every response carries an `x-request-id`, the caller's own when it is a short plain token. The request log writes one JSON line per request to standard output with the time, request id, method, route with identifiers replaced (`/v1/rooms/:room/events`), status, duration and the first eight hex digits of the room id's SHA-256; never a body, a credential, an invite code or a name.
+
 #### Joining by name, without an invite
 
 For a room everyone on your network may take part in, skip invite codes:
