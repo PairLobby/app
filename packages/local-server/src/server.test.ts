@@ -11,6 +11,7 @@ import {PROTOCOL_VERSION_HEADER, inviteProbe, newCredential, newId, normalizeInv
 import {afterAll, beforeAll, describe, expect, test} from 'vitest';
 import {RoomService, createRouter} from '@pairlobby/server-core';
 
+import {folderTarget} from './backup.js';
 import {peerAllowed, startServer, type RunningServer} from './server.js';
 import {SqliteRoomStore} from './sqlite-store.js';
 
@@ -500,5 +501,35 @@ describe('local server auto-close timer', () => {
         } finally {
             raw.close();
         }
+    });
+});
+
+describe('local server backups', () => {
+    test('test_a_replaced_relay_on_an_empty_disk_comes_back_with_its_rooms', async () => {
+        const target = folderTarget(join(directory, 'backups'));
+        const lines: string[] = [];
+        const first = await startServer({port: 0, dataFile: join(directory, 'first', 'rooms.sqlite'), backup: {target, intervalMs: 60_000, log: (line) => lines.push(line)}});
+        expect(first.restore).toEqual({outcome: 'no-backups'});
+        const room = await createRoom(first.url);
+        // No interval has passed: the copy that matters is the one taken on close.
+        await first.close();
+        expect(await target.list()).toHaveLength(1);
+        expect(JSON.parse(lines[0] ?? '{}')).toMatchObject({level: 'info', event: 'backup'});
+
+        const dataFile = join(directory, 'second', 'rooms.sqlite');
+        const second = await startServer({port: 0, dataFile, backup: {target}});
+        try {
+            expect(second.restore).toMatchObject({outcome: 'restored'});
+            const response = await fetch(`${second.url}/v1/rooms/${room.roomId}/events?after=0`, {headers: {authorization: `Bearer ${room.participantCredential}`}});
+            expect(response.status).toBe(200);
+        } finally {
+            await second.close();
+        }
+        // Nothing changed after the restore, so closing took no new copy.
+        expect(await target.list()).toHaveLength(1);
+
+        const kept = await startServer({port: 0, dataFile, backup: {target}});
+        await kept.close();
+        expect(kept.restore).toEqual({outcome: 'kept-local-data'});
     });
 });

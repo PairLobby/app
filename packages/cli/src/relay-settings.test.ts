@@ -70,4 +70,15 @@ describe('relay settings', () => {
         chmodSync(empty, 0o600);
         expect(() => relaySettings({}, {PAIRLOBBY_CREATE_TOKEN_FILE: empty})).toThrow('is empty');
     });
+
+    test('test_backups_need_a_place_and_take_their_rhythm_from_the_environment', () => {
+        expect(relaySettings({}, {PAIRLOBBY_BACKUP: 's3://team-relay/pairlobby'}).backup).toEqual({url: 's3://team-relay/pairlobby', intervalMs: 60_000, keep: 48, restore: true});
+        expect(relaySettings({backup: '/srv/copies', noRestore: true}, {PAIRLOBBY_BACKUP: 's3://ignored', PAIRLOBBY_BACKUP_INTERVAL: '300', PAIRLOBBY_BACKUP_KEEP: '12'}).backup).toEqual({url: '/srv/copies', intervalMs: 300_000, keep: 12, restore: false});
+        expect(relaySettings({}, {PAIRLOBBY_BACKUP: '/srv/copies', PAIRLOBBY_NO_RESTORE: '1'}).backup?.restore).toBe(false);
+        expect(relaySettings({}, {}).backup).toBeUndefined();
+        expect(() => relaySettings({}, {PAIRLOBBY_BACKUP_INTERVAL: '60'})).toThrow('need a place to back up to');
+        expect(() => relaySettings({}, {PAIRLOBBY_BACKUP: '/srv/copies', PAIRLOBBY_BACKUP_INTERVAL: '5'})).toThrow('PAIRLOBBY_BACKUP_INTERVAL must be a whole number from 10 to 86400');
+        expect(() => relaySettings({}, {PAIRLOBBY_BACKUP: '/srv/copies', PAIRLOBBY_BACKUP_S3_ENDPOINT: 'r2.example.com'})).toThrow('must be an http(s) origin');
+        expect(() => relaySettings({}, {PAIRLOBBY_BACKUP: '/srv/copies', PAIRLOBBY_NO_RESTORE: 'yes'})).toThrow('must be 1 or 0');
+    });
 });

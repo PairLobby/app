@@ -206,11 +206,18 @@ Every `serve` flag also reads from a `PAIRLOBBY_*` variable, so a container or a
 | `PAIRLOBBY_CREATE_TOKEN` | | token needed to create rooms (environment only) |
 | `PAIRLOBBY_CREATE_TOKEN_FILE` | | the same token read from a file only its owner can read (`chmod 600`); not with the variable |
 | `PAIRLOBBY_REQUEST_LOG` | `--request-log` | `all`, `writes` (skips successful reads, which waiting clients repeat every second) or `off` (default) |
+| `PAIRLOBBY_BACKUP` | `--backup` | where to copy the rooms: `s3://bucket/prefix` or an absolute folder |
+| `PAIRLOBBY_BACKUP_INTERVAL` | | seconds between checks for changes (60) |
+| `PAIRLOBBY_BACKUP_KEEP` | | copies to keep (48) |
+| `PAIRLOBBY_BACKUP_S3_ENDPOINT` | | an S3-compatible endpoint such as Cloudflare R2 or MinIO; absent means AWS |
+| `PAIRLOBBY_NO_RESTORE` | `--no-restore` | `1` starts empty on an empty disk instead of from the newest copy |
 | `PAIRLOBBY_LIMIT_CREATE_PER_MIN_IP` | | rooms one caller may create a minute (10) |
 | `PAIRLOBBY_LIMIT_REDEEM_PER_MIN_IP` | | invite codes one caller may try a minute (20) |
 | `PAIRLOBBY_LIMIT_REDEEM_PER_MIN_GLOBAL` | | invite codes the whole relay accepts a minute (300) |
 
 `GET /health` answers `{"service":"pairlobby-relay","ready":true}` for a load balancer's health check, whatever `Host` it sends. Every response carries an `x-request-id`, the caller's own when it is a short plain token. The request log writes one JSON line per request to standard output with the time, request id, method, route with identifiers replaced (`/v1/rooms/:room/events`), status, duration and the first eight hex digits of the room id's SHA-256; never a body, a credential, an invite code or a name.
+
+With `--backup`, the relay copies its database every minute when something changed, and once more when it stops, so a container that is replaced cleanly loses nothing and one that crashes loses at most a minute. When it starts on a disk with no database, it restores the newest copy first; a database already on the disk always wins. If the copies cannot be reached, it refuses to start rather than begin empty. Start with `--no-restore` to begin empty on purpose, knowing new copies will push out the old ones after `PAIRLOBBY_BACKUP_KEEP` rounds. S3 uses the usual AWS credentials: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, the ECS task role or the EC2 instance role, with `AWS_REGION`. The role needs `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject` and `s3:ListBucket` on the bucket and prefix. Every copy and restore writes one JSON line to standard output.
 
 #### Joining by name, without an invite
 

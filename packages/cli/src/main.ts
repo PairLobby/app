@@ -138,6 +138,8 @@ const OPTIONS = {
     'public-url': {type: 'string'},
     'trusted-proxy-header': {type: 'string'},
     'request-log': {type: 'string'},
+    backup: {type: 'string'},
+    'no-restore': {type: 'boolean'},
     port: {type: 'string'},
     'data-dir': {type: 'string'},
     help: {type: 'boolean'}
@@ -249,6 +251,9 @@ const HELP = `pairlobby
                                     only callers sending the same token may create rooms; invites still join without it
   pairlobby serve --request-log writes
                                     one JSON line per request on standard output: all, writes (skips successful reads) or off
+  pairlobby serve --backup s3://<bucket>/<prefix>
+                                    copy the rooms there every minute and on stop (or to an absolute folder);
+                                    an empty disk starts from the newest copy unless --no-restore
   PAIRLOBBY_* variables             every serve flag also reads from the environment, for containers; see GUIDE.md
   pairlobby service install          keep the relay running at login and after a crash, on the installed release (macOS)
   pairlobby service status|restart|logs|uninstall
@@ -2549,18 +2554,24 @@ function relayNetwork(store: LocalStore, values: Values, hostGiven: boolean): 'o
 }
 
 async function serve(store: LocalStore, values: Values): Promise<number> {
-    const {startServer} = await import('@pairlobby/local-server');
+    const {backupTarget, parseBackupLocation, startServer} = await import('@pairlobby/local-server');
     const {dataDirectory} = await import('@pairlobby/client');
     const {join} = await import('node:path');
     const dataDir = str(values, 'data-dir') ?? dataDirectory();
     // Flags win over PAIRLOBBY_* variables; the create token only ever comes from the environment, since a command line shows in every process listing.
-    const flagNames: [keyof RelayFlags, 'host' | 'port' | 'public-url' | 'trusted-proxy-header' | 'request-log'][] = [['host', 'host'], ['port', 'port'], ['publicUrl', 'public-url'], ['trustedProxyHeader', 'trusted-proxy-header'], ['requestLog', 'request-log']];
-    const flags: RelayFlags = Object.fromEntries(flagNames.flatMap(([key, name]) => (str(values, name) === undefined ? [] : [[key, str(values, name)]])));
+    const flagNames: [keyof RelayFlags, 'host' | 'port' | 'public-url' | 'trusted-proxy-header' | 'request-log' | 'backup'][] = [['host', 'host'], ['port', 'port'], ['publicUrl', 'public-url'], ['trustedProxyHeader', 'trusted-proxy-header'], ['requestLog', 'request-log'], ['backup', 'backup']];
+    const flags: RelayFlags = {...Object.fromEntries(flagNames.flatMap(([key, name]) => (str(values, name) === undefined ? [] : [[key, str(values, name)]]))), ...(flag(values, 'no-restore') ? {noRestore: true} : {})};
     const settings = relaySettings(flags, process.env);
+    const backupLocation = settings.backup ? parseBackupLocation(settings.backup.url) : null;
+    if (settings.backup && !backupLocation) {
+        throw new UsageError(`--backup (PAIRLOBBY_BACKUP) must be s3://bucket/prefix or an absolute folder path, not "${settings.backup.url}"`);
+    }
     const network = relayNetwork(store, values, settings.host !== undefined);
     const host = settings.host ?? (network === 'off' ? '127.0.0.1' : '0.0.0.0');
     const port = settings.port ?? DEFAULT_RELAY_PORT;
     const {publicUrl, trustedProxyHeader, createToken, allowedHosts, limits, requestLog} = settings;
+    const writeLine = (line: string) => process.stdout.write(`${line}\n`);
+    const backup = settings.backup && backupLocation ? {target: backupTarget(backupLocation), intervalMs: settings.backup.intervalMs, keep: settings.backup.keep, restore: settings.backup.restore, log: writeLine} : undefined;
     // Tailnet devices may address this one by its MagicDNS names, which are not interface addresses.
     const tailnet = host === '127.0.0.1' ? null : await tailscaleView();
     // A relay started from an agent's shell belongs to that session's process tree and dies with it, taking every room with it.
@@ -2570,7 +2581,7 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     }
     let running;
     try {
-        running = await startServer({version: VERSION, host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), ...(trustedProxyHeader ? {trustedProxyHeader} : {}), ...(createToken ? {createToken} : {}), allowedHosts, limits, ...(requestLog ? {requestLog: {mode: requestLog, write: (line: string) => process.stdout.write(`${line}\n`)}} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
+        running = await startServer({version: VERSION, host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), ...(trustedProxyHeader ? {trustedProxyHeader} : {}), ...(createToken ? {createToken} : {}), allowedHosts, limits, ...(requestLog ? {requestLog: {mode: requestLog, write: writeLine}} : {}), ...(backup ? {backup} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
     } catch (error) {
         // Say what is wrong and what to do, rather than surfacing a raw errno. The
         // occupant is never probed: something else owning the port is not ours to poke.
@@ -2608,6 +2619,13 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
         note('anyone who can reach this relay can create rooms on it. To require a token, start it with PAIRLOBBY_CREATE_TOKEN set, and give the same variable to the people who create rooms.');
     }
     out(`Data: ${running.dataFile}`);
+    if (backup) {
+        const restored = running.restore?.outcome === 'restored' ? running.restore.backup : null;
+        if (restored) {
+            out(`Restored the rooms from ${restored.name} in ${backup.target.description}, taken ${restored.takenAt}.`);
+        }
+        out(`Backups: ${backup.target.description}, every ${Math.round(backup.intervalMs / 1000)} seconds when something changed and once more on stop.`);
+    }
     out('Press Ctrl+C to stop.');
     // Runs in the foreground: an auto-starting daemon is lifecycle complexity nobody has asked for yet.
     await new Promise<void>((resolve) => {
