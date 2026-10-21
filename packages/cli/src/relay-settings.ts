@@ -8,7 +8,7 @@ import type {RequestLogMode} from '@pairlobby/local-server';
 
 import {UsageError} from './context.js';
 
-export type RelayFlags = {host?: string; port?: string; publicUrl?: string; trustedProxyHeader?: string; requestLog?: string};
+export type RelayFlags = {host?: string; port?: string; publicUrl?: string; trustedProxyHeader?: string; requestLog?: string; backup?: string; noRestore?: boolean};
 
 export type RelayEnvironment = Record<string, string | undefined>;
 
@@ -22,7 +22,11 @@ export type RelaySettings = {
     allowedHosts: string[];
     limits: Partial<AdmissionLimits>;
     requestLog?: RequestLogMode;
+    backup?: RelayBackupSettings;
 };
+
+/** Where and how often to copy the database; `url` is checked against the relay's own parser when the relay starts. */
+export type RelayBackupSettings = {url: string; intervalMs: number; keep: number; restore: boolean};
 
 type Source = {flag?: string; variable: string};
 
@@ -33,7 +37,7 @@ const LIMIT_VARIABLES: Record<keyof AdmissionLimits, string> = {
 };
 
 /** Every variable `serve` reads, for help text and documentation. */
-export const RELAY_VARIABLES = ['PAIRLOBBY_HOST', 'PAIRLOBBY_PORT', 'PAIRLOBBY_DATA_DIR', 'PAIRLOBBY_PUBLIC_URL', 'PAIRLOBBY_TRUSTED_PROXY_HEADER', 'PAIRLOBBY_ALLOWED_HOSTS', 'PAIRLOBBY_CREATE_TOKEN', 'PAIRLOBBY_CREATE_TOKEN_FILE', 'PAIRLOBBY_REQUEST_LOG', ...Object.values(LIMIT_VARIABLES)];
+export const RELAY_VARIABLES = ['PAIRLOBBY_HOST', 'PAIRLOBBY_PORT', 'PAIRLOBBY_DATA_DIR', 'PAIRLOBBY_PUBLIC_URL', 'PAIRLOBBY_TRUSTED_PROXY_HEADER', 'PAIRLOBBY_ALLOWED_HOSTS', 'PAIRLOBBY_CREATE_TOKEN', 'PAIRLOBBY_CREATE_TOKEN_FILE', 'PAIRLOBBY_REQUEST_LOG', 'PAIRLOBBY_BACKUP', 'PAIRLOBBY_BACKUP_INTERVAL', 'PAIRLOBBY_BACKUP_KEEP', 'PAIRLOBBY_BACKUP_S3_ENDPOINT', 'PAIRLOBBY_NO_RESTORE', ...Object.values(LIMIT_VARIABLES)];
 
 function described({flag, variable}: Source): string {
     return flag ? `--${flag} (${variable})` : variable;
@@ -117,6 +121,7 @@ export function relaySettings(flags: RelayFlags, environment: RelayEnvironment):
         throw new UsageError(`${described({flag: 'request-log', variable: 'PAIRLOBBY_REQUEST_LOG'})} must be all, writes or off, not "${requestLog}"`);
     }
     const token = createToken(environment);
+    const backup = backupSettings(flags, environment);
     return {
         ...(host ? {host} : {}),
         // 0 lets the system choose a free port.
@@ -126,6 +131,33 @@ export function relaySettings(flags: RelayFlags, environment: RelayEnvironment):
         ...(token ? {createToken: token} : {}),
         allowedHosts,
         limits,
-        ...(requestLog && requestLog !== 'off' ? {requestLog: requestLog as RequestLogMode} : {})
+        ...(requestLog && requestLog !== 'off' ? {requestLog: requestLog as RequestLogMode} : {}),
+        ...(backup ? {backup} : {})
+    };
+}
+
+function backupSettings(flags: RelayFlags, environment: RelayEnvironment): RelayBackupSettings | undefined {
+    const url = pick(flags.backup, environment, 'PAIRLOBBY_BACKUP');
+    const interval = environment['PAIRLOBBY_BACKUP_INTERVAL']?.trim();
+    const keep = environment['PAIRLOBBY_BACKUP_KEEP']?.trim();
+    const endpoint = environment['PAIRLOBBY_BACKUP_S3_ENDPOINT']?.trim();
+    const noRestore = environment['PAIRLOBBY_NO_RESTORE']?.trim().toLowerCase();
+    if (noRestore && !['1', 'true', '0', 'false'].includes(noRestore)) {
+        throw new UsageError(`PAIRLOBBY_NO_RESTORE must be 1 or 0, not "${noRestore}"`);
+    }
+    if (endpoint && !/^https?:\/\/[^/]+\/?$/.test(endpoint)) {
+        throw new UsageError(`PAIRLOBBY_BACKUP_S3_ENDPOINT must be an http(s) origin such as https://<account>.r2.cloudflarestorage.com, not "${endpoint}"`);
+    }
+    if (!url) {
+        if (interval || keep || endpoint || flags.noRestore) {
+            throw new UsageError('backup settings need a place to back up to: set --backup (PAIRLOBBY_BACKUP) to s3://bucket/prefix or a folder');
+        }
+        return undefined;
+    }
+    return {
+        url,
+        intervalMs: interval ? wholeNumber(interval, {variable: 'PAIRLOBBY_BACKUP_INTERVAL'}, 10, 86_400) * 1000 : 60_000,
+        keep: keep ? wholeNumber(keep, {variable: 'PAIRLOBBY_BACKUP_KEEP'}, 1, 10_000) : 48,
+        restore: !(flags.noRestore || noRestore === '1' || noRestore === 'true')
     };
 }

@@ -12,6 +12,8 @@ import {ABSOLUTE_MAX_FILE_BYTES} from '@pairlobby/protocol';
 
 import {advertiseRelay, isLocalNetworkAddress, isLoopbackAddress, isTailscaleAddress} from './network.js';
 import {REQUEST_ID_HEADER, requestIdFor, requestLogLine, shouldLog} from './request-log.js';
+import {restoreLatest, startBackups} from './backup.js';
+import type {BackupSchedule, BackupScheduleOptions, RestoreResult} from './backup.js';
 import type {RequestLogOptions} from './request-log.js';
 import {SqliteRoomStore} from './sqlite-store.js';
 
@@ -45,6 +47,8 @@ export interface ServeOptions {
     limits?: Partial<AdmissionLimits>;
     /** One JSON line per request for a log collector; absent logs nothing. */
     requestLog?: RequestLogOptions;
+    /** Copies the database while it runs and once more on close; on a disk with no database, the newest copy is restored first unless `restore` is false. */
+    backup?: BackupScheduleOptions & {restore?: boolean};
 }
 
 export interface RunningServer {
@@ -56,6 +60,8 @@ export interface RunningServer {
     host: string;
     port: number;
     dataFile: string;
+    /** What happened to the backup on start, when backups are on. */
+    restore?: RestoreResult;
     close(): Promise<void>;
 }
 
@@ -72,10 +78,19 @@ function requestBodyLimit(incoming: IncomingMessage): number {
 /** The port a relay listens on unless told otherwise, and the one other devices try when searching a tailnet. */
 export const DEFAULT_PORT = 8790;
 
-export function startServer(options: ServeOptions): Promise<RunningServer> {
+export async function startServer(options: ServeOptions): Promise<RunningServer> {
+    mkdirSync(dirname(options.dataFile), {recursive: true});
+    const backup = options.backup;
+    // Starting empty while the rooms sit in an unreachable backup would bury them under new copies.
+    const restore = backup && backup.restore !== false ? await restoreLatest({target: backup.target, dataFile: options.dataFile, ...(backup.log ? {log: backup.log} : {})}).catch((error: unknown) => {
+        throw new Error(`could not restore the rooms from ${backup.target.description}: ${error instanceof Error ? error.message : String(error)}. Fix access to it, or start with --no-restore to begin empty.`);
+    }) : undefined;
+    return listen(options, restore);
+}
+
+function listen(options: ServeOptions, restore: RestoreResult | undefined): Promise<RunningServer> {
     const host = options.host ?? '127.0.0.1';
     const port = options.port ?? DEFAULT_PORT;
-    mkdirSync(dirname(options.dataFile), {recursive: true});
     const store = new SqliteRoomStore(options.dataFile);
     const service = new RoomService(store);
 
@@ -164,6 +179,7 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
         }
     });
     let stopAdvertising = () => {};
+    let backups: BackupSchedule | null = null;
 
     return new Promise<RunningServer>((resolve, reject) => {
         server.once('error', reject);
@@ -176,6 +192,7 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
             if (options.advertise && !isLoopback(host)) {
                 stopAdvertising = advertiseRelay(boundPort);
             }
+            backups = options.backup ? startBackups({...options.backup, source: store, dataFile: options.dataFile}) : null;
             resolve({
                 url: options.publicUrl ?? `http://${wildcard ? '127.0.0.1' : host}:${boundPort}`,
                 shareUrls: shareUrls(host, boundPort, options.publicUrl, tailscaleOnly),
@@ -183,11 +200,12 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
                 host,
                 port: boundPort,
                 dataFile: options.dataFile,
+                ...(restore ? {restore} : {}),
                 close: () => {
                     stopped = true;
                     clearTimeout(wake);
                     stopAdvertising();
-                    return mutations.then(() => shutdown(server, store));
+                    return mutations.then(() => shutdown(server, store, backups));
                 }
             });
         });
@@ -307,11 +325,14 @@ async function toRequest(incoming: IncomingMessage, origin: string, bodyLimit: n
     return new Request(new URL(incoming.url ?? '/', origin), {method, headers, ...(hasBody ? {body: Buffer.concat(chunks)} : {})});
 }
 
-function shutdown(server: Server, store: SqliteRoomStore): Promise<void> {
+/** Stops taking requests, takes the last backup, then closes the database. */
+function shutdown(server: Server, store: SqliteRoomStore, backups: BackupSchedule | null): Promise<void> {
     return new Promise((resolve) => {
         server.close(() => {
-            store.close();
-            resolve();
+            void (backups?.stop() ?? Promise.resolve()).finally(() => {
+                store.close();
+                resolve();
+            });
         });
         server.closeAllConnections?.();
     });

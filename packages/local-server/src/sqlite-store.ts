@@ -3,6 +3,7 @@
 //! once two requests interleave around an await.
 
 import {ProtocolError, mergeMessageRequest} from '@pairlobby/protocol';
+import * as sqlite from 'node:sqlite';
 import {DatabaseSync} from 'node:sqlite';
 
 import type {FileRecord, HandoverRecord, InviteRecord, LocalRoom, MessageRequest, ParticipantRecord, RequestPage, RoomEvent, RoomRecord} from '@pairlobby/protocol';
@@ -75,6 +76,21 @@ export class SqliteRoomStore implements RoomStore {
 
     close(): void {
         this.db.close();
+    }
+
+    /** Rows this store has changed since it opened, so a backup can tell nothing happened. */
+    changeCount(): number {
+        return Number((this.db.prepare('SELECT total_changes() AS changes').get() as {changes: number}).changes);
+    }
+
+    /** A consistent copy at `destination`, taken a few pages at a time so requests keep being served. */
+    async snapshot(destination: string): Promise<void> {
+        // `backup` arrived in Node 22.16; older 22s block for the whole copy instead.
+        if (typeof sqlite.backup === 'function') {
+            await sqlite.backup(this.db, destination, {rate: 100});
+            return;
+        }
+        this.db.prepare('VACUUM INTO ?').run(destination);
     }
 
     private transaction<T>(run: () => T): T {
