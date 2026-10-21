@@ -16,6 +16,7 @@ import {LocalStore, PairLobbyClient, openRequests, owedByMe, unreceipted} from '
 import type {JoinedRoom, RoomEntry, RoomPreset, Settings} from '@pairlobby/client';
 import {ParticipantName, ProtocolError, effectivePermissions, requestState, newId, normalizeInviteCode, MessageAction, roomPermissions, safeFileName} from '@pairlobby/protocol';
 import type {AdapterCapabilities, MessageRequest} from '@pairlobby/protocol';
+import type {RelayFlags} from '@pairlobby/local-server/settings';
 
 import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
 import {detectRuntime, sameRuntime} from './runtime-detect.js';
@@ -25,8 +26,6 @@ import {WhenError, formatDuration, parseDuration, parseExpiry} from './when.js';
 import {pickExpiry} from './picker.js';
 import {DEFAULT_LOCAL_SERVER, DEFAULT_RELAY_PORT, UsageError, controllerCredential, moderationCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
 import type {Selection} from './context.js';
-import {relaySettings} from './relay-settings.js';
-import type {RelayFlags} from './relay-settings.js';
 import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
 import {acceptInvitation, accountToken, declineInvitation, isOnlineKey, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineOrigin, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
@@ -2554,24 +2553,27 @@ function relayNetwork(store: LocalStore, values: Values, hostGiven: boolean): 'o
 }
 
 async function serve(store: LocalStore, values: Values): Promise<number> {
-    const {backupTarget, parseBackupLocation, startServer} = await import('@pairlobby/local-server');
+    const {backupTarget, startServer} = await import('@pairlobby/local-server');
+    const {RelaySettingsError, relaySettings} = await import('@pairlobby/local-server/settings');
     const {dataDirectory} = await import('@pairlobby/client');
     const {join} = await import('node:path');
     const dataDir = str(values, 'data-dir') ?? dataDirectory();
     // Flags win over PAIRLOBBY_* variables; the create token only ever comes from the environment, since a command line shows in every process listing.
     const flagNames: [keyof RelayFlags, 'host' | 'port' | 'public-url' | 'trusted-proxy-header' | 'request-log' | 'backup'][] = [['host', 'host'], ['port', 'port'], ['publicUrl', 'public-url'], ['trustedProxyHeader', 'trusted-proxy-header'], ['requestLog', 'request-log'], ['backup', 'backup']];
     const flags: RelayFlags = {...Object.fromEntries(flagNames.flatMap(([key, name]) => (str(values, name) === undefined ? [] : [[key, str(values, name)]]))), ...(flag(values, 'no-restore') ? {noRestore: true} : {})};
-    const settings = relaySettings(flags, process.env);
-    const backupLocation = settings.backup ? parseBackupLocation(settings.backup.url) : null;
-    if (settings.backup && !backupLocation) {
-        throw new UsageError(`--backup (PAIRLOBBY_BACKUP) must be s3://bucket/prefix or an absolute folder path, not "${settings.backup.url}"`);
-    }
+    const settings = (() => {
+        try {
+            return relaySettings(flags, process.env);
+        } catch (error) {
+            throw error instanceof RelaySettingsError ? new UsageError(error.message) : error;
+        }
+    })();
     const network = relayNetwork(store, values, settings.host !== undefined);
     const host = settings.host ?? (network === 'off' ? '127.0.0.1' : '0.0.0.0');
     const port = settings.port ?? DEFAULT_RELAY_PORT;
     const {publicUrl, trustedProxyHeader, createToken, allowedHosts, limits, requestLog} = settings;
     const writeLine = (line: string) => process.stdout.write(`${line}\n`);
-    const backup = settings.backup && backupLocation ? {target: backupTarget(backupLocation), intervalMs: settings.backup.intervalMs, keep: settings.backup.keep, restore: settings.backup.restore, log: writeLine} : undefined;
+    const backup = settings.backup ? {target: backupTarget(settings.backup.location), intervalMs: settings.backup.intervalMs, keep: settings.backup.keep, restore: settings.backup.restore, log: writeLine} : undefined;
     // Tailnet devices may address this one by its MagicDNS names, which are not interface addresses.
     const tailnet = host === '127.0.0.1' ? null : await tailscaleView();
     // A relay started from an agent's shell belongs to that session's process tree and dies with it, taking every room with it.

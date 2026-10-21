@@ -195,6 +195,8 @@ Only set `--trusted-proxy-header` when every request comes through that proxy, s
 
 Every `serve` flag also reads from a `PAIRLOBBY_*` variable, so a container or a service manager needs no command line; a flag wins over its variable.
 
+In a container, run `pairlobby-relay` from the `@pairlobby/local-server` package instead of the whole CLI: the same settings, JSON log lines, a final backup on `SIGTERM`, and none of the room commands. It needs `PAIRLOBBY_DATA_DIR` and listens on `127.0.0.1` unless `PAIRLOBBY_HOST` says otherwise. [`deploy/relay`](deploy/relay) has a Dockerfile. `pairlobby-relay check <url>` checks a deployed relay from outside: health, the address invites show, whether creating rooms needs the token (pass it in `PAIRLOBBY_CREATE_TOKEN`), then one test room through create, join, send, read and delete.
+
 | Variable | Flag | Meaning |
 |---|---|---|
 | `PAIRLOBBY_HOST` | `--host` | address to listen on; `0.0.0.0` in a container |

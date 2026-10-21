@@ -5,3 +5,5 @@ export * from './sqlite-store.js';
 export * from './request-log.js';
 export * from './backup.js';
 export * from './s3.js';
+export * from './settings.js';
+export * from './check.js';

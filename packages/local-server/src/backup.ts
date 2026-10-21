@@ -6,9 +6,8 @@ import {dirname, join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 
 import {s3Client} from './s3.js';
+import type {BackupLocation} from './settings.js';
 import type {S3Client, S3Environment} from './s3.js';
-
-export type BackupLocation = {kind: 'folder'; path: string} | {kind: 's3'; bucket: string; prefix: string};
 
 /** Where copies go. Names are `rooms-<UTC time>.sqlite`, so sorting them sorts them by age. */
 export type BackupTarget = {
@@ -62,17 +61,6 @@ export function backupName(at: Date): string {
 function takenAt(name: string): string {
     const [, day = '', time = '', millis = ''] = NAME.exec(name) ?? [];
     return `${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6)}T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4)}.${millis}Z`;
-}
-
-/** `s3://bucket/prefix` or an absolute folder path (`file://` allowed); null for anything else. */
-export function parseBackupLocation(value: string): BackupLocation | null {
-    if (value.startsWith('s3://')) {
-        const [bucket = '', ...rest] = value.slice('s3://'.length).split('/');
-        const prefix = rest.filter(Boolean).join('/');
-        return /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket) ? {kind: 's3', bucket, prefix: prefix ? `${prefix}/` : ''} : null;
-    }
-    const path = value.startsWith('file://') ? decodeURIComponent(new URL(value).pathname) : value;
-    return path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path) ? {kind: 'folder', path} : null;
 }
 
 export function folderTarget(directory: string): BackupTarget {

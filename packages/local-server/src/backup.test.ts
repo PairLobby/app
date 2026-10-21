@@ -6,7 +6,7 @@ import {newCredential} from '@pairlobby/protocol';
 import {RoomService} from '@pairlobby/server-core';
 import {afterAll, describe, expect, test} from 'vitest';
 
-import {backupName, folderTarget, parseBackupLocation, restoreLatest, startBackups} from './backup.js';
+import {backupName, folderTarget, restoreLatest, startBackups} from './backup.js';
 import type {BackupTarget} from './backup.js';
 import {SqliteRoomStore} from './sqlite-store.js';
 
@@ -35,17 +35,7 @@ function unreachable(): BackupTarget {
     return {description: 's3://gone/', put: fail, list: fail, get: fail, remove: fail};
 }
 
-describe('backup locations', () => {
-    test('test_s3_urls_and_absolute_folders_are_accepted_and_nothing_else', () => {
-        expect(parseBackupLocation('s3://team-relay/pairlobby/prod/')).toEqual({kind: 's3', bucket: 'team-relay', prefix: 'pairlobby/prod/'});
-        expect(parseBackupLocation('s3://team-relay')).toEqual({kind: 's3', bucket: 'team-relay', prefix: ''});
-        expect(parseBackupLocation('/var/backups/pairlobby')).toEqual({kind: 'folder', path: '/var/backups/pairlobby'});
-        expect(parseBackupLocation('file:///var/backups/pair%20lobby')).toEqual({kind: 'folder', path: '/var/backups/pair lobby'});
-        expect(parseBackupLocation('backups')).toBeNull();
-        expect(parseBackupLocation('s3://Team_Relay/x')).toBeNull();
-        expect(parseBackupLocation('https://bucket.s3.amazonaws.com')).toBeNull();
-    });
-
+describe('backup names', () => {
     test('test_copy_names_sort_by_the_time_they_were_taken', () => {
         expect(backupName(new Date('2026-10-21T18:04:05.123Z'))).toBe('rooms-20261021T180405123Z.sqlite');
         expect([backupName(new Date('2026-10-21T09:00:00Z')), backupName(new Date('2026-10-20T23:00:00Z'))].sort()[0]).toContain('20261020');

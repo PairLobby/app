@@ -4,7 +4,7 @@ import {join} from 'node:path';
 
 import {afterAll, describe, expect, test} from 'vitest';
 
-import {parsePublicUrl, relaySettings} from './relay-settings.js';
+import {parseBackupLocation, parsePublicUrl, relaySettings} from './settings.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'pairlobby-relay-settings-'));
 
@@ -72,13 +72,24 @@ describe('relay settings', () => {
     });
 
     test('test_backups_need_a_place_and_take_their_rhythm_from_the_environment', () => {
-        expect(relaySettings({}, {PAIRLOBBY_BACKUP: 's3://team-relay/pairlobby'}).backup).toEqual({url: 's3://team-relay/pairlobby', intervalMs: 60_000, keep: 48, restore: true});
-        expect(relaySettings({backup: '/srv/copies', noRestore: true}, {PAIRLOBBY_BACKUP: 's3://ignored', PAIRLOBBY_BACKUP_INTERVAL: '300', PAIRLOBBY_BACKUP_KEEP: '12'}).backup).toEqual({url: '/srv/copies', intervalMs: 300_000, keep: 12, restore: false});
+        expect(relaySettings({}, {PAIRLOBBY_BACKUP: 's3://team-relay/pairlobby'}).backup).toEqual({location: {kind: 's3', bucket: 'team-relay', prefix: 'pairlobby/'}, intervalMs: 60_000, keep: 48, restore: true});
+        expect(relaySettings({backup: '/srv/copies', noRestore: true}, {PAIRLOBBY_BACKUP: 's3://ignored', PAIRLOBBY_BACKUP_INTERVAL: '300', PAIRLOBBY_BACKUP_KEEP: '12'}).backup).toEqual({location: {kind: 'folder', path: '/srv/copies'}, intervalMs: 300_000, keep: 12, restore: false});
+        expect(() => relaySettings({}, {PAIRLOBBY_BACKUP: 'relative/dir'})).toThrow('--backup (PAIRLOBBY_BACKUP) must be s3://bucket/prefix or an absolute folder path');
         expect(relaySettings({}, {PAIRLOBBY_BACKUP: '/srv/copies', PAIRLOBBY_NO_RESTORE: '1'}).backup?.restore).toBe(false);
         expect(relaySettings({}, {}).backup).toBeUndefined();
         expect(() => relaySettings({}, {PAIRLOBBY_BACKUP_INTERVAL: '60'})).toThrow('need a place to back up to');
         expect(() => relaySettings({}, {PAIRLOBBY_BACKUP: '/srv/copies', PAIRLOBBY_BACKUP_INTERVAL: '5'})).toThrow('PAIRLOBBY_BACKUP_INTERVAL must be a whole number from 10 to 86400');
         expect(() => relaySettings({}, {PAIRLOBBY_BACKUP: '/srv/copies', PAIRLOBBY_BACKUP_S3_ENDPOINT: 'r2.example.com'})).toThrow('must be an http(s) origin');
         expect(() => relaySettings({}, {PAIRLOBBY_BACKUP: '/srv/copies', PAIRLOBBY_NO_RESTORE: 'yes'})).toThrow('must be 1 or 0');
+    });
+
+    test('test_s3_urls_and_absolute_folders_are_accepted_and_nothing_else', () => {
+        expect(parseBackupLocation('s3://team-relay/pairlobby/prod/')).toEqual({kind: 's3', bucket: 'team-relay', prefix: 'pairlobby/prod/'});
+        expect(parseBackupLocation('s3://team-relay')).toEqual({kind: 's3', bucket: 'team-relay', prefix: ''});
+        expect(parseBackupLocation('/var/backups/pairlobby')).toEqual({kind: 'folder', path: '/var/backups/pairlobby'});
+        expect(parseBackupLocation('file:///var/backups/pair%20lobby')).toEqual({kind: 'folder', path: '/var/backups/pair lobby'});
+        expect(parseBackupLocation('backups')).toBeNull();
+        expect(parseBackupLocation('s3://Team_Relay/x')).toBeNull();
+        expect(parseBackupLocation('https://bucket.s3.amazonaws.com')).toBeNull();
     });
 });
