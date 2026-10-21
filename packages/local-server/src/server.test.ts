@@ -416,6 +416,53 @@ describe('local server reachable from a network', () => {
     });
 });
 
+describe('local server run as a service', () => {
+    test('test_health_answers_any_host_and_every_response_carries_a_request_id', async () => {
+        const relay = await startServer({port: 0, dataFile: join(directory, 'health.sqlite'), version: '9.9.9'});
+        try {
+            const health = await rawGet('/health', {host: '10.9.8.7:8790'}, relay.port);
+            expect(health.status).toBe(200);
+            const answer = await fetch(`${relay.url}/health`);
+            expect(await answer.json()).toEqual({service: 'pairlobby-relay', ready: true, version: '9.9.9'});
+            const echoed = await fetch(`${relay.url}/v1/server`, {headers: {'x-request-id': 'from-the-balancer'}});
+            expect(echoed.headers.get('x-request-id')).toBe('from-the-balancer');
+            expect((await fetch(`${relay.url}/v1/server`)).headers.get('x-request-id')).toMatch(/^[0-9a-f-]{36}$/);
+        } finally {
+            await relay.close();
+        }
+    });
+
+    test('test_the_request_log_has_one_line_per_write_and_no_room_ids_or_secrets', async () => {
+        const lines: string[] = [];
+        const relay = await startServer({port: 0, dataFile: join(directory, 'logged.sqlite'), requestLog: {mode: 'writes', write: (line) => lines.push(line)}});
+        try {
+            const room = await createRoom(relay.url);
+            await fetch(`${relay.url}/v1/rooms/${room.roomId}/events`, {headers: {authorization: `Bearer ${room.participantCredential}`}});
+            await fetch(`${relay.url}/v1/rooms/${room.roomId}/events`);
+            const entries = lines.map((line) => JSON.parse(line) as {method: string; route: string; status: number; roomHash?: string});
+            expect(entries.map(({method, route, status}) => `${method} ${route} ${status}`)).toEqual(['POST /v1/rooms 201', 'GET /v1/rooms/:room/events 401']);
+            expect(entries[1]!.roomHash).toMatch(/^[0-9a-f]{8}$/);
+            const all = lines.join('\n');
+            for (const secret of [room.roomId, room.participantCredential, room.controllerCredential, room.invite.code, 'http-room']) {
+                expect(all).not.toContain(secret);
+            }
+        } finally {
+            await relay.close();
+        }
+    });
+
+    test('test_extra_allowed_hosts_are_accepted_exactly', async () => {
+        const relay = await startServer({port: 0, dataFile: join(directory, 'allowed-hosts.sqlite'), allowedHosts: ['relay.internal']});
+        try {
+            expect((await rawGet('/v1/server', {host: 'relay.internal'}, relay.port)).status).toBe(200);
+            expect((await rawGet('/v1/server', {host: 'relay.internal:9999'}, relay.port)).status).toBe(401);
+            expect((await rawGet('/v1/server', {host: 'evil.example'}, relay.port)).status).toBe(401);
+        } finally {
+            await relay.close();
+        }
+    });
+});
+
 describe('local server auto-close timer', () => {
     test('test_the_relay_closes_an_idle_room_on_its_own_without_a_request', async () => {
         const dataFile = join(directory, 'auto-close.sqlite');

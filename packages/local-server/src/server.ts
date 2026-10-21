@@ -11,6 +11,8 @@ import type {AdmissionLimits} from '@pairlobby/server-core';
 import {ABSOLUTE_MAX_FILE_BYTES} from '@pairlobby/protocol';
 
 import {advertiseRelay, isLocalNetworkAddress, isLoopbackAddress, isTailscaleAddress} from './network.js';
+import {REQUEST_ID_HEADER, requestIdFor, requestLogLine, shouldLog} from './request-log.js';
+import type {RequestLogOptions} from './request-log.js';
 import {SqliteRoomStore} from './sqlite-store.js';
 
 export interface ServeOptions {
@@ -25,6 +27,8 @@ export interface ServeOptions {
     peers?: 'any' | 'tailscale';
     /** More names this server answers to beyond its own addresses and hostname, such as Tailscale MagicDNS names. */
     hostnames?: string[];
+    /** Exact `Host` values to accept as well, such as an internal DNS name a load balancer forwards unchanged. */
+    allowedHosts?: string[];
     /** Announce this relay on the local network over mDNS, so `pairlobby join <code>` there can find it. */
     advertise?: boolean;
     /** Reported by `GET /v1/server`, so a client can tell which build this relay runs. */
@@ -39,6 +43,8 @@ export interface ServeOptions {
     trustedProxyHeader?: string;
     /** Rate limits on creating rooms and redeeming invites; callers on this device are exempt unless the relay is behind a proxy. */
     limits?: Partial<AdmissionLimits>;
+    /** One JSON line per request for a log collector; absent logs nothing. */
+    requestLog?: RequestLogOptions;
 }
 
 export interface RunningServer {
@@ -77,7 +83,7 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
     // Host is pinned to defeat DNS rebinding, and an unexpected Origin is refused.
     // A server listening on every interface also answers to this machine's own
     // addresses and names; a rebinding attack needs a name the attacker controls.
-    const allowedHosts: string[] = [];
+    const allowedHosts: string[] = [...(options.allowedHosts ?? [])];
     if (options.publicUrl) {
         allowedHosts.push(new URL(options.publicUrl).host);
     }
@@ -140,8 +146,15 @@ export function startServer(options: ServeOptions): Promise<RunningServer> {
     };
     sweep();
 
+    const health = JSON.stringify({service: 'pairlobby-relay', ready: true, ...(options.version ? {version: options.version} : {})});
     const server = createHttpServer((incoming, outgoing) => {
-        void respond(handle, incoming, outgoing, `http://${incoming.headers.host ?? `${host}:${port}`}`, peerAddresses);
+        // Answered before the Host check and the write queue: a load balancer probes by address, and a busy relay is still alive.
+        if (incoming.method === 'GET' && (incoming.url ?? '').split('?', 1)[0] === '/health') {
+            outgoing.writeHead(200, {'content-type': 'application/json', 'cache-control': 'no-store'});
+            outgoing.end(health);
+            return;
+        }
+        void respond(handle, incoming, outgoing, `http://${incoming.headers.host ?? `${host}:${port}`}`, peerAddresses, options.requestLog);
     });
     // Enforced on the connection, before any request is read: the bind address alone
     // cannot say "Tailscale only" when the Tailscale address may not exist yet at boot.
@@ -241,27 +254,34 @@ function shareUrls(host: string, port: number, publicUrl: string | undefined, ta
     return urls;
 }
 
-async function respond(handle: (request: Request) => Promise<Response>, incoming: IncomingMessage, outgoing: ServerResponse, origin: string, peerAddresses: WeakMap<Request, string>): Promise<void> {
+async function respond(handle: (request: Request) => Promise<Response>, incoming: IncomingMessage, outgoing: ServerResponse, origin: string, peerAddresses: WeakMap<Request, string>, log: RequestLogOptions | undefined): Promise<void> {
+    const started = Date.now();
+    const requestId = requestIdFor(typeof incoming.headers[REQUEST_ID_HEADER] === 'string' ? incoming.headers[REQUEST_ID_HEADER] : null);
     const bodyLimit = requestBodyLimit(incoming);
+    const finish = (status: number, headers: Record<string, string>, body?: Buffer | string) => {
+        outgoing.writeHead(status, {...headers, [REQUEST_ID_HEADER]: requestId});
+        outgoing.end(body);
+        const method = incoming.method ?? 'GET';
+        if (log && shouldLog(log.mode, method, status)) {
+            log.write(requestLogLine({requestId, method, path: (incoming.url ?? '/').split('?', 1)[0]!, status, ms: Date.now() - started, at: new Date(started)}));
+        }
+    };
+    const tooLarge = () => finish(413, {'content-type': 'application/json', connection: 'close'}, JSON.stringify({error: {code: 'payload_too_large', message: 'this request is larger than the relay accepts'}}));
     try {
         if (Number(incoming.headers['content-length'] ?? 0) > bodyLimit) {
-            outgoing.writeHead(413, {'content-type': 'application/json', connection: 'close'});
-            outgoing.end(JSON.stringify({error: {code: 'payload_too_large', message: 'this request is larger than the relay accepts'}}));
+            tooLarge();
             return;
         }
         const request = await toRequest(incoming, origin, bodyLimit);
         peerAddresses.set(request, incoming.socket.remoteAddress ?? '');
         const response = await handle(request);
-        outgoing.writeHead(response.status, Object.fromEntries(response.headers));
-        outgoing.end(response.body ? Buffer.from(await response.arrayBuffer()) : undefined);
+        finish(response.status, Object.fromEntries(response.headers), response.body ? Buffer.from(await response.arrayBuffer()) : undefined);
     } catch (error) {
         if (error instanceof RequestBodyTooLarge) {
-            outgoing.writeHead(413, {'content-type': 'application/json', connection: 'close'});
-            outgoing.end(JSON.stringify({error: {code: 'payload_too_large', message: 'this request is larger than the relay accepts'}}));
+            tooLarge();
             return;
         }
-        outgoing.writeHead(503, {'content-type': 'application/json'});
-        outgoing.end(JSON.stringify({error: {code: 'server_unavailable', message: 'the server could not complete this request'}}));
+        finish(503, {'content-type': 'application/json'}, JSON.stringify({error: {code: 'server_unavailable', message: 'the server could not complete this request'}}));
     }
 }
 
