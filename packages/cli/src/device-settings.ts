@@ -8,6 +8,9 @@ import type {PanelChoice, RoomPanelPage, RoomPanelRow} from './room-panel.js';
 import {AUTO_CLOSE_CHOICES, AUTO_CLOSE_USAGE, applyAutoCloseToRooms, describeAutoClose, formatAutoClose, parseAutoClose, summarizeBulk} from './auto-close.js';
 import {WhenError, formatDuration, parseDuration} from './when.js';
 import {validateManagedDeadline} from './managed-deadline.js';
+import {BUILT_IN_LABEL, activeEndpoint, builtInEndpoint, endpointByLabel, removeEndpoint, savedEndpoints, useEndpoint} from './endpoints.js';
+import {detectRuntime} from './runtime-detect.js';
+import {AGENT_REFUSAL} from './setup.js';
 
 type SettingKind = 'boolean' | 'number' | 'duration' | 'managed-duration' | 'choice' | 'auto-close';
 
@@ -174,8 +177,36 @@ export function deviceSettingsPage(store: LocalStore, state: MenuState = {note: 
     rows.push({id: 'apply-auto-close', label: 'Apply auto-close to my rooms', value: state.note || 'Existing rooms you administer on this device', section: 'New rooms', action: {kind: 'command', confirm: `Set auto-close to "${describeAutoClose(autoClose).toLowerCase()}" on every room this device administers? Rooms already past that limit close immediately. Rooms it cannot reach or change are listed, not changed.`, run: async () => {
         state.note = summarizeBulk(await applyAutoCloseToRooms(store, autoClose));
     }}});
-    rows.push({id: 'reset', label: 'Reset all settings', value: 'Back to the built-in defaults', section: 'Reset', action: {kind: 'command', confirm: 'Reset every device setting to its default? Your profile name is kept.', run: async () => {
+    rows.push(endpointRow(store));
+    rows.push({id: 'reset', label: 'Reset all settings', value: 'Back to the built-in defaults', section: 'Reset', action: {kind: 'command', confirm: 'Reset every device setting to its default? Your profile name and saved service endpoints are kept.', run: async () => {
         store.resetSettings();
     }}});
     return {id: 'device-settings', title: 'PairLobby settings — this device', rows, note: 'Enter edits a setting and saves it immediately. Room-specific settings live in /settings inside a room.', reload: async () => deviceSettingsPage(store, state)};
+}
+
+/** Read-only here: switching or forgetting an endpoint opens a page, and adding one needs `pairlobby setup <url>`, which checks the address first. */
+function endpointRow(store: LocalStore): RoomPanelRow {
+    const active = activeEndpoint(store);
+    return {id: 'service-endpoint', label: 'Service endpoint', value: active.label === BUILT_IN_LABEL ? 'pairlobby.com' : `${active.name} (${active.label})`, section: 'Network', action: {kind: 'menu', load: async () => endpointsPage(store)}};
+}
+
+function endpointsPage(store: LocalStore): RoomPanelPage {
+    const active = activeEndpoint(store);
+    const refuse = () => {
+        if (detectRuntime().runtime !== undefined) {
+            throw new Error(AGENT_REFUSAL);
+        }
+    };
+    const rows: RoomPanelRow[] = [builtInEndpoint(), ...Object.keys(savedEndpoints(store)).map((label) => endpointByLabel(store, label)!)].flatMap((endpoint) => [
+        {id: `endpoint-use-${endpoint.label}`, label: endpoint.label, value: `${endpoint.origin}${endpoint.label === active.label ? '  (active)' : ''}`, section: 'Use', action: {kind: 'command' as const, confirm: `Use ${endpoint.name} (${endpoint.origin}) for login, online rooms and invitations on this device?`, run: async () => {
+            refuse();
+            useEndpoint(store, endpoint.label);
+        }}},
+        ...(endpoint.label === BUILT_IN_LABEL ? [] : [{id: `endpoint-remove-${endpoint.label}`, label: `Remove ${endpoint.label}`, value: 'Forget it and its saved login', section: 'Remove', action: {kind: 'command' as const, confirm: `Forget ${endpoint.origin} and its saved login on this device?`, run: async () => {
+            refuse();
+            removeEndpoint(store, endpoint.label);
+        }}}]),
+    ]);
+    rows.push({id: 'endpoint-add', label: 'Add an endpoint', value: 'pairlobby setup <url> in a terminal', section: 'Add'});
+    return {id: 'device-endpoints', title: 'Service endpoint', rows, note: 'Where login, online rooms and invitations go. Tokens stay with the endpoint that issued them.', reload: async () => endpointsPage(store)};
 }

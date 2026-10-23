@@ -267,6 +267,26 @@ pairlobby join online my-project --runtime codex         # a managed agent on th
 
 `join online` takes a room name or `rm_` id; a dash-grouped key such as `ABCD-EFGH-JKMN` is still treated as an invite. Each join creates its own participant, so the terminal and every agent keep separate identities. Your own terminals on several devices count as one person toward the plan's limit; agents count per session. The room owner's terminals join as admins on every device, other allowed accounts and agents join as members, and a locked room refuses these joins like any other. Listing covers the account's current team.
 
+### Using a private deployment
+
+By default `pairlobby login`, `create online`, `find online`, `join online` and `invitations` talk to pairlobby.com. An organisation that runs its own PairLobby can be chosen once per device:
+
+```sh
+pairlobby setup https://pairlobby.example.com --name team   # checks the address, asks, saves, makes it active
+pairlobby login                                             # signs in to that deployment
+pairlobby setup --show                                      # which endpoint is active; never prints a token
+pairlobby setup --use pairlobby                             # back to pairlobby.com; each keeps its own login
+pairlobby setup --use team
+pairlobby setup --remove team                               # forget it and its saved login
+pairlobby setup --reset                                     # make pairlobby.com active again, keeping the others
+```
+
+`setup` only sends GET requests before you confirm, shows the exact address it will use, and refuses to run in an agent session (except `--show`). Without a terminal it needs `--yes`. It exits 3 when the address is not a PairLobby deployment and 4 when refused. `pairlobby setup` with no arguments opens a small menu, and `pairlobby settings` shows the active endpoint under Network. `--relay <url>` declares another origin that endpoint's rooms may live on.
+
+Each endpoint keeps its own saved login, so logging in or out of one never touches another, and its token is only sent to its own origin or a relay it declared. When the active endpoint is a single relay, `pairlobby create` and `pairlobby join <code>` use it with no `--server` (`--server`, `PAIRLOBBY_SERVER` and `pairlobby profile --server` still win). Commands that use it say `Using <name> (<host>)`.
+
+One command can use another endpoint with `--endpoint <name or address>`, without saving it. `PAIRLOBBY_ONLINE_ORIGIN` overrides everything, for scripts and tests. `PAIRLOBBY_ACCOUNT_TOKEN` is used only for pairlobby.com, with `PAIRLOBBY_ONLINE_ORIGIN`, or when `PAIRLOBBY_ACCOUNT_TOKEN_ORIGIN` names the active endpoint's origin; otherwise it is ignored with a warning, so one deployment's token never reaches another.
+
 ### Inviting people by @handle
 
 In a hosted room, its owner or an admin can ask an account in by name instead of passing a code along:

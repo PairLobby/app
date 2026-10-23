@@ -28,13 +28,15 @@ import {DEFAULT_LOCAL_SERVER, DEFAULT_RELAY_PORT, UsageError, controllerCredenti
 import type {Selection} from './context.js';
 import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
-import {acceptInvitation, accountToken, declineInvitation, isOnlineKey, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineOrigin, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
+import {acceptInvitation, accountToken, accountTokenFor, declineInvitation, isOnlineKey, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
 import type {ReceivedInvitation} from './online.js';
 import {receiverAttempts, receiverConfiguration, receiverStatus, refreshReceivers, retryProviderNow, runReceiver, startReceiver, stopReceiver, waitAndRefreshReceiver, wakeOfflineReceivers} from './receiver.js';
 import type {ReceiverStartOptions, ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
 import {discoverableNote, joinCommand, localOnlyNote, parseJoinLink, shareTarget} from './share.js';
 import {invitationNotice, rememberInvitations, scheduleInvitationCheck} from './invitation-notice.js';
+import {BUILT_IN_ORIGIN, activeEndpoint, endpointRelay, useEndpointOverride} from './endpoints.js';
+import {DEFAULT_SETUP, setupCommand} from './setup.js';
 import {DEFAULT_LOCAL_ROOMS, findLocalRoom, findRelayForInvite, listLocalRooms} from './relay-discovery.js';
 import {routeForRoom} from './mentions.js';
 import type {RoutedChatMessage} from './mentions.js';
@@ -138,6 +140,12 @@ const OPTIONS = {
     'trusted-proxy-header': {type: 'string'},
     'request-log': {type: 'string'},
     backup: {type: 'string'},
+    endpoint: {type: 'string'},
+    relay: {type: 'string', multiple: true},
+    login: {type: 'boolean'},
+    show: {type: 'boolean'},
+    use: {type: 'string'},
+    remove: {type: 'string'},
     'no-restore': {type: 'boolean'},
     port: {type: 'string'},
     'data-dir': {type: 'string'},
@@ -184,6 +192,10 @@ const HELP = `pairlobby
                                     manage automatic receiving for the selected agent
   pairlobby spawn <claude|codex|qwen> [model] [--name name] [--effort level]
                                     create a new background agent in a saved room
+  pairlobby setup <url>              use your organisation's PairLobby for login and online rooms (asks first)
+  pairlobby setup --show|--use <name>|--remove <name>|--reset
+                                    which endpoint is active; switch; forget one; back to pairlobby.com
+  --endpoint <name|url>              one command against another endpoint, without saving it
   pairlobby login                    approve this terminal in the browser (--no-browser prints the link)
   pairlobby login --token            paste an account token from the website instead
   pairlobby logout                   revoke this terminal's login and forget it
@@ -306,6 +318,7 @@ async function main(argv: string[]): Promise<number> {
         scheduleBackgroundCheck(store, command);
     }
     scheduleInvitationCheck(store, command);
+    useEndpointOverride(str(values, 'endpoint'));
 
     switch (command) {
         case 'receiver-tools':
@@ -347,7 +360,11 @@ async function main(argv: string[]): Promise<number> {
             }
             return listRooms(store, values);
         case 'find':
-            return positionals[1] === 'online' ? findOnline(store, values) : findCommand(store, values);
+            if (positionals[1] === 'online') {
+                announceEndpoint(store);
+                return findOnline(store, values);
+            }
+            return findCommand(store, values);
         case 'name':
             return renameRoom(store, values, positionals[1], positionals.slice(2).join(' '));
         case 'rename-self':
@@ -362,14 +379,24 @@ async function main(argv: string[]): Promise<number> {
             return setLocalJoin(store, values, positionals[1]);
         case 'delete':
             return deleteRoom(store, values, positionals[1]);
+        case 'setup':
+            return setupCommand(store, {url: positionals[1], name: str(values, 'name'), relays: (values['relay'] as string[] | undefined) ?? [], yes: flag(values, 'yes'), login: flag(values, 'login'), json: flag(values, 'json'), show: flag(values, 'show'), use: str(values, 'use'), remove: str(values, 'remove'), reset: flag(values, 'reset')}, {...DEFAULT_SETUP, agent: detectRuntime().runtime !== undefined});
         case 'create':
+            if (positionals[1] === 'online') {
+                announceEndpoint(store);
+            }
             return createRoom(store, values, positionals[1] === 'online');
         case 'join':
+            if (positionals[1] === 'online') {
+                announceEndpoint(store);
+            }
             return joinRoom(store, values, ['online', 'local'].includes(positionals[1] ?? '') ? positionals[2] : positionals[1], positionals[1] === 'online', positionals[1] === 'local');
         case 'login':
+            announceEndpoint(store);
             out(`Logged in as ${await loginOnline(store, {paste: flag(values, 'token'), ...(flag(values, 'no-browser') ? {openBrowser: false} : {})})}`);
             return 0;
         case 'logout': {
+            announceEndpoint(store);
             const result = await logoutOnline(store);
             if (!result.removed) {
                 out('No saved account login on this device.');
@@ -482,6 +509,7 @@ async function main(argv: string[]): Promise<number> {
         case 'profile':
             return profileCommand(store, values);
         case 'invitations':
+            announceEndpoint(store);
             return invitationsCommand(store, values, positionals[1], positionals[2]);
         case 'settings':
             return settingsCommand(store, values, positionals[1], positionals[2]);
@@ -1273,10 +1301,11 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
     if (str(values, 'allow') && !privateRoom) {
         throw new UsageError('--allow requires a private room (--private)');
     }
-    const serverUrl = online ? (await onlineAccount(store)).server : resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')});
+    const serverUrl = online ? (await onlineAccount(store)).server : resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local'), fallback: endpointRelay(store)});
     const identity = identityFrom(store, values, 'agent');
-    // A self-hosted relay may ask for its create token; it travels where an account token would.
-    const client = new PairLobbyClient(serverUrl, online ? accountToken(store) : (process.env['PAIRLOBBY_CREATE_TOKEN'] ?? process.env['PAIRLOBBY_ACCOUNT_TOKEN']));
+    // A self-hosted relay may ask for its create token; it travels where an account token would,
+    // and a login saved for this relay's endpoint is that token.
+    const client = new PairLobbyClient(serverUrl, online ? accountToken(store) : (process.env['PAIRLOBBY_CREATE_TOKEN'] ?? process.env['PAIRLOBBY_ACCOUNT_TOKEN'] ?? accountTokenFor(store, serverUrl)));
     const lifetime = settings.defaultRoomLifetimeMs;
     const expiresAt = str(values, 'expiry') !== undefined ? parseExpirySpec(str(values, 'expiry')!) : lifetime === null ? null : Date.now() + lifetime;
     const created = await client.createRoom(
@@ -1357,6 +1386,14 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
     return 0;
 }
 
+/** Names the login endpoint in use when it is not pairlobby.com, so a person always knows where a command goes. */
+function announceEndpoint(store: LocalStore): void {
+    const endpoint = activeEndpoint(store);
+    if (endpoint.origin !== BUILT_IN_ORIGIN) {
+        note(`Using ${endpoint.name} (${new URL(endpoint.origin).host})`);
+    }
+}
+
 /** True when nothing on the command line, in the environment or in the profile says which relay to use. */
 function namesNoRelay(store: LocalStore, values: Values): boolean {
     return !str(values, 'server') && !flag(values, 'local') && !process.env['PAIRLOBBY_SERVER'] && !store.profile().server;
@@ -1394,9 +1431,11 @@ async function joinRoom(store: LocalStore, values: Values, code?: string, online
     // Online, a dash-grouped key is an invite; anything else names one of the account's own rooms.
     // A room someone invited this account into lives on their relay, so each room names its own.
     const accountRoom = online && !isOnlineKey(code) ? await onlineRooms(store).then(({rooms}) => matchOnlineRoom(rooms, code)).then((room) => ({server: room.server, room})) : null;
-    const serverUrl = accountRoom ? accountRoom.server : online ? await resolveOnlineKey(store, code) : (link?.serverUrl ?? (namesNoRelay(store, values) && !code.startsWith('rm_') ? await discoverRelay(code) : resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')})));
+    // After `pairlobby setup`, the endpoint's one relay is where a bare code goes, before searching the network.
+    const relayDefault = online || link ? undefined : endpointRelay(store);
+    const serverUrl = accountRoom ? accountRoom.server : online ? await resolveOnlineKey(store, code) : (link?.serverUrl ?? (namesNoRelay(store, values) && !relayDefault && !code.startsWith('rm_') ? await discoverRelay(code) : resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local'), fallback: relayDefault})));
     const identity = identityFrom(store, values, 'agent');
-    const token = new URL(serverUrl).origin === onlineOrigin() ? accountToken(store) : undefined;
+    const token = accountTokenFor(store, serverUrl);
     const client = new PairLobbyClient(serverUrl, token);
     const useInviteName = str(values, 'as') === undefined && !(identity.kind === 'human' && store.profile().displayName);
     // A room id and an invite code are not confusable, so one command takes either.
@@ -2715,7 +2754,7 @@ void main(process.argv.slice(2))
     .catch((error: unknown) => {
         if (error instanceof UsageError) {
             note(String(error.message));
-            process.exitCode = 2;
+            process.exitCode = error.exitCode;
             return;
         }
         if (error instanceof ProtocolError) {

@@ -3,26 +3,52 @@ import {LocalStore} from '@pairlobby/client';
 import {normalizeInviteCode} from '@pairlobby/protocol';
 import {UsageError} from './context.js';
 import {DeviceLoginUnavailable, loginInBrowser, revokeToken} from './device-login.js';
+import {BUILT_IN_ORIGIN, activeEndpoint, normalizeOrigin, relayBelongs, tokenMayGo} from './endpoints.js';
+import type {Endpoint} from './endpoints.js';
 
 type Keypress = {name?: string; ctrl?: boolean};
 
-export function onlineOrigin(): string {
-    const url = new URL(process.env['PAIRLOBBY_ONLINE_ORIGIN'] ?? 'https://pairlobby.com');
-    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) {
-        throw new UsageError('Online service must use HTTPS');
-    }
-    if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
-        throw new UsageError('Online service must be an origin, without credentials or a path');
-    }
-    return url.origin;
+/** The login endpoint's origin for this command; see `activeEndpoint` for the order. */
+export function onlineOrigin(store: LocalStore): string {
+    return activeEndpoint(store).origin;
 }
-export function accountToken(store: LocalStore, origin = onlineOrigin()) {
-    return process.env['PAIRLOBBY_ACCOUNT_TOKEN'] ?? store.credential('online-account', origin);
+
+let warnedUnscoped = false;
+
+/**
+ * PAIRLOBBY_ACCOUNT_TOKEN, when it may be used for this endpoint: always for
+ * pairlobby.com, with PAIRLOBBY_ONLINE_ORIGIN, or when PAIRLOBBY_ACCOUNT_TOKEN_ORIGIN
+ * names this origin. Otherwise one deployment's token could reach another.
+ */
+function environmentToken(endpoint: Endpoint): string | undefined {
+    const token = process.env['PAIRLOBBY_ACCOUNT_TOKEN'];
+    if (!token) {
+        return undefined;
+    }
+    const scoped = process.env['PAIRLOBBY_ACCOUNT_TOKEN_ORIGIN'];
+    if (endpoint.origin === BUILT_IN_ORIGIN || process.env['PAIRLOBBY_ONLINE_ORIGIN'] || (scoped && normalizeOrigin(scoped, 'PAIRLOBBY_ACCOUNT_TOKEN_ORIGIN') === endpoint.origin)) {
+        return token;
+    }
+    if (!warnedUnscoped) {
+        warnedUnscoped = true;
+        process.stderr.write(`PAIRLOBBY_ACCOUNT_TOKEN ignored: it is not scoped to ${endpoint.origin}\n`);
+    }
+    return undefined;
+}
+
+export function accountToken(store: LocalStore, endpoint = activeEndpoint(store)): string | undefined {
+    return environmentToken(endpoint) ?? store.credential('online-account', endpoint.origin);
+}
+
+/** The saved token for a relay on the active endpoint's own origin or one it declared; never any other origin. */
+export function accountTokenFor(store: LocalStore, serverUrl: string): string | undefined {
+    const endpoint = activeEndpoint(store);
+    return tokenMayGo(endpoint, serverUrl) ? accountToken(store, endpoint) : undefined;
 }
 type RequestBody = {method: 'POST' | 'PUT'; body: unknown};
 
-async function request<T>(path: string, token?: string, send?: RequestBody): Promise<T> {
-    const response = await fetch(onlineOrigin() + path, {...(send ? {method: send.method, body: JSON.stringify(send.body)} : {}), headers: {...(token ? {'x-pairlobby-account-token': token} : {}), ...(send ? {'content-type': 'application/json'} : {})}, redirect: 'error', signal: AbortSignal.timeout(15000)});
+async function request<T>(endpoint: Endpoint, path: string, token?: string, send?: RequestBody): Promise<T> {
+    const response = await fetch(endpoint.origin + path, {...(send ? {method: send.method, body: JSON.stringify(send.body)} : {}), headers: {...(token ? {'x-pairlobby-account-token': token} : {}), ...(send ? {'content-type': 'application/json'} : {})}, redirect: 'error', signal: AbortSignal.timeout(15000)});
     const data = (await response.json()) as {error?: {message?: string}};
     if (!response.ok) {
         throw new UsageError(data.error?.message ?? 'Online service unavailable');
@@ -30,8 +56,9 @@ async function request<T>(path: string, token?: string, send?: RequestBody): Pro
     return data as T;
 }
 export async function onlineAccount(store: LocalStore) {
-    const result = await request<{email: string; userId: string; server: string; handle?: string | null}>('/api/online/account', accountToken(store));
-    validateRelay(result.server);
+    const endpoint = activeEndpoint(store);
+    const result = await request<{email: string; userId: string; server: string; handle?: string | null}>(endpoint, '/api/online/account', accountToken(store, endpoint));
+    validateRelay(endpoint, result.server);
     return result;
 }
 
@@ -45,26 +72,27 @@ function requireToken(store: LocalStore, purpose: string): string {
 
 /** Sets this account's handle, the name others invite it by. The service enforces the rules and answers with the stored form. */
 export async function setHandle(store: LocalStore, handle: string): Promise<string> {
-    return (await request<{handle: string}>('/api/online/handle', requireToken(store, 'choose a handle'), {method: 'PUT', body: {handle}})).handle;
+    return (await request<{handle: string}>(activeEndpoint(store), '/api/online/handle', requireToken(store, 'choose a handle'), {method: 'PUT', body: {handle}})).handle;
 }
 
 /** An invitation this account received and has not answered. `guest` is a read-only observer. */
 export type ReceivedInvitation = {id: string; roomId: string; roomName: string; invitedBy: string; role: 'member' | 'guest'; agents: number; createdAt: number; expiresAt: number};
 
 export async function receivedInvitations(store: LocalStore): Promise<ReceivedInvitation[]> {
-    return (await request<{invitations: ReceivedInvitation[]}>('/api/online/invitations', requireToken(store, 'see your invitations'))).invitations;
+    return (await request<{invitations: ReceivedInvitation[]}>(activeEndpoint(store), '/api/online/invitations', requireToken(store, 'see your invitations'))).invitations;
 }
 
 export type AcceptedInvitation = {roomId: string; roomName: string; role: 'member' | 'guest'; server: string};
 
 /** Accepts an invitation, which is what puts this account on the room's allowlist. Joining is a separate step. */
 export async function acceptInvitation(store: LocalStore, id: string): Promise<AcceptedInvitation> {
-    const result = await request<AcceptedInvitation>(`/api/online/invitations/${id}/accept`, requireToken(store, 'accept an invitation'), {method: 'POST', body: {}});
-    return {...result, server: validateRelay(result.server)};
+    const endpoint = activeEndpoint(store);
+    const result = await request<AcceptedInvitation>(endpoint, `/api/online/invitations/${id}/accept`, requireToken(store, 'accept an invitation'), {method: 'POST', body: {}});
+    return {...result, server: validateRelay(endpoint, result.server)};
 }
 
 export async function declineInvitation(store: LocalStore, id: string): Promise<void> {
-    await request(`/api/online/invitations/${id}/decline`, requireToken(store, 'decline an invitation'), {method: 'POST', body: {}});
+    await request(activeEndpoint(store), `/api/online/invitations/${id}/decline`, requireToken(store, 'decline an invitation'), {method: 'POST', body: {}});
 }
 
 /** Picks one invitation by its id, room id, or room name, and says so when a name is shared. */
@@ -104,10 +132,11 @@ export type OnlineRooms = {server: string; rooms: OnlineRoom[]};
 
 /** Rooms this account owns or is allowed into, from whichever device asks. */
 export async function onlineRooms(store: LocalStore): Promise<OnlineRooms> {
-    const result = await request<{server: string; rooms: Omit<OnlineRoom, 'server'>[]; shared?: OnlineRoom[]}>('/api/online/rooms', requireToken(store, 'see your account rooms'));
-    const server = validateRelay(result.server);
+    const endpoint = activeEndpoint(store);
+    const result = await request<{server: string; rooms: Omit<OnlineRoom, 'server'>[]; shared?: OnlineRoom[]}>(endpoint, '/api/online/rooms', requireToken(store, 'see your account rooms'));
+    const server = validateRelay(endpoint, result.server);
     // A service from before invitations sends no shared rooms.
-    const shared = (result.shared ?? []).map((room) => ({...room, server: validateRelay(room.server), shared: true}));
+    const shared = (result.shared ?? []).map((room) => ({...room, server: validateRelay(endpoint, room.server), shared: true}));
     return {server, rooms: [...result.rooms.map((room) => ({...room, server})), ...shared]};
 }
 
@@ -136,15 +165,17 @@ export async function resolveOnlineKey(store: LocalStore, code: string): Promise
     if (!normalized) {
         throw new UsageError('Invalid online room key');
     }
-    const result = await request<{server: string}>('/api/online/invites/' + normalized, accountToken(store));
-    return validateRelay(result.server);
+    const endpoint = activeEndpoint(store);
+    const result = await request<{server: string}>(endpoint, '/api/online/invites/' + normalized, accountToken(store, endpoint));
+    return validateRelay(endpoint, result.server);
 }
-function validateRelay(value: string): string {
-    const server = new URL(value);
-    if (server.origin !== onlineOrigin() || !server.pathname.startsWith('/relay/') || server.username || server.password || server.search || server.hash) {
+
+/** A room address the service returned, accepted only on this endpoint's own relays (for pairlobby.com, under `/relay/`). */
+function validateRelay(endpoint: Endpoint, value: string): string {
+    if (!relayBelongs(endpoint, value)) {
         throw new UsageError('The service returned an invalid room address');
     }
-    return server.href;
+    return new URL(value).href;
 }
 export type LoginOptions = {
     /** Paste a token from the account page instead of approving in the browser. */
@@ -153,11 +184,12 @@ export type LoginOptions = {
     openBrowser?: boolean;
 };
 
-async function promptForToken(): Promise<string> {
+async function promptForToken(endpoint: Endpoint): Promise<string> {
     if (!process.stdin.isTTY) {
         throw new UsageError('Set PAIRLOBBY_ACCOUNT_TOKEN or run pairlobby login in a terminal');
     }
-    process.stderr.write(`Create an account token at ${onlineOrigin()}/account.\nPaste account token (hidden): `);
+    // The account page exists on pairlobby.com; another deployment says where its tokens come from.
+    process.stderr.write(endpoint.hosted ? `Create an account token at ${endpoint.origin}/account.\nPaste account token (hidden): ` : `Paste the token for ${endpoint.name} (hidden): `);
     return new Promise<string>((resolve, reject) => {
         let value = '';
         const raw = process.stdin.isRaw;
@@ -189,25 +221,26 @@ async function promptForToken(): Promise<string> {
 }
 
 export async function loginOnline(store: LocalStore, options: LoginOptions = {}): Promise<string> {
-    let token = process.env['PAIRLOBBY_ACCOUNT_TOKEN'];
+    const endpoint = activeEndpoint(store);
+    let token = environmentToken(endpoint);
     if (!token && options.paste) {
-        token = await promptForToken();
+        token = await promptForToken(endpoint);
     } else if (!token) {
         try {
-            token = await loginInBrowser({origin: onlineOrigin(), openBrowser: options.openBrowser ?? process.stdin.isTTY === true});
+            token = await loginInBrowser({origin: endpoint.origin, openBrowser: options.openBrowser ?? process.stdin.isTTY === true});
         } catch (error) {
             if (!(error instanceof DeviceLoginUnavailable)) {
                 throw error;
             }
             process.stderr.write('This service does not offer browser login yet; paste a token instead.\n');
-            token = await promptForToken();
+            token = await promptForToken(endpoint);
         }
     }
     if (!token) {
         throw new UsageError('Account token required');
     }
-    const account = await request<{email: string}>('/api/online/account', token);
-    store.putCredential('online-account', onlineOrigin(), token);
+    const account = await request<{email: string}>(endpoint, '/api/online/account', token);
+    store.putCredential('online-account', endpoint.origin, token);
     return account.email;
 }
 
@@ -215,7 +248,7 @@ export type LogoutResult = {removed: boolean; revoked: boolean | null};
 
 /** Forgets this origin's saved login, keeping other origins', and revokes it on the service; null means there was nothing saved to revoke. */
 export async function logoutOnline(store: LocalStore): Promise<LogoutResult> {
-    const origin = onlineOrigin();
+    const {origin} = activeEndpoint(store);
     const saved = store.credential('online-account', origin);
     const revoked = saved ? await revokeToken(origin, saved) : null;
     store.forgetCredential('online-account', origin);

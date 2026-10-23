@@ -2,14 +2,19 @@
 //!
 //! Like the update notice, the question is asked in a detached process so no
 //! command waits on the network: this file remembers the last answer, and the
-//! reminder is printed from that. Only a logged-in device ever asks.
+//! reminder is printed from that. Only a logged-in device ever asks, and only its
+//! active endpoint: each endpoint keeps its own answer, so switching never shows
+//! another endpoint's invitations.
 
 import {spawn} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {mkdirSync, readFileSync, renameSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 
 import type {LocalStore} from '@pairlobby/client';
 
+import {BUILT_IN_ORIGIN, activeEndpoint} from './endpoints.js';
+import type {Endpoint} from './endpoints.js';
 import {accountToken} from './online.js';
 import type {ReceivedInvitation} from './online.js';
 
@@ -22,13 +27,15 @@ export type InvitationNoticeState = {
 const CHECK_INTERVAL_MS = 10 * 60_000;
 const NEVER_CHECK = new Set(['invitations', 'update', 'receiver-run', 'receiver-tools', 'channel', 'guard-stop', 'serve']);
 
-function stateFile(store: LocalStore): string {
-    return join(store.directory, 'invitations.json');
+/** pairlobby.com keeps the original file; another endpoint gets one named after its origin. */
+function stateFile(store: LocalStore, origin = activeEndpoint(store).origin): string {
+    const suffix = origin === BUILT_IN_ORIGIN ? '' : `-${createHash('sha256').update(origin).digest('hex').slice(0, 16)}`;
+    return join(store.directory, `invitations${suffix}.json`);
 }
 
-export function readInvitationNotice(store: LocalStore): InvitationNoticeState {
+export function readInvitationNotice(store: LocalStore, origin?: string): InvitationNoticeState {
     try {
-        const saved = JSON.parse(readFileSync(stateFile(store), 'utf8')) as Partial<InvitationNoticeState>;
+        const saved = JSON.parse(readFileSync(stateFile(store, origin), 'utf8')) as Partial<InvitationNoticeState>;
         return {checkedAt: typeof saved.checkedAt === 'number' ? saved.checkedAt : 0, waiting: Array.isArray(saved.waiting) ? saved.waiting : []};
     } catch {
         return {checkedAt: 0, waiting: []};
@@ -42,22 +49,25 @@ export function rememberInvitations(store: LocalStore, invitations: ReceivedInvi
 
 function writeState(store: LocalStore, state: InvitationNoticeState): void {
     mkdirSync(store.directory, {recursive: true, mode: 0o700});
-    const temporary = `${stateFile(store)}.${process.pid}.tmp`;
+    const file = stateFile(store);
+    const temporary = `${file}.${process.pid}.tmp`;
     writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, {mode: 0o600});
-    renameSync(temporary, stateFile(store));
+    renameSync(temporary, file);
 }
 
-function loggedIn(store: LocalStore): boolean {
+/** The saved active endpoint, when it offers invitations and this device is logged in to it. */
+function invitationEndpoint(store: LocalStore): Endpoint | null {
     try {
-        return Boolean(accountToken(store));
+        const endpoint = activeEndpoint(store);
+        return endpoint.loginMode === 'browser' && accountToken(store, endpoint) ? endpoint : null;
     } catch {
-        return false;
+        return null;
     }
 }
 
 /** Starts a detached check when the last one is stale. Honors the same switches as update checks. */
 export function scheduleInvitationCheck(store: LocalStore, command: string, now = Date.now()): void {
-    if (NEVER_CHECK.has(command) || process.env['PAIRLOBBY_NO_UPDATE_CHECK'] === '1' || process.env['CI'] || !loggedIn(store)) {
+    if (NEVER_CHECK.has(command) || process.env['PAIRLOBBY_NO_UPDATE_CHECK'] === '1' || process.env['CI'] || !invitationEndpoint(store)) {
         return;
     }
     const state = readInvitationNotice(store);
@@ -77,7 +87,7 @@ export function scheduleInvitationCheck(store: LocalStore, command: string, now 
 
 /** The line to show, or null when nothing is waiting or this device is logged out. */
 export function invitationNotice(store: LocalStore): string | null {
-    if (!loggedIn(store)) {
+    if (!invitationEndpoint(store)) {
         return null;
     }
     const {waiting} = readInvitationNotice(store);

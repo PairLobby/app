@@ -80,6 +80,19 @@ export interface Profile {
     server?: string;
 }
 
+/** How a login endpoint signs people in: the browser device flow, a pasted token, or not at all. */
+export type LoginMode = 'browser' | 'token' | 'none';
+
+/** A login endpoint saved by `pairlobby setup`. Its token, if any, lives in credentials.json under its origin. */
+export interface SavedEndpoint {
+    origin: string;
+    name: string;
+    /** Origins this endpoint's rooms may live on; its account token goes there and nowhere else. */
+    relayOrigins: string[];
+    loginMode: LoginMode;
+    savedAt: number;
+}
+
 /** Behavioural preferences for this device. Distinct from the profile, which is identity. */
 export interface Settings {
     /** Ask before deleting a room. */
@@ -116,6 +129,10 @@ export interface Settings {
     networkRooms: boolean;
     /** How the room list marks where a room lives: Nerd Font icons where this terminal is known to draw them and emoji elsewhere, or always one set. */
     icons: 'auto' | 'nerd' | 'emoji' | 'symbols';
+    /** Login endpoints saved on this device, by label. The built-in pairlobby.com is implicit. */
+    endpoints?: Record<string, SavedEndpoint>;
+    /** Label of the active endpoint; absent means pairlobby.com. */
+    activeEndpoint?: string | undefined;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -207,9 +224,12 @@ export class LocalStore {
         return merged;
     }
 
+    /** Preferences go back to the defaults; saved login endpoints and the active one are kept, like the profile. */
     resetSettings(): Settings {
-        writeJsonPrivate(this.settingsFile, {});
-        return DEFAULT_SETTINGS;
+        const {endpoints, activeEndpoint} = this.settings();
+        const kept = {...(endpoints ? {endpoints} : {}), ...(activeEndpoint ? {activeEndpoint} : {})};
+        writeJsonPrivate(this.settingsFile, kept);
+        return {...DEFAULT_SETTINGS, ...kept};
     }
 
     rooms(): RoomEntry[] {
