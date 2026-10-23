@@ -78,10 +78,11 @@ async function serve(flags: RelayFlags, dataDir: string | undefined): Promise<nu
         allowedHosts: settings.allowedHosts,
         limits: settings.limits,
         roomLimits: settings.roomLimits,
+        discovery: settings.discovery,
         ...(settings.requestLog ? {requestLog: {mode: settings.requestLog, write: writeLine}} : {}),
         ...(backup ? {backup} : {})
     });
-    log({level: 'info', event: 'start', version: version(), url: running.url, listening: `${running.host}:${running.port}`, dataFile: running.dataFile, createToken: Boolean(settings.createToken), backup: backup?.target.description ?? null, restore: running.restore?.outcome ?? null});
+    log({level: 'info', event: 'start', version: version(), url: running.url, listening: `${running.host}:${running.port}`, dataFile: running.dataFile, createToken: Boolean(settings.createToken), loginMode: settings.discovery.loginMode, backup: backup?.target.description ?? null, restore: running.restore?.outcome ?? null});
     if (!settings.createToken && !['127.0.0.1', '::1', 'localhost'].includes(host)) {
         log({level: 'warn', event: 'open-creation', message: 'anyone who can reach this relay can create rooms; set PAIRLOBBY_CREATE_TOKEN to require a token'});
     }

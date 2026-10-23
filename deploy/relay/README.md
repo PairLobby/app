@@ -17,6 +17,14 @@ docker run -p 8790:8790 \
   pairlobby-relay
 ```
 
+To let people log in once with the team token (`pairlobby setup https://pairlobby.example.com --login`), add:
+
+```sh
+  -e PAIRLOBBY_LOGIN_MODE=token \
+  -e PAIRLOBBY_DISCOVERY_NAME="Example Corp PairLobby" \
+  -e PAIRLOBBY_LOGIN_HELP="Ask your team lead for the PairLobby team token." \
+```
+
 Run exactly one copy: the rooms live in one SQLite file. Stop the old container before starting the new one; with `PAIRLOBBY_BACKUP` the new one restores what the old one backed up on stop.
 
 Check a deployed relay from outside:

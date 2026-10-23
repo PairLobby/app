@@ -4,7 +4,7 @@ import {join} from 'node:path';
 
 import {afterAll, describe, expect, test} from 'vitest';
 
-import {parseBackupLocation, parsePublicUrl, relaySettings} from '../src/settings.js';
+import {RELAY_VARIABLES, parseBackupLocation, parsePublicUrl, relaySettings} from '../src/settings.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'pairlobby-relay-settings-'));
 
@@ -35,13 +35,14 @@ describe('relay settings', () => {
             allowedHosts: ['relay.internal', 'relay.internal:8080'],
             limits: {createPerMinutePerAddress: 5, redeemPerMinutePerAddress: 30, redeemPerMinuteGlobal: 600},
             roomLimits: {},
-            requestLog: 'writes'
+            requestLog: 'writes',
+            discovery: {loginMode: 'none'}
         });
     });
 
     test('test_a_flag_wins_over_its_variable_and_empty_variables_count_as_unset', () => {
         const settings = relaySettings({port: '9000', requestLog: 'off'}, {PAIRLOBBY_PORT: '8080', PAIRLOBBY_REQUEST_LOG: 'all', PAIRLOBBY_HOST: '', PAIRLOBBY_CREATE_TOKEN: ''});
-        expect(settings).toEqual({port: 9000, allowedHosts: [], limits: {}, roomLimits: {}});
+        expect(settings).toEqual({port: 9000, allowedHosts: [], limits: {}, roomLimits: {}, discovery: {loginMode: 'none'}});
     });
 
     test('test_bad_values_name_the_flag_or_variable_that_holds_them', () => {
@@ -68,6 +69,21 @@ describe('relay settings', () => {
         expect(() => relaySettings({}, {PAIRLOBBY_ROOM_MAX_PARTICIPANTS: '1'})).toThrow('PAIRLOBBY_ROOM_MAX_PARTICIPANTS must be a whole number from 2 to 1000, not "1"');
         expect(() => relaySettings({}, {PAIRLOBBY_ROOM_MAX_FILE_MB: '96'})).toThrow('PAIRLOBBY_ROOM_MAX_FILE_MB must be a whole number from 0 to 95');
         expect(() => relaySettings({}, {PAIRLOBBY_ROOM_MAX_HISTORY_MB: '1.5'})).toThrow('PAIRLOBBY_ROOM_MAX_HISTORY_MB must be a whole number');
+    });
+
+    test('test_discovery_and_token_login_come_from_the_environment', () => {
+        const settings = relaySettings({}, {PAIRLOBBY_CREATE_TOKEN: 'team-secret', PAIRLOBBY_LOGIN_MODE: 'token', PAIRLOBBY_DISCOVERY_NAME: 'Example Corp PairLobby', PAIRLOBBY_LOGIN_HELP: 'Ask your team lead for the PairLobby team token.', PAIRLOBBY_SUPPORT_URL: 'https://example.com/pairlobby-help', PAIRLOBBY_LIMIT_ACCOUNT_CHECK_PER_MIN_IP: '12'});
+        expect(settings.discovery).toEqual({loginMode: 'token', name: 'Example Corp PairLobby', loginHelp: 'Ask your team lead for the PairLobby team token.', supportUrl: 'https://example.com/pairlobby-help'});
+        expect(settings.limits).toEqual({accountCheckPerMinutePerAddress: 12});
+        expect(() => relaySettings({}, {PAIRLOBBY_LOGIN_MODE: 'token'})).toThrow('PAIRLOBBY_LOGIN_MODE=token logs people in with the create token; set PAIRLOBBY_CREATE_TOKEN');
+        expect(() => relaySettings({}, {PAIRLOBBY_LOGIN_MODE: 'browser'})).toThrow('PAIRLOBBY_LOGIN_MODE must be token or none, not "browser"');
+        expect(() => relaySettings({}, {PAIRLOBBY_DISCOVERY_NAME: 'x'.repeat(65)})).toThrow('PAIRLOBBY_DISCOVERY_NAME must be plain text of at most 64 characters');
+        expect(() => relaySettings({}, {PAIRLOBBY_LOGIN_HELP: 'line one\u001b[31m'})).toThrow('PAIRLOBBY_LOGIN_HELP must be plain text');
+        expect(() => relaySettings({}, {PAIRLOBBY_SUPPORT_URL: 'http://example.com'})).toThrow('PAIRLOBBY_SUPPORT_URL must be an https address');
+        expect(() => relaySettings({}, {PAIRLOBBY_LIMIT_ACCOUNT_CHECK_PER_MIN_IP: '0'})).toThrow('PAIRLOBBY_LIMIT_ACCOUNT_CHECK_PER_MIN_IP must be a whole number from 1 to 1000000');
+        for (const variable of ['PAIRLOBBY_DISCOVERY_NAME', 'PAIRLOBBY_LOGIN_MODE', 'PAIRLOBBY_LOGIN_HELP', 'PAIRLOBBY_SUPPORT_URL', 'PAIRLOBBY_LIMIT_ACCOUNT_CHECK_PER_MIN_IP']) {
+            expect(RELAY_VARIABLES).toContain(variable);
+        }
     });
 
     test('test_the_create_token_file_must_be_private_and_not_combined_with_the_variable', () => {

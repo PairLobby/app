@@ -7,7 +7,7 @@ import {hostname, networkInterfaces} from 'node:os';
 import {dirname} from 'node:path';
 
 import {RoomService, createAdmission, createRouter, memoryRateLimiter, proxiedAddress} from '@pairlobby/server-core';
-import type {AdmissionLimits} from '@pairlobby/server-core';
+import type {AdmissionLimits, DiscoveryDocument} from '@pairlobby/server-core';
 import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_ROOM_POLICY} from '@pairlobby/protocol';
 import type {RoomPolicy} from '@pairlobby/protocol';
 
@@ -16,6 +16,7 @@ import {REQUEST_ID_HEADER, requestIdFor, requestLogLine, shouldLog} from './requ
 import {restoreLatest, startBackups} from './backup.js';
 import type {BackupSchedule, BackupScheduleOptions, RestoreResult} from './backup.js';
 import type {RequestLogOptions} from './request-log.js';
+import type {RelayDiscovery} from './settings.js';
 import {SqliteRoomStore} from './sqlite-store.js';
 
 export interface ServeOptions {
@@ -48,6 +49,11 @@ export interface ServeOptions {
     limits?: Partial<AdmissionLimits>;
     /** Caps for rooms created from now on, over the built-in defaults; rooms that already exist keep theirs. */
     roomLimits?: Partial<RoomPolicy>;
+    /**
+     * Serve `GET /.well-known/pairlobby.json`, and with `loginMode: 'token'` (which needs
+     * `createToken`) the team token check `GET /api/online/account`. Absent serves neither.
+     */
+    discovery?: RelayDiscovery;
     /** One JSON line per request for a log collector; absent logs nothing. */
     requestLog?: RequestLogOptions;
     /** Copies the database while it runs and once more on close; on a disk with no database, the newest copy is restored first unless `restore` is false. */
@@ -76,6 +82,18 @@ class RequestBodyTooLarge extends Error {}
 function requestBodyLimit(incoming: IncomingMessage): number {
     const path = (incoming.url ?? '').split('?', 1)[0];
     return incoming.method === 'POST' && /^\/v1\/rooms\/[^/]+\/files$/.test(path ?? '') ? ABSOLUTE_MAX_FILE_BYTES : DEFAULT_MAX_REQUEST_BYTES;
+}
+
+/** The discovery document: `relays` empty means "this origin", and `features` are only what this relay really has. */
+function discoveryDocument(settings: RelayDiscovery, publicUrl: string | undefined, files: boolean): DiscoveryDocument {
+    return {
+        version: 1,
+        ...(settings.name ? {name: settings.name} : {}),
+        login: settings.loginMode === 'token' ? {mode: 'token', ...(settings.loginHelp ? {tokenHelp: settings.loginHelp} : {}), verify: '/api/online/account'} : {mode: 'none'},
+        relays: publicUrl ? [publicUrl] : [],
+        features: ['message-stages', ...(files ? ['files'] : [])],
+        ...(settings.supportUrl ? {support: settings.supportUrl} : {})
+    };
 }
 
 /** The port a relay listens on unless told otherwise, and the one other devices try when searching a tailnet. */
@@ -125,7 +143,13 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
     const clientAddress = (request: Request) => (header ? proxiedAddress(request, header) : undefined) ?? peerAddresses.get(request);
     const exempt = (request: Request) => !behindProxy && isLoopbackAddress(peerAddresses.get(request) ?? '');
     const admission = createAdmission({...(options.createToken ? {createToken: options.createToken} : {}), limiter: memoryRateLimiter(), ...(options.limits ? {limits: options.limits} : {}), clientAddress, exempt});
-    const route = createRouter({service, allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo, inviteProbe, peerIsLocal, localRooms, admission});
+    if (options.discovery?.loginMode === 'token' && !options.createToken) {
+        throw new Error('token-mode login needs a create token: it is the team token people log in with');
+    }
+    const discovery = options.discovery ? discoveryDocument(options.discovery, options.publicUrl, store.files !== undefined) : undefined;
+    // The room address a team token leads to: the advertised one, else the address the caller used.
+    const accountCheck = options.discovery?.loginMode === 'token' ? (request: Request) => ({email: null, userId: 'team' as const, name: options.discovery?.name ?? null, server: options.publicUrl ?? new URL(request.url).origin, handle: null}) : undefined;
+    const route = createRouter({service, allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo, inviteProbe, peerIsLocal, localRooms, admission, ...(discovery ? {discovery: () => discovery} : {}), ...(accountCheck ? {accountCheck} : {})});
 
     // One local relay owns this store. Serialize mutating requests so two
     // async service calls cannot both choose the same next event sequence.

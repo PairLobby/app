@@ -1,7 +1,7 @@
 import {ProtocolError} from '@pairlobby/protocol';
 import {describe, expect, test} from 'vitest';
 
-import {CREATE_TOKEN_HEADER, CREATE_TOKEN_REQUIRED, createAdmission, memoryRateLimiter, proxiedAddress} from '../src/admission.js';
+import {CREATE_TOKEN_HEADER, CREATE_TOKEN_REQUIRED, TEAM_TOKEN_REFUSED, createAdmission, memoryRateLimiter, proxiedAddress} from '../src/admission.js';
 
 type ClockState = {at: number};
 
@@ -79,6 +79,33 @@ describe('admission', () => {
         await admission.beforeRedeem(from('c'));
         await admission.beforeRedeem(from('d'));
         expect((await refusal(admission.beforeRedeem(from('e')))).code).toBe('rate_limited');
+    });
+});
+
+describe('team token check', () => {
+    const check = (headers: Record<string, string> = {}) => new Request('http://relay/api/online/account', {headers});
+
+    test('test_a_missing_and_a_wrong_team_token_are_refused_alike', async () => {
+        const admission = createAdmission({createToken: 'team-secret'});
+        const missing = await refusal(admission.beforeAccountCheck(check()));
+        const wrong = await refusal(admission.beforeAccountCheck(check({[CREATE_TOKEN_HEADER]: 'team-secreT'})));
+        expect([missing.code, missing.message, missing.httpStatus]).toEqual(['unauthorized', TEAM_TOKEN_REFUSED, 401]);
+        expect([wrong.code, wrong.message, wrong.httpStatus]).toEqual(['unauthorized', TEAM_TOKEN_REFUSED, 401]);
+        await admission.beforeAccountCheck(check({[CREATE_TOKEN_HEADER]: 'team-secret'}));
+        expect(await admission.tokenMatches(check({[CREATE_TOKEN_HEADER]: 'team-secret'}))).toBe(true);
+        expect(await createAdmission({}).tokenMatches(check({[CREATE_TOKEN_HEADER]: 'anything'}))).toBe(false);
+    });
+
+    test('test_token_checks_have_their_own_bucket_apart_from_room_creation', async () => {
+        const admission = createAdmission({createToken: 'team-secret', limiter: memoryRateLimiter(), limits: {accountCheckPerMinutePerAddress: 2, createPerMinutePerAddress: 2}, clientAddress: () => '10.0.0.9'});
+        await refusal(admission.beforeAccountCheck(check({[CREATE_TOKEN_HEADER]: 'guess-1'})));
+        await refusal(admission.beforeAccountCheck(check({[CREATE_TOKEN_HEADER]: 'guess-2'})));
+        const limited = await refusal(admission.beforeAccountCheck(check({[CREATE_TOKEN_HEADER]: 'team-secret'})));
+        expect([limited.code, limited.httpStatus]).toEqual(['rate_limited', 429]);
+        expect(limited.details.retryAfterMs).toBeGreaterThan(0);
+        await admission.beforeCreate(post({[CREATE_TOKEN_HEADER]: 'team-secret'}));
+        await admission.beforeCreate(post({[CREATE_TOKEN_HEADER]: 'team-secret'}));
+        expect((await refusal(admission.beforeCreate(post({[CREATE_TOKEN_HEADER]: 'team-secret'})))).code).toBe('rate_limited');
     });
 });
 

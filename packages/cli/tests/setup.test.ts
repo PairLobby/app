@@ -98,7 +98,7 @@ test('test_the_probe_finds_a_relay_or_an_account_service_with_get_requests_only'
 
 test('test_the_probe_reads_a_discovery_document_first', async () => {
     host({'/.well-known/pairlobby.json': {status: 200, body: {version: 1, name: 'Example \u001b[31mCorp\u001b[0m PairLobby', login: {mode: 'token'}, relays: ['https://relay.example.com'], future: true}}, ...RELAY});
-    expect(await probeEndpoint('https://pairlobby.example.com')).toEqual({kind: 'discovery', name: 'Example Corp PairLobby', loginMode: 'token', relayOrigins: ['https://relay.example.com']});
+    expect(await probeEndpoint('https://pairlobby.example.com')).toEqual({kind: 'discovery', name: 'Example Corp PairLobby', loginMode: 'token', relayOrigins: ['https://relay.example.com'], verify: '/api/online/account'});
 
     host({'/.well-known/pairlobby.json': {status: 200, body: {version: 2, login: {mode: 'token'}}}});
     await expect(probeEndpoint('https://pairlobby.example.com')).rejects.toMatchObject({exitCode: 3});
@@ -219,10 +219,12 @@ test('test_the_token_variable_is_ignored_for_an_endpoint_it_is_not_scoped_to', a
 
     vi.stubEnv('PAIRLOBBY_ONLINE_ORIGIN', '');
     local.forgetCredential('online-account', 'https://team.example.com');
-    const fetcher = vi.fn(async () => Response.json({email: 'person@example.com'}));
+    const fetcher = vi.fn(async (_input: string, _init?: RequestInit) => new Response('not found', {status: 404}));
     vi.stubGlobal('fetch', fetcher);
     await expect(loginOnline(local, {paste: true})).rejects.toThrow();
-    expect(fetcher).not.toHaveBeenCalled();
+    // Only the discovery document was read; the unscoped token went nowhere.
+    expect(fetcher.mock.calls.map((call) => String(call[0]))).toEqual(['https://team.example.com/.well-known/pairlobby.json']);
+    expect(fetcher.mock.calls.every((call) => !JSON.stringify(call[1]?.headers ?? {}).includes('from-environment'))).toBe(true);
     expect(local.credential('online-account', 'https://team.example.com')).toBeUndefined();
 });
 

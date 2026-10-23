@@ -391,6 +391,61 @@ describe('local server reachable from a network', () => {
         }
     });
 
+    test('test_the_discovery_document_says_who_the_relay_is_and_how_to_log_in', async () => {
+        const plain = await startServer({port: 0, dataFile: join(directory, 'discovery-none.sqlite'), discovery: {loginMode: 'none'}});
+        const team = await startServer({port: 0, dataFile: join(directory, 'discovery-token.sqlite'), createToken: 'team-secret', publicUrl: 'https://pairlobby.example.com', discovery: {loginMode: 'token', name: 'Example Corp PairLobby', loginHelp: 'Ask your team lead for the PairLobby team token.', supportUrl: 'https://example.com/pairlobby-help'}});
+        const bare = await startServer({port: 0, dataFile: join(directory, 'discovery-absent.sqlite')});
+        try {
+            const none = await fetch(`${plain.url}/.well-known/pairlobby.json`);
+            expect(none.headers.get('cache-control')).toBe('public, max-age=300');
+            expect(await none.json()).toEqual({version: 1, login: {mode: 'none'}, relays: [], features: ['message-stages', 'files']});
+            const token = await fetch(`http://127.0.0.1:${team.port}/.well-known/pairlobby.json`);
+            expect(await token.json()).toEqual({version: 1, name: 'Example Corp PairLobby', login: {mode: 'token', tokenHelp: 'Ask your team lead for the PairLobby team token.', verify: '/api/online/account'}, relays: ['https://pairlobby.example.com'], features: ['message-stages', 'files'], support: 'https://example.com/pairlobby-help'});
+            expect((await rawGet('/.well-known/pairlobby.json', {host: 'attacker.example'}, team.port)).status).toBe(401);
+            expect((await fetch(`${bare.url}/.well-known/pairlobby.json`)).status).toBe(404);
+        } finally {
+            await Promise.all([plain.close(), team.close(), bare.close()]);
+        }
+    });
+
+    test('test_the_team_token_check_answers_only_in_token_mode_and_only_the_right_token', async () => {
+        const team = await startServer({port: 0, dataFile: join(directory, 'account-token.sqlite'), createToken: 'team-secret', discovery: {loginMode: 'token', name: 'Team'}});
+        const plain = await startServer({port: 0, dataFile: join(directory, 'account-none.sqlite'), createToken: 'team-secret', discovery: {loginMode: 'none'}});
+        try {
+            const ask = (url: string, token?: string) => fetch(`${url}/api/online/account`, {headers: token ? {'x-pairlobby-account-token': token} : {}});
+            const right = await ask(team.url, 'team-secret');
+            expect(right.status).toBe(200);
+            expect(await right.json()).toEqual({email: null, userId: 'team', name: 'Team', server: team.url, handle: null});
+            for (const offered of [undefined, 'team-secreT']) {
+                const refused = await ask(team.url, offered);
+                expect(refused.status).toBe(401);
+                expect(await refused.json()).toEqual({error: {code: 'unauthorized', message: 'this is not the team token for this relay'}});
+            }
+            expect((await ask(plain.url, 'team-secret')).status).toBe(404);
+            expect((await fetch(`${team.url}/api/online/rooms`, {headers: {'x-pairlobby-account-token': 'team-secret'}})).status).toBe(404);
+            expect((await fetch(`${team.url}/api/device/code`, {method: 'POST'})).status).toBe(404);
+        } finally {
+            await Promise.all([team.close(), plain.close()]);
+        }
+        await expect(startServer({port: 0, dataFile: join(directory, 'account-missing.sqlite'), discovery: {loginMode: 'token'}})).rejects.toThrow('token-mode login needs a create token');
+    });
+
+    test('test_team_token_checks_are_limited_apart_from_room_creation', async () => {
+        const team = await startServer({port: 0, dataFile: join(directory, 'account-limits.sqlite'), createToken: 'team-secret', trustedProxyHeader: 'x-forwarded-for', limits: {accountCheckPerMinutePerAddress: 2}, discovery: {loginMode: 'token'}});
+        try {
+            const ask = (token: string) => fetch(`${team.url}/api/online/account`, {headers: {'x-pairlobby-account-token': token, 'x-forwarded-for': '203.0.113.7'}});
+            expect((await ask('guess')).status).toBe(401);
+            expect((await ask('guess')).status).toBe(401);
+            const limited = await ask('team-secret');
+            expect(limited.status).toBe(429);
+            expect(((await limited.json()) as {error: {code: string; retryAfterMs: number}}).error).toMatchObject({code: 'rate_limited'});
+            expect((await tryCreate(team.url, {'x-pairlobby-account-token': 'team-secret', 'x-forwarded-for': '203.0.113.7'})).status).toBe(201);
+            expect((await fetch(`${team.url}/api/online/account`, {headers: {'x-pairlobby-account-token': 'team-secret', 'x-forwarded-for': '203.0.113.8'}})).status).toBe(200);
+        } finally {
+            await team.close();
+        }
+    });
+
     test('test_behind_a_public_url_or_proxy_nobody_joins_by_name_even_from_this_device', async () => {
         for (const options of [{publicUrl: 'https://relay.example.com'}, {trustedProxyHeader: 'x-forwarded-for'}]) {
             const relay = await startServer({port: 0, dataFile: join(directory, `proxied-local-${Object.keys(options)[0]}.sqlite`), ...options});

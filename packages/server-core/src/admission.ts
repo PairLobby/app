@@ -9,6 +9,9 @@ export const CREATE_TOKEN_HEADER = 'x-pairlobby-account-token';
 
 export const CREATE_TOKEN_REQUIRED = 'this relay needs its create token to start a room; set PAIRLOBBY_CREATE_TOKEN';
 
+/** One message for a missing and a wrong team token, so the answer says nothing about which. */
+export const TEAM_TOKEN_REFUSED = 'this is not the team token for this relay';
+
 export type RateLimit = {perMinute: number};
 
 export type RateDecision = {ok: true} | {ok: false; retryAfterMs: number};
@@ -25,9 +28,11 @@ export type AdmissionLimits = {
     redeemPerMinutePerAddress: number;
     /** Invite redemptions the whole relay accepts a minute, whoever tries them. */
     redeemPerMinuteGlobal: number;
+    /** Team token checks (`GET /api/online/account`) one address may make a minute, counted apart from creating rooms. */
+    accountCheckPerMinutePerAddress: number;
 };
 
-export const DEFAULT_ADMISSION_LIMITS: AdmissionLimits = {createPerMinutePerAddress: 10, redeemPerMinutePerAddress: 20, redeemPerMinuteGlobal: 300};
+export const DEFAULT_ADMISSION_LIMITS: AdmissionLimits = {createPerMinutePerAddress: 10, redeemPerMinutePerAddress: 20, redeemPerMinuteGlobal: 300, accountCheckPerMinutePerAddress: 30};
 
 export type AdmissionOptions = {
     /** When set, creating a room needs this token in the create token header. Joining with an invite never does. */
@@ -86,16 +91,30 @@ export function createAdmission(options: AdmissionOptions) {
             throw new ProtocolError('rate_limited', 'too many attempts from here; wait a moment and try again', {retryAfterMs: decision.retryAfterMs});
         }
     };
+    /** Whether the request carries the create token, compared as digests so the time taken says nothing about it. */
+    const tokenMatches = async (request: Request): Promise<boolean> => {
+        const offered = request.headers.get(CREATE_TOKEN_HEADER);
+        return Boolean(tokenDigest && offered && digestsEqual(await hashCredential(offered), await tokenDigest));
+    };
     return {
+        tokenMatches,
         /** Refuses a room creation without the create token, then counts it against the caller. */
         async beforeCreate(request: Request): Promise<void> {
-            if (tokenDigest) {
-                const offered = request.headers.get(CREATE_TOKEN_HEADER);
-                if (!offered || !digestsEqual(await hashCredential(offered), await tokenDigest)) {
-                    throw new ProtocolError('unauthorized', CREATE_TOKEN_REQUIRED);
-                }
+            if (tokenDigest && !(await tokenMatches(request))) {
+                throw new ProtocolError('unauthorized', CREATE_TOKEN_REQUIRED);
             }
             await take(request, `create:address:${address(request)}`, 1, {perMinute: limits.createPerMinutePerAddress});
+        },
+        /**
+         * The team token check behind token-mode login: counted first, in its own bucket so
+         * guessing cannot spend the create budget, then refused the same way whether the
+         * token is missing or wrong.
+         */
+        async beforeAccountCheck(request: Request): Promise<void> {
+            await take(request, `account-check:address:${address(request)}`, 1, {perMinute: limits.accountCheckPerMinutePerAddress});
+            if (!(await tokenMatches(request))) {
+                throw new ProtocolError('unauthorized', TEAM_TOKEN_REFUSED);
+            }
         },
         /** Counts an invite redemption against the caller and the whole relay, before the code is looked up. */
         async beforeRedeem(request: Request): Promise<void> {
