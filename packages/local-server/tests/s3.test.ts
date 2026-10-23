@@ -1,5 +1,8 @@
 import {createHash} from 'node:crypto';
+import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {createServer} from 'node:http';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import type {AddressInfo} from 'node:net';
 import type {Server} from 'node:http';
 
@@ -118,5 +121,119 @@ describe('AWS credentials', () => {
             throw new Error('unreachable');
         }) as typeof fetch;
         await expect(awsCredentials({}, nothing)()).rejects.toThrow('no AWS credentials');
+    });
+});
+
+type StsCall = {headers: Record<string, string | string[] | undefined>; form: URLSearchParams};
+
+type StsAnswer = {status: number; body: string};
+
+/** A loopback STS that records each AssumeRoleWithWebIdentity call and answers with whatever the test queued. */
+async function fakeSts(answer: (call: StsCall) => StsAnswer): Promise<{url: string; calls: StsCall[]; close: () => void}> {
+    const calls: StsCall[] = [];
+    const sts = createServer((incoming, outgoing) => {
+        const chunks: Buffer[] = [];
+        incoming.on('data', (chunk: Buffer) => chunks.push(chunk));
+        incoming.on('end', () => {
+            const call = {headers: incoming.headers, form: new URLSearchParams(Buffer.concat(chunks).toString())};
+            calls.push(call);
+            const {status, body} = answer(call);
+            outgoing.writeHead(status, {'content-type': 'application/json'}).end(body);
+        });
+    });
+    await new Promise<void>((resolve) => sts.listen(0, '127.0.0.1', resolve));
+    return {url: `http://127.0.0.1:${(sts.address() as AddressInfo).port}/`, calls, close: () => sts.close()};
+}
+
+function stsCredentials(id: string, expiration: number | string): StsAnswer {
+    return {status: 200, body: JSON.stringify({AssumeRoleWithWebIdentityResponse: {AssumeRoleWithWebIdentityResult: {Credentials: {AccessKeyId: id, SecretAccessKey: `${id}-secret`, SessionToken: `${id}-session`, Expiration: expiration}}}})};
+}
+
+describe('AWS web identity credentials', () => {
+    const roleArn = 'arn:aws:iam::123456789012:role/pairlobby-relay';
+    let directory: string;
+    let tokenFile: string;
+
+    beforeAll(() => {
+        directory = mkdtempSync(join(tmpdir(), 'pairlobby-web-identity-'));
+        tokenFile = join(directory, 'token');
+    });
+
+    afterAll(() => {
+        rmSync(directory, {recursive: true, force: true});
+    });
+
+    test('test_web_identity_assumes_the_role_with_an_unsigned_form_post', async () => {
+        writeFileSync(tokenFile, 'web-token-1\n');
+        const sts = await fakeSts(() => stsCredentials('assumed', Math.floor(Date.now() / 1000) + 3600));
+        try {
+            const credentials = await awsCredentials({AWS_ROLE_ARN: roleArn, AWS_WEB_IDENTITY_TOKEN_FILE: tokenFile, AWS_ENDPOINT_URL_STS: sts.url})();
+            expect(credentials).toMatchObject({accessKeyId: 'assumed', secretAccessKey: 'assumed-secret', sessionToken: 'assumed-session'});
+            expect(sts.calls).toHaveLength(1);
+            const [call] = sts.calls;
+            expect(Object.fromEntries(call!.form)).toEqual({Action: 'AssumeRoleWithWebIdentity', Version: '2011-06-15', RoleArn: roleArn, RoleSessionName: 'pairlobby-relay', WebIdentityToken: 'web-token-1'});
+            expect(call!.headers['accept']).toBe('application/json');
+            expect(call!.headers['authorization']).toBeUndefined();
+        } finally {
+            sts.close();
+        }
+    });
+
+    test('test_expiring_credentials_are_refreshed_with_the_token_file_read_again', async () => {
+        writeFileSync(tokenFile, 'web-token-1');
+        let round = 0;
+        // The first credentials expire within the five-minute margin, in ISO form; the second last an hour, in epoch seconds.
+        const sts = await fakeSts(() => ++round === 1 ? stsCredentials('first', new Date(Date.now() + 60_000).toISOString()) : stsCredentials('second', Math.floor(Date.now() / 1000) + 3600));
+        try {
+            const credentials = awsCredentials({AWS_ROLE_ARN: roleArn, AWS_WEB_IDENTITY_TOKEN_FILE: tokenFile, AWS_ROLE_SESSION_NAME: 'team-relay', AWS_ENDPOINT_URL_STS: sts.url});
+            expect((await credentials()).accessKeyId).toBe('first');
+            writeFileSync(tokenFile, 'web-token-2');
+            expect((await credentials()).accessKeyId).toBe('second');
+            expect((await credentials()).accessKeyId).toBe('second');
+            expect(sts.calls.map((call) => [call.form.get('WebIdentityToken'), call.form.get('RoleSessionName')])).toEqual([['web-token-1', 'team-relay'], ['web-token-2', 'team-relay']]);
+        } finally {
+            sts.close();
+        }
+    });
+
+    test('test_concurrent_callers_share_one_refresh', async () => {
+        writeFileSync(tokenFile, 'web-token-1');
+        const sts = await fakeSts(() => stsCredentials('shared', Math.floor(Date.now() / 1000) + 3600));
+        try {
+            const credentials = awsCredentials({AWS_ROLE_ARN: roleArn, AWS_WEB_IDENTITY_TOKEN_FILE: tokenFile, AWS_ENDPOINT_URL_STS: sts.url});
+            const all = await Promise.all([credentials(), credentials(), credentials()]);
+            expect(all.map((each) => each.accessKeyId)).toEqual(['shared', 'shared', 'shared']);
+            expect(sts.calls).toHaveLength(1);
+        } finally {
+            sts.close();
+        }
+    });
+
+    test('test_an_sts_refusal_names_the_role_and_error_code_and_nothing_secret', async () => {
+        writeFileSync(tokenFile, 'secret-web-token');
+        const sts = await fakeSts(() => ({status: 400, body: JSON.stringify({Error: {Code: 'InvalidIdentityToken', Message: 'Token secret-web-token is not valid'}})}));
+        try {
+            const failure = await awsCredentials({AWS_ROLE_ARN: roleArn, AWS_WEB_IDENTITY_TOKEN_FILE: tokenFile, AWS_ENDPOINT_URL_STS: sts.url})().catch((error: Error) => error);
+            expect((failure as Error).message).toBe(`could not assume ${roleArn}: InvalidIdentityToken`);
+            expect((failure as Error).message).not.toContain('secret-web-token');
+        } finally {
+            sts.close();
+        }
+        const missing = awsCredentials({AWS_ROLE_ARN: roleArn, AWS_WEB_IDENTITY_TOKEN_FILE: join(directory, 'missing'), AWS_ENDPOINT_URL_STS: 'http://127.0.0.1:9/'});
+        await expect(missing()).rejects.toThrow(`could not assume ${roleArn}: cannot read AWS_WEB_IDENTITY_TOKEN_FILE`);
+    });
+
+    test('test_environment_keys_win_over_web_identity_which_wins_over_the_container_role', async () => {
+        writeFileSync(tokenFile, 'web-token-1');
+        const asked: string[] = [];
+        const recording = (async (url: string | URL | Request) => {
+            asked.push(String(url));
+            return new Response(stsCredentials('from-sts', Math.floor(Date.now() / 1000) + 3600).body);
+        }) as typeof fetch;
+        const webIdentity = {AWS_ROLE_ARN: roleArn, AWS_WEB_IDENTITY_TOKEN_FILE: tokenFile, AWS_REGION: 'eu-west-1'};
+        expect((await awsCredentials({...webIdentity, AWS_ACCESS_KEY_ID: 'id', AWS_SECRET_ACCESS_KEY: 'secret'}, recording)()).accessKeyId).toBe('id');
+        expect(asked).toEqual([]);
+        expect((await awsCredentials({...webIdentity, AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: '/v2/credentials/abc'}, recording)()).accessKeyId).toBe('from-sts');
+        expect(asked).toEqual(['https://sts.eu-west-1.amazonaws.com/']);
     });
 });
