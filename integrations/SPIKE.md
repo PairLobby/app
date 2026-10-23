@@ -32,8 +32,8 @@ The synthetic harness requires Codex CLI and Python 3.11+ but uses a localhost f
 After building, run focused tests with:
 
 ```sh
-npx vitest run packages/cli/src/spawn-options.test.ts packages/cli/src/spawn-agent.test.ts packages/cli/src/spawn-receiver.test.ts
-npx vitest run packages/cli/src/agent-roster.test.ts packages/cli/src/clipboard.test.ts
+npx vitest run packages/cli/tests/spawn-options.test.ts packages/cli/tests/spawn-agent.test.ts packages/cli/tests/spawn-receiver.test.ts
+npx vitest run packages/cli/tests/agent-roster.test.ts packages/cli/tests/clipboard.test.ts
 ```
 
 Spawn coverage includes separate identities/names, human/guest restrictions, admission rules, private-account token forwarding, lost redemption response recovery, cleanup failure, no idle inference, sequential/parallel behavior, and actual adapter model/effort arguments. Roster coverage includes external agents, Origin, private invite storage, managed versus caller conversation IDs, reported/configured models, moderation/Working state, retained-history pagination, and no extra receipts/cursor changes. PTY coverage checks full cell values, double-click targeting, navigation, paging, refresh, resize, and returning to chat.
