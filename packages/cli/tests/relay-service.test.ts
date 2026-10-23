@@ -6,12 +6,12 @@ import {expect, test} from 'vitest';
 import type {RoomEntry} from '@pairlobby/client';
 import {startServer} from '@pairlobby/local-server';
 
-import {formatServiceStatus, plistProgram, probeRelay, servicePlist, servicePort, serviceProgram} from '../src/relay-service.js';
+import {definitionProgram, formatServiceStatus, plistProgram, probeRelay, serviceDefinition, serviceLayout, servicePlist, servicePort, serviceProgram, unitProperties} from '../src/relay-service.js';
 import type {ServiceLayout, ServiceStatus} from '../src/relay-service.js';
 import {relayAdvice} from '../src/room-list.js';
 import type {RoomListEntry} from '../src/render.js';
 
-const layout: ServiceLayout = {label: 'com.pairlobby.relay', plist: '/Users/me/Library/LaunchAgents/com.pairlobby.relay.plist', log: '/Users/me/Library/Logs/PairLobby/relay.log', domain: 'gui/501'};
+const layout: ServiceLayout = {manager: 'launchd', label: 'com.pairlobby.relay', file: '/Users/me/Library/LaunchAgents/com.pairlobby.relay.plist', log: '/Users/me/Library/Logs/PairLobby/relay.log', domain: 'gui/501'};
 
 test('test_the_agent_runs_the_installed_launcher_and_restarts_after_a_failure', () => {
     const program = serviceProgram('/Users/me/.local/bin/pairlobby');
@@ -33,6 +33,30 @@ test('test_without_the_installer_the_agent_runs_this_exact_build_and_says_so', (
     const plist = servicePlist(layout, {args: ['/a & b/<node>'], followsUpdates: false}, {port: 8791, host: '0.0.0.0', environment: {}});
     expect(plist).toContain('<string>/a &amp; b/&lt;node&gt;</string>');
     expect(plistProgram(plist)).toEqual(['/a & b/<node>', 'serve', '--port', '8791', '--host', '0.0.0.0']);
+});
+
+test('test_on_linux_a_systemd_user_unit_runs_the_launcher_restarts_always_and_logs_to_a_file', () => {
+    const linux = serviceLayout('linux', {}, '/home/me');
+    expect(linux).toEqual({manager: 'systemd', label: 'pairlobby-relay', file: '/home/me/.config/systemd/user/pairlobby-relay.service', log: '/home/me/.local/state/pairlobby/relay.log', domain: 'user'});
+    expect(serviceLayout('linux', {XDG_CONFIG_HOME: '/cfg', XDG_STATE_HOME: '/state', PAIRLOBBY_SERVICE_LABEL: 'pairlobby-test'}, '/home/me')).toMatchObject({label: 'pairlobby-test', file: '/cfg/systemd/user/pairlobby-test.service', log: '/state/pairlobby/pairlobby-test.log'});
+    const unit = serviceDefinition(linux, {args: ['/home/me/.local/bin/pairlobby'], followsUpdates: true}, {port: 8790, environment: {PAIRLOBBY_NO_UPDATE_CHECK: '1', PATH: '/usr/local/bin:/usr/bin'}});
+    expect(unit).toContain('ExecStart="/home/me/.local/bin/pairlobby" "serve" "--port" "8790"\n');
+    expect(unit).toContain('Environment="PATH=/usr/local/bin:/usr/bin"\n');
+    expect(unit).toContain('Restart=always\n');
+    expect(unit).toContain('RestartSec=10\n');
+    expect(unit).toContain('StandardOutput=append:/home/me/.local/state/pairlobby/relay.log\n');
+    expect(unit).toContain('WantedBy=default.target\n');
+    expect(definitionProgram(linux, unit)).toEqual(['/home/me/.local/bin/pairlobby', 'serve', '--port', '8790']);
+    expect(servicePort(definitionProgram(linux, unit))).toBe(8790);
+});
+
+test('test_a_unit_quotes_spaces_quotes_percent_and_dollar_signs_and_reads_them_back', () => {
+    const linux = serviceLayout('linux', {}, '/home/me');
+    const unit = serviceDefinition(linux, {args: ['/opt/my "tools"/100%/$HOME\\node'], followsUpdates: false}, {port: 8791, host: '0.0.0.0', environment: {PAIRLOBBY_DATA_DIR: '/data/50%'}});
+    expect(unit).toContain('ExecStart="/opt/my \\"tools\\"/100%%/$$HOME\\\\node" "serve" "--port" "8791" "--host" "0.0.0.0"');
+    expect(unit).toContain('Environment="PAIRLOBBY_DATA_DIR=/data/50%%"');
+    expect(definitionProgram(linux, unit)).toEqual(['/opt/my "tools"/100%/$HOME\\node', 'serve', '--port', '8791', '--host', '0.0.0.0']);
+    expect(unitProperties('UnitFileState=enabled\nMainPID=4242\n')).toEqual({UnitFileState: 'enabled', MainPID: '4242'});
 });
 
 test('test_an_agent_from_the_old_repository_script_is_read_and_reported_as_not_following_updates', () => {

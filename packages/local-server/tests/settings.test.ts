@@ -34,13 +34,14 @@ describe('relay settings', () => {
             createToken: 'team-secret',
             allowedHosts: ['relay.internal', 'relay.internal:8080'],
             limits: {createPerMinutePerAddress: 5, redeemPerMinutePerAddress: 30, redeemPerMinuteGlobal: 600},
+            roomLimits: {},
             requestLog: 'writes'
         });
     });
 
     test('test_a_flag_wins_over_its_variable_and_empty_variables_count_as_unset', () => {
         const settings = relaySettings({port: '9000', requestLog: 'off'}, {PAIRLOBBY_PORT: '8080', PAIRLOBBY_REQUEST_LOG: 'all', PAIRLOBBY_HOST: '', PAIRLOBBY_CREATE_TOKEN: ''});
-        expect(settings).toEqual({port: 9000, allowedHosts: [], limits: {}});
+        expect(settings).toEqual({port: 9000, allowedHosts: [], limits: {}, roomLimits: {}});
     });
 
     test('test_bad_values_name_the_flag_or_variable_that_holds_them', () => {
@@ -52,6 +53,21 @@ describe('relay settings', () => {
         expect(() => relaySettings({}, {PAIRLOBBY_LIMIT_CREATE_PER_MIN_IP: '0'})).toThrow('PAIRLOBBY_LIMIT_CREATE_PER_MIN_IP must be a whole number');
         expect(() => relaySettings({requestLog: 'verbose'}, {})).toThrow('must be all, writes or off');
         expect(() => parsePublicUrl('https://team.example.com/path')).toThrow('no path');
+    });
+
+    test('test_room_caps_come_from_the_environment_in_whole_units_and_out_of_range_values_are_refused', () => {
+        const settings = relaySettings({}, {
+            PAIRLOBBY_ROOM_MAX_PARTICIPANTS: '40',
+            PAIRLOBBY_ROOM_MAX_EVENTS: '50000',
+            PAIRLOBBY_ROOM_MAX_HISTORY_MB: '64',
+            PAIRLOBBY_ROOM_MAX_MESSAGE_KB: '64',
+            PAIRLOBBY_ROOM_MAX_FILE_MB: '0',
+            PAIRLOBBY_ROOM_MAX_FILES_MB: '2048'
+        });
+        expect(settings.roomLimits).toEqual({maxParticipants: 40, maxRetainedEvents: 50_000, maxRetainedEventBytes: 64 * 1024 * 1024, maxEventPayloadBytes: 64 * 1024, maxFileBytes: 0, maxRetainedFileBytes: 2048 * 1024 * 1024});
+        expect(() => relaySettings({}, {PAIRLOBBY_ROOM_MAX_PARTICIPANTS: '1'})).toThrow('PAIRLOBBY_ROOM_MAX_PARTICIPANTS must be a whole number from 2 to 1000, not "1"');
+        expect(() => relaySettings({}, {PAIRLOBBY_ROOM_MAX_FILE_MB: '96'})).toThrow('PAIRLOBBY_ROOM_MAX_FILE_MB must be a whole number from 0 to 95');
+        expect(() => relaySettings({}, {PAIRLOBBY_ROOM_MAX_HISTORY_MB: '1.5'})).toThrow('PAIRLOBBY_ROOM_MAX_HISTORY_MB must be a whole number');
     });
 
     test('test_the_create_token_file_must_be_private_and_not_combined_with_the_variable', () => {

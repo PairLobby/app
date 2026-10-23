@@ -91,9 +91,9 @@ npm run service:uninstall   # remove it; rooms and credentials are left alone
 | --- | --- | --- | --- |
 | macOS | LaunchAgent | yes | yes, after 10s |
 | Windows | Scheduled task, logon trigger | yes | yes, after 1 min (the shortest Windows allows) |
-| Linux | not built — run `pairlobby serve`, or use the shell hook below | — | — |
+| Linux | systemd user unit (`~/.config/systemd/user/pairlobby-relay.service`) | yes | yes, after 10s |
 
-Neither needs administrator rights. `npm run service -- logs` tails the log and
+None needs administrator rights. `npm run service -- logs` tails the log and
 `npm run service -- restart` kicks it. Set `PAIRLOBBY_PORT` before
 `service:install` to use a port other than 8790. The relay shares itself as
 `pairlobby settings network-sharing` says each time it starts, so restart it
@@ -102,9 +102,12 @@ pins a listen address instead and ignores the setting. A service installed by an
 earlier version always passes `--host 127.0.0.1`: re-run `service:install` once
 to let the setting apply.
 
+On Linux the unit logs to `~/.local/state/pairlobby/relay.log`. A user unit stops
+when you log out; `loginctl enable-linger $USER` keeps it running without a session.
+
 On Windows the task runs node through a small VBScript shim, because Windows has
 no windowless node and the task would otherwise flash a console at every logon.
-Both platforms bake node's path into a generated launcher, so re-run
+All three bake node's path into a generated launcher, so re-run
 `service:install` after changing node version.
 
 If you would rather not install a relay service, a shell hook does most of the same job
@@ -216,6 +219,14 @@ In a container, run `pairlobby-relay` from the `@pairlobby/local-server` package
 | `PAIRLOBBY_LIMIT_CREATE_PER_MIN_IP` | | rooms one caller may create a minute (10) |
 | `PAIRLOBBY_LIMIT_REDEEM_PER_MIN_IP` | | invite codes one caller may try a minute (20) |
 | `PAIRLOBBY_LIMIT_REDEEM_PER_MIN_GLOBAL` | | invite codes the whole relay accepts a minute (300) |
+| `PAIRLOBBY_ROOM_MAX_PARTICIPANTS` | | people and agents in one room (16) |
+| `PAIRLOBBY_ROOM_MAX_EVENTS` | | events a room keeps before it refuses new messages (20000) |
+| `PAIRLOBBY_ROOM_MAX_HISTORY_MB` | | MiB of history a room keeps (32) |
+| `PAIRLOBBY_ROOM_MAX_MESSAGE_KB` | | KiB in one message (32) |
+| `PAIRLOBBY_ROOM_MAX_FILE_MB` | | MiB in one file, at most 95; `0` turns attachments off (95) |
+| `PAIRLOBBY_ROOM_MAX_FILES_MB` | | MiB of files a room keeps (512) |
+
+The `PAIRLOBBY_ROOM_*` caps apply to rooms created after the relay starts with them; a room keeps the caps it was created with. A full room still accepts pause, close and export.
 
 `GET /health` answers `{"service":"pairlobby-relay","ready":true}` for a load balancer's health check, whatever `Host` it sends. Every response carries an `x-request-id`, the caller's own when it is a short plain token. The request log writes one JSON line per request to standard output with the time, request id, method, route with identifiers replaced (`/v1/rooms/:room/events`), status, duration and the first eight hex digits of the room id's SHA-256; never a body, a credential, an invite code or a name.
 

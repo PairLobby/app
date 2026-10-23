@@ -375,6 +375,22 @@ describe('local server reachable from a network', () => {
         }
     });
 
+    test('test_configured_room_caps_apply_to_rooms_created_after_the_relay_starts', async () => {
+        const relay = await startServer({port: 0, dataFile: join(directory, 'caps.sqlite'), roomLimits: {maxParticipants: 2, maxEventPayloadBytes: 1024}});
+        try {
+            const created = await createRoom(relay.url);
+            const join = (code: string) => fetch(`${relay.url}/v1/invites/redeem`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({code, displayName: 'codex', kind: 'agent', participantCredential: newCredential('participant'), attemptId: newId('attempt'), attemptSecret: newCredential('attempt')})});
+            expect((await join(created.invite.code)).status).toBe(200);
+            const minted = await fetch(`${relay.url}/v1/rooms/${created.roomId}/invites`, {method: 'POST', headers: {'content-type': 'application/json', authorization: `Bearer ${created.controllerCredential}`}, body: '{}'});
+            const full = await join(((await minted.json()) as {code: string}).code);
+            expect(((await full.json()) as {error: {code: string}}).error.code).toBe('participant_limit_reached');
+            const sent = await fetch(`${relay.url}/v1/rooms/${created.roomId}/events`, {method: 'POST', headers: {'content-type': 'application/json', authorization: `Bearer ${created.participantCredential}`}, body: JSON.stringify({type: 'message', payload: {text: 'x'.repeat(2000)}, idempotencyKey: newId('event')})});
+            expect(((await sent.json()) as {error: {code: string}}).error.code).toBe('payload_too_large');
+        } finally {
+            await relay.close();
+        }
+    });
+
     test('test_behind_a_public_url_or_proxy_nobody_joins_by_name_even_from_this_device', async () => {
         for (const options of [{publicUrl: 'https://relay.example.com'}, {trustedProxyHeader: 'x-forwarded-for'}]) {
             const relay = await startServer({port: 0, dataFile: join(directory, `proxied-local-${Object.keys(options)[0]}.sqlite`), ...options});
