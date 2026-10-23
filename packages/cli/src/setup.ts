@@ -10,8 +10,10 @@ import {createInterface} from 'node:readline/promises';
 import type {LocalStore, LoginMode} from '@pairlobby/client';
 
 import {UsageError} from './context.js';
-import {BUILT_IN_LABEL, NOT_A_DEPLOYMENT, REFUSED, activeEndpoint, builtInEndpoint, defaultLabel, displayText, endpointByLabel, normalizeOrigin, removeEndpoint, resetEndpoint, saveEndpoint, savedActiveEndpoint, savedEndpoints, useEndpoint, validateLabel} from './endpoints.js';
+import {BUILT_IN_LABEL, NOT_A_DEPLOYMENT, REFUSED, activeEndpoint, builtInEndpoint, defaultLabel, endpointByLabel, normalizeOrigin, removeEndpoint, resetEndpoint, saveEndpoint, savedActiveEndpoint, savedEndpoints, useEndpoint, validateLabel} from './endpoints.js';
 import type {Endpoint} from './endpoints.js';
+import type {ProbeResult} from './discovery.js';
+import {body, get, parseDiscovery} from './discovery.js';
 import {accountToken} from './online.js';
 import {json, out} from './render.js';
 
@@ -34,58 +36,10 @@ export type SetupDeps = {
     /** This command runs inside an agent's session. */
     agent: boolean;
     ask: (question: string) => Promise<string>;
-    login: (store: LocalStore) => Promise<string>;
+    login: (store: LocalStore) => Promise<string | null>;
 };
 
-/** What a probe learned about a host. */
-export type ProbeResult = {kind: 'discovery' | 'relay' | 'account'; name: string; loginMode: LoginMode; relayOrigins: string[]};
-
 export const AGENT_REFUSAL = 'Changing the login endpoint is for a person at a terminal, not an agent session.';
-
-const PROBE_TIMEOUT_MS = 10_000;
-
-async function get(url: string): Promise<Response | null> {
-    try {
-        return await fetch(url, {method: 'GET', headers: {accept: 'application/json'}, redirect: 'error', signal: AbortSignal.timeout(PROBE_TIMEOUT_MS)});
-    } catch {
-        return null;
-    }
-}
-
-async function body(response: Response | null): Promise<Record<string, unknown> | null> {
-    if (!response) {
-        return null;
-    }
-    try {
-        const value = await response.json() as unknown;
-        return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
-    } catch {
-        return null;
-    }
-}
-
-const LOGIN_MODES: LoginMode[] = ['browser', 'token', 'none'];
-
-/** A discovery document, or null when it is not one this CLI understands. A newer major version is refused outright. */
-export function parseDiscovery(document: Record<string, unknown>, origin: string): ProbeResult | null {
-    if (typeof document['version'] !== 'number') {
-        return null;
-    }
-    if (document['version'] > 1) {
-        throw new UsageError(`${origin} describes itself with a newer format (version ${document['version']}); update pairlobby and try again`, NOT_A_DEPLOYMENT);
-    }
-    const login = document['login'] as Record<string, unknown> | undefined;
-    const mode = login && typeof login === 'object' ? login['mode'] : undefined;
-    if (!LOGIN_MODES.includes(mode as LoginMode)) {
-        return null;
-    }
-    const relays = Array.isArray(document['relays']) ? document['relays'] : [];
-    if (!relays.every((relay) => typeof relay === 'string')) {
-        return null;
-    }
-    const name = typeof document['name'] === 'string' ? displayText(document['name'], 64) : '';
-    return {kind: 'discovery', name: name || new URL(origin).host, loginMode: mode as LoginMode, relayOrigins: relays.length > 0 ? (relays as string[]).map((relay) => normalizeOrigin(relay, 'A relay the endpoint declares')) : [origin]};
-}
 
 /**
  * What answers at `origin`, from GET requests only, stopping at the first match: its
@@ -185,7 +139,8 @@ async function addEndpoint(store: LocalStore, options: SetupOptions, deps: Setup
     }
     out(saved.loginMode === 'none' ? `Saved as "${label}". ${saved.name} has no login; create and join rooms there with no --server.` : `Saved as "${label}". Run pairlobby login to sign in to ${saved.name}.`);
     if (options.login && saved.loginMode !== 'none') {
-        out(`Logged in as ${await deps.login(store)}`);
+        const email = await deps.login(store);
+        out(email ? `Logged in as ${email}` : `Logged in to ${saved.name}`);
     }
     return 0;
 }

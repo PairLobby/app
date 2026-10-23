@@ -219,12 +219,19 @@ In a container, run `pairlobby-relay` from the `@pairlobby/local-server` package
 | `PAIRLOBBY_LIMIT_CREATE_PER_MIN_IP` | | rooms one caller may create a minute (10) |
 | `PAIRLOBBY_LIMIT_REDEEM_PER_MIN_IP` | | invite codes one caller may try a minute (20) |
 | `PAIRLOBBY_LIMIT_REDEEM_PER_MIN_GLOBAL` | | invite codes the whole relay accepts a minute (300) |
+| `PAIRLOBBY_LIMIT_ACCOUNT_CHECK_PER_MIN_IP` | | team token checks one caller may make a minute, counted apart from creating rooms (30) |
+| `PAIRLOBBY_LOGIN_MODE` | | `token` lets people log in with the create token as a team token; `none` (default) offers no login |
+| `PAIRLOBBY_DISCOVERY_NAME` | | the name `pairlobby setup` shows, up to 64 characters |
+| `PAIRLOBBY_LOGIN_HELP` | | one or two sentences shown above the token prompt, up to 300 characters |
+| `PAIRLOBBY_SUPPORT_URL` | | an https page for help, shown by `pairlobby setup --show` |
 | `PAIRLOBBY_ROOM_MAX_PARTICIPANTS` | | people and agents in one room (16) |
 | `PAIRLOBBY_ROOM_MAX_EVENTS` | | events a room keeps before it refuses new messages (20000) |
 | `PAIRLOBBY_ROOM_MAX_HISTORY_MB` | | MiB of history a room keeps (32) |
 | `PAIRLOBBY_ROOM_MAX_MESSAGE_KB` | | KiB in one message (32) |
 | `PAIRLOBBY_ROOM_MAX_FILE_MB` | | MiB in one file, at most 95; `0` turns attachments off (95) |
 | `PAIRLOBBY_ROOM_MAX_FILES_MB` | | MiB of files a room keeps (512) |
+
+Every relay started this way answers `GET /.well-known/pairlobby.json`, which tells `pairlobby setup` its name, how to log in and where its rooms are (`PAIRLOBBY_PUBLIC_URL`, else the address used). Set `PAIRLOBBY_PUBLIC_URL` (or `PAIRLOBBY_ALLOWED_HOSTS`) to the name people use, or the relay refuses requests for it. With `PAIRLOBBY_LOGIN_MODE=token`, which needs a create token, it also answers `GET /api/online/account`: the create token in `x-pairlobby-account-token` gets `200`, a missing or wrong one the same `401`, and checks are rate limited on their own. No other account path exists on the relay.
 
 The `PAIRLOBBY_ROOM_*` caps apply to rooms created after the relay starts with them; a room keeps the caps it was created with. A full room still accepts pause, close and export.
 
@@ -280,6 +287,16 @@ pairlobby setup --use team
 pairlobby setup --remove team                               # forget it and its saved login
 pairlobby setup --reset                                     # make pairlobby.com active again, keeping the others
 ```
+
+What a deployment offers depends on how it logs people in, which `pairlobby setup --show` names:
+
+| Login | Offers |
+|---|---|
+| `browser` (pairlobby.com, or an account service) | everything: `login` in the browser, `create online`, `find online`, `join online`, `invitations`, handles |
+| `token` (a relay with `PAIRLOBBY_LOGIN_MODE=token`) | `login` with the team token, `create online`; joining is by invite code |
+| `none` (a plain relay) | no login; `create` and `join <code>` reach it with no `--server` |
+
+In token mode `pairlobby login` shows the relay's help text and asks for the team token (hidden), checks it with the relay, and saves it only if it is right; `logout` only forgets it, since the team shares it. A command the deployment does not offer says so instead of failing.
 
 `setup` only sends GET requests before you confirm, shows the exact address it will use, and refuses to run in an agent session (except `--show`). Without a terminal it needs `--yes`. It exits 3 when the address is not a PairLobby deployment and 4 when refused. `pairlobby setup` with no arguments opens a small menu, and `pairlobby settings` shows the active endpoint under Network. `--relay <url>` declares another origin that endpoint's rooms may live on.
 

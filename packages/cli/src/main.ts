@@ -28,7 +28,7 @@ import {DEFAULT_LOCAL_SERVER, DEFAULT_RELAY_PORT, UsageError, controllerCredenti
 import type {Selection} from './context.js';
 import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
-import {acceptInvitation, accountToken, accountTokenFor, declineInvitation, isOnlineKey, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
+import {acceptInvitation, accountToken, accountTokenFor, requireAccountApi, declineInvitation, isOnlineKey, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
 import type {ReceivedInvitation} from './online.js';
 import {receiverAttempts, receiverConfiguration, receiverStatus, refreshReceivers, retryProviderNow, runReceiver, startReceiver, stopReceiver, waitAndRefreshReceiver, wakeOfflineReceivers} from './receiver.js';
 import type {ReceiverStartOptions, ReceiverStatus} from './receiver.js';
@@ -362,6 +362,7 @@ async function main(argv: string[]): Promise<number> {
         case 'find':
             if (positionals[1] === 'online') {
                 announceEndpoint(store);
+                requireAccountApi(store, 'find online');
                 return findOnline(store, values);
             }
             return findCommand(store, values);
@@ -384,22 +385,29 @@ async function main(argv: string[]): Promise<number> {
         case 'create':
             if (positionals[1] === 'online') {
                 announceEndpoint(store);
+                requireAccountApi(store, 'create online');
             }
             return createRoom(store, values, positionals[1] === 'online');
         case 'join':
             if (positionals[1] === 'online') {
                 announceEndpoint(store);
+                requireAccountApi(store, 'join online');
             }
             return joinRoom(store, values, ['online', 'local'].includes(positionals[1] ?? '') ? positionals[2] : positionals[1], positionals[1] === 'online', positionals[1] === 'local');
-        case 'login':
+        case 'login': {
             announceEndpoint(store);
-            out(`Logged in as ${await loginOnline(store, {paste: flag(values, 'token'), ...(flag(values, 'no-browser') ? {openBrowser: false} : {})})}`);
+            const email = await loginOnline(store, {paste: flag(values, 'token'), ...(flag(values, 'no-browser') ? {openBrowser: false} : {})});
+            // A team token stands for no one in particular, so there is no address to show.
+            out(email ? `Logged in as ${email}` : `Logged in to ${activeEndpoint(store).name}`);
             return 0;
+        }
         case 'logout': {
             announceEndpoint(store);
             const result = await logoutOnline(store);
             if (!result.removed) {
                 out('No saved account login on this device.');
+            } else if (result.revoked === null) {
+                out('Logged out. The saved token is forgotten on this device.');
             } else if (result.revoked) {
                 out('Logged out. This terminal\'s token was revoked.');
             } else {
@@ -510,6 +518,7 @@ async function main(argv: string[]): Promise<number> {
             return profileCommand(store, values);
         case 'invitations':
             announceEndpoint(store);
+            requireAccountApi(store, 'invitations');
             return invitationsCommand(store, values, positionals[1], positionals[2]);
         case 'settings':
             return settingsCommand(store, values, positionals[1], positionals[2]);
@@ -1138,6 +1147,7 @@ async function invitationsCommand(store: LocalStore, values: Values, action?: st
 /** Shows or sets this device's default identity, and with --username the account's handle. */
 async function profileCommand(store: LocalStore, values: Values): Promise<number> {
     if (str(values, 'username') !== undefined) {
+        requireAccountApi(store, 'profile --username');
         const handle = await setHandle(store, str(values, 'username')!);
         if (flag(values, 'json')) {
             json({handle});
@@ -2610,7 +2620,7 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     const network = relayNetwork(store, values, settings.host !== undefined);
     const host = settings.host ?? (network === 'off' ? '127.0.0.1' : '0.0.0.0');
     const port = settings.port ?? DEFAULT_RELAY_PORT;
-    const {publicUrl, trustedProxyHeader, createToken, allowedHosts, limits, roomLimits, requestLog} = settings;
+    const {publicUrl, trustedProxyHeader, createToken, allowedHosts, limits, roomLimits, requestLog, discovery} = settings;
     const writeLine = (line: string) => process.stdout.write(`${line}\n`);
     const backup = settings.backup ? {target: backupTarget(settings.backup.location), intervalMs: settings.backup.intervalMs, keep: settings.backup.keep, restore: settings.backup.restore, log: writeLine} : undefined;
     // Tailnet devices may address this one by its MagicDNS names, which are not interface addresses.
@@ -2622,7 +2632,7 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     }
     let running;
     try {
-        running = await startServer({version: VERSION, host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), ...(trustedProxyHeader ? {trustedProxyHeader} : {}), ...(createToken ? {createToken} : {}), allowedHosts, limits, roomLimits, ...(requestLog ? {requestLog: {mode: requestLog, write: writeLine}} : {}), ...(backup ? {backup} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
+        running = await startServer({version: VERSION, host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), ...(trustedProxyHeader ? {trustedProxyHeader} : {}), ...(createToken ? {createToken} : {}), allowedHosts, limits, roomLimits, discovery, ...(requestLog ? {requestLog: {mode: requestLog, write: writeLine}} : {}), ...(backup ? {backup} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
     } catch (error) {
         // Say what is wrong and what to do, rather than surfacing a raw errno. The
         // occupant is never probed: something else owning the port is not ours to poke.

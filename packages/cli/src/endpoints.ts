@@ -196,6 +196,23 @@ export function saveEndpoint(store: LocalStore, input: EndpointInput, now = Date
     return fromSaved(input.label, endpoints[input.label]!);
 }
 
+/** Refreshes what a saved endpoint said about itself, leaving which endpoint is active alone. */
+export function updateEndpoint(store: LocalStore, label: string, update: Pick<SavedEndpoint, 'name' | 'loginMode' | 'relayOrigins'>): Endpoint | undefined {
+    const endpoints = {...savedEndpoints(store)};
+    const saved = endpoints[label];
+    if (!saved) {
+        return undefined;
+    }
+    endpoints[label] = {...saved, ...update};
+    store.setSettings({endpoints});
+    return fromSaved(label, endpoints[label]!);
+}
+
+/** True for an endpoint saved on this device, as opposed to pairlobby.com or an address given for one command. */
+export function isSaved(store: LocalStore, endpoint: Endpoint): boolean {
+    return savedEndpoints(store)[endpoint.label]?.origin === endpoint.origin;
+}
+
 export function useEndpoint(store: LocalStore, label: string): Endpoint {
     const endpoint = endpointByLabel(store, label);
     if (!endpoint) {

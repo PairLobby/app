@@ -67,6 +67,32 @@ export interface RouterOptions {
     localRooms?: (name?: string) => Promise<LocalRoom[]>;
     /** The create token and rate limits; absent means anyone who reaches the relay may create rooms and try codes freely. */
     admission?: Admission;
+    /** Answers `GET /.well-known/pairlobby.json`, which tells `pairlobby setup` who this relay is and how to log in. */
+    discovery?: () => DiscoveryDocument;
+    /**
+     * Token-mode login: answers `GET /api/online/account` for a caller holding the team
+     * token (the create token). Absent means the path is unknown. Needs `admission`.
+     */
+    accountCheck?: (request: Request) => TeamAccount;
+}
+
+/** What a deployment says about itself to `pairlobby setup`. */
+export interface DiscoveryDocument {
+    version: 1;
+    name?: string;
+    login: {mode: 'token' | 'none'; tokenHelp?: string; verify?: string};
+    relays: string[];
+    features: string[];
+    support?: string;
+}
+
+/** The account a team token stands for: no person, just where its rooms go. */
+export interface TeamAccount {
+    email: null;
+    userId: 'team';
+    name: string | null;
+    server: string;
+    handle: null;
 }
 
 export interface ServerInfo {
@@ -98,6 +124,14 @@ export function createRouter(options: RouterOptions): (request: Request) => Prom
                     return errorResponse('invalid_request', `prefix must be ${INVITE_PROBE_LENGTH} lowercase hex digits`, 400);
                 }
                 return json({known: await options.inviteProbe(prefix)});
+            }
+            const path = new URL(request.url).pathname;
+            if (options.discovery && request.method.toUpperCase() === 'GET' && path === '/.well-known/pairlobby.json') {
+                return new Response(JSON.stringify(options.discovery()), {status: 200, headers: {...JSON_HEADERS, 'cache-control': 'public, max-age=300'}});
+            }
+            if (options.accountCheck && options.admission && request.method.toUpperCase() === 'GET' && path === '/api/online/account') {
+                await options.admission.beforeAccountCheck(request);
+                return json(options.accountCheck(request));
             }
             const local = await routeLocal(request, options);
             if (local) {

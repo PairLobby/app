@@ -36,7 +36,12 @@ export type RelaySettings = {
     roomLimits: Partial<RoomLimits>;
     requestLog?: RequestLogMode;
     backup?: RelayBackupSettings;
+    /** What `GET /.well-known/pairlobby.json` says, and whether the relay offers token-mode login. */
+    discovery: RelayDiscovery;
 };
+
+/** How the relay describes itself to `pairlobby setup`. Token mode makes the create token double as the team login. */
+export type RelayDiscovery = {loginMode: 'token' | 'none'; name?: string; loginHelp?: string; supportUrl?: string};
 
 /** Where and how often to copy the database. */
 export type RelayBackupSettings = {location: BackupLocation; intervalMs: number; keep: number; restore: boolean};
@@ -66,11 +71,14 @@ const ROOM_LIMIT_VARIABLES: RoomLimitVariable[] = [
 const LIMIT_VARIABLES: Record<keyof AdmissionLimits, string> = {
     createPerMinutePerAddress: 'PAIRLOBBY_LIMIT_CREATE_PER_MIN_IP',
     redeemPerMinutePerAddress: 'PAIRLOBBY_LIMIT_REDEEM_PER_MIN_IP',
-    redeemPerMinuteGlobal: 'PAIRLOBBY_LIMIT_REDEEM_PER_MIN_GLOBAL'
+    redeemPerMinuteGlobal: 'PAIRLOBBY_LIMIT_REDEEM_PER_MIN_GLOBAL',
+    accountCheckPerMinutePerAddress: 'PAIRLOBBY_LIMIT_ACCOUNT_CHECK_PER_MIN_IP'
 };
 
+const DISCOVERY_VARIABLES = ['PAIRLOBBY_DISCOVERY_NAME', 'PAIRLOBBY_LOGIN_MODE', 'PAIRLOBBY_LOGIN_HELP', 'PAIRLOBBY_SUPPORT_URL'];
+
 /** Every variable `serve` reads, for help text and documentation. */
-export const RELAY_VARIABLES = ['PAIRLOBBY_HOST', 'PAIRLOBBY_PORT', 'PAIRLOBBY_DATA_DIR', 'PAIRLOBBY_PUBLIC_URL', 'PAIRLOBBY_TRUSTED_PROXY_HEADER', 'PAIRLOBBY_ALLOWED_HOSTS', 'PAIRLOBBY_CREATE_TOKEN', 'PAIRLOBBY_CREATE_TOKEN_FILE', 'PAIRLOBBY_REQUEST_LOG', 'PAIRLOBBY_BACKUP', 'PAIRLOBBY_BACKUP_INTERVAL', 'PAIRLOBBY_BACKUP_KEEP', 'PAIRLOBBY_BACKUP_S3_ENDPOINT', 'PAIRLOBBY_NO_RESTORE', ...Object.values(LIMIT_VARIABLES), ...ROOM_LIMIT_VARIABLES.map(({variable}) => variable)];
+export const RELAY_VARIABLES = ['PAIRLOBBY_HOST', 'PAIRLOBBY_PORT', 'PAIRLOBBY_DATA_DIR', 'PAIRLOBBY_PUBLIC_URL', 'PAIRLOBBY_TRUSTED_PROXY_HEADER', 'PAIRLOBBY_ALLOWED_HOSTS', 'PAIRLOBBY_CREATE_TOKEN', 'PAIRLOBBY_CREATE_TOKEN_FILE', 'PAIRLOBBY_REQUEST_LOG', 'PAIRLOBBY_BACKUP', 'PAIRLOBBY_BACKUP_INTERVAL', 'PAIRLOBBY_BACKUP_KEEP', 'PAIRLOBBY_BACKUP_S3_ENDPOINT', 'PAIRLOBBY_NO_RESTORE', ...DISCOVERY_VARIABLES, ...Object.values(LIMIT_VARIABLES), ...ROOM_LIMIT_VARIABLES.map(({variable}) => variable)];
 
 function described({flag, variable}: Source): string {
     return flag ? `--${flag} (${variable})` : variable;
@@ -162,6 +170,7 @@ export function relaySettings(flags: RelayFlags, environment: RelayEnvironment):
     }
     const token = createToken(environment);
     const backup = backupSettings(flags, environment);
+    const discovery = discoverySettings(environment, token !== undefined);
     return {
         ...(host ? {host} : {}),
         // 0 lets the system choose a free port.
@@ -173,7 +182,46 @@ export function relaySettings(flags: RelayFlags, environment: RelayEnvironment):
         limits,
         roomLimits,
         ...(requestLog && requestLog !== 'off' ? {requestLog: requestLog as RequestLogMode} : {}),
-        ...(backup ? {backup} : {})
+        ...(backup ? {backup} : {}),
+        discovery
+    };
+}
+
+/** Plain text shown in someone's terminal: no control characters, bounded length. */
+function plainText(value: string, variable: string, maximum: number): string {
+    if (value.length > maximum || /[\x00-\x1f\x7f]/.test(value)) {
+        throw new RelaySettingsError(`${variable} must be plain text of at most ${maximum} characters, on one line`);
+    }
+    return value;
+}
+
+function discoverySettings(environment: RelayEnvironment, hasCreateToken: boolean): RelayDiscovery {
+    const mode = environment['PAIRLOBBY_LOGIN_MODE']?.trim() || 'none';
+    if (mode !== 'token' && mode !== 'none') {
+        throw new RelaySettingsError(`PAIRLOBBY_LOGIN_MODE must be token or none, not "${mode}"`);
+    }
+    if (mode === 'token' && !hasCreateToken) {
+        throw new RelaySettingsError('PAIRLOBBY_LOGIN_MODE=token logs people in with the create token; set PAIRLOBBY_CREATE_TOKEN or PAIRLOBBY_CREATE_TOKEN_FILE');
+    }
+    const name = environment['PAIRLOBBY_DISCOVERY_NAME']?.trim();
+    const help = environment['PAIRLOBBY_LOGIN_HELP']?.trim();
+    const support = environment['PAIRLOBBY_SUPPORT_URL']?.trim();
+    if (support) {
+        let url: URL | undefined;
+        try {
+            url = new URL(support);
+        } catch {
+            url = undefined;
+        }
+        if (!url || url.protocol !== 'https:' || url.username || url.password) {
+            throw new RelaySettingsError(`PAIRLOBBY_SUPPORT_URL must be an https address, not "${support}"`);
+        }
+    }
+    return {
+        loginMode: mode,
+        ...(name ? {name: plainText(name, 'PAIRLOBBY_DISCOVERY_NAME', 64)} : {}),
+        ...(help ? {loginHelp: plainText(help, 'PAIRLOBBY_LOGIN_HELP', 300)} : {}),
+        ...(support ? {supportUrl: support} : {})
     };
 }
 
