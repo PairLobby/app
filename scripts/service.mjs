@@ -17,16 +17,18 @@ if (!COMMANDS.includes(command)) {
     process.exit(2);
 }
 
+// The CLI writes the LaunchAgent or the systemd user unit itself, pointed at the installed release; see `pairlobby service`.
+const cli = () => ({file: process.execPath, args: [join(HERE, '..', 'packages', 'cli', 'dist', 'main.js'), 'service', command]});
+
 const runner = {
-    // The CLI writes the LaunchAgent itself, pointed at the installed release; see `pairlobby service`.
-    darwin: () => ({file: process.execPath, args: [join(HERE, '..', 'packages', 'cli', 'dist', 'main.js'), 'service', command]}),
+    darwin: cli,
+    linux: cli,
     win32: () => ({file: 'powershell.exe', args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(HERE, 'relay-service.ps1'), command]}),
 }[process.platform];
 
 if (!runner) {
-    // Saying which platforms are covered beats a generic failure: on Linux the
-    // equivalent is a systemd --user unit, which nobody has written yet.
-    process.stderr.write(`No background-relay support for ${process.platform} yet — macOS and Windows only.\n`);
+    // Saying which platforms are covered beats a generic failure.
+    process.stderr.write(`No background-relay support for ${process.platform} yet: macOS, Linux and Windows only.\n`);
     process.stderr.write('Run the relay yourself with "pairlobby serve", or see the shell hook in the README.\n');
     process.exit(1);
 }

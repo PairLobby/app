@@ -5,6 +5,8 @@
 
 import {readFileSync, statSync} from 'node:fs';
 
+import {ABSOLUTE_MAX_FILE_BYTES} from '@pairlobby/protocol';
+import type {RoomPolicy} from '@pairlobby/protocol';
 import type {AdmissionLimits} from '@pairlobby/server-core';
 
 import type {RequestLogMode} from './request-log.js';
@@ -30,6 +32,8 @@ export type RelaySettings = {
     /** Exact Host values to accept beyond the relay's own, such as an internal DNS name. */
     allowedHosts: string[];
     limits: Partial<AdmissionLimits>;
+    /** Caps every new room gets; unset ones keep the built-in defaults. */
+    roomLimits: Partial<RoomLimits>;
     requestLog?: RequestLogMode;
     backup?: RelayBackupSettings;
 };
@@ -39,7 +43,25 @@ export type RelayBackupSettings = {location: BackupLocation; intervalMs: number;
 
 export type BackupLocation = {kind: 'folder'; path: string} | {kind: 's3'; bucket: string; prefix: string};
 
+/** The per-room caps a relay operator may set. */
+export type RoomLimits = Pick<RoomPolicy, 'maxParticipants' | 'maxRetainedEvents' | 'maxRetainedEventBytes' | 'maxEventPayloadBytes' | 'maxFileBytes' | 'maxRetainedFileBytes'>;
+
 type Source = {flag?: string; variable: string};
+
+type RoomLimitVariable = {key: keyof RoomLimits; variable: string; minimum: number; maximum: number; unitBytes: number};
+
+const KIB = 1024;
+const MIB = 1024 * KIB;
+
+/** Sizes are whole KiB or MiB so a typo cannot turn into a byte count. */
+const ROOM_LIMIT_VARIABLES: RoomLimitVariable[] = [
+    {key: 'maxParticipants', variable: 'PAIRLOBBY_ROOM_MAX_PARTICIPANTS', minimum: 2, maximum: 1000, unitBytes: 1},
+    {key: 'maxRetainedEvents', variable: 'PAIRLOBBY_ROOM_MAX_EVENTS', minimum: 100, maximum: 10_000_000, unitBytes: 1},
+    {key: 'maxRetainedEventBytes', variable: 'PAIRLOBBY_ROOM_MAX_HISTORY_MB', minimum: 1, maximum: 10_240, unitBytes: MIB},
+    {key: 'maxEventPayloadBytes', variable: 'PAIRLOBBY_ROOM_MAX_MESSAGE_KB', minimum: 1, maximum: 4096, unitBytes: KIB},
+    {key: 'maxFileBytes', variable: 'PAIRLOBBY_ROOM_MAX_FILE_MB', minimum: 0, maximum: ABSOLUTE_MAX_FILE_BYTES / MIB, unitBytes: MIB},
+    {key: 'maxRetainedFileBytes', variable: 'PAIRLOBBY_ROOM_MAX_FILES_MB', minimum: 0, maximum: 102_400, unitBytes: MIB}
+];
 
 const LIMIT_VARIABLES: Record<keyof AdmissionLimits, string> = {
     createPerMinutePerAddress: 'PAIRLOBBY_LIMIT_CREATE_PER_MIN_IP',
@@ -48,7 +70,7 @@ const LIMIT_VARIABLES: Record<keyof AdmissionLimits, string> = {
 };
 
 /** Every variable `serve` reads, for help text and documentation. */
-export const RELAY_VARIABLES = ['PAIRLOBBY_HOST', 'PAIRLOBBY_PORT', 'PAIRLOBBY_DATA_DIR', 'PAIRLOBBY_PUBLIC_URL', 'PAIRLOBBY_TRUSTED_PROXY_HEADER', 'PAIRLOBBY_ALLOWED_HOSTS', 'PAIRLOBBY_CREATE_TOKEN', 'PAIRLOBBY_CREATE_TOKEN_FILE', 'PAIRLOBBY_REQUEST_LOG', 'PAIRLOBBY_BACKUP', 'PAIRLOBBY_BACKUP_INTERVAL', 'PAIRLOBBY_BACKUP_KEEP', 'PAIRLOBBY_BACKUP_S3_ENDPOINT', 'PAIRLOBBY_NO_RESTORE', ...Object.values(LIMIT_VARIABLES)];
+export const RELAY_VARIABLES = ['PAIRLOBBY_HOST', 'PAIRLOBBY_PORT', 'PAIRLOBBY_DATA_DIR', 'PAIRLOBBY_PUBLIC_URL', 'PAIRLOBBY_TRUSTED_PROXY_HEADER', 'PAIRLOBBY_ALLOWED_HOSTS', 'PAIRLOBBY_CREATE_TOKEN', 'PAIRLOBBY_CREATE_TOKEN_FILE', 'PAIRLOBBY_REQUEST_LOG', 'PAIRLOBBY_BACKUP', 'PAIRLOBBY_BACKUP_INTERVAL', 'PAIRLOBBY_BACKUP_KEEP', 'PAIRLOBBY_BACKUP_S3_ENDPOINT', 'PAIRLOBBY_NO_RESTORE', ...Object.values(LIMIT_VARIABLES), ...ROOM_LIMIT_VARIABLES.map(({variable}) => variable)];
 
 function described({flag, variable}: Source): string {
     return flag ? `--${flag} (${variable})` : variable;
@@ -127,6 +149,13 @@ export function relaySettings(flags: RelayFlags, environment: RelayEnvironment):
             limits[key] = wholeNumber(value, {variable}, 1, 1_000_000);
         }
     }
+    const roomLimits: Partial<RoomLimits> = {};
+    for (const {key, variable, minimum, maximum, unitBytes} of ROOM_LIMIT_VARIABLES) {
+        const value = environment[variable]?.trim();
+        if (value) {
+            roomLimits[key] = wholeNumber(value, {variable}, minimum, maximum) * unitBytes;
+        }
+    }
     const requestLog = pick(flags.requestLog, environment, 'PAIRLOBBY_REQUEST_LOG');
     if (requestLog !== undefined && !['all', 'writes', 'off'].includes(requestLog)) {
         throw new RelaySettingsError(`${described({flag: 'request-log', variable: 'PAIRLOBBY_REQUEST_LOG'})} must be all, writes or off, not "${requestLog}"`);
@@ -142,6 +171,7 @@ export function relaySettings(flags: RelayFlags, environment: RelayEnvironment):
         ...(token ? {createToken: token} : {}),
         allowedHosts,
         limits,
+        roomLimits,
         ...(requestLog && requestLog !== 'off' ? {requestLog: requestLog as RequestLogMode} : {}),
         ...(backup ? {backup} : {})
     };

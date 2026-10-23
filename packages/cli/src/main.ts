@@ -2571,7 +2571,7 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     const network = relayNetwork(store, values, settings.host !== undefined);
     const host = settings.host ?? (network === 'off' ? '127.0.0.1' : '0.0.0.0');
     const port = settings.port ?? DEFAULT_RELAY_PORT;
-    const {publicUrl, trustedProxyHeader, createToken, allowedHosts, limits, requestLog} = settings;
+    const {publicUrl, trustedProxyHeader, createToken, allowedHosts, limits, roomLimits, requestLog} = settings;
     const writeLine = (line: string) => process.stdout.write(`${line}\n`);
     const backup = settings.backup ? {target: backupTarget(settings.backup.location), intervalMs: settings.backup.intervalMs, keep: settings.backup.keep, restore: settings.backup.restore, log: writeLine} : undefined;
     // Tailnet devices may address this one by its MagicDNS names, which are not interface addresses.
@@ -2583,7 +2583,7 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     }
     let running;
     try {
-        running = await startServer({version: VERSION, host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), ...(trustedProxyHeader ? {trustedProxyHeader} : {}), ...(createToken ? {createToken} : {}), allowedHosts, limits, ...(requestLog ? {requestLog: {mode: requestLog, write: writeLine}} : {}), ...(backup ? {backup} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
+        running = await startServer({version: VERSION, host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), ...(trustedProxyHeader ? {trustedProxyHeader} : {}), ...(createToken ? {createToken} : {}), allowedHosts, limits, roomLimits, ...(requestLog ? {requestLog: {mode: requestLog, write: writeLine}} : {}), ...(backup ? {backup} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
     } catch (error) {
         // Say what is wrong and what to do, rather than surfacing a raw errno. The
         // occupant is never probed: something else owning the port is not ours to poke.
@@ -2662,6 +2662,9 @@ async function service(values: Values, action: string): Promise<number> {
                 note('PairLobby was not installed with its installer here, so the service runs this build and updates will not reach it. Install with the installer (or npm run install:local in a checkout) and run this again to fix that.');
             }
             show(await installService({port, host: str(values, 'host') ?? process.env['PAIRLOBBY_HOST'], environment}, program));
+            if (process.platform === 'linux') {
+                note('A systemd user service stops when you log out. To keep the relay running without a session: loginctl enable-linger $USER');
+            }
             return 0;
         }
         case 'status':

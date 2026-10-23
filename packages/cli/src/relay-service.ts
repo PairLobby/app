@@ -1,7 +1,8 @@
-//! Keeps this device's relay running on its own. On macOS a LaunchAgent starts
-//! `pairlobby serve` at login and again whenever it stops, so the relay belongs to
-//! no terminal or agent session. It runs the installed release through the
-//! installer's launcher, so `pairlobby update` moves the relay along with the CLI.
+//! Keeps this device's relay running on its own. On macOS a LaunchAgent, on Linux a
+//! systemd user unit, starts `pairlobby serve` at login and again whenever it stops,
+//! so the relay belongs to no terminal or agent session. It runs the installed
+//! release through the installer's launcher, so `pairlobby update` moves the relay
+//! along with the CLI.
 
 import {execFileSync} from 'node:child_process';
 import {existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync} from 'node:fs';
@@ -12,28 +13,41 @@ import {installedLauncher} from './updater.js';
 
 export const SERVICE_LABEL = 'com.pairlobby.relay';
 
-export type ServiceLayout = {label: string; plist: string; log: string; domain: string};
+export type ServiceManager = 'launchd' | 'systemd';
+/** `file` is the LaunchAgent plist or the systemd unit; `domain` is launchd's, unused by systemd. */
+export type ServiceLayout = {manager: ServiceManager; label: string; file: string; log: string; domain: string};
 export type ServiceProgram = {args: string[]; followsUpdates: boolean};
 export type ServiceSettings = {port: number; host?: string | undefined; environment: Record<string, string>};
 export type RelayProbe = {answering: boolean; version: string | null};
 export type ServiceStatus = {installed: boolean; loaded: boolean; pid: number | null; program: string[]; followsUpdates: boolean; relay: RelayProbe; url: string; log: string};
 export type ServiceRefresh = {restarted: boolean; reason: string};
 
-/** Where the agent lives. `PAIRLOBBY_SERVICE_LABEL` gives tests their own agent beside the real one. */
-export function serviceLayout(): ServiceLayout {
-    const label = process.env['PAIRLOBBY_SERVICE_LABEL'] || SERVICE_LABEL;
-    const home = homedir();
+/** Where the service lives. `PAIRLOBBY_SERVICE_LABEL` gives tests their own service beside the real one. */
+export function serviceLayout(system: string = platform(), environment: NodeJS.ProcessEnv = process.env, home = homedir()): ServiceLayout {
+    const label = environment['PAIRLOBBY_SERVICE_LABEL'] || SERVICE_LABEL;
+    const logName = label === SERVICE_LABEL ? 'relay.log' : `${label}.log`;
+    if (system === 'linux') {
+        const unit = label === SERVICE_LABEL ? 'pairlobby-relay' : label;
+        const config = environment['XDG_CONFIG_HOME'] || join(home, '.config');
+        const state = environment['XDG_STATE_HOME'] || join(home, '.local', 'state');
+        return {manager: 'systemd', label: unit, file: join(config, 'systemd', 'user', `${unit}.service`), log: join(state, 'pairlobby', logName), domain: 'user'};
+    }
     return {
+        manager: 'launchd',
         label,
-        plist: join(home, 'Library', 'LaunchAgents', `${label}.plist`),
-        log: join(home, 'Library', 'Logs', 'PairLobby', label === SERVICE_LABEL ? 'relay.log' : `${label}.log`),
+        file: join(home, 'Library', 'LaunchAgents', `${label}.plist`),
+        log: join(home, 'Library', 'Logs', 'PairLobby', logName),
         domain: `gui/${process.getuid?.() ?? 0}`,
     };
 }
 
+function supported(system = platform()): boolean {
+    return system === 'darwin' || system === 'linux';
+}
+
 export function requireServicePlatform(): void {
-    if (platform() !== 'darwin') {
-        throw new Error('pairlobby service runs the relay as a macOS LaunchAgent; other systems are not supported yet. Run pairlobby serve under your own supervisor, or on Windows use npm run service from a checkout.');
+    if (!supported()) {
+        throw new Error('pairlobby service runs the relay as a macOS LaunchAgent or a systemd user unit on Linux; other systems are not supported yet. Run pairlobby serve under your own supervisor, or on Windows use npm run service from a checkout.');
     }
 }
 
@@ -53,9 +67,23 @@ function xml(value: string): string {
     return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 }
 
-export function servicePlist(layout: ServiceLayout, program: ServiceProgram, settings: ServiceSettings): string {
+function serveArgs(program: ServiceProgram, settings: ServiceSettings): string[] {
     // Without --host the relay follows `pairlobby settings network-sharing` each time it starts.
-    const args = [...program.args, 'serve', '--port', String(settings.port), ...(settings.host ? ['--host', settings.host] : [])];
+    return [...program.args, 'serve', '--port', String(settings.port), ...(settings.host ? ['--host', settings.host] : [])];
+}
+
+/** The plist or the unit the service manager reads. */
+export function serviceDefinition(layout: ServiceLayout, program: ServiceProgram, settings: ServiceSettings): string {
+    return layout.manager === 'systemd' ? serviceUnit(layout, program, settings) : servicePlist(layout, program, settings);
+}
+
+/** The program an installed service runs, read back from its plist or unit. */
+export function definitionProgram(layout: ServiceLayout, text: string): string[] {
+    return layout.manager === 'systemd' ? unitProgram(text) : plistProgram(text);
+}
+
+export function servicePlist(layout: ServiceLayout, program: ServiceProgram, settings: ServiceSettings): string {
+    const args = serveArgs(program, settings);
     const environment = Object.entries(settings.environment).map(([key, value]) => `        <key>${xml(key)}</key><string>${xml(value)}</string>`);
     return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -89,6 +117,43 @@ export function plistProgram(plist: string): string[] {
     return [...array.matchAll(/<string>([\s\S]*?)<\/string>/g)].map((match) => match[1]!.replaceAll('&quot;', '"').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&'));
 }
 
+/** A quoted systemd value with its quote, backslash and specifier characters escaped. */
+function unitQuoted(value: string): string {
+    return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%')}"`;
+}
+
+/** One ExecStart word: also `$`, which ExecStart, unlike Environment, expands. */
+function unitWord(value: string): string {
+    return unitQuoted(value).replaceAll('$', '$$$$');
+}
+
+export function serviceUnit(layout: ServiceLayout, program: ServiceProgram, settings: ServiceSettings): string {
+    const environment = Object.entries(settings.environment).map(([key, value]) => `Environment=${unitQuoted(`${key}=${value}`)}`);
+    return `[Unit]
+Description=PairLobby relay
+After=network-online.target
+
+[Service]
+ExecStart=${serveArgs(program, settings).map(unitWord).join(' ')}
+${environment.join('\n')}
+# Always: a relay stopped by SIGTERM exits cleanly, and that must not keep it down. uninstall is how to stop it.
+Restart=always
+# Without this, a port clash becomes a restart loop several times a second.
+RestartSec=10
+StandardOutput=append:${layout.log}
+StandardError=append:${layout.log}
+
+[Install]
+WantedBy=default.target
+`;
+}
+
+/** The ExecStart words of a unit written by serviceUnit. */
+export function unitProgram(unit: string): string[] {
+    const line = /^ExecStart=(.*)$/m.exec(unit)?.[1] ?? '';
+    return [...line.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((match) => match[1]!.replace(/\\(.)/g, '$1').replaceAll('%%', '%').replaceAll('$$', '$'));
+}
+
 /** Any HTTP answer means something is listening; only a refused or timed-out connection means the relay is down. */
 export async function probeRelay(url: string): Promise<RelayProbe> {
     try {
@@ -104,7 +169,25 @@ function launchctl(args: string[]): string {
     return execFileSync('launchctl', args, {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']});
 }
 
+function systemctl(args: string[]): string {
+    return execFileSync('systemctl', ['--user', ...args], {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']});
+}
+
+/** `systemctl show` lines as a map, such as {UnitFileState: 'enabled', MainPID: '4242'}. */
+export function unitProperties(printed: string): Record<string, string> {
+    return Object.fromEntries(printed.split('\n').filter((line) => line.includes('=')).map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1).trim()]));
+}
+
 function loadedPid(layout: ServiceLayout): {loaded: boolean; pid: number | null} {
+    if (layout.manager === 'systemd') {
+        try {
+            const properties = unitProperties(systemctl(['show', layout.label, '--property=UnitFileState', '--property=MainPID']));
+            const pid = Number(properties['MainPID'] ?? 0);
+            return {loaded: properties['UnitFileState'] === 'enabled', pid: pid > 0 ? pid : null};
+        } catch {
+            return {loaded: false, pid: null};
+        }
+    }
     try {
         const printed = launchctl(['print', `${layout.domain}/${layout.label}`]);
         const pid = /^\s*pid = (\d+)/m.exec(printed)?.[1];
@@ -115,7 +198,7 @@ function loadedPid(layout: ServiceLayout): {loaded: boolean; pid: number | null}
 }
 
 export function serviceInstalled(layout = serviceLayout()): boolean {
-    return platform() === 'darwin' && existsSync(layout.plist);
+    return supported() && existsSync(layout.file);
 }
 
 /** The port an installed agent's relay listens on; the old repository script's launcher always used 8790. */
@@ -126,13 +209,13 @@ export function servicePort(program: string[]): number {
 
 /** Whether the installed agent is the one that keeps a relay on this port running. */
 export function serviceCovers(port: number, layout = serviceLayout()): boolean {
-    return serviceInstalled(layout) && servicePort(plistProgram(readFileSync(layout.plist, 'utf8'))) === port;
+    return serviceInstalled(layout) && servicePort(definitionProgram(layout, readFileSync(layout.file, 'utf8'))) === port;
 }
 
 export async function serviceStatus(port: number, layout = serviceLayout()): Promise<ServiceStatus> {
     const url = `http://127.0.0.1:${port}`;
-    const installed = existsSync(layout.plist);
-    const program = installed ? plistProgram(readFileSync(layout.plist, 'utf8')) : [];
+    const installed = existsSync(layout.file);
+    const program = installed ? definitionProgram(layout, readFileSync(layout.file, 'utf8')) : [];
     const launcher = installedLauncher();
     return {installed, ...loadedPid(layout), program, followsUpdates: launcher !== null && program[0] === launcher, relay: await probeRelay(url), url, log: layout.log};
 }
@@ -150,38 +233,58 @@ async function waitForRelay(url: string, seconds: number): Promise<RelayProbe> {
 }
 
 export async function installService(settings: ServiceSettings, program = serviceProgram(), layout = serviceLayout()): Promise<ServiceStatus> {
-    mkdirSync(join(layout.plist, '..'), {recursive: true});
+    mkdirSync(join(layout.file, '..'), {recursive: true});
     mkdirSync(join(layout.log, '..'), {recursive: true});
-    const pending = `${layout.plist}.${process.pid}.tmp`;
-    writeFileSync(pending, servicePlist(layout, program, settings), {mode: 0o644});
-    renameSync(pending, layout.plist);
+    const pending = `${layout.file}.${process.pid}.tmp`;
+    writeFileSync(pending, serviceDefinition(layout, program, settings), {mode: 0o644});
+    renameSync(pending, layout.file);
+    if (layout.manager === 'systemd') {
+        systemctl(['daemon-reload']);
+        systemctl(['enable', layout.label]);
+        // restart, not start: an installed unit running the old command line must pick up the new one.
+        systemctl(['restart', layout.label]);
+        await waitForRelay(`http://127.0.0.1:${settings.port}`, 10);
+        return serviceStatus(settings.port, layout);
+    }
     try {
         launchctl(['bootout', `${layout.domain}/${layout.label}`]);
     } catch {
         // Not loaded yet.
     }
-    launchctl(['bootstrap', layout.domain, layout.plist]);
+    launchctl(['bootstrap', layout.domain, layout.file]);
     await waitForRelay(`http://127.0.0.1:${settings.port}`, 10);
     return serviceStatus(settings.port, layout);
 }
 
 export function uninstallService(layout = serviceLayout()): boolean {
-    const existed = existsSync(layout.plist);
+    const existed = existsSync(layout.file);
+    if (layout.manager === 'systemd') {
+        try {
+            systemctl(['disable', '--now', layout.label]);
+        } catch {
+            // Already stopped and disabled.
+        }
+        rmSync(layout.file, {force: true});
+        systemctl(['daemon-reload']);
+        return existed;
+    }
     try {
         launchctl(['bootout', `${layout.domain}/${layout.label}`]);
     } catch {
         // Already unloaded.
     }
-    rmSync(layout.plist, {force: true});
+    rmSync(layout.file, {force: true});
     return existed;
 }
 
 export async function restartService(port: number, layout = serviceLayout()): Promise<ServiceStatus> {
-    if (!existsSync(layout.plist)) {
+    if (!existsSync(layout.file)) {
         throw new Error('The relay service is not installed. Install it with: pairlobby service install');
     }
-    if (!loadedPid(layout).loaded) {
-        launchctl(['bootstrap', layout.domain, layout.plist]);
+    if (layout.manager === 'systemd') {
+        systemctl(['restart', layout.label]);
+    } else if (!loadedPid(layout).loaded) {
+        launchctl(['bootstrap', layout.domain, layout.file]);
     } else {
         launchctl(['kickstart', '-k', `${layout.domain}/${layout.label}`]);
     }
@@ -194,7 +297,7 @@ export async function refreshService(port: number, layout = serviceLayout()): Pr
     if (!serviceInstalled(layout)) {
         return {restarted: false, reason: 'not installed'};
     }
-    const program = plistProgram(readFileSync(layout.plist, 'utf8'));
+    const program = definitionProgram(layout, readFileSync(layout.file, 'utf8'));
     if (program[0] !== installedLauncher()) {
         return {restarted: false, reason: `it runs ${program.join(' ')}, not the installed release; reinstall it with pairlobby service install`};
     }

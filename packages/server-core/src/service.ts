@@ -146,10 +146,15 @@ export class RoomService {
     private readonly now: Clock;
     readonly turns: TurnCoordinator;
 
+    /**
+     * `roomPolicy` is what a new room gets when the caller names no policy, such as a
+     * self-hosted relay's configured limits. Existing rooms keep the policy they were made with.
+     */
     constructor(
         store: RoomStore,
         now: Clock = () => Date.now(),
-        private readonly directory?: InviteDirectory
+        private readonly directory?: InviteDirectory,
+        private readonly roomPolicy: RoomPolicy = DEFAULT_ROOM_POLICY
     ) {
         this.now = now;
         this.store = new AutoCloseStore(store, () => this.now());
@@ -277,7 +282,7 @@ export class RoomService {
                 sessionId: input.sessionId ?? null,
                 capabilities: input.capabilities ?? null,
                 ...(input.expiresAt !== undefined ? {expiresAt: input.expiresAt} : {}),
-                ...(input.policy ? {policy: input.policy} : {})
+                policy: input.policy ?? this.roomPolicy
             },
             this.ctx()
         );
