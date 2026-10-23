@@ -12,6 +12,18 @@ export type RoomPanelPage = {id: string; title: string; rows: RoomPanelRow[]; no
 type RoomPanelOptions = {screen: blessed.Widgets.Screen; close: () => void};
 type Editor = {row: RoomPanelRow; value: string; cursor: number; choice: number; typing: boolean; confirmation?: string | undefined; apply: boolean; attempted?: boolean};
 
+export type PanelColumns = {sectionWidth: number; labelWidth: number};
+
+/** Column widths for a page's rows: labels are shown whole when every row fits the width, otherwise they shrink before the values do, down to the old 35% share. */
+export function panelColumns(rows: RoomPanelRow[], width: number): PanelColumns {
+    const sectionWidth = Math.min(16, Math.max(10, ...rows.map((row) => row.section.length)));
+    const labelNeed = Math.max(0, ...rows.map((row) => row.label.length));
+    const valueNeed = Math.max(0, ...rows.map((row) => row.value.length + (row.action ? 3 : 0)));
+    const minimum = Math.min(24, Math.max(12, Math.floor(width * .35)));
+    const room = width - sectionWidth - 1 - 3 - valueNeed;
+    return {sectionWidth, labelWidth: Math.min(labelNeed, Math.max(minimum, room))};
+}
+
 /** Room controls own keyboard focus while the chat continues receiving in the background. */
 export class RoomPanel {
     private panel: blessed.Widgets.BoxElement;
@@ -352,11 +364,11 @@ export class RoomPanel {
             if (this.selected >= this.top + this.pageSize()) {
                 this.top = this.selected - this.pageSize() + 1;
             }
-            const labelWidth = Math.min(24, Math.max(12, Math.floor(width * .35)));
+            const {sectionWidth, labelWidth} = panelColumns(this.page.rows, width);
             this.page.rows.slice(this.top, this.top + this.pageSize()).forEach((row, offset) => {
                 const index = this.top + offset;
                 const label = row.label.length > labelWidth ? row.label.slice(0, labelWidth - 1) + '…' : row.label;
-                const cell = this.line(3 + offset, `${row.section.slice(0, 10).padEnd(10)} ${label.padEnd(labelWidth)} │ ${row.value}${row.action ? '  ›' : ''}`, index === this.selected);
+                const cell = this.line(3 + offset, `${row.section.slice(0, sectionWidth).padEnd(sectionWidth)} ${label.padEnd(labelWidth)} │ ${row.value}${row.action ? '  ›' : ''}`, index === this.selected);
                 cell.on('click', () => { this.selected = index; this.render(); });
             });
         }

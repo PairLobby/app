@@ -1,0 +1,37 @@
+name: CI
+
+# Every pull request into master builds the workspace, runs the tests and packages the CLI
+# the way the release workflow does, so a merge never reaches Release broken.
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Check ssmver.toml matches the CLI version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' ssmver.toml)
+          cli=$(node -p "require('./packages/cli/package.json').version")
+          if [ -z "$version" ] || [ "$version" != "$cli" ]; then
+            echo "::error::ssmver.toml is at '$version' but packages/cli/package.json is at '$cli'"
+            exit 1
+          fi
+      - run: npm ci
+      - run: npm test
+      - name: Package the CLI
+        run: node scripts/build-distribution.mjs artifacts

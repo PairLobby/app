@@ -103,6 +103,11 @@ test('test_two_rooms_with_one_name_are_listed_for_the_person_to_pick', async () 
     await expect(findLocalRoom('tower-test', rooms({'http://127.0.0.1:8790': ['rm_A'], 'http://10.0.0.5:8790': ['rm_B']}))).rejects.toThrow(/more than one room named "tower-test"[\s\S]*join local rm_A --server http:\/\/127\.0\.0\.1:8790[\s\S]*join local rm_B --server http:\/\/10\.0\.0\.5:8790/);
 });
 
+test('test_one_room_seen_through_this_device_and_its_lan_address_is_not_ambiguous', async () => {
+    const found = await findLocalRoom('tower-test', rooms({'http://127.0.0.1:8790': ['rm_A'], 'http://10.0.0.110:8790': ['rm_A']}));
+    expect([found.url, found.label, found.room.roomId]).toEqual(['http://127.0.0.1:8790', 'this device', 'rm_A']);
+});
+
 test('test_no_room_by_that_name_says_how_many_relays_answered', async () => {
     await expect(findLocalRoom('tower-test', rooms({'http://127.0.0.1:8790': []}))).rejects.toThrow(/no room named "tower-test" is open to the local network on the 1 relay\(s\) that answered \(of 1 this device can see\)/);
 });
