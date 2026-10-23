@@ -9,7 +9,7 @@ import type {LocalStore, SessionEntry} from '@pairlobby/client';
 import {newCredential, newId, ProtocolError} from '@pairlobby/protocol';
 import type {RoomSnapshot} from '@pairlobby/protocol';
 import {select, UsageError} from './context.js';
-import {accountToken, onlineOrigin} from './online.js';
+import {accountTokenFor} from './online.js';
 import {receiverStatus, startReceiver, stopReceiver} from './receiver.js';
 import type {ReceiverStatus} from './receiver.js';
 import type {ReceiverRuntimeName} from './receiver-runtime.js';
@@ -53,7 +53,7 @@ export function readSpawnMetadata(store: LocalStore, roomId: string): Map<string
 }
 
 function spawnClient(store: LocalStore, serverUrl: string): PairLobbyClient {
-    return new PairLobbyClient(serverUrl, new URL(serverUrl).origin === onlineOrigin() ? accountToken(store) : undefined);
+    return new PairLobbyClient(serverUrl, accountTokenFor(store, serverUrl));
 }
 
 function actorSnapshot(snapshot: RoomSnapshot, participantId: string): void {

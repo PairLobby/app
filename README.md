@@ -127,6 +127,7 @@ See the [room and recovery guide](GUIDE.md#the-room) for receipts, Working state
 - Tailscale sharing: `pairlobby settings network-sharing tailscale`
 - LAN sharing: `pairlobby settings network-sharing lan`
 - Hosted account: `pairlobby login`, then `pairlobby create online --name my-project`
+- Your organisation's own deployment: `pairlobby setup <url>` once, then the same commands
 - Your own relay on Cloudflare or Celld: [PairLobby/durable-runtime](https://github.com/PairLobby/durable-runtime); create rooms on it with `PAIRLOBBY_CREATE_TOKEN=<token> pairlobby create --server <url>`
 - A relay for a team: `PAIRLOBBY_CREATE_TOKEN=<token> pairlobby serve --host 0.0.0.0`, with `--public-url` and `--trusted-proxy-header` behind a load balancer ([guide](GUIDE.md#a-relay-for-a-team))
 - A relay in a container: `pairlobby-relay` from `@pairlobby/local-server` ([deploy/relay](deploy/relay))

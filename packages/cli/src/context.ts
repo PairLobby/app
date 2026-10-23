@@ -8,9 +8,10 @@ import {ProtocolError} from '@pairlobby/protocol';
 import {LocalStore, PairLobbyClient} from '@pairlobby/client';
 import type {RoomEntry, SessionEntry} from '@pairlobby/client';
 
-import {accountToken, onlineOrigin} from './online.js';
+import {accountTokenFor} from './online.js';
 
-type ServerOptions = {server?: string | undefined; local?: boolean | undefined};
+/** `fallback` is the active login endpoint's relay, used only when nothing else names one. */
+type ServerOptions = {server?: string | undefined; local?: boolean | undefined; fallback?: string | undefined};
 
 type RecipientParticipant = {participantId: string; displayName: string; revoked: boolean; left: boolean};
 
@@ -18,8 +19,9 @@ export const DEFAULT_RELAY_PORT = 8790;
 
 export const DEFAULT_LOCAL_SERVER = `http://127.0.0.1:${DEFAULT_RELAY_PORT}`;
 
+/** A mistake the person can fix. `exitCode` is 2 unless a command documents another. */
 export class UsageError extends Error {
-    constructor(message: string) {
+    constructor(message: string, readonly exitCode = 2) {
         super(message);
         this.name = 'UsageError';
     }
@@ -68,7 +70,10 @@ export function resolveServer(options: ServerOptions): string {
     if (options.local) {
         return DEFAULT_LOCAL_SERVER;
     }
-    return process.env['PAIRLOBBY_SERVER'] ? normalizeServerUrl(process.env['PAIRLOBBY_SERVER']) : DEFAULT_LOCAL_SERVER;
+    if (process.env['PAIRLOBBY_SERVER']) {
+        return normalizeServerUrl(process.env['PAIRLOBBY_SERVER']);
+    }
+    return options.fallback ?? DEFAULT_LOCAL_SERVER;
 }
 
 export function resolveRoom(store: LocalStore, reference?: string): RoomEntry {
@@ -124,14 +129,13 @@ export function select(store: LocalStore, roomRef?: string, sessionRef?: string)
 }
 
 /**
- * The saved account login, for a room on the hosted service only. The client sends
- * it on the few requests that act as an account, such as inviting someone by handle;
- * it never goes to any other relay.
+ * The saved account login, for a room on the active login endpoint's relays only
+ * (on pairlobby.com, under `/relay/`). The client sends it on the few requests that
+ * act as an account, such as inviting someone by handle; it never goes to any other relay.
  */
 export function hostedAccountToken(store: LocalStore, serverUrl: string): string | undefined {
     try {
-        const server = new URL(serverUrl);
-        return server.pathname.startsWith('/relay/') && server.origin === onlineOrigin() ? accountToken(store) : undefined;
+        return accountTokenFor(store, serverUrl);
     } catch {
         return undefined;
     }

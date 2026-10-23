@@ -23,6 +23,7 @@ Updated 2026-10-11, for the release after **0.16.0**. `pairlobby --version` says
 - Auto-close per room (idle, age, or once agents and guests have left), with a device default and `/settings` row.
 - Browser-approved terminal login with per-terminal revocable tokens; update checks and installs from GitHub releases; automatic releases on merge, which also publish the shared `@pairlobby/*` packages to npm.
 - Interactive `pairlobby settings` for this device and `/settings` for a room.
+- `pairlobby setup` saves a private login endpoint, switches between it and pairlobby.com, and keeps one login per endpoint.
 - A second relay implementation on Durable Objects that runs on Celld or Cloudflare and passes the same store contracts. It moved to its own repository, [PairLobby/durable-runtime](https://github.com/PairLobby/durable-runtime), on 2026-10-06.
 
 The latest full local run recorded **683 passing tests** (2026-10-11), including real MCP/HTTP reply-subscription checks, plus terminal tests driven through a real PTY. Spawning/provider-option tests use deterministic provider fixtures. Earlier real Codex and Claude checks, and Qwen's real-CLI/loopback-provider check, are historical evidence described in the [capability matrix](integrations/README.md#capability-evidence). They do not certify new live-provider behavior, every terminal host, overnight idle, or production load.

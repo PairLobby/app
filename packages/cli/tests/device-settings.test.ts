@@ -59,7 +59,7 @@ test('test_network_sharing_takes_off_tailscale_or_lan_and_says_to_restart', asyn
 test('test_the_menu_lists_every_setting_and_saves_edits_immediately', async () => {
     const store = new LocalStore(join(directory, 'menu'));
     const page = deviceSettingsPage(store);
-    expect(page.rows.map((row) => row.id)).toEqual(['profile-name', ...Object.keys(SETTING_KEYS), 'apply-auto-close', 'reset']);
+    expect(page.rows.map((row) => row.id)).toEqual(['profile-name', ...Object.keys(SETTING_KEYS), 'apply-auto-close', 'service-endpoint', 'reset']);
     expect(new Set(page.rows.map((row) => row.section))).toEqual(new Set(['Profile', 'New rooms', 'Terminal', 'Updates', 'Agents', 'Network', 'Reset']));
     const edit = (id: string) => page.rows.find((row) => row.id === id)!.action as PanelEdit;
     expect(edit('default-reply-mode').choices?.map((choice) => choice.value)).toEqual(['sequential', 'parallel']);

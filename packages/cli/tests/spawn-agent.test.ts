@@ -103,8 +103,9 @@ test('commands validate options without broadcasting and cannot adopt another lo
 });
 
 test('hosted-origin admission carries the saved account token without exposing it in results', async () => {
-    vi.stubEnv('PAIRLOBBY_ONLINE_ORIGIN', relay.url);
-    context.store.putCredential('online-account', relay.url, 'fixture-account-token');
+    // A deployment's relay at the root path is a saved endpoint, as `pairlobby setup` makes it.
+    context.store.setSettings({endpoints: {team: {origin: new URL(relay.url).origin, name: 'Team', relayOrigins: [new URL(relay.url).origin], loginMode: 'token', savedAt: 1}}, activeEndpoint: 'team'});
+    context.store.putCredential('online-account', new URL(relay.url).origin, 'fixture-account-token');
     const fetch = globalThis.fetch;
     const tokens: (string | null)[] = [];
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
