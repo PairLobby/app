@@ -213,11 +213,11 @@ export async function loginOnline(store: LocalStore, options: LoginOptions = {})
 
 export type LogoutResult = {removed: boolean; revoked: boolean | null};
 
-/** Forgets the saved login and revokes it on the service; null means there was nothing saved to revoke. */
+/** Forgets this origin's saved login, keeping other origins', and revokes it on the service; null means there was nothing saved to revoke. */
 export async function logoutOnline(store: LocalStore): Promise<LogoutResult> {
     const origin = onlineOrigin();
     const saved = store.credential('online-account', origin);
     const revoked = saved ? await revokeToken(origin, saved) : null;
-    store.forgetRoom('online-account');
+    store.forgetCredential('online-account', origin);
     return {removed: saved !== undefined, revoked};
 }
