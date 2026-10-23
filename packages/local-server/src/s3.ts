@@ -16,7 +16,7 @@ export type S3ClientOptions = {
     region: string;
     /** An S3-compatible endpoint such as `https://<account>.r2.cloudflarestorage.com`; addressed path-style. Absent means AWS. */
     endpoint?: string;
-    /** Absent means the usual AWS chain: environment, then the ECS task role, then the EC2 instance role. */
+    /** Absent means the usual AWS chain: environment, then a web identity (EKS IRSA), then the ECS task role, then the EC2 instance role. */
     credentials?: () => Promise<S3Credentials>;
     fetch?: typeof fetch;
 };
@@ -76,12 +76,80 @@ async function fetchJson(fetcher: typeof fetch, url: string, headers: Record<str
     return (await response.json()) as RoleCredentialsBody;
 }
 
+type StsCredentialsBody = {AccessKeyId?: string; SecretAccessKey?: string; SessionToken?: string; Expiration?: number | string};
+
+type StsResponseBody = {AssumeRoleWithWebIdentityResponse?: {AssumeRoleWithWebIdentityResult?: {Credentials?: StsCredentialsBody}}; Error?: {Code?: string}};
+
+/** STS gives `Expiration` as epoch seconds in JSON and as an ISO date elsewhere; either is accepted. */
+function expirationTime(value: number | string | undefined): number | undefined {
+    if (value === undefined) {
+        return undefined;
+    }
+    if (typeof value === 'number' || /^\d+(\.\d+)?$/.test(value)) {
+        return Number(value) * 1000;
+    }
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+/** The error code STS answered with, from its JSON or XML error body, never the body itself. */
+function stsErrorCode(text: string, status: number): string {
+    try {
+        const code = (JSON.parse(text) as StsResponseBody).Error?.Code;
+        if (code) {
+            return code;
+        }
+    } catch {
+        // Not JSON: fall back to the XML error shape.
+    }
+    return xmlValues(text, 'Code')[0] ?? `HTTP ${status}`;
+}
+
+/** EKS IRSA and the like: the platform's web-identity token, read afresh each time because it rotates, exchanged for role credentials with an unsigned STS call. */
+async function webIdentityCredentials(environment: S3Environment, roleArn: string, tokenFile: string, fetcher: typeof fetch): Promise<ExpiringCredentials> {
+    let token: string;
+    try {
+        token = readFileSync(tokenFile, 'utf8').trim();
+    } catch (error) {
+        throw new Error(`could not assume ${roleArn}: cannot read AWS_WEB_IDENTITY_TOKEN_FILE ${tokenFile} (${(error as NodeJS.ErrnoException).code ?? 'unreadable'})`);
+    }
+    const region = environment['AWS_REGION'] || environment['AWS_DEFAULT_REGION'];
+    const endpoint = environment['AWS_ENDPOINT_URL_STS'] || (region ? `https://sts.${region}.amazonaws.com/` : 'https://sts.amazonaws.com/');
+    const form = new URLSearchParams({Action: 'AssumeRoleWithWebIdentity', Version: '2011-06-15', RoleArn: roleArn, RoleSessionName: environment['AWS_ROLE_SESSION_NAME'] || 'pairlobby-relay', WebIdentityToken: token});
+    let response: Response;
+    try {
+        response = await fetcher(endpoint, {method: 'POST', headers: {accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded'}, body: form.toString(), signal: AbortSignal.timeout(5000)});
+    } catch (error) {
+        throw new Error(`could not assume ${roleArn}: STS at ${endpoint} could not be reached (${(error as Error).name})`);
+    }
+    const text = await response.text();
+    if (!response.ok) {
+        throw new Error(`could not assume ${roleArn}: ${stsErrorCode(text, response.status)}`);
+    }
+    let credentials: StsCredentialsBody | undefined;
+    try {
+        credentials = (JSON.parse(text) as StsResponseBody).AssumeRoleWithWebIdentityResponse?.AssumeRoleWithWebIdentityResult?.Credentials;
+    } catch {
+        credentials = undefined;
+    }
+    if (!credentials?.AccessKeyId || !credentials.SecretAccessKey) {
+        throw new Error(`could not assume ${roleArn}: STS answered without credentials`);
+    }
+    const expiresAt = expirationTime(credentials.Expiration);
+    return {accessKeyId: credentials.AccessKeyId, secretAccessKey: credentials.SecretAccessKey, ...(credentials.SessionToken ? {sessionToken: credentials.SessionToken} : {}), ...(expiresAt !== undefined ? {expiresAt} : {})};
+}
+
 async function loadCredentials(environment: S3Environment, fetcher: typeof fetch): Promise<ExpiringCredentials> {
     const accessKeyId = environment['AWS_ACCESS_KEY_ID'];
     const secretAccessKey = environment['AWS_SECRET_ACCESS_KEY'];
     if (accessKeyId && secretAccessKey) {
         const sessionToken = environment['AWS_SESSION_TOKEN'];
         return {accessKeyId, secretAccessKey, ...(sessionToken ? {sessionToken} : {})};
+    }
+    const roleArn = environment['AWS_ROLE_ARN'];
+    const webIdentityTokenFile = environment['AWS_WEB_IDENTITY_TOKEN_FILE'];
+    if (roleArn && webIdentityTokenFile) {
+        return webIdentityCredentials(environment, roleArn, webIdentityTokenFile, fetcher);
     }
     const relative = environment['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
     if (relative) {
@@ -96,7 +164,7 @@ async function loadCredentials(environment: S3Environment, fetcher: typeof fetch
     // EC2 instance metadata, version 2: a session token first, then the role's credentials.
     const tokenResponse = await fetcher('http://169.254.169.254/latest/api/token', {method: 'PUT', headers: {'x-aws-ec2-metadata-token-ttl-seconds': '21600'}, signal: AbortSignal.timeout(1000)}).catch(() => null);
     if (!tokenResponse?.ok) {
-        throw new Error('no AWS credentials: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or run with an ECS task role or an EC2 instance role');
+        throw new Error('no AWS credentials: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, set AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE for a web identity (EKS IRSA), or run with an ECS task role or an EC2 instance role');
     }
     const metadataToken = await tokenResponse.text();
     const roles = await fetcher('http://169.254.169.254/latest/meta-data/iam/security-credentials/', {headers: {'x-aws-ec2-metadata-token': metadataToken}, signal: AbortSignal.timeout(1000)});
@@ -107,13 +175,18 @@ async function loadCredentials(environment: S3Environment, fetcher: typeof fetch
     return fromRoleBody(await fetchJson(fetcher, `http://169.254.169.254/latest/meta-data/iam/security-credentials/${role}`, {'x-aws-ec2-metadata-token': metadataToken}));
 }
 
-/** The default AWS credential chain, cached until five minutes before temporary credentials expire. */
+/** The default AWS credential chain, cached until five minutes before temporary credentials expire. Callers during a refresh share it. */
 export function awsCredentials(environment: S3Environment = process.env, fetcher: typeof fetch = fetch): () => Promise<S3Credentials> {
     let cached: ExpiringCredentials | null = null;
+    let refreshing: Promise<ExpiringCredentials> | null = null;
     return async () => {
-        if (!cached || (cached.expiresAt !== undefined && cached.expiresAt - Date.now() < 5 * 60_000)) {
-            cached = await loadCredentials(environment, fetcher);
+        if (cached && (cached.expiresAt === undefined || cached.expiresAt - Date.now() >= 5 * 60_000)) {
+            return cached;
         }
+        refreshing ??= loadCredentials(environment, fetcher).finally(() => {
+            refreshing = null;
+        });
+        cached = await refreshing;
         return cached;
     };
 }

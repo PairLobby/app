@@ -25,6 +25,8 @@ To let people log in once with the team token (`pairlobby setup https://pairlobb
   -e PAIRLOBBY_LOGIN_HELP="Ask your team lead for the PairLobby team token." \
 ```
 
+Backups to S3 take AWS credentials in the usual order: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, a web identity (Kubernetes IRSA sets `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE`), the ECS task role, then the EC2 instance role.
+
 Run exactly one copy: the rooms live in one SQLite file. Stop the old container before starting the new one; with `PAIRLOBBY_BACKUP` the new one restores what the old one backed up on stop.
 
 Check a deployed relay from outside:

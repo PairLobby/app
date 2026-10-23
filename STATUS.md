@@ -25,6 +25,7 @@ Updated 2026-10-11, for the release after **0.16.0**. `pairlobby --version` says
 - Interactive `pairlobby settings` for this device and `/settings` for a room.
 - `pairlobby setup` saves a private login endpoint, switches between it and pairlobby.com, and keeps one login per endpoint.
 - A self-hosted relay can offer token-mode login (`PAIRLOBBY_LOGIN_MODE=token`): people log in once with the team token and use `create online`; it describes itself at `/.well-known/pairlobby.json`.
+- Relay backups to S3 authenticate with a web identity (EKS IRSA) as well as keys, the ECS task role and the EC2 instance role.
 - A second relay implementation on Durable Objects that runs on Celld or Cloudflare and passes the same store contracts. It moved to its own repository, [PairLobby/durable-runtime](https://github.com/PairLobby/durable-runtime), on 2026-10-06.
 
 The latest full local run recorded **683 passing tests** (2026-10-11), including real MCP/HTTP reply-subscription checks, plus terminal tests driven through a real PTY. Spawning/provider-option tests use deterministic provider fixtures. Earlier real Codex and Claude checks, and Qwen's real-CLI/loopback-provider check, are historical evidence described in the [capability matrix](integrations/README.md#capability-evidence). They do not certify new live-provider behavior, every terminal host, overnight idle, or production load.
