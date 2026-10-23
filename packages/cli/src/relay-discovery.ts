@@ -118,13 +118,23 @@ export const DEFAULT_LOCAL_ROOMS: LocalRoomDeps = {
 /**
  * The one room named `name` that is open to the local network, on this device's
  * relay, a relay announced on the local network, or a tailnet device. Names are not
- * unique, so several matches are listed for the person to pick by room id.
+ * unique, so several matches are listed for the person to pick by room id; one room
+ * seen through two addresses of the same relay counts once.
  */
 export async function findLocalRoom(name: string, deps: LocalRoomDeps = DEFAULT_LOCAL_ROOMS, only?: string): Promise<LocalRoomMatch> {
     const candidates = only ? [{url: only, label: only}] : [{url: deps.local, label: 'this device'}, ...(await Promise.all([deps.lan(), deps.tailnet()])).flat()];
     const unique = [...new Map(candidates.map((candidate) => [candidate.url, candidate])).values()];
     const answers = await Promise.all(unique.map(async (candidate) => ({...candidate, rooms: await deps.lookup(candidate.url, name)})));
-    const matches = answers.flatMap((answer) => (answer.rooms ?? []).map((room) => ({url: answer.url, label: answer.label, room})));
+    // A relay reached by two addresses (this device and its own LAN address) reports the same room twice; keep the first, this device's.
+    const found = new Map<string, LocalRoomMatch>();
+    for (const answer of answers) {
+        for (const room of answer.rooms ?? []) {
+            if (!found.has(room.roomId)) {
+                found.set(room.roomId, {url: answer.url, label: answer.label, room});
+            }
+        }
+    }
+    const matches = [...found.values()];
     if (matches.length === 1) {
         return matches[0]!;
     }
