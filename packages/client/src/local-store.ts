@@ -386,6 +386,17 @@ export class LocalStore {
         return this.credentials()[`${roomId}:${scope}`];
     }
 
+    /** Removes one credential and leaves every other scope and room alone; a missing one is not an error. */
+    forgetCredential(roomId: string, scope: string): void {
+        const credentials = this.credentials();
+        const key = `${roomId}:${scope}`;
+        if (!(key in credentials)) {
+            return;
+        }
+        delete credentials[key];
+        writeJsonPrivate(this.credentialsFile, credentials);
+    }
+
     private credentials(): Record<string, string> {
         return readJson<Record<string, string>>(this.credentialsFile, {});
     }

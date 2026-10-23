@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import {afterEach, expect, test, vi} from 'vitest';
 import {LocalStore} from '@pairlobby/client';
 import {hostedAccountToken} from '../src/context.js';
-import {accountToken, isOnlineKey, loginOnline, matchInvitation, matchOnlineRoom, onlineRooms, resolveOnlineKey} from '../src/online.js';
+import {accountToken, isOnlineKey, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineRooms, resolveOnlineKey} from '../src/online.js';
 import type {OnlineRoom, ReceivedInvitation} from '../src/online.js';
 const directories: string[] = [];
 afterEach(() => {
@@ -124,4 +124,32 @@ test('test_the_account_token_goes_only_to_rooms_on_the_hosted_service', () => {
     expect(hostedAccountToken(local, 'http://127.0.0.1:8790')).toBeUndefined();
     expect(hostedAccountToken(local, 'https://pairlobby.test/not-a-relay')).toBeUndefined();
     expect(hostedAccountToken(local, 'not a url')).toBeUndefined();
+});
+
+test('test_logout_forgets_only_the_active_origins_token', async () => {
+    vi.stubEnv('PAIRLOBBY_ONLINE_ORIGIN', 'https://a.example');
+    const local = store();
+    local.putCredential('online-account', 'https://a.example', 'token-a');
+    local.putCredential('online-account', 'https://b.example', 'token-b');
+    const fetcher = vi.fn().mockResolvedValue(new Response('{}', {status: 200}));
+    vi.stubGlobal('fetch', fetcher);
+
+    expect(await logoutOnline(local)).toEqual({removed: true, revoked: true});
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0]![0]).toBe('https://a.example/api/device/revoke');
+    expect(fetcher.mock.calls[0]![1].headers['x-pairlobby-account-token']).toBe('token-a');
+    expect(local.credential('online-account', 'https://a.example')).toBeUndefined();
+    expect(local.credential('online-account', 'https://b.example')).toBe('token-b');
+});
+
+test('test_logout_with_nothing_saved_leaves_other_origins_alone', async () => {
+    vi.stubEnv('PAIRLOBBY_ONLINE_ORIGIN', 'https://a.example');
+    const local = store();
+    local.putCredential('online-account', 'https://b.example', 'token-b');
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+
+    expect(await logoutOnline(local)).toEqual({removed: false, revoked: null});
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(local.credential('online-account', 'https://b.example')).toBe('token-b');
 });

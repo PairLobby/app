@@ -134,6 +134,22 @@ describe('local registry', () => {
         expect(store.credential('rm_BBBBBBBBBBBBBBBBBBBBBBBBBB', 'controller')).toBe('plc_keep');
     });
 
+    test('test_forgetting_one_credential_keeps_other_scopes_and_rooms', () => {
+        store.putCredential('online-account', 'https://a.example', 'token-a');
+        store.putCredential('online-account', 'https://b.example', 'token-b');
+        store.putCredential(room().roomId, 'controller', 'plc_keep');
+
+        store.forgetCredential('online-account', 'https://a.example');
+        expect(store.credential('online-account', 'https://a.example')).toBeUndefined();
+        expect(store.credential('online-account', 'https://b.example')).toBe('token-b');
+        expect(store.credential(room().roomId, 'controller')).toBe('plc_keep');
+
+        store.forgetCredential('online-account', 'https://missing.example');
+        store.forgetCredential('rm_MISSING', 'controller');
+        expect(store.credential('online-account', 'https://b.example')).toBe('token-b');
+        expect(store.credential(room().roomId, 'controller')).toBe('plc_keep');
+    });
+
     test('test_a_profile_round_trips_and_merges', () => {
         expect(store.profile()).toEqual({});
         store.setProfile({displayName: 'hugo', kind: 'human'});
