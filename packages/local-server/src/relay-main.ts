@@ -77,6 +77,7 @@ async function serve(flags: RelayFlags, dataDir: string | undefined): Promise<nu
         ...(settings.createToken ? {createToken: settings.createToken} : {}),
         allowedHosts: settings.allowedHosts,
         limits: settings.limits,
+        roomLimits: settings.roomLimits,
         ...(settings.requestLog ? {requestLog: {mode: settings.requestLog, write: writeLine}} : {}),
         ...(backup ? {backup} : {})
     });

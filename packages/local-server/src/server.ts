@@ -8,7 +8,8 @@ import {dirname} from 'node:path';
 
 import {RoomService, createAdmission, createRouter, memoryRateLimiter, proxiedAddress} from '@pairlobby/server-core';
 import type {AdmissionLimits} from '@pairlobby/server-core';
-import {ABSOLUTE_MAX_FILE_BYTES} from '@pairlobby/protocol';
+import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_ROOM_POLICY} from '@pairlobby/protocol';
+import type {RoomPolicy} from '@pairlobby/protocol';
 
 import {advertiseRelay, isLocalNetworkAddress, isLoopbackAddress, isTailscaleAddress} from './network.js';
 import {REQUEST_ID_HEADER, requestIdFor, requestLogLine, shouldLog} from './request-log.js';
@@ -45,6 +46,8 @@ export interface ServeOptions {
     trustedProxyHeader?: string;
     /** Rate limits on creating rooms and redeeming invites; callers on this device are exempt unless the relay is behind a proxy. */
     limits?: Partial<AdmissionLimits>;
+    /** Caps for rooms created from now on, over the built-in defaults; rooms that already exist keep theirs. */
+    roomLimits?: Partial<RoomPolicy>;
     /** One JSON line per request for a log collector; absent logs nothing. */
     requestLog?: RequestLogOptions;
     /** Copies the database while it runs and once more on close; on a disk with no database, the newest copy is restored first unless `restore` is false. */
@@ -92,7 +95,7 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
     const host = options.host ?? '127.0.0.1';
     const port = options.port ?? DEFAULT_PORT;
     const store = new SqliteRoomStore(options.dataFile);
-    const service = new RoomService(store);
+    const service = new RoomService(store, undefined, undefined, {...DEFAULT_ROOM_POLICY, ...options.roomLimits});
 
     // Loopback is not authentication: a page in the user's browser can reach it too.
     // Host is pinned to defeat DNS rebinding, and an unexpected Origin is refused.

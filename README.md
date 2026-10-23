@@ -123,7 +123,7 @@ See the [room and recovery guide](GUIDE.md#the-room) for receipts, Working state
 ## Local, network, and hosted rooms
 
 - Local relay: `pairlobby serve`
-- Keep it running at login and after a crash (macOS): `pairlobby service install`, then `pairlobby service status`
+- Keep it running at login and after a crash (macOS and Linux): `pairlobby service install`, then `pairlobby service status`
 - Tailscale sharing: `pairlobby settings network-sharing tailscale`
 - LAN sharing: `pairlobby settings network-sharing lan`
 - Hosted account: `pairlobby login`, then `pairlobby create online --name my-project`
