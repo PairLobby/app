@@ -8,7 +8,7 @@ import {startServer} from '@pairlobby/local-server';
 import type {RunningServer} from '@pairlobby/local-server';
 
 import {activeEndpoint, saveEndpoint} from '../src/endpoints.js';
-import {accountToken, loginOnline, logoutOnline, onlineAccount, onlineRooms, requireAccountApi} from '../src/online.js';
+import {accountToken, createTokenFor, loginOnline, logoutOnline, onlineAccount, onlineRooms, requireAccountApi} from '../src/online.js';
 import {setupCommand} from '../src/setup.js';
 
 const TEAM_TOKEN = 'team-secret-token';
@@ -29,7 +29,7 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-    for (const variable of ['PAIRLOBBY_ONLINE_ORIGIN', 'PAIRLOBBY_ACCOUNT_TOKEN', 'PAIRLOBBY_ACCOUNT_TOKEN_ORIGIN', 'PAIRLOBBY_SERVER']) {
+    for (const variable of ['PAIRLOBBY_ONLINE_ORIGIN', 'PAIRLOBBY_ACCOUNT_TOKEN', 'PAIRLOBBY_ACCOUNT_TOKEN_ORIGIN', 'PAIRLOBBY_CREATE_TOKEN', 'PAIRLOBBY_SERVER']) {
         vi.stubEnv(variable, '');
     }
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -122,4 +122,21 @@ test('test_a_404_from_a_saved_endpoint_refreshes_what_it_says_about_itself', asy
     local.putCredential('online-account', team.url, TEAM_TOKEN);
     await expect(onlineRooms(local)).rejects.toThrow();
     expect(activeEndpoint(local)).toMatchObject({name: 'Example Corp PairLobby', loginMode: 'token'});
+});
+
+test('test_plain_create_never_sends_an_unscoped_account_token_to_a_relay', async () => {
+    const local = store();
+    // On pairlobby.com, a token in PAIRLOBBY_ACCOUNT_TOKEN belongs to pairlobby.com, not to the team relay.
+    vi.stubEnv('PAIRLOBBY_ACCOUNT_TOKEN', TEAM_TOKEN);
+    expect(createTokenFor(local, team.url)).toBeUndefined();
+    await expect(new PairLobbyClient(team.url, createTokenFor(local, team.url)).createRoom('leaked', {displayName: 'alice', kind: 'human'})).rejects.toThrow('create token');
+
+    vi.stubEnv('PAIRLOBBY_CREATE_TOKEN', TEAM_TOKEN);
+    expect(createTokenFor(local, team.url)).toBe(TEAM_TOKEN);
+    vi.stubEnv('PAIRLOBBY_CREATE_TOKEN', '');
+
+    await setUpTeam(local);
+    offerToken(TEAM_TOKEN);
+    expect(createTokenFor(local, team.url)).toBe(TEAM_TOKEN);
+    expect(createTokenFor(local, plain.url)).toBeUndefined();
 });

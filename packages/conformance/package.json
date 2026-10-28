@@ -1,0 +1,25 @@
+{
+  "name": "@pairlobby/conformance",
+  "version": "0.23.0",
+  "license": "Elastic-2.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "pairlobby-conformance": "./dist/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@pairlobby/client": "*",
+    "@pairlobby/protocol": "*"
+  },
+  "devDependencies": {
+    "@pairlobby/local-server": "*"
+  }
+}

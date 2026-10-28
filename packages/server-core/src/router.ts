@@ -8,6 +8,7 @@ import {
     PROTOCOL_VERSION,
     PROTOCOL_VERSION_HEADER,
     FileId,
+    MAX_EVENT_WAIT_MS,
     ProtocolError,
     ReadEventsQuery,
     RedeemInviteRequest,
@@ -34,9 +35,10 @@ import {
     SetExpiryRequest,
     ControlRequest
 } from '@pairlobby/protocol';
-import type {ErrorCode, LocalRoom, ProviderWait} from '@pairlobby/protocol';
+import type {ErrorCode, LiveTransport, LocalRoom, ProviderWait, RelayLimits, ServerDescription} from '@pairlobby/protocol';
 
 import type {Admission} from './admission.js';
+import type {ChangeNotifier} from './changes.js';
 import type {RoomService} from './service.js';
 
 export interface RouterOptions {
@@ -49,8 +51,20 @@ export interface RouterOptions {
     allowedOrigins?: string[];
     /** `Host` values to accept, defeating DNS rebinding against a local server. */
     allowedHosts?: string[] | ((host: string) => boolean);
-    /** Answers `GET /v1/server`; absent means the path is unknown. */
+    /** What only the adapter knows for `GET /v1/server`: its share addresses and its build. Every relay answers the path. */
     serverInfo?: () => ServerInfo;
+    /**
+     * Wakes held reads. Present means the relay offers long-poll: `GET .../events?wait=` waits for a change
+     * instead of answering empty. Only a relay whose writes all pass through one process can offer it.
+     */
+    changes?: ChangeNotifier;
+    /**
+     * How clients hear about new events, when the relay knows. Defaults to `long-poll` with `changes` and is
+     * otherwise left out, so a client keeps its own rule; a relay with a socket hub says `websocket`.
+     */
+    transport?: LiveTransport;
+    /** Features beyond those the router can see for itself. */
+    features?: string[];
     /**
      * Answers `GET /v1/invites/probe?prefix=`: whether any invite this server issued
      * has a digest starting with that prefix. Lets a client on the same network find
@@ -115,8 +129,8 @@ export function createRouter(options: RouterOptions): (request: Request) => Prom
             if (guard) {
                 return guard;
             }
-            if (options.serverInfo && request.method.toUpperCase() === 'GET' && new URL(request.url).pathname === '/v1/server') {
-                return json(options.serverInfo());
+            if (request.method.toUpperCase() === 'GET' && new URL(request.url).pathname === '/v1/server') {
+                return json(describe(options));
             }
             if (options.inviteProbe && request.method.toUpperCase() === 'GET' && new URL(request.url).pathname === '/v1/invites/probe') {
                 const prefix = new URL(request.url).searchParams.get('prefix') ?? '';
@@ -137,7 +151,7 @@ export function createRouter(options: RouterOptions): (request: Request) => Prom
             if (local) {
                 return local;
             }
-            return await route(request, service, options.admission);
+            return await route(request, service, options.admission, options.changes);
         } catch (error) {
             if (error instanceof ProtocolError) {
                 return errorResponse(error.code, error.message, error.httpStatus, error.details);
@@ -185,7 +199,56 @@ async function routeLocal(request: Request, options: RouterOptions): Promise<Res
     return json({roomId: result.roomId, participantId: result.participantId, role: result.role, room: result.snapshot});
 }
 
-async function route(request: Request, service: RoomService, admission?: Admission): Promise<Response> {
+/** The relay's own account of itself, from what this router was given: nothing is claimed that it was not. */
+export function describe(options: RouterOptions): ServerDescription {
+    const profile = options.service.relayProfile();
+    const features = [
+        ...(profile.files ? ['files'] : []),
+        ...(options.peerIsLocal && options.localRooms ? ['local-join'] : []),
+        ...(options.inviteProbe ? ['invite-probe'] : []),
+        ...(options.admission?.createTokenRequired ? ['create-token'] : []),
+        ...(options.accountCheck && options.admission ? ['token-login'] : []),
+        ...(options.features ?? [])
+    ];
+    const transport = options.transport ?? (options.changes ? 'long-poll' : undefined);
+    return describeRelay({limits: profile.limits, features, ...(transport ? {transport} : {}), ...(options.serverInfo ? {info: options.serverInfo()} : {})});
+}
+
+export type RelayDescriptionInput = {limits: RelayLimits; features: string[]; transport?: LiveTransport; info?: ServerInfo};
+
+/**
+ * `GET /v1/server` for any relay, including one that answers it outside this router, such as
+ * a Worker in front of Durable Objects. Every relay speaking this protocol has message stages.
+ */
+export function describeRelay({limits, features, transport, info}: RelayDescriptionInput): ServerDescription {
+    return {
+        protocol: PROTOCOL_VERSION,
+        ...info,
+        features: [...new Set(['message-stages', ...features])],
+        ...(transport ? {transport: {live: transport, ...(transport === 'long-poll' ? {maxWaitMs: MAX_EVENT_WAIT_MS} : {})}} : {}),
+        limits
+    };
+}
+
+/**
+ * A read that waits: registered before reading so a write in between still wakes it, and
+ * answered as soon as anything is newer than `after`, at the deadline, or on any other change
+ * to the room, so the client rereads whatever else it watches.
+ */
+async function readWaiting(service: RoomService, changes: ChangeNotifier, roomId: string, credential: string, after: number, limit: number, waitMs: number): Promise<Response> {
+    const waiting = changes.wait(roomId, Math.min(waitMs, MAX_EVENT_WAIT_MS));
+    try {
+        const page = await service.read(roomId, credential, after, limit);
+        if (page.events.length > 0 || !waiting || !(await waiting.changed)) {
+            return json(page);
+        }
+        return json(await service.read(roomId, credential, after, limit));
+    } finally {
+        waiting?.cancel();
+    }
+}
+
+async function route(request: Request, service: RoomService, admission?: Admission, changes?: ChangeNotifier): Promise<Response> {
     const url = new URL(request.url);
     const segments = url.pathname.split('/').filter(Boolean);
     const method = request.method.toUpperCase();
@@ -317,6 +380,9 @@ async function route(request: Request, service: RoomService, admission?: Admissi
         }
         case 'GET events': {
             const query = ReadEventsQuery.parse(Object.fromEntries(new URL(request.url).searchParams));
+            if (changes && query.wait > 0) {
+                return readWaiting(service, changes, roomId, credential, query.after, query.limit, query.wait);
+            }
             return json(await service.read(roomId, credential, query.after, query.limit));
         }
         case 'POST events': {
@@ -401,10 +467,16 @@ async function route(request: Request, service: RoomService, admission?: Admissi
     }
 }
 
-function checkHeaders(request: Request, options: RouterOptions): Response | null {
+/** Refuses a request declaring another protocol version, before anything else looks at it. Null when it may go on. */
+export function protocolVersionRefusal(request: Request): Response | null {
     const declared = request.headers.get(PROTOCOL_VERSION_HEADER);
-    if (declared !== null && declared !== String(PROTOCOL_VERSION)) {
-        return errorResponse('protocol_version_unsupported', `this server speaks protocol version ${PROTOCOL_VERSION}`, 400);
+    return declared !== null && declared !== String(PROTOCOL_VERSION) ? errorResponse('protocol_version_unsupported', `this server speaks protocol version ${PROTOCOL_VERSION}`, 400) : null;
+}
+
+function checkHeaders(request: Request, options: RouterOptions): Response | null {
+    const refused = protocolVersionRefusal(request);
+    if (refused) {
+        return refused;
     }
     const origin = request.headers.get('origin');
     if (origin !== null && !(options.allowedOrigins ?? []).includes(origin)) {

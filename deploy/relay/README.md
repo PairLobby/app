@@ -27,6 +27,8 @@ To let people log in once with the team token (`pairlobby setup https://pairlobb
 
 Backups to S3 take AWS credentials in the usual order: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, a web identity (Kubernetes IRSA sets `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE`), the ECS task role, then the EC2 instance role.
 
+Clients hold reads open for up to 25 seconds (long-poll), so give the load balancer an idle timeout of at least 30 seconds; the AWS default of 60 is fine.
+
 Run exactly one copy: the rooms live in one SQLite file. Stop the old container before starting the new one; with `PAIRLOBBY_BACKUP` the new one restores what the old one backed up on stop.
 
 Check a deployed relay from outside:
@@ -35,4 +37,4 @@ Check a deployed relay from outside:
 PAIRLOBBY_CREATE_TOKEN=<token> npx -y @pairlobby/local-server@<version> check https://pairlobby.example.com
 ```
 
-It creates one test room, joins it, sends and reads a message, and deletes it. Every setting is in [GUIDE.md](../../GUIDE.md#running-the-relay-as-a-service-or-in-a-container).
+It creates one test room, joins it, sends and reads a message, and deletes it. For the full set of relay checks, run `PAIRLOBBY_CREATE_TOKEN=<token> npx -y @pairlobby/conformance@<version> https://pairlobby.example.com`. Every setting is in [GUIDE.md](../../GUIDE.md#running-the-relay-as-a-service-or-in-a-container).

@@ -47,6 +47,14 @@ export function accountTokenFor(store: LocalStore, serverUrl: string): string | 
     const endpoint = activeEndpoint(store);
     return tokenMayGo(endpoint, serverUrl) ? accountToken(store, endpoint) : undefined;
 }
+
+/**
+ * The token `create` sends to a relay: PAIRLOBBY_CREATE_TOKEN, which names the relay's own create token,
+ * or else the active endpoint's login when the relay is one of its own. Never an unscoped PAIRLOBBY_ACCOUNT_TOKEN.
+ */
+export function createTokenFor(store: LocalStore, serverUrl: string): string | undefined {
+    return process.env['PAIRLOBBY_CREATE_TOKEN'] || accountTokenFor(store, serverUrl);
+}
 type RequestBody = {method: 'POST' | 'PUT'; body: unknown};
 
 /** Rereads a saved endpoint's discovery document and keeps what it now says. Null when there is none to read. */
