@@ -1,13 +1,14 @@
-//! The local relay. Bridges `node:http` to the shared Web-standard router, so
-//! local and hosted operation run the same request handling.
+//! The Node relay: an adapter between `node:http` and the shared kernel (`createRelay`).
+//! It supplies one write queue for its one store, a timer for auto-close, and what the
+//! socket says about each caller; every protocol rule stays in the kernel.
 
 import {createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse} from 'node:http';
 import {mkdirSync} from 'node:fs';
 import {hostname, networkInterfaces} from 'node:os';
 import {dirname} from 'node:path';
 
-import {ChangeNotifier, NotifyingStore, RoomService, createAdmission, createRouter, memoryRateLimiter, proxiedAddress} from '@pairlobby/server-core';
-import type {AdmissionLimits, DiscoveryDocument} from '@pairlobby/server-core';
+import {ChangeNotifier, NotifyingStore, RoomService, createAdmission, createRelay, memoryRateLimiter, queueExecutor, timerScheduler} from '@pairlobby/server-core';
+import type {AdmissionLimits, DiscoveryDocument, Relay, RequestContext} from '@pairlobby/server-core';
 import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_ROOM_POLICY} from '@pairlobby/protocol';
 import type {RoomPolicy} from '@pairlobby/protocol';
 
@@ -137,58 +138,22 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
     const discoverable = () => !behindProxy && !isLoopback(host) && (options.advertise === true || (boundPort === DEFAULT_PORT && (wildcard || isTailscaleAddress(host))));
     const serverInfo = () => ({shareUrls: shareUrls(host, boundPort, options.publicUrl, tailscaleOnly), discoverable: discoverable(), ...(options.version ? {version: options.version} : {})});
     const inviteProbe = async (prefix: string) => store.hasInviteDigestPrefix(prefix);
-    // Where each request's connection came from, read off the socket: no header can claim it.
-    const peerAddresses = new WeakMap<Request, string>();
-    const peerIsLocal = (request: Request) => !behindProxy && isLocalNetworkAddress(peerAddresses.get(request) ?? '');
+    const peerIsLocal = (_request: Request, context: RequestContext) => isLocalNetworkAddress(context.peerAddress ?? '');
     const localRooms = async (name?: string) => store.localJoinRooms(name);
-    const header = options.trustedProxyHeader;
-    const clientAddress = (request: Request) => (header ? proxiedAddress(request, header) : undefined) ?? peerAddresses.get(request);
-    const exempt = (request: Request) => !behindProxy && isLoopbackAddress(peerAddresses.get(request) ?? '');
-    const admission = createAdmission({...(options.createToken ? {createToken: options.createToken} : {}), limiter: memoryRateLimiter(), ...(options.limits ? {limits: options.limits} : {}), clientAddress, exempt});
+    const exempt = (_request: Request, context: RequestContext) => !behindProxy && isLoopbackAddress(context.peerAddress ?? '');
+    const admission = createAdmission({...(options.createToken ? {createToken: options.createToken} : {}), limiter: memoryRateLimiter(), ...(options.limits ? {limits: options.limits} : {}), ...(options.trustedProxyHeader ? {trustedProxyHeader: options.trustedProxyHeader} : {}), exempt});
     if (options.discovery?.loginMode === 'token' && !options.createToken) {
         throw new Error('token-mode login needs a create token: it is the team token people log in with');
     }
     const discovery = options.discovery ? discoveryDocument(options.discovery, options.publicUrl, store.files !== undefined) : undefined;
     // The room address a team token leads to: the advertised one, else the address the caller used.
     const accountCheck = options.discovery?.loginMode === 'token' ? (request: Request) => ({email: null, userId: 'team' as const, name: options.discovery?.name ?? null, server: options.publicUrl ?? new URL(request.url).origin, handle: null}) : undefined;
-    const route = createRouter({service, allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo, changes, inviteProbe, peerIsLocal, localRooms, admission, ...(discovery ? {discovery: () => discovery} : {}), ...(accountCheck ? {accountCheck} : {})});
-
-    // One local relay owns this store. Serialize mutating requests so two
-    // async service calls cannot both choose the same next event sequence.
-    let mutations: Promise<unknown> = Promise.resolve();
-
-    // One timer for the whole relay, aimed at the earliest auto-close deadline. Sweeps
-    // join the write queue, and every write re-plans it, so a changed policy or a new
-    // message moves the wake-up instead of leaving a stale one to fire.
-    let wake: ReturnType<typeof setTimeout> | undefined;
-    let stopped = false;
-    const plan = (at: number | null): void => {
-        clearTimeout(wake);
-        wake = undefined;
-        if (stopped || at === null) {
-            return;
-        }
-        wake = setTimeout(sweep, Math.min(Math.max(0, at - Date.now()), 2 ** 31 - 1));
-        wake.unref();
-    };
-    const sweep = (): void => {
-        mutations = mutations
-            .then(async () => {
-                const result = await service.closeDueRooms();
-                plan(result.more ? Date.now() : result.nextAt);
-            })
-            .catch(() => plan(Date.now() + 60_000));
-    };
-
-    const handle = (request: Request): Promise<Response> => {
-        const result = mutations.then(() => route(request));
-        if (!['GET', 'HEAD'].includes(request.method)) {
-            mutations = result.catch(() => {});
-            sweep();
-        }
-        return result;
-    };
-    sweep();
+    // One store behind one process: one queue keeps two writes from choosing the same next event sequence.
+    const executor = queueExecutor();
+    // One timer for the whole relay, aimed at the earliest auto-close deadline; every write plans it again.
+    const scheduler = timerScheduler(() => void relay.tick('auto-close'));
+    const relay: Relay = createRelay({service, executor, scheduler, behindProxy, allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo, changes, inviteProbe, peerIsLocal, localRooms, admission, ...(discovery ? {discovery: () => discovery} : {}), ...(accountCheck ? {accountCheck} : {})});
+    void relay.tick('auto-close');
 
     const health = JSON.stringify({service: 'pairlobby-relay', ready: true, ...(options.version ? {version: options.version} : {})});
     const server = createHttpServer((incoming, outgoing) => {
@@ -198,7 +163,7 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
             outgoing.end(health);
             return;
         }
-        void respond(handle, incoming, outgoing, `http://${incoming.headers.host ?? `${host}:${port}`}`, peerAddresses, options.requestLog);
+        void respond(relay, incoming, outgoing, `http://${incoming.headers.host ?? `${host}:${port}`}`, options.requestLog);
     });
     // Enforced on the connection, before any request is read: the bind address alone
     // cannot say "Tailscale only" when the Tailscale address may not exist yet at boot.
@@ -231,11 +196,10 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
                 dataFile: options.dataFile,
                 ...(restore ? {restore} : {}),
                 close: () => {
-                    stopped = true;
-                    clearTimeout(wake);
+                    scheduler.stop();
                     changes.close();
                     stopAdvertising();
-                    return mutations.then(() => shutdown(server, store, backups));
+                    return executor.idle().then(() => shutdown(server, store, backups));
                 }
             });
         });
@@ -302,7 +266,7 @@ function shareUrls(host: string, port: number, publicUrl: string | undefined, ta
     return urls;
 }
 
-async function respond(handle: (request: Request) => Promise<Response>, incoming: IncomingMessage, outgoing: ServerResponse, origin: string, peerAddresses: WeakMap<Request, string>, log: RequestLogOptions | undefined): Promise<void> {
+async function respond(relay: Relay, incoming: IncomingMessage, outgoing: ServerResponse, origin: string, log: RequestLogOptions | undefined): Promise<void> {
     const started = Date.now();
     const requestId = requestIdFor(typeof incoming.headers[REQUEST_ID_HEADER] === 'string' ? incoming.headers[REQUEST_ID_HEADER] : null);
     const bodyLimit = requestBodyLimit(incoming);
@@ -321,8 +285,8 @@ async function respond(handle: (request: Request) => Promise<Response>, incoming
             return;
         }
         const request = await toRequest(incoming, origin, bodyLimit);
-        peerAddresses.set(request, incoming.socket.remoteAddress ?? '');
-        const response = await handle(request);
+        // Read off the socket: no header can claim where the connection came from.
+        const response = await relay.handle(request, {peerAddress: incoming.socket.remoteAddress ?? ''});
         finish(response.status, Object.fromEntries(response.headers), response.body ? Buffer.from(await response.arrayBuffer()) : undefined);
     } catch (error) {
         if (error instanceof RequestBodyTooLarge) {
