@@ -140,7 +140,7 @@ Network discovery, join-by-name, hosted invitations, account access, updates, an
 ```text
 packages/protocol/       wire schemas and errors
 packages/room-core/      authorization and state transitions
-packages/server-core/    shared room service and storage contract
+packages/server-core/    relay kernel shared by every relay, room service, storage contract
 packages/local-server/   SQLite relay and the pairlobby-relay command
 packages/client/         HTTP client and local registry
 packages/cli/            terminal application and managed receivers

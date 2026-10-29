@@ -364,6 +364,11 @@ export class RoomService {
      * crash between the two steps leaves a resumable reservation rather than an
      * invite a different stranger can claim.
      */
+    /** The room an invite's digest belongs to, for routing before the room checks the code; null when no invite has it. */
+    async inviteRoom(digest: string): Promise<string | null> {
+        return (await this.store.inviteByDigest(digest))?.roomId ?? null;
+    }
+
     async redeemInvite(input: RedeemInput): Promise<RedeemResult> {
         const normalized = normalizeInviteCode(input.code);
         if (!normalized) {

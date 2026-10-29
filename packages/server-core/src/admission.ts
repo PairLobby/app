@@ -4,6 +4,8 @@
 
 import {ProtocolError, digestsEqual, hashCredential} from '@pairlobby/protocol';
 
+import type {RequestContext} from './ports.js';
+
 /** The header that carries a relay's create token, the same one a hosted account token travels in. */
 export const CREATE_TOKEN_HEADER = 'x-pairlobby-account-token';
 
@@ -40,10 +42,15 @@ export type AdmissionOptions = {
     /** Absent means no rate limits. */
     limiter?: RateLimiter;
     limits?: Partial<AdmissionLimits>;
-    /** The caller's address as the transport saw it; undefined when it cannot tell, and then every such caller shares one count. */
-    clientAddress?: (request: Request) => string | undefined;
+    /**
+     * The header a proxy in front of the relay puts the caller's address in, such as `x-forwarded-for`.
+     * Absent means no such header is read, whoever sends it: a caller could write it themselves.
+     */
+    trustedProxyHeader?: string;
+    /** The caller's address; defaults to the proxy header when one is trusted, else the connection's address. Undefined makes every such caller share one count. */
+    clientAddress?: (request: Request, context: RequestContext) => string | undefined;
     /** Callers the limits do not apply to, such as this device on a relay that is not behind a proxy. */
-    exempt?: (request: Request) => boolean;
+    exempt?: (request: Request, context: RequestContext) => boolean;
 };
 
 type BucketState = {tokens: number; updatedAt: number};
@@ -81,9 +88,11 @@ export function memoryRateLimiter({now = Date.now, maxKeys = 10_000}: MemoryRate
 export function createAdmission(options: AdmissionOptions) {
     const limits = {...DEFAULT_ADMISSION_LIMITS, ...options.limits};
     const tokenDigest = options.createToken ? hashCredential(options.createToken) : null;
-    const address = (request: Request) => options.clientAddress?.(request) ?? 'unknown';
-    const take = async (request: Request, key: string, cost: number, limit: RateLimit) => {
-        if (!options.limiter || options.exempt?.(request)) {
+    const header = options.trustedProxyHeader;
+    const clientAddress = options.clientAddress ?? ((request: Request, context: RequestContext) => (header ? proxiedAddress(request, header) : undefined) ?? context.peerAddress);
+    const address = (request: Request, context: RequestContext) => clientAddress(request, context) ?? 'unknown';
+    const take = async (request: Request, context: RequestContext, key: string, cost: number, limit: RateLimit) => {
+        if (!options.limiter || options.exempt?.(request, context)) {
             return;
         }
         const decision = await options.limiter.take(key, cost, limit);
@@ -101,34 +110,34 @@ export function createAdmission(options: AdmissionOptions) {
         /** Creating a room needs the create token here. */
         createTokenRequired: tokenDigest !== null,
         /** Refuses a room creation without the create token, then counts it against the caller. */
-        async beforeCreate(request: Request): Promise<void> {
+        async beforeCreate(request: Request, context: RequestContext = {}): Promise<void> {
             if (tokenDigest && !(await tokenMatches(request))) {
                 throw new ProtocolError('unauthorized', CREATE_TOKEN_REQUIRED);
             }
-            await take(request, `create:address:${address(request)}`, 1, {perMinute: limits.createPerMinutePerAddress});
+            await take(request, context, `create:address:${address(request, context)}`, 1, {perMinute: limits.createPerMinutePerAddress});
         },
         /**
          * The team token check behind token-mode login: counted first, in its own bucket so
          * guessing cannot spend the create budget, then refused the same way whether the
          * token is missing or wrong.
          */
-        async beforeAccountCheck(request: Request): Promise<void> {
-            await take(request, `account-check:address:${address(request)}`, 1, {perMinute: limits.accountCheckPerMinutePerAddress});
+        async beforeAccountCheck(request: Request, context: RequestContext = {}): Promise<void> {
+            await take(request, context, `account-check:address:${address(request, context)}`, 1, {perMinute: limits.accountCheckPerMinutePerAddress});
             if (!(await tokenMatches(request))) {
                 throw new ProtocolError('unauthorized', TEAM_TOKEN_REFUSED);
             }
         },
         /** Counts an invite redemption against the caller and the whole relay, before the code is looked up. */
-        async beforeRedeem(request: Request): Promise<void> {
-            await take(request, `redeem:address:${address(request)}`, 1, {perMinute: limits.redeemPerMinutePerAddress});
-            await take(request, 'redeem:global', 1, {perMinute: limits.redeemPerMinuteGlobal});
+        async beforeRedeem(request: Request, context: RequestContext = {}): Promise<void> {
+            await take(request, context, `redeem:address:${address(request, context)}`, 1, {perMinute: limits.redeemPerMinutePerAddress});
+            await take(request, context, 'redeem:global', 1, {perMinute: limits.redeemPerMinuteGlobal});
         },
         /** A code that matched nothing costs the caller once more, so guessing is slower than joining. */
-        async afterUnknownInvite(request: Request): Promise<void> {
-            if (!options.limiter || options.exempt?.(request)) {
+        async afterUnknownInvite(request: Request, context: RequestContext = {}): Promise<void> {
+            if (!options.limiter || options.exempt?.(request, context)) {
                 return;
             }
-            await options.limiter.take(`redeem:address:${address(request)}`, 1, {perMinute: limits.redeemPerMinutePerAddress});
+            await options.limiter.take(`redeem:address:${address(request, context)}`, 1, {perMinute: limits.redeemPerMinutePerAddress});
         }
     };
 }

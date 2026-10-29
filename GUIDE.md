@@ -675,8 +675,8 @@ This repository holds the protocol, the room logic, the server adapters, and the
 ```text
 packages/protocol/         schemas, versions, error contracts, HTTP and socket wire format
 packages/room-core/        authorization and state transitions, no network dependency
-packages/server-core/      the storage contract and the room service every transport runs
-packages/local-server/     node:sqlite store and the local relay
+packages/server-core/      the relay kernel (createRelay: edge, inRoom, tick), its ports, admission, and the room service
+packages/local-server/     node:sqlite store and the Node adapter around the kernel
 packages/client/           HTTP client and the per-device room registry
 packages/cli/              the command line
 fixtures/                  in-memory reference store, fake agents, the contract suite

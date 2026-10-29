@@ -1,4 +1,6 @@
 export * from './admission.js';
+export * from './ports.js';
+export * from './relay.js';
 export * from './router.js';
 export * from './service.js';
 export * from './stable-json.js';
