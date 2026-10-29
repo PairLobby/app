@@ -210,7 +210,7 @@ In a container, run `pairlobby-relay` from the `@pairlobby/local-server` package
 | `PAIRLOBBY_ALLOWED_HOSTS` | | more exact `Host` values to accept, comma separated, such as `relay.internal` |
 | `PAIRLOBBY_CREATE_TOKEN` | | token needed to create rooms (environment only) |
 | `PAIRLOBBY_CREATE_TOKEN_FILE` | | the same token read from a file only its owner can read (`chmod 600`); not with the variable |
-| `PAIRLOBBY_REQUEST_LOG` | `--request-log` | `all`, `writes` (skips successful reads, which waiting clients repeat every second) or `off` (default) |
+| `PAIRLOBBY_REQUEST_LOG` | `--request-log` | `all`, `writes` (skips successful reads, which waiting clients repeat) or `off` (default) |
 | `PAIRLOBBY_BACKUP` | `--backup` | where to copy the rooms: `s3://bucket/prefix` or an absolute folder |
 | `PAIRLOBBY_BACKUP_INTERVAL` | | seconds between checks for changes (60) |
 | `PAIRLOBBY_BACKUP_KEEP` | | copies to keep (48) |

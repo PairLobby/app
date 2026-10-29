@@ -5,11 +5,11 @@
 //   node scripts/durable-parity.mjs <durable-runtime checkout> [--parity FILE]
 //
 // The durable-runtime checkout needs `npm ci` done. This packs the workspace packages the
-// way they would be published, installs them over the checkout's own (without saving), and
+// way they would be published, unpacks each over the copy the checkout already has, and
 // runs its relay under wrangler's test harness, once open and once with its test create
 // token. Build the workspace first (`npm run build`). Exits 1 when any check fails on either relay.
 import {execFileSync} from 'node:child_process';
-import {mkdtempSync, readdirSync, rmSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
@@ -32,8 +32,18 @@ const harnesses = [];
 let node;
 try {
     execFileSync(process.execPath, [join(root, 'scripts', 'publish-packages.mjs'), '--pack', packs], {cwd: root, stdio: ['ignore', 'ignore', 'inherit']});
-    const tarballs = readdirSync(packs).filter((name) => name.endsWith('.tgz')).map((name) => join(packs, name));
-    execFileSync('npm', ['install', '--no-save', '--no-audit', '--no-fund', ...tarballs], {cwd: durable, stdio: ['ignore', 'ignore', 'inherit']});
+    // Unpacked rather than `npm install`ed: npm 10 fails on a set of local tarballs that depend on
+    // each other ("Cannot read properties of null (reading 'edgesOut')"), and only packages the
+    // relay already depends on matter. Their external dependencies come from the checkout's own install.
+    for (const tarball of readdirSync(packs).filter((name) => name.endsWith('.tgz'))) {
+        const target = join(durable, 'node_modules', '@pairlobby', tarball.replace(/^pairlobby-/, '').replace(/-\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\.tgz$/, ''));
+        if (!existsSync(target)) {
+            continue;
+        }
+        rmSync(target, {recursive: true, force: true});
+        mkdirSync(target, {recursive: true});
+        execFileSync('tar', ['-xzf', join(packs, tarball), '-C', target, '--strip-components=1']);
+    }
 
     const {createTestHarness} = await import(pathToFileURL(createRequire(join(durable, 'package.json')).resolve('wrangler')).href);
     const {parityMatrix, runConformance} = await import(pathToFileURL(join(root, 'packages', 'conformance', 'dist', 'index.js')).href);
