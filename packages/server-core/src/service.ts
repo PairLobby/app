@@ -18,6 +18,7 @@ import type {
     NameSource,
     ParticipantRole,
     ReadEventsResponse,
+    RelayLimits,
     RoomEvent,
     RoomInvitationChange,
     RoomPolicy,
@@ -141,6 +142,19 @@ export type FileDownload = {file: FileRecord; bytes: Uint8Array};
 
 export type Clock = () => number;
 
+export type RelayProfile = {files: boolean; limits: RelayLimits};
+
+/** The limits a new room gets under `policy`, as a relay reports them; file limits only where files are kept. */
+export function relayLimits(policy: RoomPolicy, files: boolean): RelayLimits {
+    return {
+        maxParticipants: policy.maxParticipants,
+        maxEventPayloadBytes: policy.maxEventPayloadBytes,
+        maxRetainedEvents: policy.maxRetainedEvents,
+        maxRetainedEventBytes: policy.maxRetainedEventBytes,
+        ...(files ? {maxFileBytes: Math.min(policy.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES, ABSOLUTE_MAX_FILE_BYTES), maxRetainedFileBytes: policy.maxRetainedFileBytes ?? DEFAULT_MAX_RETAINED_FILE_BYTES} : {})
+    };
+}
+
 export class RoomService {
     private readonly store: RoomStore;
     private readonly now: Clock;
@@ -176,6 +190,12 @@ export class RoomService {
     /** What the room looks like, plus what this relay can do that depends on its store rather than on the room. */
     private snapshotOf(view: RoomView): RoomSnapshot {
         return {...toSnapshot(view), filesSupported: this.store.files !== undefined};
+    }
+
+    /** Whether rooms here keep files, and the limits a new room gets: what `GET /v1/server` reports. */
+    relayProfile(): RelayProfile {
+        const files = this.store.files !== undefined;
+        return {files, limits: relayLimits(this.roomPolicy, files)};
     }
 
     private fileStore(): FileStore {

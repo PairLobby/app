@@ -6,7 +6,7 @@ import {mkdirSync} from 'node:fs';
 import {hostname, networkInterfaces} from 'node:os';
 import {dirname} from 'node:path';
 
-import {RoomService, createAdmission, createRouter, memoryRateLimiter, proxiedAddress} from '@pairlobby/server-core';
+import {ChangeNotifier, NotifyingStore, RoomService, createAdmission, createRouter, memoryRateLimiter, proxiedAddress} from '@pairlobby/server-core';
 import type {AdmissionLimits, DiscoveryDocument} from '@pairlobby/server-core';
 import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_ROOM_POLICY} from '@pairlobby/protocol';
 import type {RoomPolicy} from '@pairlobby/protocol';
@@ -113,7 +113,9 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
     const host = options.host ?? '127.0.0.1';
     const port = options.port ?? DEFAULT_PORT;
     const store = new SqliteRoomStore(options.dataFile);
-    const service = new RoomService(store, undefined, undefined, {...DEFAULT_ROOM_POLICY, ...options.roomLimits});
+    // Every write goes through this one process, so it can wake the reads waiting on a room.
+    const changes = new ChangeNotifier();
+    const service = new RoomService(new NotifyingStore(store, changes), undefined, undefined, {...DEFAULT_ROOM_POLICY, ...options.roomLimits});
 
     // Loopback is not authentication: a page in the user's browser can reach it too.
     // Host is pinned to defeat DNS rebinding, and an unexpected Origin is refused.
@@ -149,7 +151,7 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
     const discovery = options.discovery ? discoveryDocument(options.discovery, options.publicUrl, store.files !== undefined) : undefined;
     // The room address a team token leads to: the advertised one, else the address the caller used.
     const accountCheck = options.discovery?.loginMode === 'token' ? (request: Request) => ({email: null, userId: 'team' as const, name: options.discovery?.name ?? null, server: options.publicUrl ?? new URL(request.url).origin, handle: null}) : undefined;
-    const route = createRouter({service, allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo, inviteProbe, peerIsLocal, localRooms, admission, ...(discovery ? {discovery: () => discovery} : {}), ...(accountCheck ? {accountCheck} : {})});
+    const route = createRouter({service, allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo, changes, inviteProbe, peerIsLocal, localRooms, admission, ...(discovery ? {discovery: () => discovery} : {}), ...(accountCheck ? {accountCheck} : {})});
 
     // One local relay owns this store. Serialize mutating requests so two
     // async service calls cannot both choose the same next event sequence.
@@ -231,6 +233,7 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
                 close: () => {
                     stopped = true;
                     clearTimeout(wake);
+                    changes.close();
                     stopAdvertising();
                     return mutations.then(() => shutdown(server, store, backups));
                 }

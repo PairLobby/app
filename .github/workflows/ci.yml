@@ -1,7 +1,8 @@
 name: CI
 
 # Every pull request into master builds the workspace, runs the tests and packages the CLI
-# the way the release workflow does, so a merge never reaches Release broken.
+# the way the release workflow does, so a merge never reaches Release broken. A second job
+# runs the shared relay checks against both relay implementations.
 on:
   pull_request:
     branches: [master]
@@ -35,3 +36,32 @@ jobs:
       - run: npm test
       - name: Package the CLI
         run: node scripts/build-distribution.mjs artifacts
+
+  # The same relay checks against the Node relay and the Durable Object relay
+  # (PairLobby/durable-runtime at master, built with this pull request's packages), so a
+  # change to the shared packages that one relay does not follow fails here, with the table
+  # in the run summary.
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: PairLobby/durable-runtime
+          ref: master
+          path: .parity/durable-runtime
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm ci
+        working-directory: .parity/durable-runtime
+      - run: node scripts/durable-parity.mjs .parity/durable-runtime --parity .parity/parity.md
+      - name: Parity table
+        if: always()
+        run: |
+          if [ -f .parity/parity.md ]; then
+            { echo '## Relay parity'; echo; cat .parity/parity.md; } >> "$GITHUB_STEP_SUMMARY"
+          fi

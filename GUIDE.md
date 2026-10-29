@@ -210,7 +210,7 @@ In a container, run `pairlobby-relay` from the `@pairlobby/local-server` package
 | `PAIRLOBBY_ALLOWED_HOSTS` | | more exact `Host` values to accept, comma separated, such as `relay.internal` |
 | `PAIRLOBBY_CREATE_TOKEN` | | token needed to create rooms (environment only) |
 | `PAIRLOBBY_CREATE_TOKEN_FILE` | | the same token read from a file only its owner can read (`chmod 600`); not with the variable |
-| `PAIRLOBBY_REQUEST_LOG` | `--request-log` | `all`, `writes` (skips successful reads, which waiting clients repeat every second) or `off` (default) |
+| `PAIRLOBBY_REQUEST_LOG` | `--request-log` | `all`, `writes` (skips successful reads, which waiting clients repeat) or `off` (default) |
 | `PAIRLOBBY_BACKUP` | `--backup` | where to copy the rooms: `s3://bucket/prefix` or an absolute folder |
 | `PAIRLOBBY_BACKUP_INTERVAL` | | seconds between checks for changes (60) |
 | `PAIRLOBBY_BACKUP_KEEP` | | copies to keep (48) |
@@ -238,6 +238,8 @@ The `PAIRLOBBY_ROOM_*` caps apply to rooms created after the relay starts with t
 `GET /health` answers `{"service":"pairlobby-relay","ready":true}` for a load balancer's health check, whatever `Host` it sends. Every response carries an `x-request-id`, the caller's own when it is a short plain token. The request log writes one JSON line per request to standard output with the time, request id, method, route with identifiers replaced (`/v1/rooms/:room/events`), status, duration and the first eight hex digits of the room id's SHA-256; never a body, a credential, an invite code or a name.
 
 With `--backup`, the relay copies its database every minute when something changed, and once more when it stops, so a container that is replaced cleanly loses nothing and one that crashes loses at most a minute. When it starts on a disk with no database, it restores the newest copy first; a database already on the disk always wins. If the copies cannot be reached, it refuses to start rather than begin empty. Start with `--no-restore` to begin empty on purpose, knowing new copies will push out the old ones after `PAIRLOBBY_BACKUP_KEEP` rounds. S3 uses the usual AWS credentials, in this order: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`; a web identity such as EKS IRSA (`AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE`, with `AWS_ROLE_SESSION_NAME` optional and `AWS_ENDPOINT_URL_STS` for an STS VPC endpoint); the ECS task role; the EC2 instance role. Set `AWS_REGION` too. The role needs `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject` and `s3:ListBucket` on the bucket and prefix. Every copy and restore writes one JSON line to standard output.
+
+`GET /v1/server` describes the relay: its version, protocol, features (`message-stages`, `files`, `local-join`, `invite-probe`, `create-token`, `token-login`), the limits a new room gets, and how clients hear about new events. `pairlobby serve` offers long-poll: a client's read waits up to 25 seconds for something new instead of asking again every second, so a room with nothing happening costs one request every 25 seconds per client. Give a load balancer in front of it an idle timeout of at least 30 seconds. The Durable Object relay says `poll`, and a relay that does not describe itself keeps the old rule (a socket for hosted rooms, polling elsewhere). `pairlobby doctor --server <url>` prints all of it, and a command the relay does not support, such as `--open-local` on a relay that cannot see where a request comes from, says so before trying.
 
 #### Joining by name, without an invite
 
@@ -302,7 +304,7 @@ In token mode `pairlobby login` shows the relay's help text and asks for the tea
 
 Each endpoint keeps its own saved login, so logging in or out of one never touches another, and its token is only sent to its own origin or a relay it declared. When the active endpoint is a single relay, `pairlobby create` and `pairlobby join <code>` use it with no `--server` (`--server`, `PAIRLOBBY_SERVER` and `pairlobby profile --server` still win). Commands that use it say `Using <name> (<host>)`.
 
-One command can use another endpoint with `--endpoint <name or address>`, without saving it. `PAIRLOBBY_ONLINE_ORIGIN` overrides everything, for scripts and tests. `PAIRLOBBY_ACCOUNT_TOKEN` is used only for pairlobby.com, with `PAIRLOBBY_ONLINE_ORIGIN`, or when `PAIRLOBBY_ACCOUNT_TOKEN_ORIGIN` names the active endpoint's origin; otherwise it is ignored with a warning, so one deployment's token never reaches another.
+One command can use another endpoint with `--endpoint <name or address>`, without saving it. `PAIRLOBBY_ONLINE_ORIGIN` overrides everything, for scripts and tests. `PAIRLOBBY_ACCOUNT_TOKEN` is used only for pairlobby.com, with `PAIRLOBBY_ONLINE_ORIGIN`, or when `PAIRLOBBY_ACCOUNT_TOKEN_ORIGIN` names the active endpoint's origin; otherwise it is ignored with a warning, so one deployment's token never reaches another. `pairlobby create --server <relay>` sends `PAIRLOBBY_CREATE_TOKEN`, or the active endpoint's login when the relay belongs to it, and never `PAIRLOBBY_ACCOUNT_TOKEN` on its own.
 
 ### Inviting people by @handle
 
@@ -696,6 +698,8 @@ python scripts/test-network-rooms.py # a room open to the network, joined from t
 
 The last full local run (2026-10-11) recorded **683 passing tests**, plus source and installed-package terminal checks. Spawning, concurrent receivers, argument forwarding, recovery, roster metadata, and clipboard transport use deterministic fixtures; this does not claim new provider-backed acceptance or native clipboard testing on every OS. See [the validation guide](integrations/SPIKE.md) for targeted commands and remaining gaps.
 
+`@pairlobby/conformance` holds the checks every relay must pass over HTTP with the real client: description, health, protocol version, create token, create, join, send and read, receipts and replies, paging, refusals, files and long-poll. A check for a feature the relay does not list is skipped. Run them against any relay with `npx @pairlobby/conformance <url>` (`PAIRLOBBY_CREATE_TOKEN` when it needs one). Every pull request runs them against `pairlobby serve` and against [durable-runtime](https://github.com/PairLobby/durable-runtime) built with the pull request's packages (`node scripts/durable-parity.mjs <durable-runtime checkout>`), and puts the table in the run summary.
+
 `fixtures/src/contract.ts` is the room contract and `fixtures/src/redemption-contract.ts` the invite crash-recovery gate. Both are parameterized by store and run against the in-memory reference and SQLite here, and against Durable Object SQLite in [durable-runtime](https://github.com/PairLobby/durable-runtime), so a behaviour that differs between adapters fails a build. A new storage adapter is expected to call them too.
 
 ## License
@@ -706,9 +710,9 @@ That makes it not "open source" in the OSI's sense, which does not permit a rest
 
 ### Publishing the shared packages
 
-Other repositories depend on `@pairlobby/protocol`, `room-core`, `server-core`, `client` and `fixtures` from npm. The release workflow publishes them on every merge to `master` that changes the version, so nobody publishes by hand.
+Other repositories depend on `@pairlobby/protocol`, `room-core`, `server-core`, `local-server`, `client`, `conformance` and `fixtures` from npm. The release workflow publishes them on every merge to `master` that changes the version, so nobody publishes by hand.
 
-Their version is ssmver's: the one in `ssmver.toml`, which ssmver writes into every `package.json` in lockstep, so all five always carry the same number as the CLI release. `scripts/publish-packages.mjs` reads it from there and refuses to run if any package disagrees. It never picks a version itself.
+Their version is ssmver's: the one in `ssmver.toml`, which ssmver writes into every `package.json` in lockstep, so they always carry the same number as the CLI release. `scripts/publish-packages.mjs` reads it from there and refuses to run if any package disagrees. It never picks a version itself.
 
 The workflow needs one repository secret, `NPM_TOKEN`: an npm access token that may publish to the `@pairlobby` scope. Without it the npm step fails with a message saying so, after the GitHub release has been made; add the secret and re-run. Each package is published with npm provenance, which records the commit and workflow that built it. A version with a suffix goes out under the `next` tag instead of `latest`.
 

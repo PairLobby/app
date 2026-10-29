@@ -98,6 +98,8 @@ export function createAdmission(options: AdmissionOptions) {
     };
     return {
         tokenMatches,
+        /** Creating a room needs the create token here. */
+        createTokenRequired: tokenDigest !== null,
         /** Refuses a room creation without the create token, then counts it against the caller. */
         async beforeCreate(request: Request): Promise<void> {
             if (tokenDigest && !(await tokenMatches(request))) {

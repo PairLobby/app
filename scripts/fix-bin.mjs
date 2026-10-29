@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-//! Restores the executable bit on the command entry points (pairlobby, pairlobby-relay) after a build.
+//! Restores the executable bit on the command entry points (pairlobby, pairlobby-relay, pairlobby-conformance) after a build.
 //!
 //! tsc emits plain files, so a clean rebuild leaves `dist/main.js` at 0644 and
 //! the linked `pairlobby` command fails with "permission denied" — after having
@@ -11,7 +11,7 @@ import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const PACKAGES = join(dirname(fileURLToPath(import.meta.url)), '..', 'packages');
-const BINS = [join(PACKAGES, 'cli', 'dist', 'main.js'), join(PACKAGES, 'local-server', 'dist', 'relay-main.js')];
+const BINS = [join(PACKAGES, 'cli', 'dist', 'main.js'), join(PACKAGES, 'local-server', 'dist', 'relay-main.js'), join(PACKAGES, 'conformance', 'dist', 'main.js')];
 
 // Windows has no execute bit; chmod there is a no-op that would only confuse.
 if (process.platform === 'win32') process.exit(0);

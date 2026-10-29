@@ -28,7 +28,7 @@ import {DEFAULT_LOCAL_SERVER, DEFAULT_RELAY_PORT, UsageError, controllerCredenti
 import type {Selection} from './context.js';
 import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
-import {acceptInvitation, accountToken, accountTokenFor, requireAccountApi, declineInvitation, isOnlineKey, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
+import {acceptInvitation, accountToken, accountTokenFor, createTokenFor, requireAccountApi, declineInvitation, isOnlineKey, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
 import type {ReceivedInvitation} from './online.js';
 import {receiverAttempts, receiverConfiguration, receiverStatus, refreshReceivers, retryProviderNow, runReceiver, startReceiver, stopReceiver, waitAndRefreshReceiver, wakeOfflineReceivers} from './receiver.js';
 import type {ReceiverStartOptions, ReceiverStatus} from './receiver.js';
@@ -50,6 +50,7 @@ import {runSettingsMenu} from './settings-menu.js';
 import {checkForInteractiveUpdate, checkForUpdate, installRelease, managedInstall, parseUpdateChoice, runBackgroundUpdate, scheduleBackgroundCheck, shouldOfferUpdate, updateNotice, writeUpdateState} from './updater.js';
 import type {LatestRelease, UpdateCheck, UpdateChoice} from './updater.js';
 import {findRooms, formatFoundRooms} from './find.js';
+import {doctorCommand, requireRelayFeature} from './doctor.js';
 import {attachmentLabel, attachmentText, expandPath, filesReport, findRoomFile, saveFile, uploadFiles} from './files.js';
 import {runPermissionCommand} from './permissions.js';
 import {applyPresetChanges, presetChanges, runPresetCommand, runPresetLibraryCommand} from './presets.js';
@@ -196,6 +197,7 @@ const HELP = `pairlobby
   pairlobby setup --show|--use <name>|--remove <name>|--reset
                                     which endpoint is active; switch; forget one; back to pairlobby.com
   --endpoint <name|url>              one command against another endpoint, without saving it
+  pairlobby doctor [--server <url>]  what the relay says it can do: version, transport, features, limits (--json)
   pairlobby login                    approve this terminal in the browser (--no-browser prints the link)
   pairlobby login --token            paste an account token from the website instead
   pairlobby logout                   revoke this terminal's login and forget it
@@ -556,6 +558,8 @@ async function main(argv: string[]): Promise<number> {
             return closeRoom(store, values);
         case 'serve':
             return serve(store, values);
+        case 'doctor':
+            return doctorCommand(store, resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local'), fallback: endpointRelay(store)}), flag(values, 'json'));
         case 'service':
             return service(values, positionals[1] ?? 'status');
         case 'help':
@@ -774,7 +778,11 @@ function parseExpirySpec(spec: string): number | null {
 async function setLocalJoin(store: LocalStore, values: Values, reference?: string): Promise<number> {
     const room = resolveRoom(store, reference ?? str(values, 'room'));
     const localJoin = !flag(values, 'off');
-    await new PairLobbyClient(room.serverUrl).setLocalJoin(room.roomId, controllerCredential(store, room), localJoin);
+    const client = new PairLobbyClient(room.serverUrl);
+    if (localJoin) {
+        await requireRelayFeature(client, 'local-join', 'joining by name');
+    }
+    await client.setLocalJoin(room.roomId, controllerCredential(store, room), localJoin);
     if (flag(values, 'json')) {
         json({roomId: room.roomId, localJoin});
         return 0;
@@ -1315,7 +1323,10 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
     const identity = identityFrom(store, values, 'agent');
     // A self-hosted relay may ask for its create token; it travels where an account token would,
     // and a login saved for this relay's endpoint is that token.
-    const client = new PairLobbyClient(serverUrl, online ? accountToken(store) : (process.env['PAIRLOBBY_CREATE_TOKEN'] ?? process.env['PAIRLOBBY_ACCOUNT_TOKEN'] ?? accountTokenFor(store, serverUrl)));
+    const client = new PairLobbyClient(serverUrl, online ? accountToken(store) : createTokenFor(store, serverUrl));
+    if (flag(values, 'open-local')) {
+        await requireRelayFeature(client, 'local-join', 'joining by name (--open-local)');
+    }
     const lifetime = settings.defaultRoomLifetimeMs;
     const expiresAt = str(values, 'expiry') !== undefined ? parseExpirySpec(str(values, 'expiry')!) : lifetime === null ? null : Date.now() + lifetime;
     const created = await client.createRoom(

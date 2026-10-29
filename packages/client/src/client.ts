@@ -2,7 +2,7 @@
 //! bodies back into `ProtocolError`, so callers handle one error type whether a
 //! failure came from local validation or from the server.
 
-import {PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, ServerFrame, newCredential, newId} from '@pairlobby/protocol';
+import {MAX_EVENT_WAIT_MS, PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, ServerDescription, ServerFrame, newCredential, newId} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
     Attachment,
@@ -24,6 +24,7 @@ import type {
     NameSource,
     ParticipantRole,
     PermissionChange,
+    LiveTransport,
     ReadEventsResponse,
     RoomEvent,
     RoomFile,
@@ -98,6 +99,9 @@ export class PairLobbyClient {
     private liveBytes = 0;
     private liveRoom: string | null = null;
     private changed = new Set<() => void>();
+    private description: Promise<ServerDescription | null> | null = null;
+    /** Cancels a held read or a poll sleep in progress, so `closeLive` wakes every kind of wait. */
+    private liveWait = new AbortController();
 
     constructor(serverUrl: string, private readonly accountToken?: string, private readonly signal?: AbortSignal) {
         this.serverUrl = serverUrl.replace(/\/+$/, '');
@@ -158,17 +162,49 @@ export class PairLobbyClient {
         }
     }
 
-    /** Older servers and hosted relays do not answer this, which means they have nothing extra to share. */
+    /** Only `pairlobby serve` reports share addresses; other relays describe themselves without them, and older ones not at all. */
     async serverInfo(): Promise<ServerShareInfo> {
-        try {
-            const info = await this.call<Partial<ServerShareInfo>>('GET', '/v1/server', null);
-            return {shareUrls: Array.isArray(info.shareUrls) ? info.shareUrls.filter((url) => typeof url === 'string') : [], reported: true, discoverable: info.discoverable === true};
-        } catch (error) {
+        const info = await this.describe(true);
+        const shareUrls = info?.shareUrls;
+        return {shareUrls: shareUrls ? shareUrls.filter((url) => typeof url === 'string') : [], reported: shareUrls !== undefined, discoverable: info?.discoverable === true};
+    }
+
+    /**
+     * What the relay says about itself (`GET /v1/server`), asked once per client. Null for a relay
+     * that does not describe itself. `strict` lets a connection failure through instead of
+     * remembering it as "no description", for callers that report reachability.
+     */
+    async describe(strict = false): Promise<ServerDescription | null> {
+        this.description ??= this.call<unknown>('GET', '/v1/server', null).then((raw) => {
+            const parsed = ServerDescription.safeParse(raw);
+            return parsed.success ? parsed.data : null;
+        }, (error: unknown) => {
+            this.description = null;
             if (error instanceof ProtocolError && error.code === 'invalid_request') {
-                return {shareUrls: [], reported: false, discoverable: false};
+                return null;
             }
             throw error;
+        });
+        try {
+            return await this.description;
+        } catch (error) {
+            if (strict) {
+                throw error;
+            }
+            return null;
         }
+    }
+
+    /**
+     * How this client hears about new events: what the relay describes, or for a relay that does
+     * not say, a socket on hosted rooms (under `/relay/`) and polling everywhere else.
+     */
+    async liveTransport(): Promise<LiveTransport> {
+        const live = (await this.describe())?.transport?.live;
+        if (live === 'poll' || live === 'long-poll' || live === 'websocket') {
+            return live;
+        }
+        return new URL(this.serverUrl).pathname.startsWith('/relay/') ? 'websocket' : 'poll';
     }
 
     /** Joins a room this client's account is allowed into; needs the account token and a server with account login. */
@@ -488,10 +524,27 @@ export class PairLobbyClient {
         await this.call('DELETE', `/v1/rooms/${roomId}`, credential);
     }
 
-    /** Hosted reads sleep on socket notifications; local relays retain polling. */
+    /**
+     * Returns when something newer than `after` may be in the room, or at `timeoutMs`. Uses the relay's
+     * transport: a socket, a held read, or a sleep of `localIntervalMs` before the caller reads again.
+     */
     async waitForChange(roomId: string, credential: string, after: number, timeoutMs: number, localIntervalMs = 1000): Promise<void> {
-        if (!new URL(this.serverUrl).pathname.startsWith('/relay/')) {
-            await new Promise((resolve) => setTimeout(resolve, Math.min(timeoutMs, localIntervalMs)));
+        const transport = await this.liveTransport();
+        const cancelled = this.liveWait.signal;
+        if (transport === 'long-poll') {
+            const waitMs = Math.min(timeoutMs, MAX_EVENT_WAIT_MS);
+            try {
+                await this.call('GET', `/v1/rooms/${roomId}/events?after=${after}&limit=1&wait=${waitMs}`, credential, undefined, waitMs + 10_000, cancelled);
+            } catch {
+                if (!cancelled.aborted) {
+                    // A relay that is restarting or gone: wait as polling would, and let the caller's next read report it.
+                    await sleep(Math.min(timeoutMs, localIntervalMs), cancelled);
+                }
+            }
+            return;
+        }
+        if (transport === 'poll') {
+            await sleep(Math.min(timeoutMs, localIntervalMs), cancelled);
             return;
         }
         if (this.liveRoom !== roomId) {
@@ -572,6 +625,8 @@ export class PairLobbyClient {
     }
 
     closeLive(): void {
+        this.liveWait.abort();
+        this.liveWait = new AbortController();
         const socket = this.socket;
         this.socket = null;
         this.liveRoom = null;
@@ -582,7 +637,7 @@ export class PairLobbyClient {
         for (const wake of this.changed) wake();
     }
 
-    private async call<T>(method: string, path: string, credential: string | null, body?: unknown): Promise<T> {
+    private async call<T>(method: string, path: string, credential: string | null, body?: unknown, timeoutMs?: number, cancelled?: AbortSignal): Promise<T> {
         const headers = new Headers({[PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)});
         if (credential) {
             headers.set('authorization', `Bearer ${credential}`);
@@ -600,7 +655,7 @@ export class PairLobbyClient {
                 method,
                 headers,
                 redirect: 'error',
-                signal: this.signal ? AbortSignal.any([this.signal, AbortSignal.timeout(path.endsWith('/export') ? 60_000 : 15_000)]) : AbortSignal.timeout(path.endsWith('/export') ? 60_000 : 15_000),
+                signal: AbortSignal.any([...(this.signal ? [this.signal] : []), ...(cancelled ? [cancelled] : []), AbortSignal.timeout(timeoutMs ?? (path.endsWith('/export') ? 60_000 : 15_000))]),
                 ...(body === undefined ? {} : {body: JSON.stringify(body)})
             });
         } catch (error) {
@@ -630,6 +685,23 @@ function toProtocolError(status: number, text: string): ProtocolError {
         // Fall through to a generic error rather than surfacing a parse failure.
     }
     return new ProtocolError(status >= 500 ? 'server_unavailable' : 'invalid_request', `the server returned ${status}`);
+}
+
+/** Resolves after `ms`, or as soon as `cancelled` aborts. */
+function sleep(ms: number, cancelled: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+        if (cancelled.aborted) {
+            resolve();
+            return;
+        }
+        const timer = setTimeout(done, ms);
+        function done(): void {
+            clearTimeout(timer);
+            cancelled.removeEventListener('abort', done);
+            resolve();
+        }
+        cancelled.addEventListener('abort', done, {once: true});
+    });
 }
 
 function isEventFrame(value: unknown): boolean {

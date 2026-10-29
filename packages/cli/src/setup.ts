@@ -54,7 +54,7 @@ export async function probeEndpoint(origin: string): Promise<ProbeResult> {
     }
     const server = await get(`${origin}/v1/server`);
     const info = server?.ok ? await body(server) : null;
-    if (info && ('shareUrls' in info || 'version' in info)) {
+    if (info && ('protocol' in info || 'shareUrls' in info || 'version' in info)) {
         return {kind: 'relay', name: new URL(origin).host, loginMode: 'none', relayOrigins: [origin]};
     }
     const account = await get(`${origin}/api/online/account`);

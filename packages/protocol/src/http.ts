@@ -140,11 +140,53 @@ export const CreateInviteRequest = z.object({
 export const CreateInviteResponse = z.object({code: z.string(), expiresAt: z.number().int().nonnegative().nullable(), reusable: z.boolean()});
 export type CreateInviteResponse = z.infer<typeof CreateInviteResponse>;
 
+/** The longest a relay holds `GET /v1/rooms/:roomId/events?wait=`, kept under the idle timeouts of common proxies and load balancers. */
+export const MAX_EVENT_WAIT_MS = 25_000;
+
 export const ReadEventsQuery = z.object({
     after: z.coerce.number().int().nonnegative().default(0),
-    limit: z.coerce.number().int().min(1).max(500).default(200)
+    limit: z.coerce.number().int().min(1).max(500).default(200),
+    /** Milliseconds to hold the request open when nothing is newer than `after`; only a relay describing `long-poll` honours it. */
+    wait: z.coerce.number().int().nonnegative().default(0)
 });
 export type ReadEventsQuery = z.infer<typeof ReadEventsQuery>;
+
+/** How a client hears about new events: read again every so often, hold a read open, or keep a socket. */
+export const LIVE_TRANSPORTS = ['poll', 'long-poll', 'websocket'] as const;
+export type LiveTransport = (typeof LIVE_TRANSPORTS)[number];
+
+/**
+ * Names a relay lists in `features`. A client checks for one before relying on it;
+ * a relay that does not describe itself is assumed to have whatever was usual before descriptions existed.
+ */
+export const RELAY_FEATURES = ['message-stages', 'files', 'local-join', 'invite-probe', 'create-token', 'token-login'] as const;
+export type RelayFeature = (typeof RELAY_FEATURES)[number];
+
+export const RelayLimits = z.object({
+    maxParticipants: z.number().int().nonnegative(),
+    maxEventPayloadBytes: z.number().int().nonnegative(),
+    maxRetainedEvents: z.number().int().nonnegative(),
+    maxRetainedEventBytes: z.number().int().nonnegative(),
+    maxFileBytes: z.number().int().nonnegative(),
+    maxRetainedFileBytes: z.number().int().nonnegative()
+}).partial();
+export type RelayLimits = z.infer<typeof RelayLimits>;
+
+/**
+ * `GET /v1/server`: what a relay is and can do. Every field is optional so an older or
+ * smaller relay can say less; `transport` and `features` use open strings so a newer
+ * relay's values do not make the whole description unreadable.
+ */
+export const ServerDescription = z.object({
+    protocol: z.number().int().positive().optional(),
+    version: z.string().max(64).optional(),
+    shareUrls: z.array(z.string()).optional(),
+    discoverable: z.boolean().optional(),
+    features: z.array(z.string().max(64)).max(64).optional(),
+    transport: z.object({live: z.string().max(32), maxWaitMs: z.number().int().positive().optional()}).optional(),
+    limits: RelayLimits.optional()
+});
+export type ServerDescription = z.infer<typeof ServerDescription>;
 
 export const ReadEventsResponse = z.object({
     events: z.array(RoomEvent),

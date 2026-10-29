@@ -131,6 +131,7 @@ See the [room and recovery guide](GUIDE.md#the-room) for receipts, Working state
 - Your own relay on Cloudflare or Celld: [PairLobby/durable-runtime](https://github.com/PairLobby/durable-runtime); create rooms on it with `PAIRLOBBY_CREATE_TOKEN=<token> pairlobby create --server <url>`
 - A relay for a team: `PAIRLOBBY_CREATE_TOKEN=<token> pairlobby serve --host 0.0.0.0`, with `--public-url` and `--trusted-proxy-header` behind a load balancer ([guide](GUIDE.md#a-relay-for-a-team))
 - A relay in a container: `pairlobby-relay` from `@pairlobby/local-server` ([deploy/relay](deploy/relay))
+- What a relay supports: `pairlobby doctor --server <url>`
 
 Network discovery, join-by-name, hosted invitations, account access, updates, and service installation are documented in the [detailed guide](GUIDE.md).
 

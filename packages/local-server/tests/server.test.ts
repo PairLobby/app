@@ -201,7 +201,7 @@ describe('local server shared with other devices', () => {
     test('test_a_loopback_server_has_nothing_to_share', async () => {
         const response = await call('/v1/server');
         expect(response.status).toBe(200);
-        expect(await response.json()).toEqual({shareUrls: [], discoverable: false});
+        expect(await response.json()).toMatchObject({shareUrls: [], discoverable: false});
         expect(server.shareUrls).toEqual([]);
     });
 
@@ -227,7 +227,7 @@ describe('local server shared with other devices', () => {
             const expected = networkAddresses().map((address) => `http://${address}:${lan.port}`);
             expect(lan.shareUrls).toEqual(expected);
             // Not on the default port and not announced over mDNS, so a bare code cannot find it.
-            expect(await (await fetch(`${lan.url}/v1/server`)).json()).toEqual({shareUrls: expected, discoverable: false});
+            expect(await (await fetch(`${lan.url}/v1/server`)).json()).toMatchObject({shareUrls: expected, discoverable: false});
         } finally {
             await lan.close();
         }
@@ -602,5 +602,53 @@ describe('local server backups', () => {
         const kept = await startServer({port: 0, dataFile, backup: {target}});
         await kept.close();
         expect(kept.restore).toEqual({outcome: 'kept-local-data'});
+    });
+});
+
+type ReadPage = {events: {seq: number; type: string}[]; latestSeq: number};
+
+type Described = {features: string[]; limits: {maxParticipants: number}};
+
+describe('relay description and long-poll', () => {
+    test('test_the_relay_describes_its_transport_features_and_limits', async () => {
+        const described = (await (await call('/v1/server')).json()) as Described;
+        expect(described).toMatchObject({protocol: 1, transport: {live: 'long-poll', maxWaitMs: 25_000}, limits: {maxParticipants: 16, maxFileBytes: 95 * 1024 * 1024}});
+        expect(described.features).toEqual(expect.arrayContaining(['message-stages', 'files', 'local-join', 'invite-probe']));
+        expect(described.features).not.toContain('create-token');
+
+        const guarded = await startServer({port: 0, dataFile: join(directory, 'described.sqlite'), createToken: 'team-secret', roomLimits: {maxParticipants: 4}});
+        try {
+            const strict = (await (await fetch(`${guarded.url}/v1/server`)).json()) as Described;
+            expect(strict.features).toContain('create-token');
+            expect(strict.limits.maxParticipants).toBe(4);
+        } finally {
+            await guarded.close();
+        }
+    });
+
+    test('test_a_waiting_read_answers_when_a_message_arrives', async () => {
+        const room = await createRoom();
+        const latest = ((await (await call(`/v1/rooms/${room.roomId}/events`, {credential: room.participantCredential})).json()) as ReadPage).latestSeq;
+        const started = Date.now();
+        const waiting = call(`/v1/rooms/${room.roomId}/events?after=${latest}&wait=20000`, {credential: room.participantCredential});
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const sent = await call(`/v1/rooms/${room.roomId}/events`, {method: 'POST', credential: room.participantCredential, body: JSON.stringify({type: 'message', payload: {text: 'wake up', priority: 'normal'}, idempotencyKey: newId('event')})});
+        expect(sent.status).toBe(201);
+        const page = (await (await waiting).json()) as ReadPage;
+        expect(page.events.map((event) => event.type)).toContain('message');
+        expect(Date.now() - started).toBeLessThan(5000);
+    });
+
+    test('test_a_waiting_read_answers_empty_at_its_deadline_and_never_waits_for_a_stranger', async () => {
+        const room = await createRoom();
+        const latest = ((await (await call(`/v1/rooms/${room.roomId}/events`, {credential: room.participantCredential})).json()) as ReadPage).latestSeq;
+        const started = Date.now();
+        const page = (await (await call(`/v1/rooms/${room.roomId}/events?after=${latest}&wait=300`, {credential: room.participantCredential})).json()) as ReadPage;
+        expect(page.events).toEqual([]);
+        expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+
+        // The credential is checked before anything waits.
+        const refused = await call(`/v1/rooms/${room.roomId}/events?after=${latest}&wait=20000`, {credential: newCredential('participant')});
+        expect(refused.status).toBe(401);
     });
 });
