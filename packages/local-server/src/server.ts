@@ -10,7 +10,7 @@ import {dirname} from 'node:path';
 import {ChangeNotifier, NotifyingStore, RoomService, createAdmission, createRelay, memoryRateLimiter, queueExecutor, timerScheduler} from '@pairlobby/server-core';
 import type {AdmissionLimits, DiscoveryDocument, Relay, RequestContext} from '@pairlobby/server-core';
 import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_ROOM_POLICY} from '@pairlobby/protocol';
-import type {RoomPolicy} from '@pairlobby/protocol';
+import type {ReceiptMode, RoomPolicy} from '@pairlobby/protocol';
 
 import {advertiseRelay, isLocalNetworkAddress, isLoopbackAddress, isTailscaleAddress} from './network.js';
 import {REQUEST_ID_HEADER, requestIdFor, requestLogLine, shouldLog} from './request-log.js';
@@ -55,6 +55,8 @@ export interface ServeOptions {
      * `createToken`) the team token check `GET /api/online/account`. Absent serves neither.
      */
     discovery?: RelayDiscovery;
+    /** How plain receipts are kept: `both` (default) until every client in use reads watermarks, then `watermark`. */
+    receiptMode?: ReceiptMode;
     /** One JSON line per request for a log collector; absent logs nothing. */
     requestLog?: RequestLogOptions;
     /** Copies the database while it runs and once more on close; on a disk with no database, the newest copy is restored first unless `restore` is false. */
@@ -116,7 +118,7 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
     const store = new SqliteRoomStore(options.dataFile);
     // Every write goes through this one process, so it can wake the reads waiting on a room.
     const changes = new ChangeNotifier();
-    const service = new RoomService(new NotifyingStore(store, changes), undefined, undefined, {...DEFAULT_ROOM_POLICY, ...options.roomLimits});
+    const service = new RoomService(new NotifyingStore(store, changes), undefined, undefined, {...DEFAULT_ROOM_POLICY, ...options.roomLimits}, options.receiptMode ? {receiptMode: options.receiptMode} : {});
 
     // Loopback is not authentication: a page in the user's browser can reach it too.
     // Host is pinned to defeat DNS rebinding, and an unexpected Origin is refused.

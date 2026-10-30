@@ -65,3 +65,33 @@ test('receipt monitor backfills pages, receives while paused/muted, retries, and
         rmSync(directory, {recursive: true, force: true});
     }
 }, 20_000);
+
+test('test_on_a_watermark_relay_the_monitor_posts_one_watermark_instead_of_a_receipt_per_message', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'pairlobby-receipt-watermark-'));
+    const relay = await startServer({port: 0, dataFile: join(directory, 'relay.sqlite'), receiptMode: 'watermark'});
+    const api = new PairLobbyClient(relay.url);
+    const room = await api.createRoom('watermarks', {displayName: 'owner', kind: 'human'});
+    const agent = await api.redeemInvite(room.invite.code, {displayName: 'reader', kind: 'agent'});
+    let monitor: ReceiptMonitor | undefined;
+    try {
+        let last = 0;
+        for (let index = 0; index < 205; index++) {
+            last = (await api.send(room.roomId, room.participantCredential, {type: 'message', payload: {text: `notice ${index}`, priority: 'normal'}, idempotencyKey: newId('event')})).event.seq;
+        }
+        const asked = await api.send(room.roomId, room.participantCredential, {type: 'message', recipientId: agent.participantId, payload: {text: 'please look', priority: 'normal'}, idempotencyKey: newId('event')});
+        monitor = startReceiptMonitor({serverUrl: relay.url, roomId: room.roomId, participantId: agent.participantId, credential: agent.participantCredential, cursorPath: join(directory, 'cursor.json'), onError: () => {}});
+        await vi.waitFor(async () => {
+            const page = await api.readEvents(room.roomId, room.participantCredential, 0, 500, {receiptsAfter: 0});
+            expect(page.receipts?.find((mark) => mark.participantId === agent.participantId)?.throughSeq).toBe(asked.event.seq);
+        }, {timeout: 10_000});
+        const page = await api.readEvents(room.roomId, room.participantCredential, 0, 500);
+        expect(page.events.filter((event) => event.type === 'message.received')).toEqual([]);
+        expect(page.latestSeq).toBe(asked.event.seq);
+        expect(asked.event.seq).toBeGreaterThan(last);
+        expect((await api.request(room.roomId, room.participantCredential, asked.event.eventId)).receivedAt).not.toBeNull();
+    } finally {
+        await monitor?.stop();
+        await relay.close();
+        rmSync(directory, {recursive: true, force: true});
+    }
+}, 20_000);

@@ -31,6 +31,12 @@ const LIMIT_LABELS: [keyof RelayLimits, string, boolean][] = [
     ['maxRetainedFileBytes', 'files kept', true]
 ];
 
+const RECEIPT_MODE_LABELS = {
+    events: 'an event per message and reader',
+    both: 'an event per message and reader, and a watermark per participant',
+    watermark: 'a watermark per participant, no events'
+};
+
 /** Refuses up front what the relay says it cannot do. A relay that does not describe itself is given the benefit of the doubt. */
 export async function requireRelayFeature(client: PairLobbyClient, feature: RelayFeature, what: string): Promise<void> {
     const features = (await client.describe())?.features;
@@ -74,6 +80,9 @@ export async function doctorCommand(store: LocalStore, relay: string, asJson: bo
         const transport = described.transport;
         out(`Transport       ${transport ? `${transport.live}${transport.maxWaitMs ? ` (holds reads up to ${transport.maxWaitMs / 1000} s)` : ''}` : 'not reported'}`);
         out(`Features        ${described.features?.length ? described.features.join(', ') : 'none reported'}`);
+        if (described.receiptMode) {
+            out(`Receipts        ${RECEIPT_MODE_LABELS[described.receiptMode]}`);
+        }
         if (described.limits) {
             out(`New rooms       ${limitsLine(described.limits)}`);
         }

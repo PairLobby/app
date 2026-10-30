@@ -16,6 +16,7 @@ import {
     MAX_EVENT_WAIT_MS,
     ProtocolError,
     ReadEventsQuery,
+    ReceiptRequest,
     RedeemInviteRequest,
     JoinAsGuestRequest,
     LocalJoinRequest,
@@ -43,7 +44,7 @@ import {
     SetExpiryRequest,
     ControlRequest
 } from '@pairlobby/protocol';
-import type {ErrorCode, LiveTransport, LocalRoom, ProviderWait, RelayLimits, ServerDescription} from '@pairlobby/protocol';
+import type {ErrorCode, LiveTransport, LocalRoom, ProviderWait, ReceiptMode, RelayLimits, ServerDescription} from '@pairlobby/protocol';
 
 import type {Admission} from './admission.js';
 import type {ChangeNotifier} from './changes.js';
@@ -328,25 +329,27 @@ export function describe(options: RelayOptions): ServerDescription {
         ...(options.inviteProbe ? ['invite-probe'] : []),
         ...(options.admission?.createTokenRequired ? ['create-token'] : []),
         ...(options.accountCheck && options.admission ? ['token-login'] : []),
+        ...(profile.receiptMode !== 'events' ? ['receipt-watermark'] : []),
         ...(options.features ?? [])
     ];
     const transport = options.transport ?? (options.changes ? 'long-poll' : undefined);
-    return describeRelay({limits: profile.limits, features, ...(transport ? {transport} : {}), ...(options.serverInfo ? {info: options.serverInfo()} : {})});
+    return describeRelay({limits: profile.limits, features, receiptMode: profile.receiptMode, ...(transport ? {transport} : {}), ...(options.serverInfo ? {info: options.serverInfo()} : {})});
 }
 
-export type RelayDescriptionInput = {limits: RelayLimits; features: string[]; transport?: LiveTransport; info?: ServerInfo};
+export type RelayDescriptionInput = {limits: RelayLimits; features: string[]; transport?: LiveTransport; receiptMode?: ReceiptMode; info?: ServerInfo};
 
 /**
  * `GET /v1/server` for any relay, including one that answers it outside this router, such as
  * a Worker in front of Durable Objects. Every relay speaking this protocol has message stages.
  */
-export function describeRelay({limits, features, transport, info}: RelayDescriptionInput): ServerDescription {
+export function describeRelay({limits, features, transport, receiptMode, info}: RelayDescriptionInput): ServerDescription {
     return {
         protocol: PROTOCOL_VERSION,
         ...info,
         features: [...new Set(['message-stages', ...features])],
         ...(transport ? {transport: {live: transport, ...(transport === 'long-poll' ? {maxWaitMs: MAX_EVENT_WAIT_MS} : {})}} : {}),
-        limits
+        limits,
+        ...(receiptMode ? {receiptMode} : {})
     };
 }
 
@@ -355,14 +358,14 @@ export function describeRelay({limits, features, transport, info}: RelayDescript
  * answered as soon as anything is newer than `after`, at the deadline, or on any other change
  * to the room, so the client rereads whatever else it watches.
  */
-async function readWaiting(service: RoomService, changes: ChangeNotifier, roomId: string, credential: string, after: number, limit: number, waitMs: number): Promise<Response> {
-    const waiting = changes.wait(roomId, Math.min(waitMs, MAX_EVENT_WAIT_MS));
+async function readWaiting(service: RoomService, changes: ChangeNotifier, roomId: string, credential: string, query: ReadEventsQuery): Promise<Response> {
+    const waiting = changes.wait(roomId, Math.min(query.wait, MAX_EVENT_WAIT_MS));
     try {
-        const page = await service.read(roomId, credential, after, limit);
-        if (page.events.length > 0 || !waiting || !(await waiting.changed)) {
+        const page = await service.read(roomId, credential, query.after, query.limit, query.receiptsAfter);
+        if (page.events.length > 0 || (page.receipts?.length ?? 0) > 0 || !waiting || !(await waiting.changed)) {
             return json(page);
         }
-        return json(await service.read(roomId, credential, after, limit));
+        return json(await service.read(roomId, credential, query.after, query.limit, query.receiptsAfter));
     } finally {
         waiting?.cancel();
     }
@@ -498,10 +501,12 @@ async function roomRoute(request: Request, roomId: string, context: RequestConte
         case 'GET events': {
             const query = ReadEventsQuery.parse(Object.fromEntries(new URL(request.url).searchParams));
             if (changes && query.wait > 0) {
-                return readWaiting(service, changes, roomId, credential, query.after, query.limit, query.wait);
+                return readWaiting(service, changes, roomId, credential, query);
             }
-            return json(await service.read(roomId, credential, query.after, query.limit));
+            return json(await service.read(roomId, credential, query.after, query.limit, query.receiptsAfter));
         }
+        case 'POST receipts':
+            return json(await service.receipt(roomId, credential, ReceiptRequest.parse(await request.json()).throughSeq));
         case 'POST events': {
             const input = SendEventRequest.parse(await request.json());
             const result = await service.send(roomId, credential, input);

@@ -3,7 +3,7 @@ import {createInterface} from 'node:readline';
 import type {Interface, Key} from 'node:readline';
 import {PassThrough, Writable} from 'node:stream';
 import {stripVTControlCharacters} from 'node:util';
-import type {MessageRequest, RoomEvent, TurnQueue} from '@pairlobby/protocol';
+import type {MessageRequest, ReceiptUpdate, RoomEvent, TurnQueue} from '@pairlobby/protocol';
 import {ReceiptView} from './receipt-view.js';
 import {WorkingStrip} from './working-strip.js';
 import {ReplyComposer, messageTarget, quotePreview} from './reply-composer.js';
@@ -400,6 +400,15 @@ export class ChatTerminal {
                 this.rememberEntry({text: this.options.format(event), event});
             }
         }
+        this.rebuild();
+    }
+
+    /** Receipt watermarks, from a relay that keeps plain receipts as one number per participant. */
+    addReceipts(updates: ReceiptUpdate[]): void {
+        if (updates.length === 0) {
+            return;
+        }
+        this.receipts.observeReceipts(updates);
         this.rebuild();
     }
 

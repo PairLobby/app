@@ -26,6 +26,7 @@ import type {
     PermissionChange,
     LiveTransport,
     ReadEventsResponse,
+    ReceiptResponse,
     RoomEvent,
     RoomFile,
     RoomSnapshot,
@@ -41,6 +42,7 @@ type InviteAttempt = {attemptId: string; participantCredential: string};
 
 type OperationResult = {ok: boolean};
 export type MessageStatusOptions = {reason?: string; turnToken?: string; responseEventId?: string};
+export type ReadEventsOptions = {receiptsAfter?: number};
 
 type HandoverRevisionResult = {revision: number; event: RoomEvent};
 
@@ -307,7 +309,11 @@ export class PairLobbyClient {
         return this.call('PUT', `/v1/rooms/${roomId}/allowed-accounts`, credential, {private: true, accounts});
     }
 
-    readEvents(roomId: string, credential: string, after: number, limit = 200): Promise<ReadEventsResponse> {
+    /** With `receiptsAfter`, also the receipt watermarks that moved since that revision, which only the relay itself has. */
+    readEvents(roomId: string, credential: string, after: number, limit = 200, options: ReadEventsOptions = {}): Promise<ReadEventsResponse> {
+        if (options.receiptsAfter !== undefined) {
+            return this.call('GET', `/v1/rooms/${roomId}/events?after=${after}&limit=${limit}&receiptsAfter=${options.receiptsAfter}`, credential);
+        }
         if (this.liveRoom === roomId && this.socket?.readyState === WebSocket.OPEN) {
             const events = this.liveEvents.filter((event) => event.seq > after).slice(0, limit);
             if (events[0]?.seq === after + 1 || after === this.watermark) {
@@ -369,6 +375,10 @@ export class PairLobbyClient {
     }
     resolveRequest(roomId: string, credential: string, eventId: string, action: 'dismiss' | 'cancel', reason?: string): Promise<RequestResolutionResult> {
         return this.call('POST', `/v1/rooms/${roomId}/requests/${eventId}/resolve`, credential, {action, ...(reason ? {reason} : {})});
+    }
+    /** This participant has received every event up to `throughSeq`; only on a relay listing `receipt-watermark`. */
+    postReceipt(roomId: string, credential: string, throughSeq: number): Promise<ReceiptResponse> {
+        return this.call('POST', `/v1/rooms/${roomId}/receipts`, credential, {throughSeq});
     }
     async acknowledgeMessage(roomId: string, credential: string, eventId: string): Promise<void> {
         await this.call('POST', `/v1/rooms/${roomId}/requests/${eventId}/ack`, credential, {});

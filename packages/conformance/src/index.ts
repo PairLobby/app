@@ -210,6 +210,40 @@ export const CHECKS: Check[] = [
         }
     },
     {
+        id: 'receipt-watermark',
+        title: 'a watermark marks requests received, reads return it, and in watermark mode it adds no event',
+        async run(context) {
+            needFeature(context, 'receipt-watermark');
+            const {owner, roomId, ownerCredential, controllerCredential, guest, guestClient} = await pair(context);
+            const first = await message(owner, roomId, ownerCredential, guest.participantId, 'First');
+            const second = await message(owner, roomId, ownerCredential, guest.participantId, 'Second');
+            const secondSeq = (await owner.readEvents(roomId, ownerCredential, 0)).events.find((event) => event.eventId === second)!.seq;
+            const before = (await owner.readEvents(roomId, ownerCredential, 0, 200, {receiptsAfter: 0})).latestSeq;
+            const moved = await guestClient.postReceipt(roomId, guest.participantCredential, secondSeq);
+            if (moved.throughSeq !== secondSeq) {
+                fail(`the watermark stopped at ${moved.throughSeq}, not ${secondSeq}`);
+            }
+            const backwards = await guestClient.postReceipt(roomId, guest.participantCredential, 1);
+            if (backwards.throughSeq !== secondSeq) {
+                fail('a lower watermark moved it back');
+            }
+            for (const eventId of [first, second]) {
+                if ((await owner.request(roomId, ownerCredential, eventId)).receivedAt === null) {
+                    fail('a request at or before the watermark is not marked received');
+                }
+            }
+            const page = await owner.readEvents(roomId, ownerCredential, 0, 200, {receiptsAfter: 0});
+            if (!page.receipts?.some((mark) => mark.participantId === guest.participantId && mark.throughSeq === secondSeq)) {
+                fail('a read asking for receipts did not return the watermark');
+            }
+            if (context.description?.receiptMode === 'watermark' && page.latestSeq !== before) {
+                fail(`a watermark added ${page.latestSeq - before} event(s)`);
+            }
+            await owner.delete(roomId, controllerCredential);
+            return context.description?.receiptMode ? `mode ${context.description.receiptMode}` : undefined;
+        }
+    },
+    {
         id: 'long-poll',
         title: 'a waiting read answers when a message arrives, and empty at its deadline',
         async run(context) {

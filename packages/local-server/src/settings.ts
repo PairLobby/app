@@ -5,8 +5,8 @@
 
 import {readFileSync, statSync} from 'node:fs';
 
-import {ABSOLUTE_MAX_FILE_BYTES} from '@pairlobby/protocol';
-import type {RoomPolicy} from '@pairlobby/protocol';
+import {ABSOLUTE_MAX_FILE_BYTES, RECEIPT_MODES} from '@pairlobby/protocol';
+import type {ReceiptMode, RoomPolicy} from '@pairlobby/protocol';
 import type {AdmissionLimits} from '@pairlobby/server-core';
 
 import type {RequestLogMode} from './request-log.js';
@@ -35,6 +35,8 @@ export type RelaySettings = {
     /** Caps every new room gets; unset ones keep the built-in defaults. */
     roomLimits: Partial<RoomLimits>;
     requestLog?: RequestLogMode;
+    /** How plain receipts are kept; unset keeps the relay's default, `both`. */
+    receiptMode?: ReceiptMode;
     backup?: RelayBackupSettings;
     /** What `GET /.well-known/pairlobby.json` says, and whether the relay offers token-mode login. */
     discovery: RelayDiscovery;
@@ -78,7 +80,7 @@ const LIMIT_VARIABLES: Record<keyof AdmissionLimits, string> = {
 const DISCOVERY_VARIABLES = ['PAIRLOBBY_DISCOVERY_NAME', 'PAIRLOBBY_LOGIN_MODE', 'PAIRLOBBY_LOGIN_HELP', 'PAIRLOBBY_SUPPORT_URL'];
 
 /** Every variable `serve` reads, for help text and documentation. */
-export const RELAY_VARIABLES = ['PAIRLOBBY_HOST', 'PAIRLOBBY_PORT', 'PAIRLOBBY_DATA_DIR', 'PAIRLOBBY_PUBLIC_URL', 'PAIRLOBBY_TRUSTED_PROXY_HEADER', 'PAIRLOBBY_ALLOWED_HOSTS', 'PAIRLOBBY_CREATE_TOKEN', 'PAIRLOBBY_CREATE_TOKEN_FILE', 'PAIRLOBBY_REQUEST_LOG', 'PAIRLOBBY_BACKUP', 'PAIRLOBBY_BACKUP_INTERVAL', 'PAIRLOBBY_BACKUP_KEEP', 'PAIRLOBBY_BACKUP_S3_ENDPOINT', 'PAIRLOBBY_NO_RESTORE', ...DISCOVERY_VARIABLES, ...Object.values(LIMIT_VARIABLES), ...ROOM_LIMIT_VARIABLES.map(({variable}) => variable)];
+export const RELAY_VARIABLES = ['PAIRLOBBY_HOST', 'PAIRLOBBY_PORT', 'PAIRLOBBY_DATA_DIR', 'PAIRLOBBY_PUBLIC_URL', 'PAIRLOBBY_TRUSTED_PROXY_HEADER', 'PAIRLOBBY_ALLOWED_HOSTS', 'PAIRLOBBY_CREATE_TOKEN', 'PAIRLOBBY_CREATE_TOKEN_FILE', 'PAIRLOBBY_REQUEST_LOG', 'PAIRLOBBY_RECEIPT_MODE', 'PAIRLOBBY_BACKUP', 'PAIRLOBBY_BACKUP_INTERVAL', 'PAIRLOBBY_BACKUP_KEEP', 'PAIRLOBBY_BACKUP_S3_ENDPOINT', 'PAIRLOBBY_NO_RESTORE', ...DISCOVERY_VARIABLES, ...Object.values(LIMIT_VARIABLES), ...ROOM_LIMIT_VARIABLES.map(({variable}) => variable)];
 
 function described({flag, variable}: Source): string {
     return flag ? `--${flag} (${variable})` : variable;
@@ -168,6 +170,10 @@ export function relaySettings(flags: RelayFlags, environment: RelayEnvironment):
     if (requestLog !== undefined && !['all', 'writes', 'off'].includes(requestLog)) {
         throw new RelaySettingsError(`${described({flag: 'request-log', variable: 'PAIRLOBBY_REQUEST_LOG'})} must be all, writes or off, not "${requestLog}"`);
     }
+    const receiptMode = environment['PAIRLOBBY_RECEIPT_MODE']?.trim() || undefined;
+    if (receiptMode !== undefined && !(RECEIPT_MODES as readonly string[]).includes(receiptMode)) {
+        throw new RelaySettingsError(`PAIRLOBBY_RECEIPT_MODE must be events, both or watermark, not "${receiptMode}"`);
+    }
     const token = createToken(environment);
     const backup = backupSettings(flags, environment);
     const discovery = discoverySettings(environment, token !== undefined);
@@ -182,6 +188,7 @@ export function relaySettings(flags: RelayFlags, environment: RelayEnvironment):
         limits,
         roomLimits,
         ...(requestLog && requestLog !== 'off' ? {requestLog: requestLog as RequestLogMode} : {}),
+        ...(receiptMode ? {receiptMode: receiptMode as ReceiptMode} : {}),
         ...(backup ? {backup} : {}),
         discovery
     };

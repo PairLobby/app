@@ -80,9 +80,17 @@ export interface RoomStore {
     handovers(roomId: string): Promise<HandoverRecord[]>;
     messageRequest(roomId: string, eventId: string): Promise<MessageRequest | null>;
     groupRequests(roomId: string, conversationId: string): Promise<MessageRequest[]>;
-    /** Renew a lease without appending a transcript event; compare revision atomically. */
+    /**
+     * Writes the room and requests without appending a transcript event, comparing the turn revision
+     * atomically: renewing a lease, or moving a receipt watermark.
+     */
     updateTurns(room: RoomRecord, requests: MessageRequest[], expectedRevision: number): Promise<void>;
     messageRequests(roomId: string, after: number, limit: number, recipientId?: string): Promise<RequestPage>;
+    /**
+     * Requests addressed to `recipientId` that nobody has marked received yet, answered or not, in
+     * `seq` order after `after`. Optional: without it a watermark marks only the requests still awaiting a reply.
+     */
+    readonly unreceivedRequests?: ((roomId: string, recipientId: string, after: number, limit: number) => Promise<RequestPage>) | undefined;
 
     setLifecycle(roomId: string, lifecycle: RoomRecord['lifecycle']): Promise<void>;
     deleteRoom(roomId: string): Promise<void>;

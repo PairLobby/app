@@ -92,6 +92,10 @@ export class NotifyingStore implements RoomStore {
         return this.store.files;
     }
 
+    get unreceivedRequests(): RoomStore['unreceivedRequests'] {
+        return this.store.unreceivedRequests?.bind(this.store);
+    }
+
     async createRoom(room: RoomRecord, participant: ParticipantRecord, event: RoomEvent): Promise<void> {
         await this.store.createRoom(room, participant, event);
         this.notifier.changed(room.roomId);
