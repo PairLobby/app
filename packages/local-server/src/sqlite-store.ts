@@ -312,6 +312,13 @@ export class SqliteRoomStore implements RoomStore {
             .all(roomId, after, recipientId ?? null, recipientId ?? null, limit + 1) as unknown as BodyRow[];
         return {requests: rows.slice(0, limit).map((row) => JSON.parse(row.body) as MessageRequest), hasMore: rows.length > limit};
     }
+    async unreceivedRequests(roomId: string, recipientId: string, after: number, limit: number): Promise<RequestPage> {
+        const rows = this.db
+            .prepare("SELECT body FROM message_requests WHERE room_id=? AND seq>? AND received_at IS NULL AND json_extract(body,'$.to')=? ORDER BY seq LIMIT ?")
+            .all(roomId, after, recipientId, limit + 1) as unknown as BodyRow[];
+        return {requests: rows.slice(0, limit).map((row) => JSON.parse(row.body) as MessageRequest), hasMore: rows.length > limit};
+    }
+
     private writeRequest(request: MessageRequest): void {
         // Keep concurrent receipt/progress writes from erasing an accepted reply.
         const old = this.db.prepare('SELECT body FROM message_requests WHERE event_id=?').get(request.eventId) as BodyRow | undefined;

@@ -147,7 +147,9 @@ export const ReadEventsQuery = z.object({
     after: z.coerce.number().int().nonnegative().default(0),
     limit: z.coerce.number().int().min(1).max(500).default(200),
     /** Milliseconds to hold the request open when nothing is newer than `after`; only a relay describing `long-poll` honours it. */
-    wait: z.coerce.number().int().nonnegative().default(0)
+    wait: z.coerce.number().int().nonnegative().default(0),
+    /** Also return the receipt watermarks that moved after this revision; only a relay describing `receipt-watermark` honours it. */
+    receiptsAfter: z.coerce.number().int().nonnegative().optional()
 });
 export type ReadEventsQuery = z.infer<typeof ReadEventsQuery>;
 
@@ -159,8 +161,28 @@ export type LiveTransport = (typeof LIVE_TRANSPORTS)[number];
  * Names a relay lists in `features`. A client checks for one before relying on it;
  * a relay that does not describe itself is assumed to have whatever was usual before descriptions existed.
  */
-export const RELAY_FEATURES = ['message-stages', 'files', 'local-join', 'invite-probe', 'create-token', 'token-login'] as const;
+export const RELAY_FEATURES = ['message-stages', 'files', 'local-join', 'invite-probe', 'create-token', 'token-login', 'receipt-watermark'] as const;
 export type RelayFeature = (typeof RELAY_FEATURES)[number];
+
+/**
+ * How a relay keeps plain receipts. `events`: one `message.received` event per message and reader, as
+ * before watermarks. `both`: those events, and a watermark per participant beside them, for a team
+ * whose clients are not all updated yet. `watermark`: the watermark alone, and a plain receipt from an
+ * older client moves it without adding an event. Read and action stages stay events in every mode.
+ */
+export const RECEIPT_MODES = ['events', 'both', 'watermark'] as const;
+export type ReceiptMode = (typeof RECEIPT_MODES)[number];
+
+/** `POST /v1/rooms/:id/receipts`: this participant has received every event up to `throughSeq`. */
+export const ReceiptRequest = z.object({throughSeq: z.number().int().nonnegative()});
+export type ReceiptRequest = z.infer<typeof ReceiptRequest>;
+
+/** One participant's watermark as a read returns it. */
+export const ReceiptUpdate = z.object({participantId: z.string(), throughSeq: z.number().int().nonnegative(), revision: z.number().int().min(1), at: z.number().int().nonnegative()});
+export type ReceiptUpdate = z.infer<typeof ReceiptUpdate>;
+
+export const ReceiptResponse = z.object({throughSeq: z.number().int().nonnegative(), receiptRevision: z.number().int().nonnegative()});
+export type ReceiptResponse = z.infer<typeof ReceiptResponse>;
 
 export const RelayLimits = z.object({
     maxParticipants: z.number().int().nonnegative(),
@@ -184,7 +206,8 @@ export const ServerDescription = z.object({
     discoverable: z.boolean().optional(),
     features: z.array(z.string().max(64)).max(64).optional(),
     transport: z.object({live: z.string().max(32), maxWaitMs: z.number().int().positive().optional()}).optional(),
-    limits: RelayLimits.optional()
+    limits: RelayLimits.optional(),
+    receiptMode: z.enum(RECEIPT_MODES).optional()
 });
 export type ServerDescription = z.infer<typeof ServerDescription>;
 
@@ -192,7 +215,10 @@ export const ReadEventsResponse = z.object({
     events: z.array(RoomEvent),
     earliestSeq: z.number().int().nonnegative(),
     latestSeq: z.number().int().nonnegative(),
-    hasMore: z.boolean()
+    hasMore: z.boolean(),
+    /** With `receiptsAfter`: the watermarks that moved since then, and the revision to ask after next time. */
+    receipts: z.array(ReceiptUpdate).optional(),
+    receiptRevision: z.number().int().nonnegative().optional()
 });
 export type ReadEventsResponse = z.infer<typeof ReadEventsResponse>;
 

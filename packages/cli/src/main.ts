@@ -1615,6 +1615,22 @@ async function sendMessage(store: LocalStore, values: Values, text: string): Pro
         const deadline = Date.now() + seconds * 1000;
         let cursor = result.event.seq;
         while (Date.now() < deadline) {
+            if (snapshot?.receiptMode === 'watermark') {
+                // No receipt events here: each recipient's request says it arrived, or has left the pending list by being answered.
+                const pending = await client.pendingRequests(room.roomId, credential);
+                for (const recipient of expected) {
+                    const delivery = pending.find((request) => request.conversationId === result.event.eventId && request.to === recipient);
+                    if (!delivery || delivery.receivedAt !== null) {
+                        received.add(recipient);
+                    }
+                }
+                if (received.size === expected.size) {
+                    acknowledged = true;
+                    break;
+                }
+                await sleep(Math.min(1000, Math.max(0, deadline - Date.now())));
+                continue;
+            }
             const page = await client.readEvents(room.roomId, credential, cursor);
             for (const event of page.events) {
                 if (event.type === 'message.received' && event.payload.eventId === result.event.eventId && event.senderId && expected.has(event.senderId)) {
@@ -1880,10 +1896,15 @@ async function readEvents(store: LocalStore, values: Values): Promise<number> {
     // Persist receipts before advancing the cursor. A failed receipt is retried
     // by the next read; it must never be swallowed as a courtesy failure.
     const member = snapshot.participants.find((participant) => participant.participantId === session.participantId);
+    // On a watermark relay one watermark covers the page; requests owed from before it are still confirmed one by one.
+    const watermarkOnly = snapshot.receiptMode === 'watermark';
     const ids = new Set(member && member.role !== 'guest' ? [
-        ...unreceipted(page.events, session.participantId, snapshot.messageReceiptScope === 'members').map((event) => event.eventId),
+        ...(watermarkOnly ? [] : unreceipted(page.events, session.participantId, snapshot.messageReceiptScope === 'members').map((event) => event.eventId)),
         ...owed.filter((request) => request.receivedAt === null).map((request) => request.eventId)
     ] : []);
+    if (watermarkOnly && member && member.role !== 'guest' && page.events.length > 0) {
+        await client.postReceipt(room.roomId, credential, page.events.at(-1)!.seq);
+    }
     for (const id of ids) await client.acknowledgeMessage(room.roomId, credential, id);
     for (const request of owed)
         if (ids.has(request.eventId)) {
@@ -2040,8 +2061,12 @@ async function watchRoom(store: LocalStore, values: Values): Promise<number> {
             const member = snapshot.participants.find((person) => person.participantId === session.participantId);
             if (member?.kind === 'agent' && member.role !== 'guest' && !member.left && !member.revoked && snapshot.lifecycle === 'open') {
                 try {
-                    for (const event of unreceipted(page.events, session.participantId, snapshot.messageReceiptScope === 'members')) {
-                        await client.acknowledgeMessage(room.roomId, credential, event.eventId);
+                    if (snapshot.receiptMode === 'watermark') {
+                        await client.postReceipt(room.roomId, credential, page.events.at(-1)!.seq);
+                    } else {
+                        for (const event of unreceipted(page.events, session.participantId, snapshot.messageReceiptScope === 'members')) {
+                            await client.acknowledgeMessage(room.roomId, credential, event.eventId);
+                        }
                     }
                 } catch (error) {
                     if (error instanceof ProtocolError && error.code === 'server_unavailable') {
@@ -2631,7 +2656,7 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     const network = relayNetwork(store, values, settings.host !== undefined);
     const host = settings.host ?? (network === 'off' ? '127.0.0.1' : '0.0.0.0');
     const port = settings.port ?? DEFAULT_RELAY_PORT;
-    const {publicUrl, trustedProxyHeader, createToken, allowedHosts, limits, roomLimits, requestLog, discovery} = settings;
+    const {publicUrl, trustedProxyHeader, createToken, allowedHosts, limits, roomLimits, requestLog, receiptMode, discovery} = settings;
     const writeLine = (line: string) => process.stdout.write(`${line}\n`);
     const backup = settings.backup ? {target: backupTarget(settings.backup.location), intervalMs: settings.backup.intervalMs, keep: settings.backup.keep, restore: settings.backup.restore, log: writeLine} : undefined;
     // Tailnet devices may address this one by its MagicDNS names, which are not interface addresses.
@@ -2643,7 +2668,7 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     }
     let running;
     try {
-        running = await startServer({version: VERSION, host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), ...(trustedProxyHeader ? {trustedProxyHeader} : {}), ...(createToken ? {createToken} : {}), allowedHosts, limits, roomLimits, discovery, ...(requestLog ? {requestLog: {mode: requestLog, write: writeLine}} : {}), ...(backup ? {backup} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
+        running = await startServer({version: VERSION, host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), ...(trustedProxyHeader ? {trustedProxyHeader} : {}), ...(createToken ? {createToken} : {}), allowedHosts, limits, roomLimits, discovery, ...(requestLog ? {requestLog: {mode: requestLog, write: writeLine}} : {}), ...(receiptMode ? {receiptMode} : {}), ...(backup ? {backup} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
     } catch (error) {
         // Say what is wrong and what to do, rather than surfacing a raw errno. The
         // occupant is never probed: something else owning the port is not ours to poke.

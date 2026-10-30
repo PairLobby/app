@@ -1,6 +1,6 @@
 import {existsSync, readFileSync, renameSync, writeFileSync} from 'node:fs';
 import {setTimeout as sleep} from 'node:timers/promises';
-import {PairLobbyClient, unreceipted} from '@pairlobby/client';
+import {PairLobbyClient, ReceiptCoalescer, unreceipted} from '@pairlobby/client';
 import {ProtocolError} from '@pairlobby/protocol';
 
 type ReceiptMonitorOptions = {serverUrl: string; roomId: string; participantId: string; credential: string; cursorPath: string; onError: (message: string) => void};
@@ -21,6 +21,8 @@ export function startReceiptMonitor(options: ReceiptMonitorOptions): ReceiptMoni
             options.onError(message);
         }
     };
+    // On a relay that keeps plain receipts only as watermarks: one post every few seconds instead of one per message.
+    const watermark = new ReceiptCoalescer((throughSeq) => client.postReceipt(options.roomId, options.credential, throughSeq), {onError: (error) => report(error instanceof Error ? error.message : 'Message receipts are unavailable')});
     if (existsSync(options.cursorPath)) {
         try {
             const saved = JSON.parse(readFileSync(options.cursorPath, 'utf8')) as {cursor?: unknown};
@@ -43,11 +45,15 @@ export function startReceiptMonitor(options: ReceiptMonitorOptions): ReceiptMoni
                 }
                 const after = Math.max(cursor, snapshot.earliestSeq - 1, 0);
                 const page = await client.readEvents(options.roomId, options.credential, after, 200);
-                for (const event of unreceipted(page.events, options.participantId, snapshot.messageReceiptScope === 'members')) {
-                    if (stopped) {
-                        return;
+                if (snapshot.receiptMode === 'watermark') {
+                    watermark.advance(page.events.at(-1)?.seq ?? 0);
+                } else {
+                    for (const event of unreceipted(page.events, options.participantId, snapshot.messageReceiptScope === 'members')) {
+                        if (stopped) {
+                            return;
+                        }
+                        await client.acknowledgeMessage(options.roomId, options.credential, event.eventId);
                     }
-                    await client.acknowledgeMessage(options.roomId, options.credential, event.eventId);
                 }
                 if (stopped) {
                     return;
@@ -80,7 +86,12 @@ export function startReceiptMonitor(options: ReceiptMonitorOptions): ReceiptMoni
         }
     }
 
-    const done = run().finally(() => client.closeLive());
+    // What was received before stopping is still reported, then nothing more.
+    const done = run().finally(async () => {
+        await watermark.flush().catch(() => {});
+        watermark.stop();
+        client.closeLive();
+    });
     let stopping: Promise<void> | undefined;
     return {
         stop: () => {

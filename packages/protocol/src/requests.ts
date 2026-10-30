@@ -5,6 +5,8 @@ export interface MessageRequest {
     roomId: string;
     eventId: string;
     seq: number;
+    /** The transcript seq of the message itself; `seq` orders requests and can run ahead of it after a group message. */
+    messageSeq?: number;
     from: string;
     to: string;
     text: string;

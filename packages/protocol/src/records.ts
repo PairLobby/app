@@ -32,6 +32,17 @@ export const RoomPolicySchema = z.object({
     connectTicketLifetimeMs: z.number().int().min(1)
 });
 
+/**
+ * How far one participant has received the room: every event up to `throughSeq`. One mark per
+ * participant replaces a plain receipt event per message; `revision` says when it last moved.
+ */
+export const ReceiptMark = z.object({
+    throughSeq: z.number().int().nonnegative(),
+    revision: z.number().int().min(1),
+    at: z.number().int().nonnegative()
+});
+export type ReceiptMark = z.infer<typeof ReceiptMark>;
+
 export const RoomRecord = z.object({
     roomId: RoomId,
     name: z.string().min(1).max(64),
@@ -59,7 +70,11 @@ export const RoomRecord = z.object({
     closeReason: CloseReasonSchema.optional(),
     nextSeq: z.number().int().min(1),
     retainedEventBytes: z.number().int().nonnegative(),
-    retainedEvents: z.number().int().nonnegative()
+    retainedEvents: z.number().int().nonnegative(),
+    /** Receipt watermarks by participant id. Not events, so they never count against the retained limits. */
+    receipts: z.record(z.string(), ReceiptMark).optional(),
+    /** Bumped each time any watermark moves, so a reader asks only for what changed since it last looked. */
+    receiptRevision: z.number().int().nonnegative().optional()
 });
 export type RoomRecord = z.infer<typeof RoomRecord>;
 
@@ -167,6 +182,8 @@ export const RoomSnapshot = z.object({
     roomId: RoomId,
     /** Absent on older relays, which only accept addressed-recipient receipts. */
     messageReceiptScope: z.enum(['recipient', 'members']).optional(),
+    /** How plain receipts are kept here (see `RECEIPT_MODES`). Absent on older relays, which keep them as events. */
+    receiptMode: z.enum(['events', 'both', 'watermark']).optional(),
     messageStagesSupported: z.boolean().optional(),
     /** The relay accepts a new attempt at a failed request and resolves the original when it is answered. */
     requestRecoverySupported: z.boolean().optional(),

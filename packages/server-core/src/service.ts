@@ -1,7 +1,7 @@
 //! Room operations shared by every transport. The Cloudflare Durable Object and
 //! the Node server both run this; only the store and the socket layer differ.
 
-import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_RETAINED_FILE_BYTES, DEFAULT_ROOM_POLICY, ProtocolError, UNATTACHED_FILE_LIFETIME_MS, formatFileSize, hashCredential, newId, newInviteCode, normalizeInviteCode, safeFileName} from '@pairlobby/protocol';
+import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_RETAINED_FILE_BYTES, DEFAULT_ROOM_POLICY, PROTOCOL_VERSION, ProtocolError, UNATTACHED_FILE_LIFETIME_MS, formatFileSize, hashCredential, newId, newInviteCode, normalizeInviteCode, safeFileName} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
     Attachment,
@@ -17,8 +17,13 @@ import type {
     RenameSelfRequest,
     NameSource,
     ParticipantRole,
+    ParticipantRecord,
     ReadEventsResponse,
+    ReceiptMode,
+    ReceiptResponse,
+    ReceiptUpdate,
     RelayLimits,
+    RoomRecord,
     RoomEvent,
     RoomInvitationChange,
     RoomPolicy,
@@ -142,7 +147,36 @@ export type FileDownload = {file: FileRecord; bytes: Uint8Array};
 
 export type Clock = () => number;
 
-export type RelayProfile = {files: boolean; limits: RelayLimits};
+export type RelayProfile = {files: boolean; limits: RelayLimits; receiptMode: ReceiptMode};
+
+export type RoomServiceOptions = {
+    /** How plain receipts are kept (`RECEIPT_MODES`); `both` until every client in use reads watermarks. */
+    receiptMode?: ReceiptMode;
+};
+
+/** Requests a watermark marks received in one write; the rest wait for the next one. */
+const WATERMARK_REQUEST_LIMIT = 2000;
+
+/** A receipt that only says the message arrived: no Read stage, no action. */
+function isPlainReceipt(request: SendEventRequest): boolean {
+    return request.type === 'message.received' && !request.payload.stage && !request.payload.action;
+}
+
+/** The room with this participant's watermark moved up to `throughSeq`, never past the last event; the same room when it would not move. */
+export function withReceipt(room: RoomRecord, participantId: string, throughSeq: number, at: number): RoomRecord {
+    const through = Math.min(throughSeq, room.nextSeq - 1);
+    if (through <= (room.receipts?.[participantId]?.throughSeq ?? 0)) {
+        return room;
+    }
+    const revision = (room.receiptRevision ?? 0) + 1;
+    return {...room, receipts: {...room.receipts, [participantId]: {throughSeq: through, revision, at}}, receiptRevision: revision};
+}
+
+/** The watermarks that moved after `after`, for a read that asked for them. */
+export function receiptsSince(room: RoomRecord, after: number): {receipts: ReceiptUpdate[]; receiptRevision: number} {
+    const receipts = Object.entries(room.receipts ?? {}).filter(([, mark]) => mark.revision > after).map(([participantId, mark]) => ({participantId, ...mark}));
+    return {receipts: receipts.sort((a, b) => a.revision - b.revision), receiptRevision: room.receiptRevision ?? 0};
+}
 
 /** The limits a new room gets under `policy`, as a relay reports them; file limits only where files are kept. */
 export function relayLimits(policy: RoomPolicy, files: boolean): RelayLimits {
@@ -159,6 +193,7 @@ export class RoomService {
     private readonly store: RoomStore;
     private readonly now: Clock;
     readonly turns: TurnCoordinator;
+    readonly receiptMode: ReceiptMode;
 
     /**
      * `roomPolicy` is what a new room gets when the caller names no policy, such as a
@@ -168,9 +203,11 @@ export class RoomService {
         store: RoomStore,
         now: Clock = () => Date.now(),
         private readonly directory?: InviteDirectory,
-        private readonly roomPolicy: RoomPolicy = DEFAULT_ROOM_POLICY
+        private readonly roomPolicy: RoomPolicy = DEFAULT_ROOM_POLICY,
+        options: RoomServiceOptions = {}
     ) {
         this.now = now;
+        this.receiptMode = options.receiptMode ?? 'both';
         this.store = new AutoCloseStore(store, () => this.now());
         this.turns = new TurnCoordinator(this.store, now);
     }
@@ -189,13 +226,13 @@ export class RoomService {
 
     /** What the room looks like, plus what this relay can do that depends on its store rather than on the room. */
     private snapshotOf(view: RoomView): RoomSnapshot {
-        return {...toSnapshot(view), filesSupported: this.store.files !== undefined};
+        return {...toSnapshot(view), filesSupported: this.store.files !== undefined, receiptMode: this.receiptMode};
     }
 
     /** Whether rooms here keep files, and the limits a new room gets: what `GET /v1/server` reports. */
     relayProfile(): RelayProfile {
         const files = this.store.files !== undefined;
-        return {files, limits: relayLimits(this.roomPolicy, files)};
+        return {files, limits: relayLimits(this.roomPolicy, files), receiptMode: this.receiptMode};
     }
 
     private fileStore(): FileStore {
@@ -476,6 +513,13 @@ export class RoomService {
             const target = await this.turns.resolve(roomId, request.payload.eventId, participant.participantId);
             const eventId = target?.conversationId ?? request.payload.eventId;
             request = {...request, payload: {...request.payload, eventId}, ...(!request.payload.action ? {idempotencyKey: `${request.payload.stage === 'read' ? 'read' : 'receipt'}-${eventId}-${participant.participantId}`} : {})};
+            if (this.receiptMode === 'watermark' && isPlainReceipt(request)) {
+                // An older client's plain receipt: kept as the watermark, answered as an event that already existed.
+                assertRoomWritable(view, now);
+                await this.plainReceipt(view, participant, eventId, now);
+                const event = {protocolVersion: PROTOCOL_VERSION, roomId, seq: Math.max(1, view.room.nextSeq - 1), eventId: newId('event'), senderId: participant.participantId, idempotencyKey: request.idempotencyKey, recipientId: null, replyTo: null, at: now, type: 'message.received', payload: request.payload} as RoomEvent;
+                return {event, deduplicated: true};
+            }
         }
         const requestDigest = stableStringify({type: request.type, payload: request.payload, recipientId: request.recipientId ?? null, replyTo: request.replyTo ?? null,
             ...(request.recipientIds ? {recipientIds: request.recipientIds} : {}), ...(request.allRecipients ? {allRecipients: true} : {}), ...(request.quoteOf ? {quoteOf: request.quoteOf} : {})});
@@ -541,6 +585,8 @@ export class RoomService {
         }
         const updates: MessageRequest[] = [];
         let replyTarget: MessageRequest | null = null;
+        // A plain receipt for a message not addressed to this participant also moves their watermark, in `both`.
+        let watermarkSeq: number | null = null;
         if (request.type === 'message.received') {
             const participant = assertCanAcknowledge(actor);
             const target = await this.turns.resolve(roomId, request.payload.eventId, participant.participantId);
@@ -550,6 +596,9 @@ export class RoomService {
             }
             if ((target?.from ?? original?.senderId) === participant.participantId) {
                 throw new ProtocolError('unauthorized', 'a sender cannot acknowledge their own message');
+            }
+            if (this.receiptMode === 'both' && isPlainReceipt(request) && target?.to !== participant.participantId) {
+                watermarkSeq = original?.seq ?? (await this.messageSeqOf(roomId, target!));
             }
             if (target?.to === participant.participantId) {
                 updates.push({...target, receivedAt: target.receivedAt ?? now, ...(request.payload.stage === 'read' ? {readAt: target.readAt ?? now} : {})});
@@ -652,6 +701,9 @@ export class RoomService {
         }
         const outgoing = replyTarget?.conversationId ? {...request, replyTo: replyTarget.conversationId} : request;
         const mutation = sendEvent(view, await hashCredential(credential), outgoing, {now, newEventId: () => newId('event')});
+        if (watermarkSeq !== null && participantId) {
+            mutation.room = withReceipt(mutation.room, participantId, watermarkSeq, now);
+        }
         if (attached.length) {
             mutation.attachFiles = attached;
         }
@@ -688,7 +740,7 @@ export class RoomService {
             let seq = Math.max(view.room.nextRequestSeq ?? 0, mutation.appendEvent.seq);
             for (const recipient of recipients) {
                 updates.push({
-                    roomId, eventId: group ? newId('event') : mutation.appendEvent.eventId, seq: seq++,
+                    roomId, eventId: group ? newId('event') : mutation.appendEvent.eventId, seq: seq++, messageSeq: mutation.appendEvent.seq,
                     from: mutation.appendEvent.senderId!, to: recipient, text: quoteContext + request.payload.text, at: mutation.appendEvent.at,
                     requiresReply: !request.replyTo, receivedAt: null, responseEventId: null, respondedAt: null, progressAt: null,
                     ...(group ? {conversationId: mutation.appendEvent.eventId, turnRequired: true} : {}),
@@ -707,11 +759,19 @@ export class RoomService {
     }
 
     async acknowledgeMessage(roomId: string, credential: string, eventId: string): Promise<MessageRequest | null> {
-        const actor = authenticate(await this.view(roomId), await hashCredential(credential), this.now());
+        const view = await this.view(roomId);
+        const now = this.now();
+        const actor = authenticate(view, await hashCredential(credential), now);
         const participant = assertCanAcknowledge(actor);
         const target = await this.turns.resolve(roomId, eventId, participant.participantId);
         if (target?.to === participant.participantId && target.receivedAt !== null) {
             return this.publicRequest(target);
+        }
+        if (this.receiptMode === 'watermark') {
+            assertRoomWritable(view, now);
+            await this.plainReceipt(view, participant, eventId, now);
+            const received = await this.turns.resolve(roomId, eventId, participant.participantId);
+            return received ? this.publicRequest(received) : null;
         }
         const root = target?.conversationId ?? eventId;
         const key = `receipt-${root}-${participant.participantId}`;
@@ -725,6 +785,86 @@ export class RoomService {
         }
         const updated = await this.turns.resolve(roomId, eventId, participant.participantId);
         return updated ? this.publicRequest(updated) : null;
+    }
+
+    /**
+     * `POST /v1/rooms/:id/receipts`: this participant has received every event up to `throughSeq`.
+     * Moves their watermark and marks their requests up to there received, with no event.
+     */
+    async receipt(roomId: string, credential: string, throughSeq: number): Promise<ReceiptResponse> {
+        if (this.receiptMode === 'events') {
+            throw new ProtocolError('unsupported_capability', 'this relay keeps receipts as events; acknowledge each message instead');
+        }
+        const view = await this.view(roomId);
+        const now = this.now();
+        const participant = assertCanAcknowledge(authenticate(view, await hashCredential(credential), now));
+        assertRoomWritable(view, now);
+        const room = await this.moveWatermark(view, participant.participantId, throughSeq, now);
+        return {throughSeq: room.receipts?.[participant.participantId]?.throughSeq ?? 0, receiptRevision: room.receiptRevision ?? 0};
+    }
+
+    /** A plain receipt with no event: the request it answers when it is addressed to this participant, else their watermark. */
+    private async plainReceipt(view: RoomView, participant: ParticipantRecord, eventId: string, now: number): Promise<void> {
+        const roomId = view.room.roomId;
+        const target = await this.turns.resolve(roomId, eventId, participant.participantId);
+        const original = target ? null : await this.store.eventById(roomId, eventId);
+        if (!target && original?.type !== 'message') {
+            throw new ProtocolError('invalid_request', 'no such retained message in this room');
+        }
+        if ((target?.from ?? original?.senderId) === participant.participantId) {
+            throw new ProtocolError('unauthorized', 'a sender cannot acknowledge their own message');
+        }
+        if (target?.to === participant.participantId) {
+            // A receiver may confirm one request out of order, so it says nothing about earlier messages.
+            if (target.receivedAt === null) {
+                await this.store.updateTurns(view.room, [{...target, receivedAt: now}], view.room.turnRevision ?? 0);
+            }
+            return;
+        }
+        // Everything else is confirmed by a reader going through the room in order.
+        await this.moveWatermark(view, participant.participantId, original?.seq ?? (await this.messageSeqOf(roomId, target!)), now);
+    }
+
+    /** Writes the moved watermark and the requests it marks received, in one write without an event. */
+    private async moveWatermark(view: RoomView, participantId: string, throughSeq: number, now: number): Promise<RoomRecord> {
+        const room = withReceipt(view.room, participantId, throughSeq, now);
+        if (room === view.room) {
+            return room;
+        }
+        const requests = await this.receivedThrough(room.roomId, participantId, room.receipts![participantId]!.throughSeq, now);
+        await this.store.updateTurns(room, requests, view.room.turnRevision ?? 0);
+        return room;
+    }
+
+    /** This participant's requests whose message is at or before `throughSeq` and not yet received, marked received at `now`. */
+    private async receivedThrough(roomId: string, participantId: string, throughSeq: number, now: number): Promise<MessageRequest[]> {
+        const page = (after: number) => this.store.unreceivedRequests ? this.store.unreceivedRequests(roomId, participantId, after, 200) : this.store.messageRequests(roomId, after, 200, participantId);
+        const marked: MessageRequest[] = [];
+        let after = 0;
+        while (marked.length < WATERMARK_REQUEST_LIMIT) {
+            const {requests, hasMore} = await page(after);
+            for (const request of requests) {
+                if (request.receivedAt !== null) {
+                    continue;
+                }
+                // Requests are numbered in message order, so the first one past the watermark ends the search.
+                if ((await this.messageSeqOf(roomId, request)) > throughSeq) {
+                    return marked;
+                }
+                marked.push({...request, receivedAt: now});
+            }
+            const last = requests.at(-1)?.seq;
+            if (!hasMore || last === undefined || last <= after) {
+                return marked;
+            }
+            after = last;
+        }
+        return marked;
+    }
+
+    /** The transcript seq of a request's message; 0 when that message is no longer retained, which puts it behind any watermark. */
+    private async messageSeqOf(roomId: string, request: MessageRequest): Promise<number> {
+        return request.messageSeq ?? (await this.store.eventById(roomId, request.conversationId ?? request.eventId))?.seq ?? 0;
     }
 
     private publicRequest(request: MessageRequest): MessageRequest {
@@ -1025,7 +1165,7 @@ export class RoomService {
         return this.applyOne(closeRoom(await this.view(roomId), await hashCredential(credential), this.ctx()));
     }
 
-    async read(roomId: string, credential: string, after: number, limit: number): Promise<ReadEventsResponse> {
+    async read(roomId: string, credential: string, after: number, limit: number, receiptsAfter?: number): Promise<ReadEventsResponse> {
         const view = await this.view(roomId);
         authenticate(view, await hashCredential(credential), this.now());
         if (after > 0 && after < view.earliestSeq - 1) {
@@ -1033,7 +1173,7 @@ export class RoomService {
         }
         const page = await this.store.readEvents(roomId, after, limit);
         const events = await Promise.all(page.events.map((event) => this.restoreAudience(event)));
-        return {events, earliestSeq: view.earliestSeq, latestSeq: view.room.nextSeq - 1, hasMore: page.hasMore};
+        return {events, earliestSeq: view.earliestSeq, latestSeq: view.room.nextSeq - 1, hasMore: page.hasMore, ...(receiptsAfter !== undefined && this.receiptMode !== 'events' ? receiptsSince(view.room, receiptsAfter) : {})};
     }
 
     /** Older group events kept the all flag only in their canonical idempotency request. */

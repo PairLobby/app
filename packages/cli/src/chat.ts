@@ -8,7 +8,7 @@ import {ChatTerminal} from './chat-terminal.js';
 
 import {ProtocolError, requestState, newId, messageActionLabel, failureLabel} from '@pairlobby/protocol';
 import type {Attachment, MessageRequest, RoomEvent, RoomSnapshot, TurnQueue} from '@pairlobby/protocol';
-import {LocalStore, PairLobbyClient} from '@pairlobby/client';
+import {LocalStore, PairLobbyClient, ReceiptCoalescer} from '@pairlobby/client';
 
 import {pickExpiry} from './picker.js';
 import {isRoomCommand, runRoomCommand} from './chat-commands.js';
@@ -610,10 +610,19 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         let loadedRequests = false;
         let outageSince: number | null = null;
         let backoffMs = intervalMs;
+        // On a relay that keeps plain receipts only as watermarks, there are no receipt events to show
+        // or to send: the read brings the watermarks, and this reader's own goes out every few seconds.
+        let receiptRevision = 0;
+        const watermark = new ReceiptCoalescer((throughSeq) => client.postReceipt(roomId, credential, throughSeq), {onError: () => {}});
 
         while (!closed) {
             try {
-                const page = await client.readEvents(roomId, credential, cursor);
+                const watermarkOnly = snapshot.receiptMode === 'watermark';
+                const page = await client.readEvents(roomId, credential, cursor, 200, watermarkOnly ? {receiptsAfter: receiptRevision} : {});
+                if (page.receipts) {
+                    view.addReceipts(page.receipts);
+                    receiptRevision = page.receiptRevision ?? receiptRevision;
+                }
                 if (page.events.length > 0) {
                     const nextCursor = page.events.at(-1)!.seq;
                     if (page.events.some((event) => event.type === 'participant.joined' || event.type === 'participant.renamed' || event.type === 'participant.left' || event.type === 'participant.revoked' || event.type === 'participant.mute_changed' || event.type === 'participant.role_changed' || event.type === 'participant.permissions_changed' || event.type === 'room.permissions_changed' || event.type === 'room.renamed' || event.type === 'room.expiry_changed' || event.type === 'room.access_changed' || event.type === 'room.auto_close_changed' || event.type === 'room.closed' || event.type === 'room.lock_changed' || event.type === 'control.pause' || event.type === 'control.resume' || event.type === 'control.ack')) {
@@ -635,10 +644,14 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                         view.addEvent(event);
                     }
                     if (!options.readOnly && snapshot.participants.some((participant) => participant.participantId === participantId && participant.kind === 'human')) {
-                        for (const event of page.events)
-                            if (event.type === 'message' && event.senderId !== participantId && (snapshot.messageReceiptScope === 'members' || event.recipientId === participantId)) {
-                                await client.acknowledgeMessage(roomId, credential, event.eventId);
-                            }
+                        if (watermarkOnly) {
+                            watermark.advance(nextCursor);
+                        } else {
+                            for (const event of page.events)
+                                if (event.type === 'message' && event.senderId !== participantId && (snapshot.messageReceiptScope === 'members' || event.recipientId === participantId)) {
+                                    await client.acknowledgeMessage(roomId, credential, event.eventId);
+                                }
+                        }
                     }
                     cursor = nextCursor;
                     store.updateCursor(roomId, sessionId, cursor);
@@ -692,6 +705,8 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             ]);
         }
 
+        await watermark.flush().catch(() => {});
+        watermark.stop();
         client.closeLive();
         clearHint();
 

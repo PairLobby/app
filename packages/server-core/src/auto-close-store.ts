@@ -30,6 +30,10 @@ export class AutoCloseStore implements RoomStore {
         return this.store.files;
     }
 
+    get unreceivedRequests(): RoomStore['unreceivedRequests'] {
+        return this.store.unreceivedRequests?.bind(this.store);
+    }
+
     async createRoom(room: RoomRecord, participant: ParticipantRecord, event: RoomEvent): Promise<void> {
         await this.store.createRoom(refreshAutoClose(room, [participant], event, this.now()), participant, event);
     }

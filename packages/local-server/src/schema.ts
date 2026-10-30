@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS message_requests (
 ) STRICT;
 CREATE INDEX IF NOT EXISTS message_requests_pending ON message_requests(room_id,seq) WHERE requires_reply=1 AND response_event_id IS NULL;
 CREATE INDEX IF NOT EXISTS message_requests_group ON message_requests(room_id,json_extract(body,'$.conversationId'));
+CREATE INDEX IF NOT EXISTS message_requests_unreceived ON message_requests(room_id,seq) WHERE received_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS files (
     file_id    TEXT PRIMARY KEY,

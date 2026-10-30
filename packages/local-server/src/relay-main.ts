@@ -29,6 +29,7 @@ Settings (a flag wins over its variable)
   --backup <place>         PAIRLOBBY_BACKUP               s3://bucket/prefix or an absolute folder
   --no-restore             PAIRLOBBY_NO_RESTORE=1         start empty on an empty disk
                            PAIRLOBBY_CREATE_TOKEN(_FILE)  token needed to create rooms
+                           PAIRLOBBY_RECEIPT_MODE         events, both (default) or watermark
   See the guide for the rest: limits, allowed hosts, backup interval and S3 endpoint.
 `;
 
@@ -80,6 +81,7 @@ async function serve(flags: RelayFlags, dataDir: string | undefined): Promise<nu
         roomLimits: settings.roomLimits,
         discovery: settings.discovery,
         ...(settings.requestLog ? {requestLog: {mode: settings.requestLog, write: writeLine}} : {}),
+        ...(settings.receiptMode ? {receiptMode: settings.receiptMode} : {}),
         ...(backup ? {backup} : {})
     });
     log({level: 'info', event: 'start', version: version(), url: running.url, listening: `${running.host}:${running.port}`, dataFile: running.dataFile, createToken: Boolean(settings.createToken), loginMode: settings.discovery.loginMode, backup: backup?.target.description ?? null, restore: running.restore?.outcome ?? null});

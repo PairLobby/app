@@ -15,7 +15,8 @@ let guarded: RunningServer;
 beforeAll(async () => {
     directory = mkdtempSync(join(tmpdir(), 'pairlobby-conformance-'));
     open = await startServer({port: 0, dataFile: join(directory, 'open.sqlite')});
-    guarded = await startServer({port: 0, dataFile: join(directory, 'guarded.sqlite'), createToken: 'conformance-token'});
+    // Watermark-only receipts here, so the checks cover both receipt modes a relay offers.
+    guarded = await startServer({port: 0, dataFile: join(directory, 'guarded.sqlite'), createToken: 'conformance-token', receiptMode: 'watermark'});
 });
 
 afterAll(async () => {

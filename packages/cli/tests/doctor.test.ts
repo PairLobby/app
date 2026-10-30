@@ -44,6 +44,7 @@ test('test_doctor_reports_what_the_relay_describes', async () => {
     const text = lines.join('');
     expect(text).toContain('Relay version   9.9.9 (protocol 1)');
     expect(text).toContain('Transport       long-poll (holds reads up to 25 s)');
+    expect(text).toContain('Receipts        an event per message and reader, and a watermark per participant');
     expect(text).toMatch(/New rooms\s+participants 16, message 32 KB/);
 });
 

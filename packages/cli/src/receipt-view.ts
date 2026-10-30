@@ -1,5 +1,5 @@
 import {failureLabel, messageActionLabel} from '@pairlobby/protocol';
-import type {MessageRequest, RoomEvent} from '@pairlobby/protocol';
+import type {MessageRequest, ReceiptUpdate, RoomEvent} from '@pairlobby/protocol';
 
 export type ConfirmedReceipt = {participantId: string; acknowledgedAt: number};
 export type MessageStage = {readAt?: number; action?: string; actionAt?: number; reason?: string};
@@ -10,10 +10,14 @@ export class ReceiptView {
     private stages = new Map<string, Map<string, MessageStage>>();
     private deliveries = new Map<string, string>();
     private senders = new Map<string, string>();
+    private seqs = new Map<string, number>();
+    /** Each participant's receipt watermark: every message at or before `throughSeq` reached them. */
+    private watermarks = new Map<string, {throughSeq: number; at: number}>();
 
     observe(event: RoomEvent): void {
         if (event.type === 'message' && event.senderId) {
             this.senders.set(event.eventId, event.senderId);
+            this.seqs.set(event.eventId, event.seq);
         }
         if (event.type === 'message.received' && event.senderId) {
             this.add(event.payload.eventId, event.senderId, event.at);
@@ -27,6 +31,16 @@ export class ReceiptView {
             this.stage(event.replyTo, event.senderId, {action: event.payload.responseStage === 'progress' ? 'Replied · continuing' : 'Done', actionAt: event.at});
         } else if (event.type === 'message.delivery_failed' && event.senderId) {
             this.stage(this.deliveries.get(event.payload.eventId) ?? event.payload.eventId, event.senderId, {action: failureLabel(event.payload.stage), actionAt: event.at, reason: event.payload.reason});
+        }
+    }
+
+    /** Watermarks from a relay that keeps plain receipts as one number per participant instead of events. */
+    observeReceipts(updates: ReceiptUpdate[]): void {
+        for (const update of updates) {
+            const previous = this.watermarks.get(update.participantId);
+            if (!previous || update.throughSeq > previous.throughSeq) {
+                this.watermarks.set(update.participantId, {throughSeq: update.throughSeq, at: update.at});
+            }
         }
     }
 
@@ -62,7 +76,17 @@ export class ReceiptView {
     }
 
     forMessage(eventId: string): ConfirmedReceipt[] {
-        return [...(this.receipts.get(eventId) ?? [])].map(([participantId, acknowledgedAt]) => ({participantId, acknowledgedAt})).sort((a, b) => a.acknowledgedAt - b.acknowledgedAt);
+        const confirmed = new Map(this.receipts.get(eventId) ?? []);
+        const seq = this.seqs.get(eventId);
+        if (seq !== undefined) {
+            // A watermark only says when it moved, not when this message arrived, so an explicit receipt's time wins.
+            for (const [participantId, mark] of this.watermarks) {
+                if (mark.throughSeq >= seq && participantId !== this.senders.get(eventId) && !confirmed.has(participantId)) {
+                    confirmed.set(participantId, mark.at);
+                }
+            }
+        }
+        return [...confirmed].map(([participantId, acknowledgedAt]) => ({participantId, acknowledgedAt})).sort((a, b) => a.acknowledgedAt - b.acknowledgedAt);
     }
 
     private add(eventId: string, participantId: string, at: number): void {
