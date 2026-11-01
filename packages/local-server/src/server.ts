@@ -8,7 +8,7 @@ import {hostname, networkInterfaces} from 'node:os';
 import {dirname} from 'node:path';
 
 import {ChangeNotifier, NotifyingStore, RoomService, createAdmission, createRelay, memoryRateLimiter, queueExecutor, timerScheduler} from '@pairlobby/server-core';
-import type {AdmissionLimits, DiscoveryDocument, Relay, RequestContext} from '@pairlobby/server-core';
+import type {AdmissionLimits, DiscoveryDocument, Relay, RelayAccount, RelayMember, RequestContext} from '@pairlobby/server-core';
 import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_ROOM_POLICY} from '@pairlobby/protocol';
 import type {ReceiptMode, RoomPolicy} from '@pairlobby/protocol';
 
@@ -18,6 +18,7 @@ import {restoreLatest, startBackups} from './backup.js';
 import type {BackupSchedule, BackupScheduleOptions, RestoreResult} from './backup.js';
 import type {RequestLogOptions} from './request-log.js';
 import type {RelayDiscovery} from './settings.js';
+import {MembersFile} from './members.js';
 import {SqliteRoomStore} from './sqlite-store.js';
 
 export interface ServeOptions {
@@ -41,6 +42,13 @@ export interface ServeOptions {
     /** When set, creating a room needs this token; joining with an invite never does. Read it from the environment, never a command line. */
     createToken?: string;
     /**
+     * Personal tokens: the members file, reread when it changes. Each token creates rooms like the
+     * create token, logs in as its member, and names that member on the rooms they create and join.
+     */
+    members?: {file: string; log?: (line: string) => void; reloadMs?: number};
+    /** False when the create token no longer logs people in, beside personal tokens. */
+    teamTokenLogin?: boolean;
+    /**
      * The header a load balancer in front of this relay puts the caller's address in, such as
      * `x-forwarded-for`. Only set it when every request comes through that proxy: a caller
      * reaching the relay directly could write the header themselves.
@@ -52,7 +60,7 @@ export interface ServeOptions {
     roomLimits?: Partial<RoomPolicy>;
     /**
      * Serve `GET /.well-known/pairlobby.json`, and with `loginMode: 'token'` (which needs
-     * `createToken`) the team token check `GET /api/online/account`. Absent serves neither.
+     * `createToken` or `members`) the token check `GET /api/online/account`. Absent serves neither.
      */
     discovery?: RelayDiscovery;
     /** How plain receipts are kept: `both` (default) until every client in use reads watermarks, then `watermark`. */
@@ -74,6 +82,8 @@ export interface RunningServer {
     dataFile: string;
     /** What happened to the backup on start, when backups are on. */
     restore?: RestoreResult;
+    /** Rereads the members file now, as on `SIGHUP`; nothing when there is none. */
+    reloadMembers(): void;
     close(): Promise<void>;
 }
 
@@ -88,11 +98,11 @@ function requestBodyLimit(incoming: IncomingMessage): number {
 }
 
 /** The discovery document: `relays` empty means "this origin", and `features` are only what this relay really has. */
-function discoveryDocument(settings: RelayDiscovery, publicUrl: string | undefined, files: boolean): DiscoveryDocument {
+function discoveryDocument(settings: RelayDiscovery, publicUrl: string | undefined, files: boolean, members: boolean): DiscoveryDocument {
     return {
         version: 1,
         ...(settings.name ? {name: settings.name} : {}),
-        login: settings.loginMode === 'token' ? {mode: 'token', ...(settings.loginHelp ? {tokenHelp: settings.loginHelp} : {}), verify: '/api/online/account'} : {mode: 'none'},
+        login: settings.loginMode === 'token' ? {mode: 'token', ...(settings.loginHelp ? {tokenHelp: settings.loginHelp} : {}), verify: '/api/online/account', ...(members ? {members: true} : {})} : {mode: 'none'},
         relays: publicUrl ? [publicUrl] : [],
         features: ['message-stages', ...(files ? ['files'] : [])],
         ...(settings.supportUrl ? {support: settings.supportUrl} : {})
@@ -143,13 +153,20 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
     const peerIsLocal = (_request: Request, context: RequestContext) => isLocalNetworkAddress(context.peerAddress ?? '');
     const localRooms = async (name?: string) => store.localJoinRooms(name);
     const exempt = (_request: Request, context: RequestContext) => !behindProxy && isLoopbackAddress(context.peerAddress ?? '');
-    const admission = createAdmission({...(options.createToken ? {createToken: options.createToken} : {}), limiter: memoryRateLimiter(), ...(options.limits ? {limits: options.limits} : {}), ...(options.trustedProxyHeader ? {trustedProxyHeader: options.trustedProxyHeader} : {}), exempt});
-    if (options.discovery?.loginMode === 'token' && !options.createToken) {
-        throw new Error('token-mode login needs a create token: it is the team token people log in with');
+    if (options.discovery?.loginMode === 'token' && !options.createToken && !options.members) {
+        throw new Error('token-mode login needs a create token or a members file: they are the tokens people log in with');
     }
-    const discovery = options.discovery ? discoveryDocument(options.discovery, options.publicUrl, store.files !== undefined) : undefined;
-    // The room address a team token leads to: the advertised one, else the address the caller used.
-    const accountCheck = options.discovery?.loginMode === 'token' ? (request: Request) => ({email: null, userId: 'team' as const, name: options.discovery?.name ?? null, server: options.publicUrl ?? new URL(request.url).origin, handle: null}) : undefined;
+    if (options.members && options.discovery?.loginMode !== 'token') {
+        throw new Error('a members file needs token-mode login: it is how people log in with their own tokens');
+    }
+    const members = options.members ? new MembersFile({path: options.members.file, ...(options.members.log ? {log: options.members.log} : {}), ...(options.members.reloadMs ? {reloadMs: options.members.reloadMs} : {})}) : null;
+    const admission = createAdmission({...(options.createToken ? {createToken: options.createToken} : {}), ...(members ? {members: members.lookup} : {}), ...(options.teamTokenLogin === false ? {teamTokenLogin: false} : {}), limiter: memoryRateLimiter(), ...(options.limits ? {limits: options.limits} : {}), ...(options.trustedProxyHeader ? {trustedProxyHeader: options.trustedProxyHeader} : {}), exempt});
+    const discovery = options.discovery ? discoveryDocument(options.discovery, options.publicUrl, store.files !== undefined, members !== null) : undefined;
+    // The room address a login leads to: the advertised one, else the address the caller used.
+    const accountCheck = options.discovery?.loginMode === 'token' ? (request: Request, member: RelayMember | null): RelayAccount => {
+        const account = {email: null, name: options.discovery?.name ?? null, server: options.publicUrl ?? new URL(request.url).origin};
+        return member ? {...account, userId: `member:${member.handle}`, handle: member.handle} : {...account, userId: 'team', handle: null};
+    } : undefined;
     // One store behind one process: one queue keeps two writes from choosing the same next event sequence.
     const executor = queueExecutor();
     // One timer for the whole relay, aimed at the earliest auto-close deadline; every write plans it again.
@@ -189,6 +206,7 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
                 stopAdvertising = advertiseRelay(boundPort);
             }
             backups = options.backup ? startBackups({...options.backup, source: store, dataFile: options.dataFile}) : null;
+            members?.start();
             resolve({
                 url: options.publicUrl ?? `http://${wildcard ? '127.0.0.1' : host}:${boundPort}`,
                 shareUrls: shareUrls(host, boundPort, options.publicUrl, tailscaleOnly),
@@ -197,7 +215,9 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
                 port: boundPort,
                 dataFile: options.dataFile,
                 ...(restore ? {restore} : {}),
+                reloadMembers: () => members?.reload(true),
                 close: () => {
+                    members?.stop();
                     scheduler.stop();
                     changes.close();
                     stopAdvertising();

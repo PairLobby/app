@@ -3,7 +3,7 @@ import {describe, expect, test} from 'vitest';
 
 import {CREATE_TOKEN_HEADER, createAdmission, memoryRateLimiter} from '../src/admission.js';
 import {queueExecutor, timerScheduler} from '../src/ports.js';
-import {createRelay} from '../src/relay.js';
+import {MEMBER_HEADER, createRelay} from '../src/relay.js';
 import type {RelayOptions, RoomRoute} from '../src/relay.js';
 import type {AutoCloseSweep, RoomService} from '../src/service.js';
 
@@ -78,6 +78,22 @@ describe('relay kernel edge', () => {
         expect(await unknown.json()).toMatchObject({error: {code: 'invite_unknown', message: 'that invite code is not valid'}});
         const malformed = (await relay.edge(redeem('nope'))) as Response;
         expect(await malformed.json()).toMatchObject({error: {code: 'invite_unknown', message: 'that invite code is not well formed'}});
+    });
+
+    test('test_the_edge_names_the_verified_member_on_create_and_redeem_and_drops_any_claim_a_caller_wrote', async () => {
+        const state = stub();
+        const code = newInviteCode();
+        state.invites.set(await hashCredential(normalizeInviteCode(code)!), 'rm_INVITED');
+        const damien = await hashCredential('plm_damien');
+        const relay = relayWith(state, {admission: createAdmission({createToken: 'team-secret', members: async (digest) => (digest === damien ? {handle: 'damien'} : null)})});
+        expect(routed(await relay.edge(create({[CREATE_TOKEN_HEADER]: 'plm_damien', [MEMBER_HEADER]: 'mallory'}))).request.headers.get(MEMBER_HEADER)).toBe('damien');
+        expect(routed(await relay.edge(create({[CREATE_TOKEN_HEADER]: 'team-secret', [MEMBER_HEADER]: 'mallory'}))).request.headers.get(MEMBER_HEADER)).toBeNull();
+        expect(routed(await relay.edge(redeem(code, {[CREATE_TOKEN_HEADER]: 'plm_damien'}))).request.headers.get(MEMBER_HEADER)).toBe('damien');
+        expect(routed(await relay.edge(redeem(code, {[MEMBER_HEADER]: 'mallory'}))).request.headers.get(MEMBER_HEADER)).toBeNull();
+        const forged = new Request('http://relay/v1/rooms/rm_ABC/events', {headers: {[MEMBER_HEADER]: 'mallory'}});
+        expect(routed(await relay.edge(forged)).request.headers.get(MEMBER_HEADER)).toBeNull();
+        const description = (await (await relay.edge(new Request('http://relay/v1/server')) as Response).json()) as {features: string[]};
+        expect(description.features).toContain('member-tokens');
     });
 
     test('test_joining_by_name_needs_a_local_peer_and_is_refused_behind_a_proxy', async () => {

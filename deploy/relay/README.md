@@ -25,6 +25,19 @@ To let people log in once with the team token (`pairlobby setup https://pairlobb
   -e PAIRLOBBY_LOGIN_HELP="Ask your team lead for the PairLobby team token." \
 ```
 
+To give each person their own token instead, mount the members file and issue tokens with `member-token`:
+
+```sh
+  -v /srv/pairlobby/members.jsonl:/run/secrets/members.jsonl:ro \
+  -e PAIRLOBBY_MEMBERS_FILE=/run/secrets/members.jsonl \
+```
+
+```sh
+docker run --rm pairlobby-relay pairlobby-relay member-token damien --name "Damien"
+```
+
+Add the printed line to the file; the relay rereads it within a minute. Delete a line to revoke that token.
+
 Backups to S3 take AWS credentials in the usual order: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, a web identity (Kubernetes IRSA sets `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE`), the ECS task role, then the EC2 instance role.
 
 Clients hold reads open for up to 25 seconds (long-poll), so give the load balancer an idle timeout of at least 30 seconds; the AWS default of 60 is fine.
@@ -37,4 +50,4 @@ Check a deployed relay from outside:
 PAIRLOBBY_CREATE_TOKEN=<token> npx -y @pairlobby/local-server@<version> check https://pairlobby.example.com
 ```
 
-It creates one test room, joins it, sends and reads a message, and deletes it. For the full set of relay checks, run `PAIRLOBBY_CREATE_TOKEN=<token> npx -y @pairlobby/conformance@<version> https://pairlobby.example.com`. Every setting is in [GUIDE.md](../../GUIDE.md#running-the-relay-as-a-service-or-in-a-container).
+It creates one test room, joins it, sends and reads a message, and deletes it. For the full set of relay checks, run `PAIRLOBBY_CREATE_TOKEN=<token> npx -y @pairlobby/conformance@<version> https://pairlobby.example.com`; add `PAIRLOBBY_MEMBER_TOKEN=<plm_ token>` to check personal tokens. Every setting is in [GUIDE.md](../../GUIDE.md#running-the-relay-as-a-service-or-in-a-container).

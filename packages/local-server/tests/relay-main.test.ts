@@ -1,7 +1,7 @@
 //! Runs the built `pairlobby-relay` as a container would: settings only from the environment.
 
 import {spawn, spawnSync} from 'node:child_process';
-import {mkdtempSync, rmSync} from 'node:fs';
+import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -59,5 +59,54 @@ describe('pairlobby-relay', () => {
         expect(bad.status).toBe(2);
         expect(bad.stdout).toContain('--port (PAIRLOBBY_PORT) must be a whole number');
         expect(spawnSync(process.execPath, [BIN, 'check', 'not-a-url'], {env: environment({}), encoding: 'utf8'}).status).toBe(2);
+        writeFileSync(join(directory, 'broken-members.jsonl'), 'plm_not_a_line\n');
+        const broken = spawnSync(process.execPath, [BIN], {env: environment({PAIRLOBBY_DATA_DIR: join(directory, 'broken'), PAIRLOBBY_PORT: '0', PAIRLOBBY_LOGIN_MODE: 'token', PAIRLOBBY_MEMBERS_FILE: join(directory, 'broken-members.jsonl')}), encoding: 'utf8'});
+        expect(broken.status).toBe(2);
+        expect(JSON.parse(broken.stdout)).toMatchObject({event: 'bad-settings', message: 'line 1 of the members file is not JSON'});
+    });
+
+    test('test_member_token_issues_a_token_once_and_sighup_rereads_the_members_file', async () => {
+        const issue = (handle: string) => JSON.parse(spawnSync(process.execPath, [BIN, 'member-token', handle, '--json'], {env: environment({}), encoding: 'utf8'}).stdout) as {handle: string; token: string; line: object};
+        const damien = issue('@Damien');
+        const hugo = issue('hugo');
+        expect(damien.handle).toBe('damien');
+        expect(damien.token).toMatch(/^plm_/);
+        expect(spawnSync(process.execPath, [BIN, 'member-token', 'all'], {env: environment({}), encoding: 'utf8'}).status).toBe(2);
+        const members = join(directory, 'members.jsonl');
+        writeFileSync(members, `${JSON.stringify(damien.line)}\n${JSON.stringify(hugo.line)}\n`);
+        const env = environment({PAIRLOBBY_DATA_DIR: join(directory, 'members-data'), PAIRLOBBY_PORT: '0', PAIRLOBBY_LOGIN_MODE: 'token', PAIRLOBBY_MEMBERS_FILE: members});
+        const relay = spawn(process.execPath, [BIN], {env, stdio: ['ignore', 'pipe', 'inherit']});
+        const lines: string[] = [];
+        const waitFor = (event: string) => new Promise<{event: string; url: string}>((resolve, reject) => {
+            const look = () => {
+                const found = lines.map((line) => JSON.parse(line) as {event: string; url: string}).find((line) => line.event === event);
+                if (found) {
+                    relay.stdout.off('data', read);
+                    resolve(found);
+                }
+            };
+            const read = (chunk: Buffer) => {
+                lines.push(...chunk.toString().split('\n').filter(Boolean));
+                look();
+            };
+            relay.once('exit', (code) => reject(new Error(`exited ${code}`)));
+            relay.stdout.on('data', read);
+            look();
+        });
+        try {
+            const {url} = await waitFor('start');
+            const account = (token: string) => fetch(`${url}/api/online/account`, {headers: {'x-pairlobby-account-token': token}});
+            expect(await (await account(damien.token)).json()).toMatchObject({userId: 'member:damien', handle: 'damien'});
+            writeFileSync(members, `${JSON.stringify(hugo.line)}\n`);
+            relay.kill('SIGHUP');
+            await waitFor('members-reloaded');
+            expect((await account(damien.token)).status).toBe(401);
+            expect((await account(hugo.token)).status).toBe(200);
+            expect(lines.join('\n')).not.toContain('plm_');
+        } finally {
+            const exited = new Promise((resolve) => relay.once('exit', resolve));
+            relay.kill('SIGTERM');
+            await exited;
+        }
     });
 });

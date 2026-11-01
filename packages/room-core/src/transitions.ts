@@ -31,6 +31,8 @@ export interface Identity {
     kind: ParticipantKind;
     sessionId: string | null;
     capabilities: AdapterCapabilities | null;
+    /** The relay member this participant joins as, already verified by the relay. */
+    member?: string | undefined;
 }
 
 export interface CreateRoomInput extends Identity {
@@ -41,6 +43,8 @@ export interface CreateRoomInput extends Identity {
     controllerCredentialHash: string;
     participantCredentialHash: string;
     policy?: RoomPolicy;
+    /** The relay member creating the room, already verified by the relay. */
+    owner?: string | undefined;
 }
 
 export interface CreatedRoom {
@@ -60,6 +64,7 @@ export function createRoom(input: CreateRoomInput, ctx: CoreContext): CreatedRoo
         lifecycle: 'open',
         policy,
         controllerCredentialHash: input.controllerCredentialHash,
+        ...(input.owner ? {owner: input.owner} : {}),
         controlRevision: 0,
         nextSeq: 1,
         retainedEventBytes: 0,
@@ -513,7 +518,8 @@ function buildParticipant(roomId: string, identity: Identity, role: ParticipantR
         capabilities: identity.capabilities,
         joinedAt: ctx.now,
         revokedAt: null,
-        leftAt: null
+        leftAt: null,
+        ...(identity.member ? {member: identity.member} : {})
     };
 }
 

@@ -77,7 +77,8 @@ export function toParticipantView(view: RoomView, participant: ParticipantRecord
         controlRevision: control?.revision ?? 0,
         acknowledgedOutcome: control?.acknowledgedOutcome ?? null,
         acknowledgedRevision: control?.acknowledgedRevision ?? 0,
-        interruptRequested: Boolean(control?.paused && control.interruptRequested)
+        interruptRequested: Boolean(control?.paused && control.interruptRequested),
+        ...(participant.member ? {member: participant.member} : {})
     };
 }
 
@@ -101,6 +102,7 @@ export function toSnapshot(view: RoomView): RoomSnapshot {
         workingStatusSupported: true,
         turnMode: view.room.turnMode ?? 'sequential',
         name: view.room.name,
+        ...(view.room.owner ? {owner: view.room.owner} : {}),
         lifecycle: view.room.lifecycle,
         locked: view.room.locked ?? false,
         createdAt: view.room.createdAt,

@@ -14,7 +14,7 @@ import {BUILT_IN_LABEL, NOT_A_DEPLOYMENT, REFUSED, activeEndpoint, builtInEndpoi
 import type {Endpoint} from './endpoints.js';
 import type {ProbeResult} from './discovery.js';
 import {body, get, parseDiscovery} from './discovery.js';
-import {accountToken} from './online.js';
+import {accountToken, loggedInLine, signedInAs} from './online.js';
 import {json, out} from './render.js';
 
 export type SetupOptions = {
@@ -66,10 +66,12 @@ export async function probeEndpoint(origin: string): Promise<ProbeResult> {
     throw new UsageError(`${origin} does not look like a PairLobby deployment`, NOT_A_DEPLOYMENT);
 }
 
-type EndpointSummary = {label: string; origin: string; name: string; loginMode: LoginMode; relayOrigins: string[]; active: boolean; tokenSaved: boolean};
+type EndpointSummary = {label: string; origin: string; name: string; loginMode: LoginMode; relayOrigins: string[]; active: boolean; tokenSaved: boolean; signedInAs?: string};
 
 function summary(store: LocalStore, endpoint: Endpoint, active: Endpoint): EndpointSummary {
-    return {label: endpoint.label, origin: endpoint.origin, name: endpoint.name, loginMode: endpoint.loginMode, relayOrigins: endpoint.relayOrigins, active: endpoint.label === active.label, tokenSaved: store.credential('online-account', endpoint.origin) !== undefined};
+    const tokenSaved = store.credential('online-account', endpoint.origin) !== undefined;
+    const who = tokenSaved ? signedInAs(store, endpoint.origin) : undefined;
+    return {label: endpoint.label, origin: endpoint.origin, name: endpoint.name, loginMode: endpoint.loginMode, relayOrigins: endpoint.relayOrigins, active: endpoint.label === active.label, tokenSaved, ...(who ? {signedInAs: who} : {})};
 }
 
 function allEndpoints(store: LocalStore): Endpoint[] {
@@ -87,7 +89,12 @@ function showEndpoints(store: LocalStore, asJson: boolean): number {
     out(`Name            ${active.name}${active.label === BUILT_IN_LABEL || active.label === active.origin ? '' : ` (${active.label})`}`);
     out(`Login           ${active.loginMode}`);
     out(`Rooms live on   ${active.relayOrigins.join(', ')}`);
-    out(`Token saved     ${store.credential('online-account', active.origin) !== undefined ? 'yes' : 'no'}`);
+    const saved = store.credential('online-account', active.origin) !== undefined;
+    out(`Token saved     ${saved ? 'yes' : 'no'}`);
+    const who = saved ? signedInAs(store, active.origin) : undefined;
+    if (who) {
+        out(`Signed in as    ${who}`);
+    }
     if (process.env['PAIRLOBBY_ONLINE_ORIGIN']) {
         out('(chosen by PAIRLOBBY_ONLINE_ORIGIN for this shell)');
     }
@@ -139,8 +146,7 @@ async function addEndpoint(store: LocalStore, options: SetupOptions, deps: Setup
     }
     out(saved.loginMode === 'none' ? `Saved as "${label}". ${saved.name} has no login; create and join rooms there with no --server.` : `Saved as "${label}". Run pairlobby login to sign in to ${saved.name}.`);
     if (options.login && saved.loginMode !== 'none') {
-        const email = await deps.login(store);
-        out(email ? `Logged in as ${email}` : `Logged in to ${saved.name}`);
+        out(loggedInLine(saved.name, await deps.login(store)));
     }
     return 0;
 }

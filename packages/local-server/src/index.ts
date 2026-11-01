@@ -7,3 +7,4 @@ export * from './backup.js';
 export * from './s3.js';
 export * from './settings.js';
 export * from './check.js';
+export * from './members.js';

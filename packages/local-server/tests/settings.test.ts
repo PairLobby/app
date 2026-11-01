@@ -75,7 +75,7 @@ describe('relay settings', () => {
         const settings = relaySettings({}, {PAIRLOBBY_CREATE_TOKEN: 'team-secret', PAIRLOBBY_LOGIN_MODE: 'token', PAIRLOBBY_DISCOVERY_NAME: 'Example Corp PairLobby', PAIRLOBBY_LOGIN_HELP: 'Ask your team lead for the PairLobby team token.', PAIRLOBBY_SUPPORT_URL: 'https://example.com/pairlobby-help', PAIRLOBBY_LIMIT_ACCOUNT_CHECK_PER_MIN_IP: '12'});
         expect(settings.discovery).toEqual({loginMode: 'token', name: 'Example Corp PairLobby', loginHelp: 'Ask your team lead for the PairLobby team token.', supportUrl: 'https://example.com/pairlobby-help'});
         expect(settings.limits).toEqual({accountCheckPerMinutePerAddress: 12});
-        expect(() => relaySettings({}, {PAIRLOBBY_LOGIN_MODE: 'token'})).toThrow('PAIRLOBBY_LOGIN_MODE=token logs people in with the create token; set PAIRLOBBY_CREATE_TOKEN');
+        expect(() => relaySettings({}, {PAIRLOBBY_LOGIN_MODE: 'token'})).toThrow('PAIRLOBBY_LOGIN_MODE=token logs people in with the create token or their own tokens; set PAIRLOBBY_CREATE_TOKEN');
         expect(() => relaySettings({}, {PAIRLOBBY_LOGIN_MODE: 'browser'})).toThrow('PAIRLOBBY_LOGIN_MODE must be token or none, not "browser"');
         expect(() => relaySettings({}, {PAIRLOBBY_DISCOVERY_NAME: 'x'.repeat(65)})).toThrow('PAIRLOBBY_DISCOVERY_NAME must be plain text of at most 64 characters');
         expect(() => relaySettings({}, {PAIRLOBBY_LOGIN_HELP: 'line one\u001b[31m'})).toThrow('PAIRLOBBY_LOGIN_HELP must be plain text');
@@ -84,6 +84,16 @@ describe('relay settings', () => {
         for (const variable of ['PAIRLOBBY_DISCOVERY_NAME', 'PAIRLOBBY_LOGIN_MODE', 'PAIRLOBBY_LOGIN_HELP', 'PAIRLOBBY_SUPPORT_URL', 'PAIRLOBBY_LIMIT_ACCOUNT_CHECK_PER_MIN_IP']) {
             expect(RELAY_VARIABLES).toContain(variable);
         }
+    });
+
+    test('test_personal_tokens_need_token_login_and_turning_off_the_team_login_needs_them', () => {
+        const settings = relaySettings({}, {PAIRLOBBY_LOGIN_MODE: 'token', PAIRLOBBY_MEMBERS_FILE: '/run/secrets/members.jsonl', PAIRLOBBY_CREATE_TOKEN: 'team-secret', PAIRLOBBY_TEAM_TOKEN_LOGIN: 'off'});
+        expect([settings.membersFile, settings.teamTokenLogin, settings.createToken]).toEqual(['/run/secrets/members.jsonl', false, 'team-secret']);
+        expect(relaySettings({}, {PAIRLOBBY_LOGIN_MODE: 'token', PAIRLOBBY_MEMBERS_FILE: '/run/secrets/members.jsonl'}).teamTokenLogin).toBeUndefined();
+        expect(() => relaySettings({}, {PAIRLOBBY_MEMBERS_FILE: '/run/secrets/members.jsonl'})).toThrow('PAIRLOBBY_MEMBERS_FILE gives people their own login; set PAIRLOBBY_LOGIN_MODE=token');
+        expect(() => relaySettings({}, {PAIRLOBBY_LOGIN_MODE: 'token', PAIRLOBBY_CREATE_TOKEN: 'team-secret', PAIRLOBBY_TEAM_TOKEN_LOGIN: 'off'})).toThrow('set PAIRLOBBY_MEMBERS_FILE as well');
+        expect(() => relaySettings({}, {PAIRLOBBY_LOGIN_MODE: 'token', PAIRLOBBY_CREATE_TOKEN: 'team-secret', PAIRLOBBY_TEAM_TOKEN_LOGIN: 'maybe'})).toThrow('PAIRLOBBY_TEAM_TOKEN_LOGIN must be on or off, not "maybe"');
+        expect(RELAY_VARIABLES).toEqual(expect.arrayContaining(['PAIRLOBBY_MEMBERS_FILE', 'PAIRLOBBY_TEAM_TOKEN_LOGIN']));
     });
 
     test('test_the_create_token_file_must_be_private_and_not_combined_with_the_variable', () => {

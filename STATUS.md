@@ -25,6 +25,7 @@ Updated 2026-10-11, for the release after **0.16.0**. `pairlobby --version` says
 - Interactive `pairlobby settings` for this device and `/settings` for a room.
 - `pairlobby setup` saves a private login endpoint, switches between it and pairlobby.com, and keeps one login per endpoint.
 - A self-hosted relay can offer token-mode login (`PAIRLOBBY_LOGIN_MODE=token`): people log in once with the team token and use `create online`; it describes itself at `/.well-known/pairlobby.json`.
+- A self-hosted relay can give each person their own token (`PAIRLOBBY_MEMBERS_FILE`, `pairlobby-relay member-token`): `login` names them, and rooms and participants record the member who created or joined them.
 - Relay backups to S3 authenticate with a web identity (EKS IRSA) as well as keys, the ECS task role and the EC2 instance role.
 - Relays describe themselves at `GET /v1/server` (features, transport, limits); `pairlobby serve` offers long-poll, `pairlobby doctor` prints the description, and `@pairlobby/conformance` checks the Node and Durable Object relays against one contract on every pull request.
 - One relay kernel (`createRelay`: `edge`, `inRoom`, `tick`) serves every relay; plain Received receipts can be one watermark per participant instead of an event per message (`PAIRLOBBY_RECEIPT_MODE`, default `both`).

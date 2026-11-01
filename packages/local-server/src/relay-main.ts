@@ -7,6 +7,7 @@ import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {parseArgs} from 'node:util';
 
+import {MembersFileError, issueMemberToken} from './members.js';
 import {RelaySettingsError, relaySettings} from './settings.js';
 import type {RelayFlags} from './settings.js';
 
@@ -17,6 +18,8 @@ const HELP = `pairlobby-relay: a PairLobby relay for a container or a service
   pairlobby-relay                    run the relay with settings from PAIRLOBBY_* variables
   pairlobby-relay check <url>        check a deployed relay: health, invite address, create token,
                                      then one test room through create, join, send, read and delete
+  pairlobby-relay member-token <handle> [--name <name>] [--json]
+                                     a personal token, shown once, and the line to add to the members file
   pairlobby-relay --version
 
 Settings (a flag wins over its variable)
@@ -29,6 +32,9 @@ Settings (a flag wins over its variable)
   --backup <place>         PAIRLOBBY_BACKUP               s3://bucket/prefix or an absolute folder
   --no-restore             PAIRLOBBY_NO_RESTORE=1         start empty on an empty disk
                            PAIRLOBBY_CREATE_TOKEN(_FILE)  token needed to create rooms
+                           PAIRLOBBY_MEMBERS_FILE         personal tokens, one JSON line per person;
+                                                          reread on change and on SIGHUP
+                           PAIRLOBBY_TEAM_TOKEN_LOGIN     on (default) or off: whether the create token logs in
                            PAIRLOBBY_RECEIPT_MODE         events, both (default) or watermark
   See the guide for the rest: limits, allowed hosts, backup interval and S3 endpoint.
 `;
@@ -59,6 +65,20 @@ async function check(url: string | undefined, json: boolean): Promise<number> {
     return steps.every((step) => step.ok) ? 0 : 1;
 }
 
+async function memberToken(handle: string | undefined, name: string | undefined, json: boolean): Promise<number> {
+    if (!handle) {
+        process.stderr.write('pairlobby-relay member-token needs the person\'s handle, such as damien\n');
+        return 2;
+    }
+    const {token, line} = await issueMemberToken(handle, name);
+    if (json) {
+        process.stdout.write(`${JSON.stringify({handle: line.handle, token, line})}\n`);
+        return 0;
+    }
+    process.stdout.write(`Token for @${line.handle}, shown once; give it to them for pairlobby login:\n\n  ${token}\n\nAdd this line to the members file; the relay picks it up within a minute:\n\n  ${JSON.stringify(line)}\n`);
+    return 0;
+}
+
 async function serve(flags: RelayFlags, dataDir: string | undefined): Promise<number> {
     const settings = relaySettings(flags, process.env);
     if (!dataDir) {
@@ -76,6 +96,8 @@ async function serve(flags: RelayFlags, dataDir: string | undefined): Promise<nu
         ...(settings.publicUrl ? {publicUrl: settings.publicUrl} : {}),
         ...(settings.trustedProxyHeader ? {trustedProxyHeader: settings.trustedProxyHeader} : {}),
         ...(settings.createToken ? {createToken: settings.createToken} : {}),
+        ...(settings.membersFile ? {members: {file: settings.membersFile, log: writeLine}} : {}),
+        ...(settings.teamTokenLogin === false ? {teamTokenLogin: false} : {}),
         allowedHosts: settings.allowedHosts,
         limits: settings.limits,
         roomLimits: settings.roomLimits,
@@ -84,7 +106,7 @@ async function serve(flags: RelayFlags, dataDir: string | undefined): Promise<nu
         ...(settings.receiptMode ? {receiptMode: settings.receiptMode} : {}),
         ...(backup ? {backup} : {})
     });
-    log({level: 'info', event: 'start', version: version(), url: running.url, listening: `${running.host}:${running.port}`, dataFile: running.dataFile, createToken: Boolean(settings.createToken), loginMode: settings.discovery.loginMode, backup: backup?.target.description ?? null, restore: running.restore?.outcome ?? null});
+    log({level: 'info', event: 'start', version: version(), url: running.url, listening: `${running.host}:${running.port}`, dataFile: running.dataFile, createToken: Boolean(settings.createToken), members: Boolean(settings.membersFile), loginMode: settings.discovery.loginMode, backup: backup?.target.description ?? null, restore: running.restore?.outcome ?? null});
     if (!settings.createToken && !['127.0.0.1', '::1', 'localhost'].includes(host)) {
         log({level: 'warn', event: 'open-creation', message: 'anyone who can reach this relay can create rooms; set PAIRLOBBY_CREATE_TOKEN to require a token'});
     }
@@ -95,6 +117,7 @@ async function serve(flags: RelayFlags, dataDir: string | undefined): Promise<nu
         };
         process.once('SIGINT', () => stop('SIGINT'));
         process.once('SIGTERM', () => stop('SIGTERM'));
+        process.on('SIGHUP', () => running.reloadMembers());
     });
     log({level: 'info', event: 'stop'});
     return 0;
@@ -108,6 +131,7 @@ async function main(argv: string[]): Promise<number> {
             help: {type: 'boolean', short: 'h'},
             version: {type: 'boolean'},
             json: {type: 'boolean'},
+            name: {type: 'string'},
             'data-dir': {type: 'string'},
             host: {type: 'string'},
             port: {type: 'string'},
@@ -129,6 +153,9 @@ async function main(argv: string[]): Promise<number> {
     if (positionals[0] === 'check') {
         return check(positionals[1], values.json === true);
     }
+    if (positionals[0] === 'member-token') {
+        return memberToken(positionals[1], values.name, values.json === true);
+    }
     if (positionals.length > 0) {
         process.stderr.write(`pairlobby-relay: unknown command "${positionals[0]}"\n\n${HELP}`);
         return 2;
@@ -148,7 +175,7 @@ async function main(argv: string[]): Promise<number> {
 main(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
 }, (error: unknown) => {
-    const usage = error instanceof RelaySettingsError || (error as NodeJS.ErrnoException).code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION';
+    const usage = error instanceof RelaySettingsError || error instanceof MembersFileError || (error as NodeJS.ErrnoException).code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION';
     log({level: 'error', event: usage ? 'bad-settings' : 'failed', message: error instanceof Error ? error.message : String(error)});
     process.exitCode = usage ? 2 : 1;
 });

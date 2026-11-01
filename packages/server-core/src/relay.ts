@@ -46,7 +46,7 @@ import {
 } from '@pairlobby/protocol';
 import type {ErrorCode, LiveTransport, LocalRoom, ProviderWait, ReceiptMode, RelayLimits, ServerDescription} from '@pairlobby/protocol';
 
-import type {Admission} from './admission.js';
+import type {Admission, RelayMember} from './admission.js';
 import type {ChangeNotifier} from './changes.js';
 import {directExecutor} from './ports.js';
 import type {RequestContext, RoomExecutor, Scheduler} from './ports.js';
@@ -110,10 +110,17 @@ export interface RelayOptions {
     discovery?: () => DiscoveryDocument;
     /**
      * Token-mode login: answers `GET /api/online/account` for a caller holding the team
-     * token (the create token). Absent means the path is unknown. Needs `admission`.
+     * token (the create token) or a personal token, with the member it names or null for
+     * the team token. Absent means the path is unknown. Needs `admission`.
      */
-    accountCheck?: (request: Request) => TeamAccount;
+    accountCheck?: (request: Request, member: RelayMember | null) => RelayAccount;
 }
+
+/**
+ * Internal claim from `edge` to `inRoom`: the member whose personal token came with a room
+ * creation or an invite redemption. `edge` removes any copy a caller sent.
+ */
+export const MEMBER_HEADER = 'x-pairlobby-member';
 
 /** Where `edge` sends a request that needs a room: the room's id, and the request to run there. */
 export type RoomRoute = {roomId: string; request: Request};
@@ -133,7 +140,8 @@ export interface Relay {
 export interface DiscoveryDocument {
     version: 1;
     name?: string;
-    login: {mode: 'token' | 'none'; tokenHelp?: string; verify?: string};
+    /** `members` says people log in with their own tokens, so a login names a person. */
+    login: {mode: 'token' | 'none'; tokenHelp?: string; verify?: string; members?: boolean};
     relays: string[];
     features: string[];
     support?: string;
@@ -147,6 +155,17 @@ export interface TeamAccount {
     server: string;
     handle: null;
 }
+
+/** The account a personal token stands for: one member, by handle. */
+export interface MemberAccount {
+    email: null;
+    userId: `member:${string}`;
+    name: string | null;
+    server: string;
+    handle: string;
+}
+
+export type RelayAccount = TeamAccount | MemberAccount;
 
 export interface ServerInfo {
     /** Addresses other devices can use to reach this server; empty when it only listens on this device. */
@@ -167,7 +186,7 @@ export function createRelay(options: RelayOptions): Relay {
 
     async function edge(request: Request, context: RequestContext = {}): Promise<Response | RoomRoute> {
         try {
-            return await edgeRoute(request, context, options, inviteRoom, peerIsLocal);
+            return await edgeRoute(claiming(request, null), context, options, inviteRoom, peerIsLocal);
         } catch (error) {
             return failure(error);
         }
@@ -251,8 +270,8 @@ async function edgeRoute(request: Request, context: RequestContext, options: Rel
         return new Response(JSON.stringify(options.discovery()), {status: 200, headers: {...JSON_HEADERS, 'cache-control': 'public, max-age=300'}});
     }
     if (options.accountCheck && options.admission && method === 'GET' && path === '/api/online/account') {
-        await options.admission.beforeAccountCheck(request, context);
-        return json(options.accountCheck(request));
+        const member = await options.admission.beforeAccountCheck(request, context);
+        return json(options.accountCheck(request, member));
     }
     const local = await routeLocal(request, context, options, peerIsLocal);
     if (local) {
@@ -263,8 +282,8 @@ async function edgeRoute(request: Request, context: RequestContext, options: Rel
     }
     // A new room gets its id here, because a relay with an object per room routes by it.
     if (segments[1] === 'rooms' && segments.length === 2 && method === 'POST') {
-        await options.admission?.beforeCreate(request, context);
-        return {roomId: newId('room'), request};
+        const member = (await options.admission?.beforeCreate(request, context)) ?? null;
+        return {roomId: newId('room'), request: claiming(request, member)};
     }
     // A code names its room only through its digest; the room then checks the code itself.
     if (segments[1] === 'invites' && segments[2] === 'redeem' && method === 'POST') {
@@ -277,12 +296,31 @@ async function edgeRoute(request: Request, context: RequestContext, options: Rel
             await options.admission?.afterUnknownInvite(request, context);
             throw new ProtocolError('invite_unknown', normalized ? 'that invite code is not valid' : 'that invite code is not well formed');
         }
-        return {roomId, request: new Request(request.url, {method: request.method, headers: request.headers, body})};
+        const member = (await options.admission?.member(request)) ?? null;
+        return {roomId, request: claiming(new Request(request.url, {method: request.method, headers: request.headers, body}), member)};
     }
     if (segments[1] !== 'rooms' || segments.length < 3) {
         return errorResponse('invalid_request', 'unknown path', 404);
     }
     return {roomId: segments[2]!, request};
+}
+
+/** The request with `MEMBER_HEADER` naming `member`, or without it for null; unchanged when it already says so. */
+function claiming(request: Request, member: RelayMember | null): Request {
+    if (request.headers.get(MEMBER_HEADER) === (member?.handle ?? null)) {
+        return request;
+    }
+    const headers = new Headers(request.headers);
+    headers.delete(MEMBER_HEADER);
+    if (member) {
+        headers.set(MEMBER_HEADER, member.handle);
+    }
+    return new Request(request, {headers});
+}
+
+/** The verified member `edge` put on a request; only `edge` may set it. */
+function claimedMember(request: Request): string | undefined {
+    return request.headers.get(MEMBER_HEADER) ?? undefined;
 }
 
 const NOT_LOCAL = 'joining by name is only open to devices on this relay\'s local network or tailnet; ask for an invite code';
@@ -329,6 +367,7 @@ export function describe(options: RelayOptions): ServerDescription {
         ...(options.inviteProbe ? ['invite-probe'] : []),
         ...(options.admission?.createTokenRequired ? ['create-token'] : []),
         ...(options.accountCheck && options.admission ? ['token-login'] : []),
+        ...(options.admission?.memberTokens ? ['member-tokens'] : []),
         ...(profile.receiptMode !== 'events' ? ['receipt-watermark'] : []),
         ...(options.features ?? [])
     ];
@@ -380,14 +419,16 @@ async function roomRoute(request: Request, roomId: string, context: RequestConte
 
     if (segments[1] === 'rooms' && segments.length === 2 && method === 'POST') {
         const input = CreateRoomRequest.parse(await request.json());
-        const created = await service.createRoom({...input, roomId});
+        const member = claimedMember(request);
+        const created = await service.createRoom({...input, roomId, ...(member ? {owner: member, member} : {})});
         return json({room: created.snapshot, participantId: created.participantId, invite: created.invite}, 201);
     }
 
     if (segments[1] === 'invites' && segments[2] === 'redeem' && method === 'POST') {
         const input = RedeemInviteRequest.parse(await request.json());
+        const member = claimedMember(request);
         try {
-            const result = await service.redeemInvite(input);
+            const result = await service.redeemInvite({...input, ...(member ? {member} : {})});
             return json({roomId: result.roomId, participantId: result.participantId, role: result.role, room: result.snapshot});
         } catch (error) {
             if (error instanceof ProtocolError && error.code === 'invite_unknown') {

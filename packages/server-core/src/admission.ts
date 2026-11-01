@@ -14,6 +14,18 @@ export const CREATE_TOKEN_REQUIRED = 'this relay needs its create token to start
 /** One message for a missing and a wrong team token, so the answer says nothing about which. */
 export const TEAM_TOKEN_REFUSED = 'this is not the team token for this relay';
 
+/** The same, on a relay where people log in with their own tokens. */
+export const LOGIN_TOKEN_REFUSED = 'this token does not log in to this relay';
+
+/** A person on a relay with personal tokens. */
+export type RelayMember = {handle: string; name?: string};
+
+/** The member whose personal token has this SHA-256 digest, or null. */
+export type MemberLookup = (digest: string) => Promise<RelayMember | null>;
+
+/** Who a token in the create token header stands for: the team, or one member. */
+type Caller = {kind: 'team'} | {kind: 'member'; member: RelayMember};
+
 export type RateLimit = {perMinute: number};
 
 export type RateDecision = {ok: true} | {ok: false; retryAfterMs: number};
@@ -39,6 +51,10 @@ export const DEFAULT_ADMISSION_LIMITS: AdmissionLimits = {createPerMinutePerAddr
 export type AdmissionOptions = {
     /** When set, creating a room needs this token in the create token header. Joining with an invite never does. */
     createToken?: string;
+    /** Personal tokens: each creates rooms like the create token, logs in as its member, and names that member on the rooms they create and join. */
+    members?: MemberLookup;
+    /** Whether the create token also logs people in, beside personal tokens. Default true; false leaves it for creating rooms only. */
+    teamTokenLogin?: boolean;
     /** Absent means no rate limits. */
     limiter?: RateLimiter;
     limits?: Partial<AdmissionLimits>;
@@ -100,32 +116,53 @@ export function createAdmission(options: AdmissionOptions) {
             throw new ProtocolError('rate_limited', 'too many attempts from here; wait a moment and try again', {retryAfterMs: decision.retryAfterMs});
         }
     };
-    /** Whether the request carries the create token, compared as digests so the time taken says nothing about it. */
-    const tokenMatches = async (request: Request): Promise<boolean> => {
+    const tokenRequired = tokenDigest !== null || options.members !== undefined;
+    /** Who the token in the request stands for; the create token is compared as digests so the time taken says nothing about it. */
+    const caller = async (request: Request): Promise<Caller | null> => {
         const offered = request.headers.get(CREATE_TOKEN_HEADER);
-        return Boolean(tokenDigest && offered && digestsEqual(await hashCredential(offered), await tokenDigest));
+        if (!offered || (!tokenDigest && !options.members)) {
+            return null;
+        }
+        const digest = await hashCredential(offered);
+        if (tokenDigest && digestsEqual(digest, await tokenDigest)) {
+            return {kind: 'team'};
+        }
+        const member = await options.members?.(digest);
+        return member ? {kind: 'member', member} : null;
     };
+    const tokenMatches = async (request: Request): Promise<boolean> => (await caller(request))?.kind === 'team';
     return {
         tokenMatches,
-        /** Creating a room needs the create token here. */
-        createTokenRequired: tokenDigest !== null,
-        /** Refuses a room creation without the create token, then counts it against the caller. */
-        async beforeCreate(request: Request, context: RequestContext = {}): Promise<void> {
-            if (tokenDigest && !(await tokenMatches(request))) {
+        /** Creating a room needs the create token or a personal token here. */
+        createTokenRequired: tokenRequired,
+        /** People hold their own tokens here, so rooms and participants can name a member. */
+        memberTokens: options.members !== undefined,
+        /** The member a request's personal token names, or null; refuses nothing. */
+        async member(request: Request): Promise<RelayMember | null> {
+            const found = await caller(request);
+            return found?.kind === 'member' ? found.member : null;
+        },
+        /** Refuses a room creation without a token that may create rooms, counts it against the caller, and returns the member creating it. */
+        async beforeCreate(request: Request, context: RequestContext = {}): Promise<RelayMember | null> {
+            const found = await caller(request);
+            if (tokenRequired && !found) {
                 throw new ProtocolError('unauthorized', CREATE_TOKEN_REQUIRED);
             }
             await take(request, context, `create:address:${address(request, context)}`, 1, {perMinute: limits.createPerMinutePerAddress});
+            return found?.kind === 'member' ? found.member : null;
         },
         /**
-         * The team token check behind token-mode login: counted first, in its own bucket so
+         * The token check behind token-mode login: counted first, in its own bucket so
          * guessing cannot spend the create budget, then refused the same way whether the
-         * token is missing or wrong.
+         * token is missing or wrong. Returns the member, or null for the team token.
          */
-        async beforeAccountCheck(request: Request, context: RequestContext = {}): Promise<void> {
+        async beforeAccountCheck(request: Request, context: RequestContext = {}): Promise<RelayMember | null> {
             await take(request, context, `account-check:address:${address(request, context)}`, 1, {perMinute: limits.accountCheckPerMinutePerAddress});
-            if (!(await tokenMatches(request))) {
-                throw new ProtocolError('unauthorized', TEAM_TOKEN_REFUSED);
+            const found = await caller(request);
+            if (!found || (found.kind === 'team' && options.teamTokenLogin === false)) {
+                throw new ProtocolError('unauthorized', options.members ? LOGIN_TOKEN_REFUSED : TEAM_TOKEN_REFUSED);
             }
+            return found.kind === 'member' ? found.member : null;
         },
         /** Counts an invite redemption against the caller and the whole relay, before the code is looked up. */
         async beforeRedeem(request: Request, context: RequestContext = {}): Promise<void> {

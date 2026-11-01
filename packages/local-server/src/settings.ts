@@ -29,6 +29,10 @@ export type RelaySettings = {
     publicUrl?: string;
     trustedProxyHeader?: string;
     createToken?: string;
+    /** The members file: one JSON line per person who logs in with their own token. */
+    membersFile?: string;
+    /** False when the create token no longer logs people in, so every login names a member. */
+    teamTokenLogin?: boolean;
     /** Exact Host values to accept beyond the relay's own, such as an internal DNS name. */
     allowedHosts: string[];
     limits: Partial<AdmissionLimits>;
@@ -77,7 +81,7 @@ const LIMIT_VARIABLES: Record<keyof AdmissionLimits, string> = {
     accountCheckPerMinutePerAddress: 'PAIRLOBBY_LIMIT_ACCOUNT_CHECK_PER_MIN_IP'
 };
 
-const DISCOVERY_VARIABLES = ['PAIRLOBBY_DISCOVERY_NAME', 'PAIRLOBBY_LOGIN_MODE', 'PAIRLOBBY_LOGIN_HELP', 'PAIRLOBBY_SUPPORT_URL'];
+const DISCOVERY_VARIABLES = ['PAIRLOBBY_DISCOVERY_NAME', 'PAIRLOBBY_LOGIN_MODE', 'PAIRLOBBY_LOGIN_HELP', 'PAIRLOBBY_SUPPORT_URL', 'PAIRLOBBY_MEMBERS_FILE', 'PAIRLOBBY_TEAM_TOKEN_LOGIN'];
 
 /** Every variable `serve` reads, for help text and documentation. */
 export const RELAY_VARIABLES = ['PAIRLOBBY_HOST', 'PAIRLOBBY_PORT', 'PAIRLOBBY_DATA_DIR', 'PAIRLOBBY_PUBLIC_URL', 'PAIRLOBBY_TRUSTED_PROXY_HEADER', 'PAIRLOBBY_ALLOWED_HOSTS', 'PAIRLOBBY_CREATE_TOKEN', 'PAIRLOBBY_CREATE_TOKEN_FILE', 'PAIRLOBBY_REQUEST_LOG', 'PAIRLOBBY_RECEIPT_MODE', 'PAIRLOBBY_BACKUP', 'PAIRLOBBY_BACKUP_INTERVAL', 'PAIRLOBBY_BACKUP_KEEP', 'PAIRLOBBY_BACKUP_S3_ENDPOINT', 'PAIRLOBBY_NO_RESTORE', ...DISCOVERY_VARIABLES, ...Object.values(LIMIT_VARIABLES), ...ROOM_LIMIT_VARIABLES.map(({variable}) => variable)];
@@ -176,7 +180,15 @@ export function relaySettings(flags: RelayFlags, environment: RelayEnvironment):
     }
     const token = createToken(environment);
     const backup = backupSettings(flags, environment);
-    const discovery = discoverySettings(environment, token !== undefined);
+    const membersFile = environment['PAIRLOBBY_MEMBERS_FILE']?.trim() || undefined;
+    const discovery = discoverySettings(environment, token !== undefined, membersFile !== undefined);
+    const teamTokenLogin = environment['PAIRLOBBY_TEAM_TOKEN_LOGIN']?.trim().toLowerCase() || undefined;
+    if (teamTokenLogin !== undefined && teamTokenLogin !== 'on' && teamTokenLogin !== 'off') {
+        throw new RelaySettingsError(`PAIRLOBBY_TEAM_TOKEN_LOGIN must be on or off, not "${teamTokenLogin}"`);
+    }
+    if (teamTokenLogin === 'off' && !membersFile) {
+        throw new RelaySettingsError('PAIRLOBBY_TEAM_TOKEN_LOGIN=off leaves nobody able to log in; set PAIRLOBBY_MEMBERS_FILE as well');
+    }
     return {
         ...(host ? {host} : {}),
         // 0 lets the system choose a free port.
@@ -184,6 +196,8 @@ export function relaySettings(flags: RelayFlags, environment: RelayEnvironment):
         ...(publicUrl ? {publicUrl: parsePublicUrl(publicUrl)} : {}),
         ...(proxyHeader ? {trustedProxyHeader: proxyHeader} : {}),
         ...(token ? {createToken: token} : {}),
+        ...(membersFile ? {membersFile} : {}),
+        ...(teamTokenLogin === 'off' ? {teamTokenLogin: false} : {}),
         allowedHosts,
         limits,
         roomLimits,
@@ -202,13 +216,16 @@ function plainText(value: string, variable: string, maximum: number): string {
     return value;
 }
 
-function discoverySettings(environment: RelayEnvironment, hasCreateToken: boolean): RelayDiscovery {
+function discoverySettings(environment: RelayEnvironment, hasCreateToken: boolean, hasMembers: boolean): RelayDiscovery {
     const mode = environment['PAIRLOBBY_LOGIN_MODE']?.trim() || 'none';
     if (mode !== 'token' && mode !== 'none') {
         throw new RelaySettingsError(`PAIRLOBBY_LOGIN_MODE must be token or none, not "${mode}"`);
     }
-    if (mode === 'token' && !hasCreateToken) {
-        throw new RelaySettingsError('PAIRLOBBY_LOGIN_MODE=token logs people in with the create token; set PAIRLOBBY_CREATE_TOKEN or PAIRLOBBY_CREATE_TOKEN_FILE');
+    if (mode === 'token' && !hasCreateToken && !hasMembers) {
+        throw new RelaySettingsError('PAIRLOBBY_LOGIN_MODE=token logs people in with the create token or their own tokens; set PAIRLOBBY_CREATE_TOKEN, PAIRLOBBY_CREATE_TOKEN_FILE or PAIRLOBBY_MEMBERS_FILE');
+    }
+    if (hasMembers && mode !== 'token') {
+        throw new RelaySettingsError('PAIRLOBBY_MEMBERS_FILE gives people their own login; set PAIRLOBBY_LOGIN_MODE=token as well');
     }
     const name = environment['PAIRLOBBY_DISCOVERY_NAME']?.trim();
     const help = environment['PAIRLOBBY_LOGIN_HELP']?.trim();
