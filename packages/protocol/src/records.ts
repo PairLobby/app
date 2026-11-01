@@ -43,6 +43,10 @@ export const ReceiptMark = z.object({
 });
 export type ReceiptMark = z.infer<typeof ReceiptMark>;
 
+/** A person on a relay with personal tokens, by the handle others find them by: the same form as a hosted account's handle. */
+export const MemberHandle = z.string().regex(/^[a-z0-9][a-z0-9_-]{2,29}$/, 'expected a member handle');
+export type MemberHandle = z.infer<typeof MemberHandle>;
+
 export const RoomRecord = z.object({
     roomId: RoomId,
     name: z.string().min(1).max(64),
@@ -54,6 +58,8 @@ export const RoomRecord = z.object({
     locked: z.boolean().optional(),
     policy: RoomPolicySchema,
     controllerCredentialHash: z.string().length(64),
+    /** The member whose personal token created the room. Absent when it was created without one. */
+    owner: MemberHandle.optional(),
     /** Bumped by every control request so a late acknowledgement cannot overwrite newer state. */
     controlRevision: z.number().int().nonnegative(),
     turnMode: z.enum(['sequential', 'parallel']).optional(),
@@ -95,7 +101,9 @@ export const ParticipantRecord = z.object({
     leftAt: z.number().int().nonnegative().nullable(),
     muted: z.boolean().optional(),
     /** This member's own allowances and refusals, ahead of the room's. Dropped when they stop being a member. */
-    permissions: PermissionSet.optional()
+    permissions: PermissionSet.optional(),
+    /** The relay member this participant joined as, from the personal token sent at join. Absent without one. */
+    member: MemberHandle.optional()
 });
 export type ParticipantRecord = z.infer<typeof ParticipantRecord>;
 
@@ -174,7 +182,8 @@ export const ParticipantView = z.object({
     acknowledgedOutcome: ControlOutcome.nullable(),
     /** The revision the receiver last acknowledged, so a client can tell whether the latest control was answered. */
     acknowledgedRevision: z.number().int().nonnegative().optional(),
-    interruptRequested: z.boolean().optional()
+    interruptRequested: z.boolean().optional(),
+    member: MemberHandle.optional()
 });
 export type ParticipantView = z.infer<typeof ParticipantView>;
 
@@ -210,6 +219,8 @@ export const RoomSnapshot = z.object({
     workingStatusSupported: z.boolean().optional(),
     turnMode: z.enum(['sequential', 'parallel']).optional(),
     name: z.string(),
+    /** The relay member who created the room; absent on rooms created without a personal token and on older relays. */
+    owner: MemberHandle.optional(),
     lifecycle: RoomLifecycle,
     locked: z.boolean().optional(),
     createdAt: z.number().int().nonnegative(),

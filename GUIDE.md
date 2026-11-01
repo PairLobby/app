@@ -221,7 +221,9 @@ In a container, run `pairlobby-relay` from the `@pairlobby/local-server` package
 | `PAIRLOBBY_LIMIT_REDEEM_PER_MIN_IP` | | invite codes one caller may try a minute (20) |
 | `PAIRLOBBY_LIMIT_REDEEM_PER_MIN_GLOBAL` | | invite codes the whole relay accepts a minute (300) |
 | `PAIRLOBBY_LIMIT_ACCOUNT_CHECK_PER_MIN_IP` | | team token checks one caller may make a minute, counted apart from creating rooms (30) |
-| `PAIRLOBBY_LOGIN_MODE` | | `token` lets people log in with the create token as a team token; `none` (default) offers no login |
+| `PAIRLOBBY_LOGIN_MODE` | | `token` lets people log in with the create token as a team token, or with their own token; `none` (default) offers no login |
+| `PAIRLOBBY_MEMBERS_FILE` | | personal tokens: one JSON line per person (`pairlobby-relay member-token` prints it); reread within a minute of a change and on `SIGHUP`; needs `PAIRLOBBY_LOGIN_MODE=token` |
+| `PAIRLOBBY_TEAM_TOKEN_LOGIN` | | `on` (default) or `off`: whether the create token still logs people in beside personal tokens |
 | `PAIRLOBBY_DISCOVERY_NAME` | | the name `pairlobby setup` shows, up to 64 characters |
 | `PAIRLOBBY_LOGIN_HELP` | | one or two sentences shown above the token prompt, up to 300 characters |
 | `PAIRLOBBY_SUPPORT_URL` | | an https page for help, shown by `pairlobby setup --show` |
@@ -232,7 +234,23 @@ In a container, run `pairlobby-relay` from the `@pairlobby/local-server` package
 | `PAIRLOBBY_ROOM_MAX_FILE_MB` | | MiB in one file, at most 95; `0` turns attachments off (95) |
 | `PAIRLOBBY_ROOM_MAX_FILES_MB` | | MiB of files a room keeps (512) |
 
-Every relay started this way answers `GET /.well-known/pairlobby.json`, which tells `pairlobby setup` its name, how to log in and where its rooms are (`PAIRLOBBY_PUBLIC_URL`, else the address used). Set `PAIRLOBBY_PUBLIC_URL` (or `PAIRLOBBY_ALLOWED_HOSTS`) to the name people use, or the relay refuses requests for it. With `PAIRLOBBY_LOGIN_MODE=token`, which needs a create token, it also answers `GET /api/online/account`: the create token in `x-pairlobby-account-token` gets `200`, a missing or wrong one the same `401`, and checks are rate limited on their own. No other account path exists on the relay.
+Every relay started this way answers `GET /.well-known/pairlobby.json`, which tells `pairlobby setup` its name, how to log in and where its rooms are (`PAIRLOBBY_PUBLIC_URL`, else the address used). Set `PAIRLOBBY_PUBLIC_URL` (or `PAIRLOBBY_ALLOWED_HOSTS`) to the name people use, or the relay refuses requests for it. With `PAIRLOBBY_LOGIN_MODE=token`, which needs a create token or a members file, it also answers `GET /api/online/account`: the create token or a personal token in `x-pairlobby-account-token` gets `200`, a missing or wrong one the same `401`, and checks are rate limited on their own. No other account path exists on the relay.
+
+### Personal tokens
+
+With a members file, each person logs in with their own token, so the relay knows who they are: a room records the member who created it (`owner`), and each participant the member it joined as (`member`), agents included, since an agent joins with its device's login.
+
+```sh
+pairlobby-relay member-token damien --name "Damien"
+```
+
+This prints a `plm_` token, shown once, for Damien's `pairlobby login`, and the line to add to the members file:
+
+```json
+{"handle":"damien","name":"Damien","tokenSha256":"<sha-256 of the token>"}
+```
+
+The file holds only digests. Deleting a line revokes that token within a minute, without a restart; a file the relay cannot read or parse keeps the members it had and logs one line naming the problem, never its content. A personal token creates rooms like the create token. `pairlobby login` then says `Logged in to <name> as @damien`, and `pairlobby setup --show` shows `Signed in as`.
 
 The `PAIRLOBBY_ROOM_*` caps apply to rooms created after the relay starts with them; a room keeps the caps it was created with. A full room still accepts pause, close and export.
 
@@ -240,7 +258,7 @@ The `PAIRLOBBY_ROOM_*` caps apply to rooms created after the relay starts with t
 
 With `--backup`, the relay copies its database every minute when something changed, and once more when it stops, so a container that is replaced cleanly loses nothing and one that crashes loses at most a minute. When it starts on a disk with no database, it restores the newest copy first; a database already on the disk always wins. If the copies cannot be reached, it refuses to start rather than begin empty. Start with `--no-restore` to begin empty on purpose, knowing new copies will push out the old ones after `PAIRLOBBY_BACKUP_KEEP` rounds. S3 uses the usual AWS credentials, in this order: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`; a web identity such as EKS IRSA (`AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE`, with `AWS_ROLE_SESSION_NAME` optional and `AWS_ENDPOINT_URL_STS` for an STS VPC endpoint); the ECS task role; the EC2 instance role. Set `AWS_REGION` too. The role needs `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject` and `s3:ListBucket` on the bucket and prefix. Every copy and restore writes one JSON line to standard output.
 
-`GET /v1/server` describes the relay: its version, protocol, features (`message-stages`, `files`, `local-join`, `invite-probe`, `create-token`, `token-login`, `receipt-watermark`), its `receiptMode`, the limits a new room gets, and how clients hear about new events. `pairlobby serve` offers long-poll: a client's read waits up to 25 seconds for something new instead of asking again every second, so a room with nothing happening costs one request every 25 seconds per client. Give a load balancer in front of it an idle timeout of at least 30 seconds. The Durable Object relay says `poll`, and a relay that does not describe itself keeps the old rule (a socket for hosted rooms, polling elsewhere). `pairlobby doctor --server <url>` prints all of it, and a command the relay does not support, such as `--open-local` on a relay that cannot see where a request comes from, says so before trying.
+`GET /v1/server` describes the relay: its version, protocol, features (`message-stages`, `files`, `local-join`, `invite-probe`, `create-token`, `token-login`, `member-tokens`, `receipt-watermark`), its `receiptMode`, the limits a new room gets, and how clients hear about new events. `pairlobby serve` offers long-poll: a client's read waits up to 25 seconds for something new instead of asking again every second, so a room with nothing happening costs one request every 25 seconds per client. Give a load balancer in front of it an idle timeout of at least 30 seconds. The Durable Object relay says `poll`, and a relay that does not describe itself keeps the old rule (a socket for hosted rooms, polling elsewhere). `pairlobby doctor --server <url>` prints all of it, and a command the relay does not support, such as `--open-local` on a relay that cannot see where a request comes from, says so before trying.
 
 #### Joining by name, without an invite
 
@@ -296,7 +314,7 @@ What a deployment offers depends on how it logs people in, which `pairlobby setu
 | Login | Offers |
 |---|---|
 | `browser` (pairlobby.com, or an account service) | everything: `login` in the browser, `create online`, `find online`, `join online`, `invitations`, handles |
-| `token` (a relay with `PAIRLOBBY_LOGIN_MODE=token`) | `login` with the team token, `create online`; joining is by invite code |
+| `token` (a relay with `PAIRLOBBY_LOGIN_MODE=token`) | `login` with the team token or a personal token, `create online`; joining is by invite code |
 | `none` (a plain relay) | no login; `create` and `join <code>` reach it with no `--server` |
 
 In token mode `pairlobby login` shows the relay's help text and asks for the team token (hidden), checks it with the relay, and saves it only if it is right; `logout` only forgets it, since the team shares it. A command the deployment does not offer says so instead of failing.

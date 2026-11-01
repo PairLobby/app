@@ -105,6 +105,8 @@ export interface Identity {
     kind: ParticipantKind;
     sessionId?: string | undefined;
     capabilities?: AdapterCapabilities | undefined;
+    /** The relay member joining, verified by the relay from a personal token. Never taken from a client request. */
+    member?: string | undefined;
 }
 
 export interface CreateRoomInput extends Identity {
@@ -118,6 +120,8 @@ export interface CreateRoomInput extends Identity {
      * relay with one Durable Object per room. Never taken from a client request.
      */
     roomId?: string;
+    /** The relay member creating the room, verified by the relay from a personal token. Never taken from a client request. */
+    owner?: string | undefined;
 }
 
 export interface CreatedRoom {
@@ -338,6 +342,8 @@ export class RoomService {
                 nameSource: input.nameSource,
                 sessionId: input.sessionId ?? null,
                 capabilities: input.capabilities ?? null,
+                ...(input.member ? {member: input.member} : {}),
+                ...(input.owner ? {owner: input.owner} : {}),
                 ...(input.expiresAt !== undefined ? {expiresAt: input.expiresAt} : {}),
                 policy: input.policy ?? this.roomPolicy
             },
@@ -480,7 +486,8 @@ export class RoomService {
                 kind: input.kind,
                 nameSource: input.nameSource,
                 sessionId: input.sessionId ?? null,
-                capabilities: input.capabilities ?? null
+                capabilities: input.capabilities ?? null,
+                ...(input.member ? {member: input.member} : {})
             },
             this.ctx()
         );

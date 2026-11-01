@@ -5,7 +5,7 @@
 
 import {PairLobbyClient} from '@pairlobby/client';
 import type {JoinedRoom} from '@pairlobby/client';
-import {PROTOCOL_VERSION_HEADER, ProtocolError, newId} from '@pairlobby/protocol';
+import {PROTOCOL_VERSION_HEADER, ProtocolError, newCredential, newId} from '@pairlobby/protocol';
 import type {ErrorCode, ServerDescription} from '@pairlobby/protocol';
 
 export type CheckStatus = 'pass' | 'fail' | 'skip';
@@ -19,11 +19,13 @@ export type ConformanceOptions = {
     relay: string;
     /** The relay's create token, when it needs one. */
     createToken?: string | undefined;
+    /** A member's personal token, for a relay that lists `member-tokens`; it also creates rooms when there is no create token. */
+    memberToken?: string | undefined;
     /** Only these checks, by id. */
     only?: string[];
 };
 
-type CheckContext = {relay: string; description: ServerDescription | null; owner: () => PairLobbyClient; stranger: () => PairLobbyClient};
+type CheckContext = {relay: string; description: ServerDescription | null; memberToken?: string | undefined; owner: () => PairLobbyClient; stranger: () => PairLobbyClient};
 
 type Check = {id: string; title: string; run: (context: CheckContext) => Promise<string | void>};
 
@@ -111,6 +113,50 @@ export const CHECKS: Check[] = [
             await expectCode(context.stranger().createRoom('no token', human), 'unauthorized');
             const {owner, roomId, controllerCredential} = await pair(context);
             await owner.delete(roomId, controllerCredential);
+        }
+    },
+    {
+        id: 'member-login',
+        title: 'a personal token logs in as its member, who owns the rooms they create and is named on the rooms they join',
+        async run(context) {
+            needFeature(context, 'member-tokens');
+            const token = context.memberToken ?? fail('set PAIRLOBBY_MEMBER_TOKEN to a member\'s personal token');
+            const response = await fetch(`${context.relay}/api/online/account`, {headers: {'x-pairlobby-account-token': token}});
+            const account = (await response.json().catch(() => null)) as {userId?: string; handle?: string} | null;
+            const handle = account?.handle;
+            if (response.status !== 200 || !handle || account?.userId !== `member:${handle}`) {
+                fail(`the account check answered ${response.status} ${JSON.stringify(account)}`);
+            }
+            const refused = await fetch(`${context.relay}/api/online/account`, {headers: {'x-pairlobby-account-token': `${token}-wrong`}});
+            if (refused.status !== 401) {
+                fail(`a wrong token answered ${refused.status}`);
+            }
+            // A caller naming someone else is ignored: only the relay names a member.
+            const controllerCredential = newCredential('controller');
+            const body = {name: `conformance-${newId('event').slice(-6)}`, ...human, controllerCredential, participantCredential: newCredential('participant')};
+            const created = await fetch(`${context.relay}/v1/rooms`, {method: 'POST', headers: {'content-type': 'application/json', 'x-pairlobby-account-token': token, 'x-pairlobby-member': 'conformance-forged'}, body: JSON.stringify(body)});
+            const room = (await created.json().catch(() => null)) as {room?: {roomId: string; owner?: string; participants: Array<{member?: string}>}; invite?: {code: string}} | null;
+            if (created.status !== 201 || !room?.room || !room.invite) {
+                fail(`creating with the personal token answered ${created.status}`);
+            }
+            const owner = new PairLobbyClient(context.relay);
+            try {
+                if (room.room.owner !== handle || room.room.participants[0]?.member !== handle) {
+                    fail(`the room names owner ${room.room.owner ?? 'nobody'} and creator ${room.room.participants[0]?.member ?? 'nobody'}, not ${handle}`);
+                }
+                const joined = await new PairLobbyClient(context.relay, token).redeemInvite(room.invite.code, agent);
+                const member = joined.room.participants.find((participant) => participant.participantId === joined.participantId)?.member;
+                if (member !== handle) {
+                    fail(`the participant who joined with the personal token is named ${member ?? 'nobody'}, not ${handle}`);
+                }
+                const stranger = await context.stranger().redeemInvite((await owner.mintInvite(room.room.roomId, controllerCredential)).code, agent);
+                if (stranger.room.participants.find((participant) => participant.participantId === stranger.participantId)?.member !== undefined) {
+                    fail('a participant who joined without a token is named as a member');
+                }
+            } finally {
+                await owner.delete(room.room.roomId, controllerCredential);
+            }
+            return `logged in as @${handle}`;
         }
     },
     {
@@ -272,10 +318,10 @@ export const CHECKS: Check[] = [
     }
 ];
 
-export async function runConformance({relay, createToken, only}: ConformanceOptions): Promise<ConformanceReport> {
+export async function runConformance({relay, createToken, memberToken, only}: ConformanceOptions): Promise<ConformanceReport> {
     const base = relay.replace(/\/+$/, '');
     const description = await new PairLobbyClient(base).describe();
-    const context: CheckContext = {relay: base, description, owner: () => new PairLobbyClient(base, createToken), stranger: () => new PairLobbyClient(base)};
+    const context: CheckContext = {relay: base, description, memberToken, owner: () => new PairLobbyClient(base, createToken ?? memberToken), stranger: () => new PairLobbyClient(base)};
     const results: CheckResult[] = [];
     for (const check of CHECKS.filter((each) => !only || only.includes(each.id))) {
         const started = Date.now();

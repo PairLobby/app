@@ -28,7 +28,7 @@ import {DEFAULT_LOCAL_SERVER, DEFAULT_RELAY_PORT, UsageError, controllerCredenti
 import type {Selection} from './context.js';
 import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
-import {acceptInvitation, accountToken, accountTokenFor, createTokenFor, requireAccountApi, declineInvitation, isOnlineKey, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
+import {acceptInvitation, accountToken, accountTokenFor, createTokenFor, requireAccountApi, declineInvitation, isOnlineKey, loggedInLine, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
 import type {ReceivedInvitation} from './online.js';
 import {receiverAttempts, receiverConfiguration, receiverStatus, refreshReceivers, retryProviderNow, runReceiver, startReceiver, stopReceiver, waitAndRefreshReceiver, wakeOfflineReceivers} from './receiver.js';
 import type {ReceiverStartOptions, ReceiverStatus} from './receiver.js';
@@ -398,9 +398,8 @@ async function main(argv: string[]): Promise<number> {
             return joinRoom(store, values, ['online', 'local'].includes(positionals[1] ?? '') ? positionals[2] : positionals[1], positionals[1] === 'online', positionals[1] === 'local');
         case 'login': {
             announceEndpoint(store);
-            const email = await loginOnline(store, {paste: flag(values, 'token'), ...(flag(values, 'no-browser') ? {openBrowser: false} : {})});
-            // A team token stands for no one in particular, so there is no address to show.
-            out(email ? `Logged in as ${email}` : `Logged in to ${activeEndpoint(store).name}`);
+            const who = await loginOnline(store, {paste: flag(values, 'token'), ...(flag(values, 'no-browser') ? {openBrowser: false} : {})});
+            out(loggedInLine(activeEndpoint(store).name, who));
             return 0;
         }
         case 'logout': {
@@ -2656,7 +2655,7 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     const network = relayNetwork(store, values, settings.host !== undefined);
     const host = settings.host ?? (network === 'off' ? '127.0.0.1' : '0.0.0.0');
     const port = settings.port ?? DEFAULT_RELAY_PORT;
-    const {publicUrl, trustedProxyHeader, createToken, allowedHosts, limits, roomLimits, requestLog, receiptMode, discovery} = settings;
+    const {publicUrl, trustedProxyHeader, createToken, membersFile, teamTokenLogin, allowedHosts, limits, roomLimits, requestLog, receiptMode, discovery} = settings;
     const writeLine = (line: string) => process.stdout.write(`${line}\n`);
     const backup = settings.backup ? {target: backupTarget(settings.backup.location), intervalMs: settings.backup.intervalMs, keep: settings.backup.keep, restore: settings.backup.restore, log: writeLine} : undefined;
     // Tailnet devices may address this one by its MagicDNS names, which are not interface addresses.
@@ -2668,7 +2667,7 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     }
     let running;
     try {
-        running = await startServer({version: VERSION, host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), ...(trustedProxyHeader ? {trustedProxyHeader} : {}), ...(createToken ? {createToken} : {}), allowedHosts, limits, roomLimits, discovery, ...(requestLog ? {requestLog: {mode: requestLog, write: writeLine}} : {}), ...(receiptMode ? {receiptMode} : {}), ...(backup ? {backup} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
+        running = await startServer({version: VERSION, host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), ...(trustedProxyHeader ? {trustedProxyHeader} : {}), ...(createToken ? {createToken} : {}), ...(membersFile ? {members: {file: membersFile, log: writeLine}} : {}), ...(teamTokenLogin === false ? {teamTokenLogin} : {}), allowedHosts, limits, roomLimits, discovery, ...(requestLog ? {requestLog: {mode: requestLog, write: writeLine}} : {}), ...(receiptMode ? {receiptMode} : {}), ...(backup ? {backup} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
     } catch (error) {
         // Say what is wrong and what to do, rather than surfacing a raw errno. The
         // occupant is never probed: something else owning the port is not ours to poke.
@@ -2679,6 +2678,9 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
         }
         if ((error as NodeJS.ErrnoException).code === 'EACCES') {
             throw new UsageError(`not allowed to listen on ${host}:${port}; ports below 1024 usually need elevated permissions`);
+        }
+        if (error instanceof Error && error.name === 'MembersFileError') {
+            throw new UsageError(error.message);
         }
         throw error;
     }

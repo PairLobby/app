@@ -3,7 +3,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
 import {afterAll, beforeAll, expect, test} from 'vitest';
-import {startServer} from '@pairlobby/local-server';
+import {issueMemberToken, startServer} from '@pairlobby/local-server';
 import type {RunningServer} from '@pairlobby/local-server';
 
 import {CHECKS, parityMatrix, runConformance} from '../src/index.js';
@@ -11,12 +11,16 @@ import {CHECKS, parityMatrix, runConformance} from '../src/index.js';
 let directory: string;
 let open: RunningServer;
 let guarded: RunningServer;
+let memberToken: string;
 
 beforeAll(async () => {
     directory = mkdtempSync(join(tmpdir(), 'pairlobby-conformance-'));
     open = await startServer({port: 0, dataFile: join(directory, 'open.sqlite')});
-    // Watermark-only receipts here, so the checks cover both receipt modes a relay offers.
-    guarded = await startServer({port: 0, dataFile: join(directory, 'guarded.sqlite'), createToken: 'conformance-token', receiptMode: 'watermark'});
+    // Watermark-only receipts and personal tokens here, so the checks cover both receipt modes and member login.
+    const issued = await issueMemberToken('conformance');
+    memberToken = issued.token;
+    writeFileSync(join(directory, 'members.jsonl'), `${JSON.stringify(issued.line)}\n`);
+    guarded = await startServer({port: 0, dataFile: join(directory, 'guarded.sqlite'), createToken: 'conformance-token', receiptMode: 'watermark', members: {file: join(directory, 'members.jsonl')}, discovery: {loginMode: 'token'}});
 });
 
 afterAll(async () => {
@@ -26,7 +30,7 @@ afterAll(async () => {
 
 test('test_the_node_relay_passes_every_check', async () => {
     const plain = await runConformance({relay: open.url});
-    const withToken = await runConformance({relay: guarded.url, createToken: 'conformance-token'});
+    const withToken = await runConformance({relay: guarded.url, createToken: 'conformance-token', memberToken});
     const matrix = parityMatrix({node: plain, 'node with create token': withToken});
     if (process.env['PAIRLOBBY_PARITY_FILE']) {
         writeFileSync(process.env['PAIRLOBBY_PARITY_FILE'], `${matrix}\n`);
@@ -34,6 +38,7 @@ test('test_the_node_relay_passes_every_check', async () => {
     expect(plain.results.filter((result) => result.status === 'fail'), matrix).toEqual([]);
     expect(withToken.results.filter((result) => result.status === 'fail'), matrix).toEqual([]);
     expect(plain.results.find((result) => result.id === 'create-token')?.status).toBe('skip');
+    expect(plain.results.find((result) => result.id === 'member-login')?.status).toBe('skip');
     expect(withToken.results.map((result) => result.status)).toEqual(CHECKS.map(() => 'pass'));
 });
 

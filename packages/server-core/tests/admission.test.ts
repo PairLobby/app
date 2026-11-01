@@ -1,7 +1,8 @@
-import {ProtocolError} from '@pairlobby/protocol';
+import {ProtocolError, hashCredential} from '@pairlobby/protocol';
 import {describe, expect, test} from 'vitest';
 
-import {CREATE_TOKEN_HEADER, CREATE_TOKEN_REQUIRED, TEAM_TOKEN_REFUSED, createAdmission, memoryRateLimiter, proxiedAddress} from '../src/admission.js';
+import {CREATE_TOKEN_HEADER, CREATE_TOKEN_REQUIRED, LOGIN_TOKEN_REFUSED, TEAM_TOKEN_REFUSED, createAdmission, memoryRateLimiter, proxiedAddress} from '../src/admission.js';
+import type {MemberLookup, RelayMember} from '../src/admission.js';
 
 type ClockState = {at: number};
 
@@ -9,7 +10,7 @@ function post(headers: Record<string, string> = {}): Request {
     return new Request('http://relay/v1/rooms', {method: 'POST', headers});
 }
 
-async function refusal(work: Promise<void>): Promise<ProtocolError> {
+async function refusal(work: Promise<unknown>): Promise<ProtocolError> {
     const error = await work.then(() => null, (thrown: unknown) => thrown);
     expect(error).toBeInstanceOf(ProtocolError);
     return error as ProtocolError;
@@ -106,6 +107,45 @@ describe('team token check', () => {
         await admission.beforeCreate(post({[CREATE_TOKEN_HEADER]: 'team-secret'}));
         await admission.beforeCreate(post({[CREATE_TOKEN_HEADER]: 'team-secret'}));
         expect((await refusal(admission.beforeCreate(post({[CREATE_TOKEN_HEADER]: 'team-secret'})))).code).toBe('rate_limited');
+    });
+});
+
+describe('personal tokens', () => {
+    const check = (headers: Record<string, string> = {}) => new Request('http://relay/api/online/account', {headers});
+
+    async function lookup(tokens: Record<string, RelayMember>): Promise<MemberLookup> {
+        const byDigest = new Map(await Promise.all(Object.entries(tokens).map(async ([token, member]) => [await hashCredential(token), member] as const)));
+        return async (digest) => byDigest.get(digest) ?? null;
+    }
+
+    test('test_a_personal_token_creates_rooms_and_names_its_member_while_the_team_token_names_no_one', async () => {
+        const admission = createAdmission({createToken: 'team-secret', members: await lookup({plm_damien: {handle: 'damien', name: 'Damien'}})});
+        expect(admission.createTokenRequired).toBe(true);
+        expect(admission.memberTokens).toBe(true);
+        expect(await admission.beforeCreate(post({[CREATE_TOKEN_HEADER]: 'plm_damien'}))).toEqual({handle: 'damien', name: 'Damien'});
+        expect(await admission.beforeCreate(post({[CREATE_TOKEN_HEADER]: 'team-secret'}))).toBeNull();
+        expect((await refusal(admission.beforeCreate(post({[CREATE_TOKEN_HEADER]: 'plm_nobody'})))).message).toBe(CREATE_TOKEN_REQUIRED);
+        expect(await admission.member(post({[CREATE_TOKEN_HEADER]: 'plm_damien'}))).toEqual({handle: 'damien', name: 'Damien'});
+        expect(await admission.member(post({[CREATE_TOKEN_HEADER]: 'team-secret'}))).toBeNull();
+        expect(await admission.member(post())).toBeNull();
+    });
+
+    test('test_personal_tokens_alone_make_creation_need_a_token', async () => {
+        const admission = createAdmission({members: await lookup({plm_damien: {handle: 'damien'}})});
+        expect(admission.createTokenRequired).toBe(true);
+        await refusal(admission.beforeCreate(post()));
+        expect(await admission.beforeCreate(post({[CREATE_TOKEN_HEADER]: 'plm_damien'}))).toEqual({handle: 'damien'});
+    });
+
+    test('test_login_names_the_member_and_the_team_token_logs_in_only_while_allowed', async () => {
+        const members = await lookup({plm_damien: {handle: 'damien'}});
+        const both = createAdmission({createToken: 'team-secret', members});
+        expect(await both.beforeAccountCheck(check({[CREATE_TOKEN_HEADER]: 'plm_damien'}))).toEqual({handle: 'damien'});
+        expect(await both.beforeAccountCheck(check({[CREATE_TOKEN_HEADER]: 'team-secret'}))).toBeNull();
+        expect((await refusal(both.beforeAccountCheck(check({[CREATE_TOKEN_HEADER]: 'plm_revoked'})))).message).toBe(LOGIN_TOKEN_REFUSED);
+        const membersOnly = createAdmission({createToken: 'team-secret', members, teamTokenLogin: false});
+        expect((await refusal(membersOnly.beforeAccountCheck(check({[CREATE_TOKEN_HEADER]: 'team-secret'})))).message).toBe(LOGIN_TOKEN_REFUSED);
+        expect(await membersOnly.beforeCreate(post({[CREATE_TOKEN_HEADER]: 'team-secret'}))).toBeNull();
     });
 });
 

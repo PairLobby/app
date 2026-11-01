@@ -1,14 +1,14 @@
-import {mkdtempSync, rmSync} from 'node:fs';
+import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
 import {afterAll, afterEach, beforeAll, beforeEach, expect, test, vi} from 'vitest';
 import {LocalStore, PairLobbyClient} from '@pairlobby/client';
-import {startServer} from '@pairlobby/local-server';
+import {issueMemberToken, startServer} from '@pairlobby/local-server';
 import type {RunningServer} from '@pairlobby/local-server';
 
 import {activeEndpoint, saveEndpoint} from '../src/endpoints.js';
-import {accountToken, createTokenFor, loginOnline, logoutOnline, onlineAccount, onlineRooms, requireAccountApi} from '../src/online.js';
+import {accountToken, accountTokenFor, createTokenFor, loggedInLine, loginOnline, logoutOnline, onlineAccount, onlineRooms, requireAccountApi, signedInAs} from '../src/online.js';
 import {setupCommand} from '../src/setup.js';
 
 const TEAM_TOKEN = 'team-secret-token';
@@ -139,4 +139,40 @@ test('test_plain_create_never_sends_an_unscoped_account_token_to_a_relay', async
     offerToken(TEAM_TOKEN);
     expect(createTokenFor(local, team.url)).toBe(TEAM_TOKEN);
     expect(createTokenFor(local, plain.url)).toBeUndefined();
+});
+
+test('test_a_personal_token_logs_in_as_its_member_who_then_owns_and_joins_rooms_by_handle', async () => {
+    const damien = await issueMemberToken('damien');
+    const hugo = await issueMemberToken('hugo');
+    const members = join(directory, 'members.jsonl');
+    writeFileSync(members, `${JSON.stringify(damien.line)}\n${JSON.stringify(hugo.line)}\n`);
+    const relay = await startServer({port: 0, dataFile: join(directory, 'members.sqlite'), createToken: TEAM_TOKEN, members: {file: members}, discovery: {loginMode: 'token', name: 'Example Corp PairLobby'}});
+    try {
+        const local = store();
+        await setupCommand(local, {url: relay.url, name: 'team', relays: [], yes: true, login: false, json: false, show: false, reset: false}, human);
+        vi.stubEnv('PAIRLOBBY_ACCOUNT_TOKEN', damien.token);
+        vi.stubEnv('PAIRLOBBY_ACCOUNT_TOKEN_ORIGIN', relay.url);
+        const who = await loginOnline(local);
+        expect(who).toBe('@damien');
+        expect(loggedInLine('Example Corp PairLobby', who)).toBe('Logged in to Example Corp PairLobby as @damien');
+        expect(loggedInLine('Example Corp PairLobby', null)).toBe('Logged in to Example Corp PairLobby');
+        vi.unstubAllEnvs();
+        expect(signedInAs(local, relay.url)).toBe('@damien');
+
+        const written = vi.mocked(process.stdout.write);
+        written.mockClear();
+        await setupCommand(local, {relays: [], yes: false, login: false, json: false, show: true, reset: false}, human);
+        expect(written.mock.calls.map(([chunk]) => String(chunk)).join('')).toContain('Signed in as    @damien');
+
+        const created = await new PairLobbyClient(relay.url, createTokenFor(local, relay.url)).createRoom('owned', {displayName: 'damien', kind: 'human'});
+        expect(created.room.owner).toBe('damien');
+        const joined = await new PairLobbyClient(relay.url, hugo.token).redeemInvite(created.invite.code, {displayName: 'agent', kind: 'agent'});
+        expect(joined.room.participants.find((participant) => participant.participantId === joined.participantId)?.member).toBe('hugo');
+        expect(accountTokenFor(local, relay.url)).toBe(damien.token);
+
+        await logoutOnline(local);
+        expect(signedInAs(local, relay.url)).toBeUndefined();
+    } finally {
+        await relay.close();
+    }
 });

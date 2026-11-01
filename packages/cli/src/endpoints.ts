@@ -240,6 +240,7 @@ export function removeEndpoint(store: LocalStore, label: string): Endpoint {
     const active = store.settings().activeEndpoint;
     store.setSettings({endpoints, ...(active === label ? {activeEndpoint: undefined} : {})});
     store.forgetCredential('online-account', saved.origin);
+    store.forgetCredential('online-identity', saved.origin);
     return fromSaved(label, saved);
 }
 

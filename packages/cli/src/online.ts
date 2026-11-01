@@ -257,10 +257,28 @@ async function promptForToken(endpoint: Endpoint, help?: string): Promise<string
     });
 }
 
+/** Where the name a login stands for is kept beside its token, so `setup --show` can say it without asking the service. */
+const IDENTITY_SCOPE = 'online-identity';
+
+/** The account's email, or `@handle` for a member of a relay with personal tokens; undefined for a team token or no login. */
+export function signedInAs(store: LocalStore, origin: string): string | undefined {
+    return store.credential(IDENTITY_SCOPE, origin);
+}
+
+/** What `login` says once it worked. */
+export function loggedInLine(name: string, who: string | null): string {
+    if (who?.startsWith('@')) {
+        return `Logged in to ${name} as ${who}`;
+    }
+    // A team token stands for no one in particular, so there is no one to name.
+    return who ? `Logged in as ${who}` : `Logged in to ${name}`;
+}
+
 /**
- * Signs this device in to the active endpoint and returns the account's email, or
- * null for a team token, which stands for no one in particular. A token-mode
- * deployment is asked for its team token; one with no login refuses.
+ * Signs this device in to the active endpoint and returns who the login stands for: the
+ * account's email, `@handle` for a personal token, or null for a team token, which stands
+ * for no one in particular. A token-mode deployment is asked for its token; one with no
+ * login refuses.
  */
 export async function loginOnline(store: LocalStore, options: LoginOptions = {}): Promise<string | null> {
     let endpoint = activeEndpoint(store);
@@ -289,9 +307,16 @@ export async function loginOnline(store: LocalStore, options: LoginOptions = {})
         throw new UsageError('Account token required');
     }
     const verify = endpoint.loginMode === 'token' ? refreshed?.discovery.verify ?? DEFAULT_VERIFY : DEFAULT_VERIFY;
-    const account = await request<{email?: string | null}>(endpoint, verify, token);
+    const account = await request<{email?: string | null; handle?: string | null}>(endpoint, verify, token);
     store.putCredential('online-account', endpoint.origin, token);
-    return account.email ?? null;
+    // Only a well-formed handle is shown: it comes from the service and lands in a terminal.
+    const who = account.email ?? (typeof account.handle === 'string' && /^[a-z0-9][a-z0-9_-]{2,29}$/.test(account.handle) ? `@${account.handle}` : null);
+    if (who) {
+        store.putCredential(IDENTITY_SCOPE, endpoint.origin, who);
+    } else {
+        store.forgetCredential(IDENTITY_SCOPE, endpoint.origin);
+    }
+    return who;
 }
 
 export type LogoutResult = {removed: boolean; revoked: boolean | null};
@@ -306,5 +331,6 @@ export async function logoutOnline(store: LocalStore): Promise<LogoutResult> {
     const saved = store.credential('online-account', origin);
     const revoked = saved && loginMode === 'browser' ? await revokeToken(origin, saved) : null;
     store.forgetCredential('online-account', origin);
+    store.forgetCredential(IDENTITY_SCOPE, origin);
     return {removed: saved !== undefined, revoked};
 }
