@@ -5,8 +5,8 @@ import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
-import {LISTING_OFFLINE_AFTER_MS, hashCredential, listingAvailability, newCredential, newId} from '@pairlobby/protocol';
-import type {ListingRecord, ListingView} from '@pairlobby/protocol';
+import {LISTING_OFFLINE_AFTER_MS, hashCredential, listingAvailability, newCredential, newId, newInviteCode, normalizeInviteCode} from '@pairlobby/protocol';
+import type {ListingRecord, ListingView, ParticipantOrigin} from '@pairlobby/protocol';
 import {RoomService, createAdmission, createRelay, queueExecutor} from '@pairlobby/server-core';
 import type {Relay} from '@pairlobby/server-core';
 import {afterAll, describe, expect, test} from 'vitest';
@@ -162,6 +162,23 @@ describe('directory listings', () => {
         expect(listingAvailability(listing, 1_000 + LISTING_OFFLINE_AFTER_MS - 1)).toBe('paused');
         expect(listingAvailability(listing, 1_000 + LISTING_OFFLINE_AFTER_MS)).toBe('offline');
         expect(listingAvailability({...listing, availability: null, lastSeenAt: null}, 1_000)).toBe('unknown');
+    });
+
+    test('test_a_participant_who_came_through_the_directory_carries_its_origin_into_the_room_and_onto_its_requests', async () => {
+        const relay = await fixture();
+        const joined = await room(relay);
+        const code = newInviteCode();
+        const origin: ParticipantOrigin = {directory: true, handle: 'hugo', listingId: newId('listing'), contact: 'questions'};
+        await relay.store.putInvite({digest: await hashCredential(normalizeInviteCode(code)!), roomId: joined.roomId, role: 'member', createdAt: relay.clock.now, expiresAt: null, state: 'unused', reusable: false, boundAttemptId: null, boundCredentialHash: null, redeemedParticipantId: null, recoverableUntil: null, origin});
+        const contact = newCredential('participant');
+        const redeemed = await relay.service.redeemInvite({code, displayName: 'hugo', kind: 'human', participantCredential: contact, attemptId: newId('attempt'), member: 'hugo'});
+        expect(redeemed.snapshot.participants.find((participant) => participant.participantId === redeemed.participantId)?.origin).toEqual(origin);
+
+        const ask = (credential: string, text: string) => relay.service.send(joined.roomId, credential, {type: 'message', recipientId: joined.agentId, payload: {text, priority: 'normal'}, idempotencyKey: newId('event')} as never);
+        await ask(contact, 'How does billing retry work?');
+        await ask(joined.human, 'Please fix the retry.');
+        const page = await relay.service.requests(joined.roomId, joined.agent, 0, 10, joined.agentId);
+        expect(page.requests.map((request) => [request.text, request.origin])).toEqual([['How does billing retry work?', origin], ['Please fix the retry.', undefined]]);
     });
 
     test('test_the_last_message_lookup_uses_an_index_not_a_transcript_scan', async () => {
