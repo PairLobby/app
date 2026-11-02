@@ -6,10 +6,10 @@ import {ProtocolError, mergeMessageRequest} from '@pairlobby/protocol';
 import * as sqlite from 'node:sqlite';
 import {DatabaseSync} from 'node:sqlite';
 
-import type {FileRecord, HandoverRecord, InviteRecord, LocalRoom, MessageRequest, ParticipantRecord, RequestPage, RoomEvent, RoomRecord} from '@pairlobby/protocol';
+import type {FileRecord, HandoverRecord, InviteRecord, ListingRecord, LocalRoom, MessageRequest, ParticipantRecord, RequestPage, RoomEvent, RoomRecord} from '@pairlobby/protocol';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 import {REQUEST_BACKFILL_SQL} from '@pairlobby/server-core';
-import type {EventPage, FileStore, IdempotencyRecord, RoomStore} from '@pairlobby/server-core';
+import type {DirectoryStore, EventPage, FileStore, IdempotencyRecord, RoomStore} from '@pairlobby/server-core';
 
 import {SCHEMA, SCHEMA_VERSION} from './schema.js';
 
@@ -60,6 +60,29 @@ export class SqliteRoomStore implements RoomStore {
             this.db.prepare('DELETE FROM file_chunks WHERE file_id IN (SELECT file_id FROM files WHERE room_id = ? AND event_id IS NULL AND created_at < ?)').run(roomId, before);
             this.db.prepare('DELETE FROM files WHERE room_id = ? AND event_id IS NULL AND created_at < ?').run(roomId, before);
         }),
+    };
+
+    /** The agent directory, in the same database as the rooms its listings point into. */
+    readonly directory: DirectoryStore = {
+        putListing: async (listing) => {
+            this.db.prepare('INSERT INTO listings (listing_id, room_id, participant_id, owner, body) VALUES (?, ?, ?, ?, ?) ON CONFLICT (listing_id) DO UPDATE SET owner = excluded.owner, body = excluded.body').run(listing.listingId, listing.roomId, listing.participantId, listing.owner, JSON.stringify(listing));
+        },
+        listing: async (listingId) => {
+            const row = this.db.prepare('SELECT body FROM listings WHERE listing_id = ?').get(listingId) as BodyRow | undefined;
+            return row ? (JSON.parse(row.body) as ListingRecord) : null;
+        },
+        listingFor: async (roomId, participantId) => {
+            const row = this.db.prepare('SELECT body FROM listings WHERE room_id = ? AND participant_id = ?').get(roomId, participantId) as BodyRow | undefined;
+            return row ? (JSON.parse(row.body) as ListingRecord) : null;
+        },
+        deleteListing: async (listingId) => {
+            this.db.prepare('DELETE FROM listings WHERE listing_id = ?').run(listingId);
+        },
+        listings: async (after, limit) => (this.db.prepare('SELECT body FROM listings WHERE listing_id > ? ORDER BY listing_id LIMIT ?').all(after, limit) as unknown as BodyRow[]).map((row) => JSON.parse(row.body) as ListingRecord),
+        lastMessageAt: async (roomId, participantId) => {
+            const row = this.db.prepare("SELECT json_extract(body, '$.at') AS at FROM events WHERE room_id = ? AND json_extract(body, '$.senderId') = ? AND json_extract(body, '$.type') = 'message' ORDER BY seq DESC LIMIT 1").get(roomId, participantId) as {at: number} | undefined;
+            return row ? Number(row.at) : null;
+        },
     };
 
     constructor(location: string) {
@@ -346,7 +369,7 @@ export class SqliteRoomStore implements RoomStore {
     async deleteRoom(roomId: string): Promise<void> {
         this.transaction(() => {
             this.db.prepare('DELETE FROM file_chunks WHERE file_id IN (SELECT file_id FROM files WHERE room_id = ?)').run(roomId);
-            for (const table of ['files', 'message_requests', 'events', 'idempotency', 'handovers', 'controls', 'invites', 'participants']) {
+            for (const table of ['files', 'message_requests', 'events', 'idempotency', 'handovers', 'controls', 'invites', 'participants', 'listings']) {
                 this.db.prepare(`DELETE FROM ${table} WHERE room_id = ?`).run(roomId);
             }
         });

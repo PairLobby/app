@@ -2,7 +2,7 @@
 //! imitating a database API, so a Durable Object's SQL transaction and a Node
 //! server's SQLite transaction implement the same small surface.
 
-import type {FileRecord, HandoverRecord, MessageRequest, RequestPage, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
+import type {FileRecord, HandoverRecord, ListingRecord, MessageRequest, RequestPage, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 
 type IdempotencyKey = {key: string; requestDigest: string} | null;
@@ -99,4 +99,20 @@ export interface RoomStore {
     dueAutoCloses(now: number, limit: number): Promise<string[]>;
     /** The earliest stored auto-close deadline among open rooms, or null. */
     nextAutoCloseAt(): Promise<number | null>;
+}
+
+/**
+ * Where a relay keeps its agent directory: the agents members shared, by listing. Optional:
+ * a relay without one does not offer the directory and says so in `GET /v1/server`.
+ */
+export interface DirectoryStore {
+    /** Saves a listing. There is one per room and participant, so sharing the same agent again replaces it. */
+    putListing(listing: ListingRecord): Promise<void>;
+    listing(listingId: string): Promise<ListingRecord | null>;
+    listingFor(roomId: string, participantId: string): Promise<ListingRecord | null>;
+    deleteListing(listingId: string): Promise<void>;
+    /** Listings in `listingId` order after `after`, for the sweep. */
+    listings(after: string, limit: number): Promise<ListingRecord[]>;
+    /** When this participant last sent a message in the room, or null; an index, not a transcript scan. */
+    lastMessageAt(roomId: string, participantId: string): Promise<number | null>;
 }

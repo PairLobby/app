@@ -109,6 +109,9 @@ function discoveryDocument(settings: RelayDiscovery, publicUrl: string | undefin
     };
 }
 
+/** How often the relay deletes listings whose room or agent is gone; readers skip them already. */
+const DIRECTORY_SWEEP_MS = 60 * 60_000;
+
 /** The port a relay listens on unless told otherwise, and the one other devices try when searching a tailnet. */
 export const DEFAULT_PORT = 8790;
 
@@ -171,8 +174,10 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
     const executor = queueExecutor();
     // One timer for the whole relay, aimed at the earliest auto-close deadline; every write plans it again.
     const scheduler = timerScheduler(() => void relay.tick('auto-close'));
-    const relay: Relay = createRelay({service, executor, scheduler, behindProxy, allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo, changes, inviteProbe, peerIsLocal, localRooms, admission, ...(discovery ? {discovery: () => discovery} : {}), ...(accountCheck ? {accountCheck} : {})});
+    const relay: Relay = createRelay({service, executor, scheduler, behindProxy, allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo, changes, inviteProbe, peerIsLocal, localRooms, admission, directory: store.directory, ...(discovery ? {discovery: () => discovery} : {}), ...(accountCheck ? {accountCheck} : {})});
     void relay.tick('auto-close');
+    const sweep = members ? setInterval(() => void relay.tick('directory-sweep').catch(() => {}), DIRECTORY_SWEEP_MS) : undefined;
+    sweep?.unref();
 
     const health = JSON.stringify({service: 'pairlobby-relay', ready: true, ...(options.version ? {version: options.version} : {})});
     const server = createHttpServer((incoming, outgoing) => {
@@ -218,6 +223,7 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
                 reloadMembers: () => members?.reload(true),
                 close: () => {
                     members?.stop();
+                    clearInterval(sweep);
                     scheduler.stop();
                     changes.close();
                     stopAdvertising();

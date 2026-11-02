@@ -39,6 +39,7 @@ test('test_the_node_relay_passes_every_check', async () => {
     expect(withToken.results.filter((result) => result.status === 'fail'), matrix).toEqual([]);
     expect(plain.results.find((result) => result.id === 'create-token')?.status).toBe('skip');
     expect(plain.results.find((result) => result.id === 'member-login')?.status).toBe('skip');
+    expect(plain.results.find((result) => result.id === 'directory-listings')?.status).toBe('skip');
     expect(withToken.results.map((result) => result.status)).toEqual(CHECKS.map(() => 'pass'));
 });
 
