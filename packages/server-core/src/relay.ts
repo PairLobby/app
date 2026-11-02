@@ -42,15 +42,19 @@ import {
     ResolveRequestRequest,
     ProviderWaitRequest,
     SetExpiryRequest,
-    ControlRequest
+    ControlRequest,
+    ListingPresenceRequest,
+    ShareListingRequest,
+    toListingView
 } from '@pairlobby/protocol';
-import type {ErrorCode, LiveTransport, LocalRoom, ProviderWait, ReceiptMode, RelayLimits, ServerDescription} from '@pairlobby/protocol';
+import type {ErrorCode, ListingRecord, LiveTransport, LocalRoom, ProviderWait, ReceiptMode, RelayLimits, ServerDescription} from '@pairlobby/protocol';
 
 import type {Admission, RelayMember} from './admission.js';
 import type {ChangeNotifier} from './changes.js';
 import {directExecutor} from './ports.js';
 import type {RequestContext, RoomExecutor, Scheduler} from './ports.js';
 import type {RoomService} from './service.js';
+import type {DirectoryStore} from './store.js';
 
 export interface RelayOptions {
     service: RoomService;
@@ -114,6 +118,11 @@ export interface RelayOptions {
      * the team token. Absent means the path is unknown. Needs `admission`.
      */
     accountCheck?: (request: Request, member: RelayMember | null) => RelayAccount;
+    /**
+     * The agent directory's store. Present, with personal tokens in `admission`, means the relay
+     * offers `directory`: members share agents from their rooms under `/v1/directory`.
+     */
+    directory?: DirectoryStore;
 }
 
 /**
@@ -121,6 +130,12 @@ export interface RelayOptions {
  * creation or an invite redemption. `edge` removes any copy a caller sent.
  */
 export const MEMBER_HEADER = 'x-pairlobby-member';
+
+/** The answer to a directory request without a personal token, such as one with the team token. */
+export const DIRECTORY_NEEDS_MEMBER = 'the directory needs a personal login: ask your relay admin for a personal token, then pairlobby login';
+
+/** Listings the sweep checks per page. */
+const SWEEP_PAGE = 100;
 
 /** Where `edge` sends a request that needs a room: the room's id, and the request to run there. */
 export type RoomRoute = {roomId: string; request: Request};
@@ -132,8 +147,11 @@ export interface Relay {
     edge(request: Request, context?: RequestContext): Promise<Response | RoomRoute>;
     /** A request `edge` sent to `roomId`, run in that room's order. */
     inRoom(request: Request, roomId: string, context?: RequestContext): Promise<Response>;
-    /** Closes rooms whose auto-close time has passed, then plans the next wake-up. */
-    tick(kind: 'auto-close'): Promise<void>;
+    /**
+     * `auto-close` closes rooms whose auto-close time has passed, then plans the next wake-up.
+     * `directory-sweep` deletes listings whose room or agent is gone; a platform runs it about hourly.
+     */
+    tick(kind: 'auto-close' | 'directory-sweep'): Promise<void>;
 }
 
 /** What a deployment says about itself to `pairlobby setup`. */
@@ -203,7 +221,13 @@ export function createRelay(options: RelayOptions): Relay {
         });
     }
 
-    async function tick(_kind: 'auto-close'): Promise<void> {
+    async function tick(kind: 'auto-close' | 'directory-sweep'): Promise<void> {
+        if (kind === 'directory-sweep') {
+            if (options.directory) {
+                await sweepDirectory(options.directory);
+            }
+            return;
+        }
         const scheduler = options.scheduler;
         await executor.run(null, true, async () => {
             try {
@@ -213,6 +237,18 @@ export function createRelay(options: RelayOptions): Relay {
                 scheduler?.plan(Date.now() + 60_000);
             }
         });
+    }
+
+    /** Readers already skip a gone room's listings; this only stops the rows piling up. */
+    async function sweepDirectory(directory: DirectoryStore): Promise<void> {
+        for (let after = '', page: ListingRecord[]; (page = await directory.listings(after, SWEEP_PAGE)).length > 0; after = page.at(-1)!.listingId) {
+            for (const listing of page) {
+                // Loading a room may close it on its auto-close deadline, so the check is a write in the room's order.
+                if (!(await executor.run(listing.roomId, true, () => service.listable(listing.roomId, listing.participantId)))) {
+                    await directory.deleteListing(listing.listingId);
+                }
+            }
+        }
     }
 
     return {
@@ -280,6 +316,9 @@ async function edgeRoute(request: Request, context: RequestContext, options: Rel
     if (segments[0] !== 'v1') {
         return errorResponse('invalid_request', 'unknown path', 404);
     }
+    if (segments[1] === 'directory') {
+        return directoryEdge(request, segments, method, options);
+    }
     // A new room gets its id here, because a relay with an object per room routes by it.
     if (segments[1] === 'rooms' && segments.length === 2 && method === 'POST') {
         const member = (await options.admission?.beforeCreate(request, context)) ?? null;
@@ -303,6 +342,97 @@ async function edgeRoute(request: Request, context: RequestContext, options: Rel
         return errorResponse('invalid_request', 'unknown path', 404);
     }
     return {roomId: segments[2]!, request};
+}
+
+/**
+ * The directory's routes. Each needs a personal token; sharing and heartbeats also go to the
+ * listing's room, which checks the agent's credential. Someone else's listing is answered like a missing one.
+ */
+async function directoryEdge(request: Request, segments: string[], method: string, options: RelayOptions): Promise<Response | RoomRoute> {
+    const {directory, admission} = options;
+    if (!directory || !admission?.memberTokens || segments[2] !== 'listings' || segments.length > 5) {
+        return errorResponse('invalid_request', 'unknown path', 404);
+    }
+    const member = await admission.member(request);
+    if (segments.length === 3 && method === 'POST') {
+        if (!member) {
+            return errorResponse('unauthorized', DIRECTORY_NEEDS_MEMBER, 403);
+        }
+        const body = await request.text();
+        const {roomId} = ShareListingRequest.parse(JSON.parse(body));
+        return {roomId, request: claiming(new Request(request.url, {method, headers: request.headers, body}), member)};
+    }
+    const listing = segments[3] ? await directory.listing(segments[3]) : null;
+    // An agent may take its own listing down with its credential alone; the room checks that it is the listed agent.
+    if (segments.length === 4 && method === 'DELETE' && !member && listing && request.headers.has('authorization')) {
+        return {roomId: listing.roomId, request};
+    }
+    if (!member) {
+        return errorResponse('unauthorized', DIRECTORY_NEEDS_MEMBER, 403);
+    }
+    if (!listing || listing.owner !== member.handle) {
+        return errorResponse('invalid_request', 'no such listing', 404);
+    }
+    if (segments.length === 4 && method === 'DELETE') {
+        await directory.deleteListing(listing.listingId);
+        return new Response(null, {status: 204, headers: JSON_HEADERS});
+    }
+    if (segments.length === 5 && segments[4] === 'presence' && method === 'PUT') {
+        return {roomId: listing.roomId, request: claiming(request, member)};
+    }
+    return errorResponse('invalid_request', 'unknown path', 404);
+}
+
+/**
+ * The directory's work inside a room: the agent's credential is checked against the room as it
+ * is now, so an agent that left, a closed room or another participant's credential is refused.
+ */
+async function listingInRoom(request: Request, roomId: string, segments: string[], method: string, directory: DirectoryStore, service: RoomService): Promise<Response> {
+    const credential = bearer(request);
+    const member = claimedMember(request);
+    if (segments.length === 3 && method === 'POST' && member) {
+        const input = ShareListingRequest.parse(await request.json());
+        const {participantId, agentName, roomName, at} = await service.listingSubject(roomId, credential, member);
+        const existing = await directory.listingFor(roomId, participantId);
+        const listing: ListingRecord = {
+            listingId: existing?.listingId ?? newId('listing'),
+            roomId,
+            participantId,
+            owner: member,
+            agentName,
+            roomName,
+            topic: input.topic,
+            contact: input.contact,
+            connection: input.connection,
+            ...(input.runtime ? {runtime: input.runtime} : {}),
+            ...(input.model ? {model: input.model} : {}),
+            availability: existing?.availability ?? null,
+            lastSeenAt: existing?.lastSeenAt ?? null,
+            createdAt: existing?.createdAt ?? at,
+            updatedAt: at,
+        };
+        await directory.putListing(listing);
+        return json({listing: toListingView(listing, {now: at, lastMessageAt: await directory.lastMessageAt(roomId, participantId)})}, existing ? 200 : 201);
+    }
+    const listing = segments[3] ? await directory.listing(segments[3]) : null;
+    if (!listing || listing.roomId !== roomId || (member !== undefined && listing.owner !== member)) {
+        return errorResponse('invalid_request', 'no such listing', 404);
+    }
+    const subject = await service.listingSubject(roomId, credential, listing.owner);
+    if (subject.participantId !== listing.participantId) {
+        throw new ProtocolError('unauthorized', 'this credential is not the listed agent\'s');
+    }
+    if (segments.length === 4 && method === 'DELETE') {
+        await directory.deleteListing(listing.listingId);
+        return new Response(null, {status: 204, headers: JSON_HEADERS});
+    }
+    if (segments.length === 5 && segments[4] === 'presence' && method === 'PUT' && member) {
+        const input = ListingPresenceRequest.parse(await request.json());
+        const updated: ListingRecord = {...listing, agentName: subject.agentName, roomName: subject.roomName, availability: input.availability, lastSeenAt: subject.at, updatedAt: subject.at, ...(input.model ? {model: input.model} : {}), ...(input.connection ? {connection: input.connection} : {})};
+        await directory.putListing(updated);
+        return json({listing: toListingView(updated, {now: subject.at, lastMessageAt: await directory.lastMessageAt(roomId, listing.participantId)})});
+    }
+    return errorResponse('invalid_request', 'unknown path', 404);
 }
 
 /** The request with `MEMBER_HEADER` naming `member`, or without it for null; unchanged when it already says so. */
@@ -368,6 +498,7 @@ export function describe(options: RelayOptions): ServerDescription {
         ...(options.admission?.createTokenRequired ? ['create-token'] : []),
         ...(options.accountCheck && options.admission ? ['token-login'] : []),
         ...(options.admission?.memberTokens ? ['member-tokens'] : []),
+        ...(options.directory && options.admission?.memberTokens ? ['directory'] : []),
         ...(profile.receiptMode !== 'events' ? ['receipt-watermark'] : []),
         ...(options.features ?? [])
     ];
@@ -416,6 +547,10 @@ async function roomRoute(request: Request, roomId: string, context: RequestConte
     const url = new URL(request.url);
     const segments = url.pathname.split('/').filter(Boolean);
     const method = request.method.toUpperCase();
+
+    if (segments[1] === 'directory' && options.directory) {
+        return listingInRoom(request, roomId, segments, method, options.directory, service);
+    }
 
     if (segments[1] === 'rooms' && segments.length === 2 && method === 'POST') {
         const input = CreateRoomRequest.parse(await request.json());

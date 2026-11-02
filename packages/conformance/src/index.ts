@@ -160,6 +160,71 @@ export const CHECKS: Check[] = [
         }
     },
     {
+        id: 'directory-listings',
+        title: 'a member shares an agent with its credential and their personal token; the relay refuses anyone else',
+        async run(context) {
+            needFeature(context, 'directory');
+            const token = context.memberToken ?? fail('set PAIRLOBBY_MEMBER_TOKEN to a member\'s personal token');
+            const call = async (path: string, method: string, credential: string | null, memberToken: string | null, body?: unknown) => {
+                const headers: Record<string, string> = {'content-type': 'application/json', ...(credential ? {authorization: `Bearer ${credential}`} : {}), ...(memberToken ? {'x-pairlobby-account-token': memberToken} : {})};
+                const response = await fetch(`${context.relay}/v1/directory/listings${path}`, {method, headers, ...(body === undefined ? {} : {body: JSON.stringify(body)})});
+                return {status: response.status, body: (await response.json().catch(() => null)) as {listing?: Record<string, unknown>} | null};
+            };
+            const member = new PairLobbyClient(context.relay, token);
+            const created = await member.createRoom(`conformance-${newId('event').slice(-6)}`, human);
+            try {
+                const joined = await member.redeemInvite(created.invite.code, agent);
+                const share = {roomId: created.roomId, topic: 'Conformance', connection: 'separate'};
+                const first = await call('', 'POST', joined.participantCredential, token, share);
+                const listing = first.body?.listing;
+                if (first.status !== 201 || typeof listing?.['listingId'] !== 'string') {
+                    fail(`sharing answered ${first.status}`);
+                }
+                if ('roomId' in listing || 'participantId' in listing || listing['availability'] !== 'unknown') {
+                    fail(`the listing shows ${Object.keys(listing).join(', ')} with availability ${String(listing['availability'])}`);
+                }
+                const listingId = listing['listingId'] as string;
+                const again = await call('', 'POST', joined.participantCredential, token, {...share, topic: 'Conformance again'});
+                if (again.status !== 200 || again.body?.listing?.['listingId'] !== listingId) {
+                    fail(`sharing the same agent again answered ${again.status} with another listing`);
+                }
+                const refusals: Array<[string, Promise<{status: number}>, number]> = [
+                    ['no personal token', call('', 'POST', joined.participantCredential, null, share), 403],
+                    ['the owner\'s own human credential', call('', 'POST', created.participantCredential, token, share), 401],
+                    ['a wrong credential', call('', 'POST', newCredential('participant'), token, share), 401],
+                    ['a heartbeat without a personal token', call(`/${listingId}/presence`, 'PUT', joined.participantCredential, null, {availability: 'available'}), 403]
+                ];
+                for (const [what, response, status] of refusals) {
+                    if ((await response).status !== status) {
+                        fail(`${what} answered ${(await response).status}, not ${status}`);
+                    }
+                }
+                const beat = await call(`/${listingId}/presence`, 'PUT', joined.participantCredential, token, {availability: 'available'});
+                if (beat.status !== 200 || beat.body?.listing?.['availability'] !== 'available') {
+                    fail(`a heartbeat answered ${beat.status} with availability ${String(beat.body?.listing?.['availability'])}`);
+                }
+                await member.leave(created.roomId, joined.participantCredential);
+                const left = await call(`/${listingId}/presence`, 'PUT', joined.participantCredential, token, {availability: 'available'});
+                if (left.status !== 401) {
+                    fail(`a heartbeat from an agent that left answered ${left.status}`);
+                }
+                const removed = await call(`/${listingId}`, 'DELETE', null, token);
+                const gone = await call(`/${listingId}/presence`, 'PUT', joined.participantCredential, token, {availability: 'available'});
+                if (removed.status !== 204 || gone.status !== 404) {
+                    fail(`deleting the listing answered ${removed.status}, and a heartbeat after it ${gone.status}`);
+                }
+                const second = await member.redeemInvite((await member.mintInvite(created.roomId, created.controllerCredential)).code, agent);
+                await member.close(created.roomId, created.controllerCredential);
+                const closed = await call('', 'POST', second.participantCredential, token, share);
+                if (closed.status !== 409) {
+                    fail(`sharing from a closed room answered ${closed.status}`);
+                }
+            } finally {
+                await member.delete(created.roomId, created.controllerCredential);
+            }
+        }
+    },
+    {
         id: 'create-join-send-read',
         title: 'create, join with an invite, send, read and see the request',
         async run(context) {

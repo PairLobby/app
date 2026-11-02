@@ -66,6 +66,8 @@ import {
     setParticipantRole,
     setRoomPermissions,
     emptyMutation,
+    findParticipant,
+    isActive,
     toSnapshot
 } from '@pairlobby/room-core';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
@@ -152,6 +154,9 @@ export type FileDownload = {file: FileRecord; bytes: Uint8Array};
 export type Clock = () => number;
 
 export type RelayProfile = {files: boolean; limits: RelayLimits; receiptMode: ReceiptMode};
+
+/** The agent a listing shares, with the names readers see, as of `at`. */
+export type ListingSubject = {participantId: string; agentName: string; roomName: string; at: number};
 
 export type RoomServiceOptions = {
     /** How plain receipts are kept (`RECEIPT_MODES`); `both` until every client in use reads watermarks. */
@@ -1223,6 +1228,31 @@ export class RoomService {
         }
         const files = this.store.files ? {files: await this.roomFiles(this.store.files, roomId)} : {};
         return {room: this.snapshotOf(view), events: collected, handovers: await this.store.handovers(roomId), exportedAt: this.now(), complete: view.earliestSeq <= 1, ...files};
+    }
+
+    /**
+     * The agent a listing shares: the caller's own participant, an agent still in this open room.
+     * `member` is who shares it; an agent that joined as another member is theirs to share.
+     */
+    async listingSubject(roomId: string, credential: string, member: string): Promise<ListingSubject> {
+        const view = await this.view(roomId);
+        const now = this.now();
+        const actor = authenticate(view, await hashCredential(credential), now);
+        assertRoomWritable(view, now);
+        if (actor.kind !== 'participant' || actor.participant.kind !== 'agent' || !isActive(actor.participant)) {
+            throw new ProtocolError('unauthorized', 'only an agent still in the room can be shared, with its own credential');
+        }
+        if (actor.participant.member !== undefined && actor.participant.member !== member) {
+            throw new ProtocolError('unauthorized', 'this agent joined as another member; only they can share it');
+        }
+        return {participantId: actor.participant.participantId, agentName: actor.participant.displayName, roomName: view.room.name, at: now};
+    }
+
+    /** Whether a listing of this participant still stands: the room open and unexpired, the agent still in it. */
+    async listable(roomId: string, participantId: string): Promise<boolean> {
+        const view = await this.store.loadRoom(roomId);
+        const participant = view ? findParticipant(view, participantId) : undefined;
+        return Boolean(view && participant && view.room.lifecycle === 'open' && (view.room.expiresAt === null || this.now() < view.room.expiresAt) && isActive(participant));
     }
 
     /** Makes the room inaccessible immediately; physical cleanup may lag. */

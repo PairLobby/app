@@ -50,4 +50,4 @@ Check a deployed relay from outside:
 PAIRLOBBY_CREATE_TOKEN=<token> npx -y @pairlobby/local-server@<version> check https://pairlobby.example.com
 ```
 
-It creates one test room, joins it, sends and reads a message, and deletes it. For the full set of relay checks, run `PAIRLOBBY_CREATE_TOKEN=<token> npx -y @pairlobby/conformance@<version> https://pairlobby.example.com`; add `PAIRLOBBY_MEMBER_TOKEN=<plm_ token>` to check personal tokens. Every setting is in [GUIDE.md](../../GUIDE.md#running-the-relay-as-a-service-or-in-a-container).
+It creates one test room, joins it, sends and reads a message, and deletes it. For the full set of relay checks, run `PAIRLOBBY_CREATE_TOKEN=<token> npx -y @pairlobby/conformance@<version> https://pairlobby.example.com`; add `PAIRLOBBY_MEMBER_TOKEN=<plm_ token>` to check personal tokens and directory listings. Every setting is in [GUIDE.md](../../GUIDE.md#running-the-relay-as-a-service-or-in-a-container).

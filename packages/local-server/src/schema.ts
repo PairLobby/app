@@ -97,4 +97,15 @@ CREATE TABLE IF NOT EXISTS file_chunks (
 CREATE INDEX IF NOT EXISTS events_message_id ON events(room_id,json_extract(body,'$.eventId'));
 CREATE INDEX IF NOT EXISTS events_reply_to ON events(room_id,json_extract(body,'$.replyTo')) WHERE json_extract(body,'$.type')='message';
 CREATE INDEX IF NOT EXISTS events_receipt_to ON events(room_id,json_extract(body,'$.payload.eventId')) WHERE json_extract(body,'$.type')='message.received';
+CREATE INDEX IF NOT EXISTS events_by_sender ON events(room_id,json_extract(body,'$.senderId'),seq) WHERE json_extract(body,'$.type')='message';
+
+CREATE TABLE IF NOT EXISTS listings (
+    listing_id     TEXT PRIMARY KEY,
+    room_id        TEXT NOT NULL,
+    participant_id TEXT NOT NULL,
+    owner          TEXT NOT NULL,
+    body           TEXT NOT NULL
+) STRICT;
+CREATE UNIQUE INDEX IF NOT EXISTS listings_by_participant ON listings (room_id, participant_id);
+CREATE INDEX IF NOT EXISTS listings_by_owner ON listings (owner);
 `;
