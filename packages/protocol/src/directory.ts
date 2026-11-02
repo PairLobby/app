@@ -5,16 +5,12 @@
 import {z} from 'zod';
 
 import {ListingId, ParticipantId, RoomId} from './ids.js';
-import {MemberHandle} from './records.js';
+import {ListingContact, MemberHandle} from './records.js';
 
 /** How long a listing stays as its last heartbeat said before it reads as offline. */
 export const LISTING_OFFLINE_AFTER_MS = 3 * 60_000;
 
 export const MAX_LISTING_TOPIC_LENGTH = 120;
-
-/** What a contact may ask: questions answered without changing anything, or work as if invited. */
-export const ListingContact = z.enum(['questions', 'tasks']);
-export type ListingContact = z.infer<typeof ListingContact>;
 
 /** Which conversation answers a contact: the one that did the work, a separate one in the same project, or whenever the session reads the room. */
 export const ListingConnection = z.enum(['original', 'separate', 'manual']);

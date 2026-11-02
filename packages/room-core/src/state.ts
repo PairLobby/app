@@ -78,7 +78,8 @@ export function toParticipantView(view: RoomView, participant: ParticipantRecord
         acknowledgedOutcome: control?.acknowledgedOutcome ?? null,
         acknowledgedRevision: control?.acknowledgedRevision ?? 0,
         interruptRequested: Boolean(control?.paused && control.interruptRequested),
-        ...(participant.member ? {member: participant.member} : {})
+        ...(participant.member ? {member: participant.member} : {}),
+        ...(participant.origin ? {origin: participant.origin} : {})
     };
 }
 

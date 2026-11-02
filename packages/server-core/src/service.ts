@@ -492,7 +492,8 @@ export class RoomService {
                 nameSource: input.nameSource,
                 sessionId: input.sessionId ?? null,
                 capabilities: input.capabilities ?? null,
-                ...(input.member ? {member: input.member} : {})
+                ...(input.member ? {member: input.member} : {}),
+                ...(reserved.origin ? {origin: reserved.origin} : {})
             },
             this.ctx()
         );
@@ -749,6 +750,7 @@ export class RoomService {
             }
         }
         if (request.type === 'message' && recipients.length) {
+            const senderOrigin = findParticipant(view, mutation.appendEvent.senderId!)?.origin;
             let seq = Math.max(view.room.nextRequestSeq ?? 0, mutation.appendEvent.seq);
             for (const recipient of recipients) {
                 updates.push({
@@ -757,7 +759,8 @@ export class RoomService {
                     requiresReply: !request.replyTo, receivedAt: null, responseEventId: null, respondedAt: null, progressAt: null,
                     ...(group ? {conversationId: mutation.appendEvent.eventId, turnRequired: true} : {}),
                     ...(recovered ? {recoversEventId: recovered.eventId, attempt: (recovered.attempt ?? 1) + 1} : {}),
-                    ...(request.payload.attachments ? {attachments: request.payload.attachments} : {})
+                    ...(request.payload.attachments ? {attachments: request.payload.attachments} : {}),
+                    ...(senderOrigin ? {origin: senderOrigin} : {})
                 });
             }
             mutation.room.nextRequestSeq = seq;

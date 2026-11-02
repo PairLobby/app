@@ -5,6 +5,7 @@ import {readFileSync, renameSync, unlinkSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {createInterface} from 'node:readline';
 import type {MessageRequest} from '@pairlobby/protocol';
+import {requestProfile, requestPrompt} from './contact-safety.js';
 import {RuntimeInterrupted} from './receiver-runtime.js';
 import type {InterruptOutcome, ReceiverRuntime, RuntimeHooks, RuntimeOptions} from './receiver-runtime.js';
 import {OWN_PROCESS_GROUP, interruptProcess, signalTree} from './runtime-process.js';
@@ -51,6 +52,7 @@ export class QwenReceiver implements ReceiverRuntime {
             throw new Error('Qwen receiver is busy or unavailable');
         }
         this.saveState(false);
+        const profile = requestProfile(request);
         const configFile = join(this.options.stateDirectory, `qwen-mcp-${request.eventId}.json`);
         writeFileSync(configFile, JSON.stringify({mcpServers: {pairlobby_receiver: {
             command: process.execPath,
@@ -62,7 +64,8 @@ export class QwenReceiver implements ReceiverRuntime {
             '--bare', '--approval-mode', 'default', '--chat-recording',
             '--mcp-config', configFile, '--allowed-mcp-server-names', 'pairlobby_receiver',
             '--allowed-tools', 'mcp__pairlobby_receiver__acknowledge_message,mcp__pairlobby_receiver__working_message,mcp__pairlobby_receiver__pass_message,mcp__pairlobby_receiver__message_status,mcp__pairlobby_receiver__attach_file',
-            '--exclude-tools', 'run_shell_command,task,web_fetch,web_search',
+            // A directory contact's question also loses every tool that writes.
+            '--exclude-tools', `run_shell_command,task,web_fetch,web_search${profile.readOnly ? ',write_file,edit,replace,save_memory,todo_write' : ''}`,
             '--append-system-prompt', INSTRUCTIONS,
             ...(this.resumable ? ['--resume', this.threadId] : ['--session-id', this.threadId]),
             ...(this.options.model ? ['--model', this.options.model] : [])
@@ -162,7 +165,7 @@ export class QwenReceiver implements ReceiverRuntime {
                     resolve(result.result.trim());
                 });
                 hooks.started(randomUUID(), child.pid);
-                child.stdin.write(JSON.stringify({type: 'user', session_id: this.threadId, parent_tool_use_id: null, message: {role: 'user', content: [{type: 'text', text: `PairLobby request ${request.eventId}, sender ${request.from}:\n${request.text}`}]}}) + '\n');
+                child.stdin.write(JSON.stringify({type: 'user', session_id: this.threadId, parent_tool_use_id: null, message: {role: 'user', content: [{type: 'text', text: requestPrompt(request, profile)}]}}) + '\n');
             });
         } finally {
             try { unlinkSync(configFile); } catch {}

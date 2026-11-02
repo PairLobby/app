@@ -5,7 +5,7 @@ import {z} from 'zod';
 
 import {NameSource} from './names.js';
 import {AdapterCapabilities, ControlOutcome, ParticipantKind, ParticipantRole} from './events.js';
-import {AttemptId, EventId, HandoverId, ParticipantId, RoomId, SessionId} from './ids.js';
+import {AttemptId, EventId, HandoverId, ListingId, ParticipantId, RoomId, SessionId} from './ids.js';
 import {HandoverDocument, HandoverState} from './handover.js';
 import {AutoClosePolicySchema, CloseReasonSchema} from './auto-close.js';
 import {PermissionSet} from './permissions.js';
@@ -46,6 +46,22 @@ export type ReceiptMark = z.infer<typeof ReceiptMark>;
 /** A person on a relay with personal tokens, by the handle others find them by: the same form as a hosted account's handle. */
 export const MemberHandle = z.string().regex(/^[a-z0-9][a-z0-9_-]{2,29}$/, 'expected a member handle');
 export type MemberHandle = z.infer<typeof MemberHandle>;
+
+/** What a colleague who reaches a shared agent through the directory may ask: questions answered without changing anything, or work as if invited. */
+export const ListingContact = z.enum(['questions', 'tasks']);
+export type ListingContact = z.infer<typeof ListingContact>;
+
+/**
+ * How a participant came into the room, when it was not on an ordinary invite: through the agent
+ * directory, as `handle`, to reach `listingId`, under the contact rule the listing had then.
+ */
+export const ParticipantOrigin = z.object({
+    directory: z.literal(true),
+    handle: MemberHandle,
+    listingId: ListingId,
+    contact: ListingContact
+});
+export type ParticipantOrigin = z.infer<typeof ParticipantOrigin>;
 
 export const RoomRecord = z.object({
     roomId: RoomId,
@@ -103,7 +119,9 @@ export const ParticipantRecord = z.object({
     /** This member's own allowances and refusals, ahead of the room's. Dropped when they stop being a member. */
     permissions: PermissionSet.optional(),
     /** The relay member this participant joined as, from the personal token sent at join. Absent without one. */
-    member: MemberHandle.optional()
+    member: MemberHandle.optional(),
+    /** Set by the relay for a participant who came through the directory; never taken from a client request. */
+    origin: ParticipantOrigin.optional()
 });
 export type ParticipantRecord = z.infer<typeof ParticipantRecord>;
 
@@ -131,7 +149,9 @@ export const InviteRecord = z.object({
     boundCredentialHash: z.string().length(64).nullable(),
     redeemedParticipantId: ParticipantId.nullable(),
     /** Tombstone horizon: a consumed code stays unclaimable by anyone else until this time. */
-    recoverableUntil: z.number().int().nonnegative().nullable()
+    recoverableUntil: z.number().int().nonnegative().nullable(),
+    /** Given to the participant this invite admits: set on invites the relay mints for directory contacts. */
+    origin: ParticipantOrigin.optional()
 });
 export type InviteRecord = z.infer<typeof InviteRecord>;
 
@@ -183,7 +203,8 @@ export const ParticipantView = z.object({
     /** The revision the receiver last acknowledged, so a client can tell whether the latest control was answered. */
     acknowledgedRevision: z.number().int().nonnegative().optional(),
     interruptRequested: z.boolean().optional(),
-    member: MemberHandle.optional()
+    member: MemberHandle.optional(),
+    origin: ParticipantOrigin.optional()
 });
 export type ParticipantView = z.infer<typeof ParticipantView>;
 

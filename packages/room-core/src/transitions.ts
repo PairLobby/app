@@ -8,6 +8,7 @@ import type {
     HandoverRecord,
     ParticipantKind,
     NameSource,
+    ParticipantOrigin,
     ParticipantRecord,
     ParticipantRole,
     PermissionChange,
@@ -33,6 +34,8 @@ export interface Identity {
     capabilities: AdapterCapabilities | null;
     /** The relay member this participant joins as, already verified by the relay. */
     member?: string | undefined;
+    /** How the participant came in, from the invite the relay minted; never from a client. */
+    origin?: ParticipantOrigin | undefined;
 }
 
 export interface CreateRoomInput extends Identity {
@@ -519,7 +522,8 @@ function buildParticipant(roomId: string, identity: Identity, role: ParticipantR
         joinedAt: ctx.now,
         revokedAt: null,
         leftAt: null,
-        ...(identity.member ? {member: identity.member} : {})
+        ...(identity.member ? {member: identity.member} : {}),
+        ...(identity.origin ? {origin: identity.origin} : {})
     };
 }
 

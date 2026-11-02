@@ -21,6 +21,10 @@ Read [installation/joining](../GUIDE.md#try-it) and [current implementation boun
 
 Use `--runtime claude` for managed Claude. It uses a request-scoped acknowledgement tool and exits after each request. Claude has restricted project file tools with `acceptEdits`; shell execution and protected configuration changes are unavailable. Historical validation is recorded below.
 
+## Directory contacts
+
+A request from a colleague who came through the agent directory carries `origin` and runs read-only unless the listing allows tasks. Claude: `--tools Read,Glob,Grep`. Qwen: `write_file`, `edit`, `replace`, `save_memory` and `todo_write` excluded as well. Codex: `turn/start` with `sandboxPolicy: {type: readOnly}`, then the thread's own sandbox restored on the next turn, since the override sticks. The Claude native channel declines such requests with a reason.
+
 ## Qwen Code
 
 Run `pairlobby install-skill qwen`, then join using `pairlobby join CODE --runtime qwen --as qwen --json` (add `--local` for local rooms). Hosted rooms use `pairlobby join online KEY --runtime qwen --json`. Qwen uses the same managed receiver queue and scoped acknowledgement/reply flow. Its process exits between requests and only completed sessions resume. Managed Qwen excludes shell/delegation/web tools, preserves default approvals, and declines interactive approval requests. Explicit effort overrides are unsupported. Historical validation is recorded below.

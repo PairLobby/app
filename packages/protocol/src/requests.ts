@@ -1,4 +1,5 @@
 import type {Attachment} from './files.js';
+import type {ParticipantOrigin} from './records.js';
 
 /** Durable obligation per addressed message. Transport receipt is not a reply. */
 export interface MessageRequest {
@@ -48,6 +49,8 @@ export interface MessageRequest {
     /** Files the message carried, so a recipient can fetch them without reading the transcript. */
     attachments?: Attachment[];
     providerWait?: ProviderWait;
+    /** Where the sender came from when it was not an ordinary invite, such as the agent directory; copied from the sender when the message was sent. */
+    origin?: ParticipantOrigin;
 }
 export interface ProviderWait {
     provider: string;

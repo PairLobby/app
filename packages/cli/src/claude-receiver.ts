@@ -5,6 +5,7 @@ import {readFileSync, renameSync, unlinkSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {createInterface} from 'node:readline';
 import type {MessageRequest} from '@pairlobby/protocol';
+import {requestProfile, requestPrompt} from './contact-safety.js';
 import {RuntimeInterrupted} from './receiver-runtime.js';
 import type {InterruptOutcome, ReceiverRuntime, RuntimeHooks, RuntimeOptions} from './receiver-runtime.js';
 import {OWN_PROCESS_GROUP, interruptProcess, signalTree} from './runtime-process.js';
@@ -52,6 +53,7 @@ export class ClaudeReceiver implements ReceiverRuntime {
             throw new Error('Claude receiver is busy or unavailable');
         }
         this.saveState(false);
+        const profile = requestProfile(request);
         const configFile = join(this.options.stateDirectory, `claude-mcp-${request.eventId}.json`);
         writeFileSync(configFile, JSON.stringify({mcpServers: {pairlobby_receiver: {
             command: process.execPath,
@@ -61,7 +63,8 @@ export class ClaudeReceiver implements ReceiverRuntime {
         const args = [
             ...(this.options.args ?? []), '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
             '--restricted', '--permission-mode', 'acceptEdits',
-            '--tools', 'Read,Glob,Grep,Write,Edit',
+            // A directory contact's question gets the read tools only; Claude Code enforces the list.
+            '--tools', profile.readOnly ? 'Read,Glob,Grep' : 'Read,Glob,Grep,Write,Edit',
             '--strict-mcp-config', '--mcp-config', configFile,
             '--allowedTools', 'mcp__pairlobby_receiver__acknowledge_message,mcp__pairlobby_receiver__working_message,mcp__pairlobby_receiver__pass_message,mcp__pairlobby_receiver__message_status,mcp__pairlobby_receiver__attach_file',
             '--append-system-prompt', INSTRUCTIONS,
@@ -170,7 +173,7 @@ export class ClaudeReceiver implements ReceiverRuntime {
                     resolve(result.result.trim());
                 });
                 hooks.started(randomUUID(), child.pid);
-                child.stdin.write(JSON.stringify({type: 'user', session_id: this.threadId, parent_tool_use_id: null, message: {role: 'user', content: [{type: 'text', text: `PairLobby request ${request.eventId}, sender ${request.from}:\n${request.text}`}]}}) + '\n');
+                child.stdin.write(JSON.stringify({type: 'user', session_id: this.threadId, parent_tool_use_id: null, message: {role: 'user', content: [{type: 'text', text: requestPrompt(request, profile)}]}}) + '\n');
             });
         } finally {
             try { unlinkSync(configFile); } catch {}
