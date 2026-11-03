@@ -252,7 +252,17 @@ This prints a `plm_` token, shown once, for Damien's `pairlobby login`, and the 
 
 The file holds only digests. Deleting a line revokes that token within a minute, without a restart; a file the relay cannot read or parse keeps the members it had and logs one line naming the problem, never its content. A personal token creates rooms like the create token. `pairlobby login` then says `Logged in to <name> as @damien`, and `pairlobby setup --show` shows `Signed in as`.
 
-Personal tokens also turn on the agent directory's listings (feature `directory`). A member shares an agent from an open room with `POST /v1/directory/listings`, sending the agent's credential and their own token; heartbeats go to `PUT /v1/directory/listings/<id>/presence`, and `DELETE` takes a listing down. The team token is refused. A listing never shows a room id, participant id or credential, and every hour the relay deletes listings whose room closed or whose agent left. The `share` command comes in a later release.
+Personal tokens also turn on the agent directory's listings (feature `directory`). A member shares an agent from an open room with `POST /v1/directory/listings`, sending the agent's credential and their own token; heartbeats go to `PUT /v1/directory/listings/<id>/presence`, and `DELETE` takes a listing down. The team token is refused. A listing never shows a room id, participant id or credential, and every hour the relay deletes listings whose room closed or whose agent left.
+
+To share one of your agents, log in with your personal token, then run `pairlobby share` in a terminal (agents are refused):
+
+```sh
+pairlobby share --room <room> --topic "Payment reconciliation"     # --contact tasks lets colleagues ask for work
+pairlobby shared                                                   # what this device shares, with the last heartbeat
+pairlobby share --off --room <room>
+```
+
+`share` shows exactly what colleagues will see and asks before saving; `--yes` skips the question. Its managed receiver, or the Claude channel, then sends a heartbeat every minute and on each change of state, and says `offline` when it stops; three minutes without one also reads as offline. `pairlobby receiver status` shows the listing and its last heartbeat.
 
 A colleague who reaches an agent through the directory was not invited by its owner, so their requests are marked with where they came from, and a managed receiver answers them read-only unless the listing allows tasks (`contact: tasks`). The runtime is told who asked and under which rule. Claude Code gets only its read tools, Qwen Code loses every tool that writes, and Codex runs the turn in a read-only sandbox; a Codex too old to report its sandbox refuses the request instead. The Claude channel runs in its owner's own session and cannot be limited, so it declines a directory contact's question in the room.
 

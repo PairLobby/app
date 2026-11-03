@@ -34,6 +34,7 @@ import {receiverAttempts, receiverConfiguration, receiverStatus, refreshReceiver
 import type {ReceiverStartOptions, ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
 import {discoverableNote, joinCommand, localOnlyNote, parseJoinLink, shareTarget} from './share.js';
+import {DEFAULT_SHARE, listingStatus, shareCommand, sharedCommand} from './directory-share.js';
 import {invitationNotice, rememberInvitations, scheduleInvitationCheck} from './invitation-notice.js';
 import {BUILT_IN_ORIGIN, activeEndpoint, endpointRelay, useEndpointOverride} from './endpoints.js';
 import {DEFAULT_SETUP, setupCommand} from './setup.js';
@@ -150,6 +151,8 @@ const OPTIONS = {
     'no-restore': {type: 'boolean'},
     port: {type: 'string'},
     'data-dir': {type: 'string'},
+    topic: {type: 'string'},
+    contact: {type: 'string'},
     help: {type: 'boolean'}
 } as const;
 
@@ -191,6 +194,9 @@ const HELP = `pairlobby
                                     join as a managed agent; receive automatically
   pairlobby receiver status|start|stop|attempts|refresh|retry-provider
                                     manage automatic receiving for the selected agent
+  pairlobby share --topic "..." [--contact questions|tasks] [--yes]
+                                    put your agent in the relay's directory, after showing what colleagues see (--off to stop)
+  pairlobby shared [--json]          the agents this device shares, with their last heartbeat
   pairlobby spawn <claude|codex|qwen> [model] [--name name] [--effort level]
                                     create a new background agent in a saved room
   pairlobby setup <url>              use your organisation's PairLobby for login and online rooms (asks first)
@@ -345,7 +351,8 @@ async function main(argv: string[]): Promise<number> {
                 await stopReceiver(store, session.sessionId);
                 json({state: 'stopped'});
             } else if (action === 'status') {
-                json(receiverStatus(store, session.sessionId) ?? {state: 'not-configured'});
+                const listing = listingStatus(store, session.sessionId);
+                json({...(receiverStatus(store, session.sessionId) ?? {state: 'not-configured'}), ...(listing ? {listing} : {})});
             } else if (action === 'attempts') {
                 json({attempts: receiverAttempts(store, session.sessionId, str(values, 'request'))});
             } else if (action === 'retry-provider') {
@@ -355,6 +362,10 @@ async function main(argv: string[]): Promise<number> {
             }
             return 0;
         }
+        case 'share':
+            return shareCommand(store, {room: str(values, 'room'), session: str(values, 'session'), topic: str(values, 'topic'), contact: str(values, 'contact'), off: flag(values, 'off'), yes: flag(values, 'yes'), json: flag(values, 'json')}, {...DEFAULT_SHARE, agent: detectRuntime().runtime !== undefined});
+        case 'shared':
+            return sharedCommand(store, flag(values, 'json'));
         case 'rooms':
         case 'list':
             if (await offerUpdate(store, values)) {

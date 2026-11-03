@@ -5,7 +5,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {setTimeout as sleep} from 'node:timers/promises';
 import type {LocalStore, SessionEntry} from '@pairlobby/client';
 import {ProtocolError, newId} from '@pairlobby/protocol';
-import type {Attachment, MessageRequest, ProviderWait} from '@pairlobby/protocol';
+import type {Attachment, ListingPresenceRequest, MessageRequest, ProviderWait, ReportedAvailability} from '@pairlobby/protocol';
 import {select, UsageError} from './context.js';
 import {CodexReceiver} from './codex-receiver.js';
 import {clearAnswerFiles, stageAnswerFile, stagedAnswerFiles, uploadAnswerFiles} from './answer-files.js';
@@ -26,6 +26,7 @@ import type {AttemptTerminal, AttemptTerminalKind} from './receiver-attempt-jour
 import {VERSION} from './version.js';
 import {ProviderCooldownStore, ProviderUsageLimited, providerProfileKey, publicProviderLimit, reconcileProviderCooldown} from './provider-limits.js';
 import {providerRetryText} from './request-recovery.js';
+import {ListingHeartbeat} from './shared-listings.js';
 
 export type ReceiverStatus = {pid: number; state: string; runtime: string; version?: string; entrypoint?: string; restartRequired?: boolean; threadId?: string; model?: string; eventId?: string; attempt?: number | null; attemptId?: string | null; detail?: string; receiptError?: string; usage?: unknown; providerWait?: ProviderWait | null; idleTimeoutMs?: number; absoluteTimeoutMs?: number; requestStartedAt?: number | null; lastActivityAt?: number | null; idleDeadlineAt?: number | null; absoluteDeadlineAt?: number | null; idleRemainingMs?: number | null; absoluteRemainingMs?: number | null};
 export type ReceiverStartOptions = {model?: string; workdir?: string; effort?: string; executable?: string; idleTimeoutMs?: number; absoluteTimeoutMs?: number};
@@ -36,6 +37,19 @@ type Job = {event_id: string; phase: string; acknowledged: number; answer: strin
 type ReceiverConfiguration = {runtime: ReceiverRuntimeName; cwd: string; model?: string; effort?: string; executable?: string; idleTimeoutMs: number; absoluteTimeoutMs: number};
 type ReceiverPaths = {directory: string; status: string; lock: string; stop: string; wake: string; log: string; config: string; database: string};
 const JOURNAL_ACTIVITY_INTERVAL_MS = 5_000;
+
+/** What a listing says while the receiver is in each state; starting, reconnecting and failed states send nothing. */
+const LISTED_AVAILABILITY: Record<string, ReportedAvailability> = {available: 'available', working: 'working', provider_retry: 'working', waiting: 'working', stalled: 'working', paused: 'paused', provider_wait: 'paused'};
+
+/** The heartbeat for a shared agent: its state, and the configured model, else the one its runtime last reported. */
+export function receiverPresence(status: ReceiverStatus, configuredModel?: string): ListingPresenceRequest | null {
+    const availability = LISTED_AVAILABILITY[status.state];
+    if (!availability) {
+        return null;
+    }
+    const model = configuredModel ? {value: configuredModel, source: 'configured' as const} : status.model ? {value: status.model, source: 'reported' as const} : undefined;
+    return {availability, connection: 'separate', ...(model ? {model} : {})};
+}
 
 function paths(store: LocalStore, sessionId: string): ReceiverPaths {
     if (!/^se_[A-Z0-9]+$/.test(sessionId)) {
@@ -386,12 +400,17 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         database.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('model',?)").run(recoveredModel);
     }
     let state: ReceiverStatus = {pid: process.pid, state: 'starting', runtime: config.runtime, version: process.env['PAIRLOBBY_TEST_RECEIVER_VERSION'] ?? VERSION, entrypoint: process.env['PAIRLOBBY_TEST_RECEIVER_ENTRYPOINT'] ?? currentEntrypoint(), restartRequired: false, providerWait: null, idleTimeoutMs: config.idleTimeoutMs, absoluteTimeoutMs: config.absoluteTimeoutMs, attempt: null, attemptId: null, requestStartedAt: null, lastActivityAt: null, idleDeadlineAt: null, absoluteDeadlineAt: null, ...(savedThread ? {threadId: savedThread.value} : {}), ...(recoveredModel ? {model: recoveredModel} : {})};
+    let heartbeat: ListingHeartbeat | undefined;
     const status = (update: Partial<ReceiverStatus>) => {
         const next = {...state, ...update};
         if (JSON.stringify(next) !== JSON.stringify(state) || !existsSync(location.status)) {
             writePrivate(location.status, next);
         }
+        const changed = next.state !== state.state || next.model !== state.model;
         state = next;
+        if (changed) {
+            void heartbeat?.tick();
+        }
     };
     let stopped = false;
     let receipts: ReceiptMonitor | undefined;
@@ -837,6 +856,8 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
             }
         }});
         status({state: 'available'});
+        heartbeat = new ListingHeartbeat({store, sessionId: session.sessionId, client, credential, report: () => receiverPresence(state, config.model)});
+        heartbeat.start();
         let failures = 0;
         const probeOwner = `${session.sessionId}:${process.pid}`;
         while (!stopped) {
@@ -953,6 +974,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
     } finally {
         stop();
         await receipts?.stop();
+        await heartbeat?.stop();
         clearInterval(timer);
         process.removeListener('SIGTERM', stop);
         process.removeListener('SIGINT', stop);

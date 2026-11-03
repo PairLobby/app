@@ -51,6 +51,21 @@ test('an idle callback delivered at the absolute boundary is classified as absol
     expect(expired).toHaveBeenCalledWith('absolute', expect.objectContaining({absoluteDeadlineAt: 11_000}));
 });
 
+test('an idle deadline capped at the absolute one is classified as absolute even when its timer fires before the wall clock gets there', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    const expired = vi.fn();
+    const deadline = new ManagedDeadline({idleMs: 1_000, absoluteMs: 1_000}, expired);
+    vi.advanceTimersByTime(500);
+    // The wall clock runs a millisecond ahead when output arrives, then falls two behind the timers.
+    vi.setSystemTime(10_501);
+    deadline.touch();
+    vi.setSystemTime(10_499);
+    vi.advanceTimersByTime(499);
+    expect(expired).toHaveBeenCalledOnce();
+    expect(expired).toHaveBeenCalledWith('absolute', expect.objectContaining({absoluteDeadlineAt: 11_000}));
+});
+
 test('policy validation and failure messages keep the two limits distinct', () => {
     expect(() => validateManagedDeadline({idleMs: 10_000, absoluteMs: 5_000})).toThrow('at least');
     expect(() => validateManagedDeadline({idleMs: 999, absoluteMs: 5_000})).toThrow('between 1 second');
