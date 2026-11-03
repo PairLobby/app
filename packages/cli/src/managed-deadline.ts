@@ -115,7 +115,8 @@ export class ManagedDeadline {
         if (this.stopped) {
             return;
         }
-        const resolvedKind = kind === 'idle' && Date.now() >= this.snapshotValue.absoluteDeadlineAt ? 'absolute' : kind;
+        // An idle deadline capped at the absolute one is the absolute limit; timers can fire a little before Date.now() reaches it.
+        const resolvedKind = kind === 'idle' && (Date.now() >= this.snapshotValue.absoluteDeadlineAt || this.snapshotValue.idleDeadlineAt >= this.snapshotValue.absoluteDeadlineAt) ? 'absolute' : kind;
         this.stop();
         this.expired(resolvedKind, this.snapshot());
     }
