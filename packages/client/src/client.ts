@@ -24,6 +24,9 @@ import type {
     NameSource,
     ParticipantRole,
     PermissionChange,
+    ListingPresenceRequest,
+    ListingResponse,
+    ListingView,
     LiveTransport,
     ReadEventsResponse,
     ReceiptResponse,
@@ -31,7 +34,8 @@ import type {
     RoomFile,
     RoomSnapshot,
     SendEventRequest,
-    SendEventResponse
+    SendEventResponse,
+    ShareListingRequest
 } from '@pairlobby/protocol';
 
 type RawUpload = {body: Uint8Array<ArrayBuffer>; contentType: string};
@@ -428,6 +432,21 @@ export class PairLobbyClient {
         return this.call('DELETE', `/v1/rooms/${roomId}/participants/${participantId}`, credential);
     }
 
+    /** Puts the agent holding `credential` in the directory, or updates its listing; needs this client's personal token. */
+    async shareListing(credential: string, listing: ShareListingRequest): Promise<ListingView> {
+        return (await this.call<ListingResponse>('POST', '/v1/directory/listings', credential, listing)).listing;
+    }
+
+    /** The heartbeat: what the listed agent is doing now. */
+    async listingPresence(listingId: string, credential: string, presence: ListingPresenceRequest): Promise<ListingView> {
+        return (await this.call<ListingResponse>('PUT', `/v1/directory/listings/${listingId}/presence`, credential, presence)).listing;
+    }
+
+    /** Takes a listing down, with the personal token or the listed agent's credential. */
+    async unshareListing(listingId: string, credential: string | null): Promise<void> {
+        await this.call('DELETE', `/v1/directory/listings/${listingId}`, credential);
+    }
+
     leave(roomId: string, credential: string): Promise<RoomEventResult> {
         return this.call('POST', `/v1/rooms/${roomId}/leave`, credential, {});
     }
@@ -652,7 +671,7 @@ export class PairLobbyClient {
         if (credential) {
             headers.set('authorization', `Bearer ${credential}`);
         }
-        if (this.accountToken && method === 'POST' && (path === '/v1/rooms' || path === '/v1/invites/redeem' || path.endsWith('/account-join') || path.endsWith('/invitations'))) {
+        if (this.accountToken && ((method === 'POST' && (path === '/v1/rooms' || path === '/v1/invites/redeem' || path.endsWith('/account-join') || path.endsWith('/invitations'))) || path.startsWith('/v1/directory/'))) {
             headers.set('x-pairlobby-account-token', this.accountToken);
         }
         if (body !== undefined) {

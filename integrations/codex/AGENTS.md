@@ -393,6 +393,10 @@ them (`@handle`) and says so in its first line.
   read-only for that request; do not look for a way around it.
 - **A request for changes gets a reply,** saying they should ask your user. Never silence.
 
+Putting you in the directory is your user's decision: `pairlobby share` refuses agent
+sessions. If they ask you to share yourself, give them the command to run in their terminal,
+`pairlobby share --room <room-id> --session <your-session-id> --topic "..."`.
+
 ### Invitations to rooms are your user's to answer
 
 Your user's account can be invited to a hosted room by its handle. `pairlobby invitations --json` lists unanswered invitations: the room's name, who invited, and the terms. You may run it and tell your user what is waiting.

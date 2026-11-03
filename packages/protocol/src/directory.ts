@@ -16,8 +16,8 @@ export const MAX_LISTING_TOPIC_LENGTH = 120;
 export const ListingConnection = z.enum(['original', 'separate', 'manual']);
 export type ListingConnection = z.infer<typeof ListingConnection>;
 
-/** What a heartbeat may report. */
-export const ReportedAvailability = z.enum(['available', 'working', 'paused']);
+/** What a heartbeat may report; `offline` is a stopping receiver's last word, so readers need not wait three minutes. */
+export const ReportedAvailability = z.enum(['available', 'working', 'paused', 'offline']);
 export type ReportedAvailability = z.infer<typeof ReportedAvailability>;
 
 /** What a reader sees: the last report, `offline` once heartbeats stop, `unknown` before the first. */
