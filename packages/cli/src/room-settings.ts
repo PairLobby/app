@@ -163,7 +163,7 @@ function capitalize(text: string): string {
 
 async function membersPage(context: RoomSettingsContext): Promise<RoomPanelPage> {
     const {room} = await access(context);
-    return {id: 'members', title: 'Admins and members', rows: room.participants.filter((person) => !person.left && !person.revoked).map((person) => ({id: person.participantId, label: person.displayName, value: `${person.role === 'controller' ? 'Admin' : person.role === 'guest' ? 'Observer' : 'Member'} · ${person.kind}${person.muted ? ' · muted' : ''}${person.paused ? ' · paused' : ''}`, section: 'Members', action: {kind: 'menu', load: () => memberPage(context, person.participantId)}})), note: 'Enter opens a member’s controls. Names are labels; actions use participant IDs.', reload: () => membersPage(context)};
+    return {id: 'members', title: 'Admins and members', rows: room.participants.filter((person) => !person.left && !person.revoked).map((person) => ({id: person.participantId, label: person.displayName, value: `${person.role === 'controller' ? 'Admin' : person.role === 'guest' ? 'Visitor' : 'Member'} · ${person.kind}${person.muted ? ' · muted' : ''}${person.paused ? ' · paused' : ''}`, section: 'Members', action: {kind: 'menu', load: () => memberPage(context, person.participantId)}})), note: 'Enter opens a member’s controls. Names are labels; actions use participant IDs.', reload: () => membersPage(context)};
 }
 
 async function memberPage(context: RoomSettingsContext, id: string): Promise<RoomPanelPage> {
@@ -172,11 +172,14 @@ async function memberPage(context: RoomSettingsContext, id: string): Promise<Roo
     if (!person) {
         throw new Error('This participant is no longer in the room. Refresh the member list.');
     }
-    const rows: RoomPanelRow[] = [{id: 'id', label: 'Participant ID', value: id, section: 'Identity'}, {id: 'role', label: 'Admin access', value: person.role === 'controller' ? 'Admin' : person.role === 'guest' ? 'Visitor' : 'Member', section: 'Admin'}];
+    const rows: RoomPanelRow[] = [{id: 'id', label: 'Participant ID', value: id, section: 'Identity'}, {id: 'role', label: 'Role', value: person.role === 'controller' ? 'Admin' : person.role === 'guest' ? 'Visitor' : 'Member', section: 'Admin'}];
+    if (authority && room.adminRolesSupported && person.role === 'guest') {
+        rows[1]!.action = {kind: 'edit', initial: person.role, choices: [{label: 'Visitor: reads only', value: 'guest'}, {label: 'Member: posts and asks agents for work', value: 'member'}], hint: 'A member posts and asks agents for work. To make them read only again, mute them or remove them.', confirm: (value) => value === 'member' ? `Make ${person.displayName} a member? They can then post and ask agents for work.` : `Keep ${person.displayName} a visitor?`, save: (value) => value === 'member' ? change(context, (owner) => context.client.setRole(context.roomId, owner, id, 'member')) : Promise.resolve()};
+    }
     if (authority && room.adminRolesSupported && person.role !== 'guest') {
         rows[1]!.action = {kind: 'edit', initial: person.role, choices: [{label: 'Member — ordinary participation', value: 'member'}, {label: 'Admin — manage room settings and members', value: 'controller'}], hint: 'Admin rights include changing settings, managing members and granting admin access. The owner retains control.', confirm: (value) => `${value === 'controller' ? 'Grant' : 'Remove'} admin access for ${person.displayName}?`, save: (value) => change(context, (owner) => context.client.setRole(context.roomId, owner, id, value === 'controller' ? 'controller' : 'member'))};
     }
-    rows[1]!.hint = room.adminRolesSupported ? 'Read-only visitors must be invited as members before they can become admins.' : 'Update this relay to change admin roles.';
+    rows[1]!.hint = room.adminRolesSupported ? 'A visitor becomes a member first, then may become an admin.' : 'Update this relay to change roles.';
     // A member the room lets use a command gets the control too, except against an admin.
     const may = (permission: RoomPermission) => Boolean(authority) || (room.lifecycle === 'open' && person.role !== 'controller' && Boolean(authorityFor(room, context.participantId, permission, context.credential)));
     const control = (permission: RoomPermission, key: string, label: string, value: string, confirm: string, run: (owner: string) => Promise<unknown>) => rows.push({id: key, label, value, section: 'Controls', ...(may(permission) ? {action: {kind: 'command' as const, confirm, run: () => change(context, run, permission)}} : {hint: 'Owner or admin access required, or a permission for this command.'})});

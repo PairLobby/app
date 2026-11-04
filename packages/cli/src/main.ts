@@ -179,6 +179,8 @@ const HELP = `pairlobby
                                     show or set who can find and join the room (owner/admin)
   pairlobby room <room> invite-policy [members|owner]
                                     show or set whether members may invite (owner/admin)
+  pairlobby room <room> member|admin <name or id>
+                                    make a visitor a member, or a member an admin (owner/admin)
   pairlobby delete <room>            delete a room (controller only)
   pairlobby forget <room>            drop the local record, leave the server alone
   pairlobby settings                 interactive menu for this device's preferences and new-room defaults

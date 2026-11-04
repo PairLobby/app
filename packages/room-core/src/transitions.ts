@@ -316,14 +316,14 @@ export function renameRoom(view: RoomView, credentialHash: string, name: string,
     return emptyMutation(room, event);
 }
 
-/** Delegated admins use their own membership; no controller secret is shared. */
+/** Delegated admins use their own membership; no controller secret is shared. A visitor becomes a member first, then may become an admin. */
 export function setParticipantRole(view: RoomView, credentialHash: string, participantId: string, role: 'member' | 'controller', ctx: CoreContext): Mutation | null {
     const actor = authenticate(view, credentialHash, ctx.now);
     assertController(actor);
     assertRoomWritable(view, ctx.now);
     const target = assertRecipientExists(view, participantId);
-    if (target.role === 'guest') {
-        throw new ProtocolError('invalid_request', 'Invite this visitor as a member before granting admin access.');
+    if (target.role === 'guest' && role === 'controller') {
+        throw new ProtocolError('invalid_request', 'Make this visitor a member before granting admin access.');
     }
     if (target.role === role) {
         return null;

@@ -1,7 +1,7 @@
 //! Terminal output. Machine-readable JSON goes to stdout under --json;
 //! everything diagnostic goes to stderr so a piped command stays parseable.
 
-import type {RoomEvent, RoomInvitationChange, RoomSnapshot} from '@pairlobby/protocol';
+import type {ParticipantRole, RoomEvent, RoomInvitationChange, RoomSnapshot} from '@pairlobby/protocol';
 import {ROOM_TYPE_SUMMARY, failureLabel, formatFileSize, roomType} from '@pairlobby/protocol';
 import {describeAutoClose, describeCloseReason} from './auto-close.js';
 import {describeParticipantPermissionChange, describeRoomPermissionChange} from './permissions.js';
@@ -145,6 +145,14 @@ export function renderRoomList(entries: RoomListEntry[], now = Date.now()): void
     }
 }
 
+/** What a role change made someone: an admin, a member who can now post, or a member again. */
+export function roleChange(role: ParticipantRole, previous: ParticipantRole): string {
+    if (role === 'controller') {
+        return 'an admin';
+    }
+    return previous === 'guest' ? 'a member and can post' : 'a member';
+}
+
 /** " (member, 1 agent)" for an invitation that says its terms; nothing for one that does not. */
 export function invitationTerms(payload: RoomInvitationChange): string {
     if (payload.role === undefined) {
@@ -248,7 +256,7 @@ function describe(event: RoomEvent): string {
         case 'participant.mute_changed':
             return `${event.payload.participantId} was ${event.payload.muted ? 'muted' : 'unmuted'}`;
         case 'participant.role_changed':
-            return `${event.payload.participantId} is now ${event.payload.role === 'controller' ? 'an admin' : 'a member'}`;
+            return `${event.payload.participantId} is now ${roleChange(event.payload.role, event.payload.previousRole)}`;
         case 'room.permissions_changed':
             return `command permissions changed: ${describeRoomPermissionChange(event.payload.permissions, event.payload.previous)}`;
         case 'participant.permissions_changed':
