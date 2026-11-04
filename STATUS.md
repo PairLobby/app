@@ -4,7 +4,7 @@ Updated 2026-10-11, for the release after **0.16.0**. `pairlobby --version` says
 
 ## What works
 
-- Rooms, reusable/single-use invitations, read-only guests, expiry, handovers, and explicit control state.
+- Rooms, reusable/single-use invitations, read-only visitors, expiry, handovers, and explicit control state.
 - Messages carry up to eight inert file attachments, with a strict 95 MB single-file ceiling and 512 MB retained per room on local relays; the Durable Object relay stores them too, and hosted rooms apply the plan's limits. Managed agents can attach workspace files to their answers, `/files` shows space used, and `pairlobby export` saves history plus files. Inline media previews are not implemented.
 - Managed Codex, Claude, and Qwen receivers: detached Node code waits; addressed requests run in separate managed conversations, without listening models or polling subagents.
 - Managed Claude usage exhaustion is a durable `provider_wait`, not a failed task: the turn is released, same-profile queues are fenced, one receiver atomically probes restored capacity, repeated limits use bounded backoff then manual-only recovery, and every recovery is a new audited attempt that inspects prior side effects.
@@ -20,7 +20,7 @@ Updated 2026-10-11, for the release after **0.16.0**. `pairlobby --version` says
 - Other devices without an account: `pairlobby settings network-sharing tailscale|lan` shares this device's relay; `pairlobby join <code>` finds the relay that issued a code on the local network or tailnet; `create --open-local` lets anyone there join by room name; the room list shows rooms open on the network.
 - Hosted rooms across accounts: `/invite @handle`, `/invites`, `pairlobby invitations` with accept and decline, and `pairlobby profile --username`. Answering an invitation is for a person; agents are refused. This needs the hosted service's matching release.
 - `/interrupt` and `pairlobby interrupt` stop one agent's current task, hold its queue, and report an acknowledged outcome.
-- Auto-close per room (idle, age, or once agents and guests have left), with a device default and `/settings` row.
+- Auto-close per room (idle, age, or once agents and visitors have left), with a device default and `/settings` row.
 - Browser-approved terminal login with per-terminal revocable tokens; update checks and installs from GitHub releases; automatic releases on merge, which also publish the shared `@pairlobby/*` packages to npm.
 - Interactive `pairlobby settings` for this device and `/settings` for a room.
 - `pairlobby setup` saves a private login endpoint, switches between it and pairlobby.com, and keeps one login per endpoint.
@@ -81,7 +81,7 @@ These tracked guides are the published references. `.docs/` (papercuts) and work
 - Managed-request recovery now has activity-aware deadlines, append-only local attempts, retry/reassign/dismiss/cancel, an interactive `/requests` details/attempts/action panel, receiver-confirmed workspace context, remaining-time/attempt status, and fresh-thread recovery after unsafe termination. Automatic replay remains disabled for ambiguous failures; typed provider usage exhaustion alone uses a guarded deferred retry.
 - Members may invite other members; invitations never grant controller privileges. Room text cannot broaden runtime permissions.
 - Local credentials share the OS user's trust boundary. Naming or marking a membership as human is not an independent OS security boundary.
-- Closing guest admission does not eject existing guests. Revocation affects a membership/seat, not every future identity of the same account.
+- Closing visitor admission does not eject existing visitors. Revocation affects a membership/seat, not every future identity of the same account.
 - Broader invite abuse controls and cleanup/retention operations remain separate from the CLI features.
 - The Windows relay service is not runtime-verified; no Linux login-service equivalent is implemented.
 

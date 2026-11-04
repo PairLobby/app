@@ -127,7 +127,7 @@ test('test_a_file_is_in_the_room_only_once_a_message_carries_it_and_the_relay_de
     expect((await fetch(`${server.url}/v1/rooms/${room.roomId}/files/${uploaded.fileId}`)).status).toBe(401);
 
     await expect(client.send(room.roomId, room.participantCredential, message('again', [uploaded]))).rejects.toThrow('already sent with another message');
-    await expect(client.uploadFile(room.roomId, reader.participantCredential, 'x.txt', text('x'))).rejects.toThrow('guests can read this room');
+    await expect(client.uploadFile(room.roomId, reader.participantCredential, 'x.txt', text('x'))).rejects.toThrow('visitors can read this room');
     await expect(client.uploadFile(room.roomId, room.participantCredential, 'empty.txt', new Uint8Array())).rejects.toThrow('empty file');
 });
 

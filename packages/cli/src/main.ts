@@ -166,7 +166,7 @@ const HELP = `pairlobby
   pairlobby rename-self <new name>  rename your selected participant in a room
   pairlobby expiry [room] <when>     never | in 10 hours | at 2026-09-20 18:00
   pairlobby expire [room]            pick expiry from a menu
-  pairlobby open <room>              let anyone with the room id join as a guest
+  pairlobby open <room>              let anyone with the room id join as a visitor
   pairlobby open <room> --off        back to invite only
   pairlobby open-local <room>        let anyone on your network or tailnet join by name, as a member (--off to stop)
   pairlobby delete <room>            delete a room (controller only)
@@ -777,7 +777,7 @@ function parseExpirySpec(spec: string): number | null {
 }
 
 /**
- * Opens a room to read-only guests, or closes it again.
+ * Opens a room to read-only visitors, or closes it again.
  *
  * This makes the room id enough to get in, which turns an identifier that is
  * printed by `list`, by errors, and in logs into a credential. The warning is
@@ -829,14 +829,14 @@ async function setAccess(store: LocalStore, values: Values, reference?: string):
         return 0;
     }
     if (joinPolicy === 'invite_only') {
-        out(`${room.name} is invite only again. Existing guests keep their access until you remove them.`);
+        out(`${room.name} is invite only again. Existing visitors keep their access until you remove them.`);
         return 0;
     }
-    out(`${room.name} is open to guests.`);
+    out(`${room.name} is open to visitors.`);
     out('');
     out(`  pairlobby join ${room.roomId}`);
     out('');
-    note('anyone holding that room id can now read the whole transcript. Guests cannot send,');
+    note('anyone holding that room id can now read the whole transcript. Visitors cannot send,');
     note('hand over, or control anything. Close it again with: pairlobby open <room> --off');
     return 0;
 }
@@ -1094,7 +1094,7 @@ function validatedName(name: string): string {
 
 function invitationTerms(invitation: ReceivedInvitation): string {
     const agents = invitation.agents === 0 ? 'no agents' : `may bring ${invitation.agents} agent${invitation.agents === 1 ? '' : 's'}`;
-    return `${invitation.role === 'guest' ? 'read-only observer' : 'member'}, ${agents}`;
+    return `${invitation.role === 'guest' ? 'read-only visitor' : 'member'}, ${agents}`;
 }
 
 /**
@@ -1153,7 +1153,7 @@ async function invitationsCommand(store: LocalStore, values: Values, action?: st
         json({...accepted, accepted: true});
         return 0;
     }
-    out(`Accepted. ${accepted.roomName} is now one of your account's rooms${accepted.role === 'guest' ? ', as a read-only observer' : ''}.`);
+    out(`Accepted. ${accepted.roomName} is now one of your account's rooms${accepted.role === 'guest' ? ', as a read-only visitor' : ''}.`);
     out('');
     out(`  pairlobby join online ${accepted.roomId}                      # your terminal`);
     if (accepted.role !== 'guest' && invitation.agents > 0) {
@@ -1279,7 +1279,7 @@ async function applyRoomDefaults(client: PairLobbyClient, roomId: string, contro
         changes.push(['read-only invitations', () => client.setInviteRole(roomId, controller, 'guest')]);
     }
     if (!online && settings.defaultGuestAccess === 'open_to_guests') {
-        changes.push(['open guest access', () => client.setJoinPolicy(roomId, controller, 'open_to_guests')]);
+        changes.push(['open visitor access', () => client.setJoinPolicy(roomId, controller, 'open_to_guests')]);
     }
     for (const [label, apply] of changes) {
         try {
@@ -1549,10 +1549,10 @@ async function finishJoin(store: LocalStore, values: Values, joined: JoinedRoom,
     // Joining a room means being in it. Only a machine caller — --json, a pipe,
     // or an explicit --no-follow — gets a printed snapshot and its prompt back.
     if (isInteractive(values) && !receiver) {
-        note(`joined ${joined.room.name} as ${identity.displayName}${joined.role === 'guest' ? ' — read-only guest' : ''}`);
+        note(`joined ${joined.room.name} as ${identity.displayName}${joined.role === 'guest' ? ' — read-only visitor' : ''}`);
         return chatRoom(store, {...values, room: joined.roomId, session: identity.sessionId});
     }
-    out(`Joined ${joined.room.name} as ${identity.displayName}${joined.role === 'guest' ? ' (read-only guest)' : ''}`);
+    out(`Joined ${joined.room.name} as ${identity.displayName}${joined.role === 'guest' ? ' (read-only visitor)' : ''}`);
     out(`Session: ${identity.sessionId}`);
     if (detail.conversationId) {
         out(`Conversation: ${detail.conversationId}`);

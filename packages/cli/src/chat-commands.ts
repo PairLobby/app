@@ -28,18 +28,18 @@ function targetParticipant(snapshot: RoomSnapshot, reference: string): string {
 
 function invitationTerms(invitation: RoomInvitation): string {
     const agents = invitation.agents === 0 ? 'no agents' : `may bring ${invitation.agents} agent${invitation.agents === 1 ? '' : 's'}`;
-    return `${invitation.role === 'guest' ? 'read-only observer' : 'member'}, ${agents}`;
+    return `${invitation.role === 'guest' ? 'read-only visitor' : 'member'}, ${agents}`;
 }
 
-/** `/invite @maria @joe observer`: each handle is asked separately, so one unknown name does not stop the others. */
+/** `/invite @maria @joe visitor`: each handle is asked separately, so one unknown name does not stop the others. */
 async function inviteHandles(argument: string, client: PairLobbyClient, roomId: string, authority: string): Promise<string> {
     const words = argument.split(/\s+/).filter(Boolean);
     const handles = [...new Set(words.filter((word) => word.startsWith('@')).map((word) => word.toLowerCase()))];
     const rest = words.filter((word) => !word.startsWith('@'));
-    if (rest.length > 1 || (rest[0] !== undefined && !['member', 'observer'].includes(rest[0])) || handles.some((handle) => handle.length < 2)) {
-        throw new Error('Usage: /invite @handle [@handle …] [member|observer]');
+    if (rest.length > 1 || (rest[0] !== undefined && !['member', 'visitor', 'observer'].includes(rest[0])) || handles.some((handle) => handle.length < 2)) {
+        throw new Error('Usage: /invite @handle [@handle …] [member|visitor]');
     }
-    const role = rest[0] === 'observer' ? 'observer' : 'member';
+    const role = rest[0] === 'visitor' || rest[0] === 'observer' ? 'observer' : 'member';
     const lines: string[] = [];
     for (const handle of handles) {
         try {
@@ -81,7 +81,7 @@ export async function runRoomCommand(line: string, context: RoomCommandContext):
     const snapshot = await client.snapshot(roomId, credential);
     const member = snapshot.participants.find((participant) => participant.participantId === participantId);
     if (!member || member.role === 'guest') {
-        throw new ProtocolError('unauthorized', 'observers cannot use room commands');
+        throw new ProtocolError('unauthorized', 'visitors cannot use room commands');
     }
     const [command] = line.split(/\s+/);
     const argument = line.slice(command!.length).trim();
@@ -117,12 +117,12 @@ export async function runRoomCommand(line: string, context: RoomCommandContext):
         if (/\S+@\S+\.\S+/.test(argument)) {
             throw new Error('Inviting by email is not available yet. Invite an account with /invite @handle, or use /invite for a code.');
         }
-        if (argument && !/^as\s+\S/.test(argument) && !['member', 'observer'].includes(argument)) {
-            throw new Error('Usage: /invite, /invite member, /invite observer, /invite as <name>, or /invite @handle [observer]');
+        if (argument && !/^as\s+\S/.test(argument) && !['member', 'visitor', 'observer'].includes(argument)) {
+            throw new Error('Usage: /invite, /invite member, /invite visitor, /invite as <name>, or /invite @handle [visitor]');
         }
         const defaultName = /^as\s/.test(argument) ? argument.slice(3).trim() : undefined;
         // A named invite or an explicit choice wins; otherwise the room's /settings default, which is member.
-        const role = defaultName || argument === 'member' ? 'member' : argument === 'observer' ? 'guest' : snapshot.policy.inviteRole ?? 'member';
+        const role = defaultName || argument === 'member' ? 'member' : argument === 'visitor' || argument === 'observer' ? 'guest' : snapshot.policy.inviteRole ?? 'member';
         const inviter = authorityFor(snapshot, participantId, 'invite', credential, controllerCredential);
         if (!inviter) {
             throw notPermitted('invite');
@@ -130,7 +130,7 @@ export async function runRoomCommand(line: string, context: RoomCommandContext):
         const invite = await client.mintInvite(roomId, inviter, role, true, undefined, defaultName);
         const share = await joinCommand(client.serverUrl, invite.code);
         const reach = share.target.discoverable ? ` (on your network or tailnet, pairlobby join ${invite.code} is enough)` : !share.target.localOnly ? '' : share.target.otherRelay ? ' (this device only; other devices need an address of this relay they can reach)' : ' (this device only; share it with pairlobby settings network-sharing, then restart the relay)';
-        const admits = role === 'guest' ? 'read-only observer' : defaultName ? `member who can speak, default name: ${defaultName}` : 'member who can speak';
+        const admits = role === 'guest' ? 'read-only visitor' : defaultName ? `member who can speak, default name: ${defaultName}` : 'member who can speak';
         return `Invite: ${invite.code} — ${admits} · ${share.command}${reach}`;
     }
     const permission = command === '/lock' || command === '/unlock' ? 'lock' : command === '/kick' ? 'kick' : 'mute';

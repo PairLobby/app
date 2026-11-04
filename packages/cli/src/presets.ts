@@ -53,7 +53,7 @@ export function describePreset(preset: RoomPreset): string {
         `Preset ${preset.name} (saved ${new Date(preset.savedAt).toLocaleDateString()})`,
         `  Command permissions  ${describePermissions(preset.permissions)}`,
         `  Reply mode           ${preset.turnMode}`,
-        `  Invitations          ${preset.inviteRole === 'guest' ? 'read-only observers' : 'members who can speak'}`,
+        `  Invitations          ${preset.inviteRole === 'guest' ? 'read-only visitors' : 'members who can speak'}`,
         `  Auto-close           ${describeAutoClose(preset.autoClose)}`,
     ].join('\n');
 }
@@ -73,7 +73,7 @@ export function presetChanges(preset: RoomPreset, room: RoomSnapshot, target: Pr
         changes.push({label: 'Reply mode', from: room.turnMode ?? 'sequential', to: preset.turnMode, apply: (authority) => client.setTurnMode(roomId, authority, preset.turnMode)});
     }
     if ((room.policy.inviteRole ?? 'member') !== preset.inviteRole) {
-        const words = (role: 'member' | 'guest') => role === 'guest' ? 'read-only observers' : 'members who can speak';
+        const words = (role: 'member' | 'guest') => role === 'guest' ? 'read-only visitors' : 'members who can speak';
         changes.push({label: 'Invitations', from: words(room.policy.inviteRole ?? 'member'), to: words(preset.inviteRole), apply: (authority) => client.setInviteRole(roomId, authority, preset.inviteRole)});
     }
     const autoClose = room.policy.autoClose ?? {mode: 'off' as const};

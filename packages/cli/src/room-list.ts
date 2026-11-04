@@ -198,7 +198,7 @@ export function sessionRows(store: LocalStore, entry: RoomListEntry): ListRow[] 
         const configured = config?.model ?? session.model;
         const model = session.kind === 'human' ? '—' : reported || (configured ? configured + '*' : threadId ? 'Not reported' : 'Not started');
         const role = member?.role ?? session.role;
-        const values = {name: member?.displayName ?? session.displayName, kind: member?.kind ?? session.kind, state, receiver: receiver?.state ?? 'Not managed', model, role: role === 'controller' ? 'Admin' : role === 'guest' ? 'Observer' : 'Member', joined: new Date(session.joinedAt).toISOString(), id: session.sessionId};
+        const values = {name: member?.displayName ?? session.displayName, kind: member?.kind ?? session.kind, state, receiver: receiver?.state ?? 'Not managed', model, role: role === 'controller' ? 'Admin' : role === 'guest' ? 'Visitor' : 'Member', joined: new Date(session.joinedAt).toISOString(), id: session.sessionId};
         return {id: session.sessionId, roomId: entry.room.roomId, sessionId: session.sessionId, values, sortValues: {...values, joined: session.joinedAt}};
     });
 }

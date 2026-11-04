@@ -319,7 +319,7 @@ export function setParticipantRole(view: RoomView, credentialHash: string, parti
     assertRoomWritable(view, ctx.now);
     const target = assertRecipientExists(view, participantId);
     if (target.role === 'guest') {
-        throw new ProtocolError('invalid_request', 'Invite this observer as a member before granting admin access.');
+        throw new ProtocolError('invalid_request', 'Invite this visitor as a member before granting admin access.');
     }
     if (target.role === role) {
         return null;
@@ -361,7 +361,7 @@ export function setParticipantPermissions(view: RoomView, credentialHash: string
     assertRoomWritable(view, ctx.now);
     const target = assertRecipientExists(view, participantId);
     if (target.role === 'guest') {
-        throw new ProtocolError('invalid_request', 'A read-only observer cannot use room commands. Invite them as a member first.');
+        throw new ProtocolError('invalid_request', 'A read-only visitor cannot use room commands. Invite them as a member first.');
     }
     if (target.role === 'controller') {
         throw new ProtocolError('invalid_request', 'Admins can already use every command. Make them a member to limit them.');

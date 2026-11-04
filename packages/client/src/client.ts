@@ -80,7 +80,7 @@ export interface JoinedRoom {
     room: RoomSnapshot;
 }
 
-/** An invitation to a hosted room, as its owner and admins see it. `guest` is a read-only observer. */
+/** An invitation to a hosted room, as its owner and admins see it. `guest` is a read-only visitor. */
 export type RoomInvitation = {id: string; handle: string; role: 'member' | 'guest'; agents: number; state: 'pending' | 'accepted'; createdAt: number; expiresAt: number};
 
 /** A relay's answer to an invite probe: it issued a matching code, it did not, it predates probes, or it could not be asked. */

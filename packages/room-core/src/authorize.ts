@@ -93,7 +93,7 @@ export function assertCanWrite(actor: Actor): ParticipantRecord {
 export function assertCanAcknowledge(actor: Actor): ParticipantRecord {
     const participant = assertActiveMember(actor);
     if (participant.role === 'guest') {
-        throw new ProtocolError('unauthorized', 'guests can read this room but cannot take part in it');
+        throw new ProtocolError('unauthorized', 'visitors can read this room but cannot take part in it');
     }
     return participant;
 }

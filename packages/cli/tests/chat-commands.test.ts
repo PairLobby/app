@@ -61,12 +61,14 @@ test('test_the_room_setting_makes_plain_invites_read_only_and_explicit_choices_s
     const {owner} = await createRoom();
     await client.setInviteRole(owner.roomId, owner.controllerCredential!, 'guest');
     const reply = await runRoomCommand('/invite', owner);
-    expect(reply).toContain('read-only observer');
+    expect(reply).toContain('read-only visitor');
     const {context: observer} = await joinRoom(inviteCode(reply), 'reader');
     expect((await client.snapshot(observer.roomId, observer.credential)).participants.find((participant) => participant.participantId === observer.participantId)?.role).toBe('guest');
     const {context: member} = await joinRoom(inviteCode(await runRoomCommand('/invite member', owner)), 'speaker');
     expect((await client.snapshot(member.roomId, member.credential)).participants.find((participant) => participant.participantId === member.participantId)?.role).toBe('member');
     await expect(runRoomCommand('/invite everyone', owner)).rejects.toThrow('Usage: /invite');
+    const {context: visitor} = await joinRoom(inviteCode(await runRoomCommand('/invite visitor', owner)), 'reader');
+    expect((await client.snapshot(visitor.roomId, visitor.credential)).participants.find((participant) => participant.participantId === visitor.participantId)?.role).toBe('guest');
 });
 
 test('test_observer_invite_cannot_write_or_run_room_commands', async () => {

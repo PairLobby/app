@@ -41,13 +41,14 @@ test('test_specs_round_trip_and_read_as_sentences', () => {
     expect(parseAutoClose('idle:2h')).toEqual({mode: 'inactivity', afterMs: 7_200_000});
     expect(parseAutoClose('AGE:7d')).toEqual({mode: 'age', afterMs: 604_800_000});
     expect(parseAutoClose('agents-and-guests-left')).toEqual({mode: 'agents_and_guests_left'});
+    expect(parseAutoClose('agents-and-visitors-left')).toEqual({mode: 'agents_and_guests_left'});
     expect(parseAutoClose('never')).toEqual({mode: 'off'});
     expect(formatAutoClose(parseAutoClose('idle:90m'))).toBe('idle:90m');
     expect(formatAutoClose(parseAutoClose('age:48h'))).toBe('age:2d');
     expect(() => parseAutoClose('idle:10s')).toThrow('one minute');
     expect(() => parseAutoClose('sometimes')).toThrow('auto-close takes');
     expect(describeAutoClose(undefined)).toBe('Off');
-    expect(describeAutoClose({mode: 'agents_and_guests_left'})).toBe('When all agents and guests have left');
+    expect(describeAutoClose({mode: 'agents_and_guests_left'})).toBe('When all agents and visitors have left');
 });
 
 test('test_bulk_apply_reports_every_room_instead_of_a_total', async () => {

@@ -40,7 +40,7 @@ export function agentProvider(runtime?: string): string {
 
 function statusFor(participant: RoomSnapshot['participants'][number], receiver: ReceiverStatus | null, queue?: TurnQueue): string {
     if (participant.role === 'guest') {
-        return 'Observer';
+        return 'Visitor';
     }
     if (participant.muted) {
         return 'Muted';

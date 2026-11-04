@@ -27,8 +27,8 @@ const ON_OFF: PanelChoice[] = [{label: 'On', value: 'true'}, {label: 'Off', valu
 
 export const SETTING_KEYS: Record<string, SettingDefinition> = {
     'default-reply-mode': {field: 'defaultTurnMode', kind: 'choice', label: 'Reply mode', section: 'New rooms', help: 'how agents answer in rooms you create: sequential or parallel', choices: [{label: 'Sequential — one agent answers at a time', value: 'sequential'}, {label: 'Parallel — different agents can work together', value: 'parallel'}]},
-    'default-invites': {field: 'defaultInviteRole', kind: 'choice', label: 'Invitations', section: 'New rooms', help: 'what a plain /invite admits in rooms you create: member or observer', choices: [{label: 'Members — invitees can send messages', value: 'member'}, {label: 'Read-only observers — invitees can only read', value: 'guest'}]},
-    'default-guest-access': {field: 'defaultGuestAccess', kind: 'choice', label: 'Guest access (local rooms)', section: 'New rooms', help: 'whether anyone with a local room id may read it: invite-only or open', choices: [{label: 'Invite only — require an invitation', value: 'invite_only'}, {label: 'Anyone with the room ID may read as a guest', value: 'open_to_guests'}]},
+    'default-invites': {field: 'defaultInviteRole', kind: 'choice', label: 'Invitations', section: 'New rooms', help: 'what a plain /invite admits in rooms you create: member or visitor', choices: [{label: 'Members — invitees can send messages', value: 'member'}, {label: 'Read-only visitors — invitees can only read', value: 'guest'}]},
+    'default-guest-access': {field: 'defaultGuestAccess', kind: 'choice', label: 'Visitor access (local rooms)', section: 'New rooms', help: 'whether anyone with a local room id may read it: invite-only or open', choices: [{label: 'Invite only — require an invitation', value: 'invite_only'}, {label: 'Anyone with the room ID may read as a visitor', value: 'open_to_guests'}]},
     'default-private-online': {field: 'defaultPrivateOnline', kind: 'boolean', label: 'Private online rooms', section: 'New rooms', help: 'restrict online rooms you create to allowed accounts (create online --public overrides)'},
     'auto-close': {field: 'defaultAutoClose', kind: 'auto-close', label: 'Auto-close discussions', section: 'New rooms', help: `when rooms you create close themselves: ${AUTO_CLOSE_USAGE}`, choices: AUTO_CLOSE_CHOICES},
     'default-expiry': {field: 'defaultRoomLifetimeMs', kind: 'duration', label: 'Room expiry', section: 'New rooms', help: 'how long a new room lives: never, or a duration like 24h'},
@@ -106,8 +106,8 @@ export function validateManagedSettings(settings: Settings): void {
     }
 }
 
-/** Choice values accept their short names too: observer for guest, open for open_to_guests. */
-const CHOICE_ALIASES: Record<string, string> = {observer: 'guest', 'read-only': 'guest', open: 'open_to_guests', 'invite-only': 'invite_only'};
+/** Choice values accept their short names too: visitor or observer for guest, open for open_to_guests. */
+const CHOICE_ALIASES: Record<string, string> = {visitor: 'guest', observer: 'guest', 'read-only': 'guest', open: 'open_to_guests', 'invite-only': 'invite_only'};
 
 export function parseSettingValue(key: string, definition: SettingDefinition, value: string): Settings[keyof Settings] {
     switch (definition.kind) {
