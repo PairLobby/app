@@ -108,6 +108,19 @@ describe('relay kernel edge', () => {
         expect(description.features).not.toContain('local-join');
     });
 
+    test('test_a_proxy_that_is_the_access_gate_lets_every_caller_join_by_name', async () => {
+        const roomId = newId('room');
+        const join = () => new Request(`http://relay/v1/rooms/${roomId}/local-join`, {method: 'POST', body: '{}'});
+        // The socket says the caller is not local, as behind any proxy: only the opt-in changes the answer.
+        const gated = relayWith(stub(), {peerIsLocal: () => false, localRooms: async () => [], behindProxy: true, proxyIsAccessGate: true});
+        expect(routed(await gated.edge(join())).roomId).toBe(roomId);
+        const description = (await (await gated.edge(new Request('http://relay/v1/server')) as Response).json()) as {features: string[]};
+        expect(description.features).toContain('local-join');
+        // The opt-in means nothing without a proxy: a direct relay still asks the socket.
+        const direct = relayWith(stub(), {peerIsLocal: () => false, localRooms: async () => [], proxyIsAccessGate: true});
+        expect(((await direct.edge(join())) as Response).status).toBe(401);
+    });
+
     test('test_a_forwarded_address_is_only_believed_from_a_trusted_proxy_header', async () => {
         const limits = {createPerMinutePerAddress: 1};
         const from = (address: string) => create({'x-forwarded-for': address});

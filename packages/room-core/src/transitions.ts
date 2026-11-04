@@ -476,14 +476,17 @@ export function setRoomType(view: RoomView, credentialHash: string, type: RoomTy
 }
 
 /**
- * Admits a member who found the room by name. The relay has already checked that
- * the request came from its local network or tailnet; this checks the room allows it.
+ * Admits someone who found the room by name: a member of a public room, a visitor of a
+ * protected one. The relay has already checked the caller may use it; this checks the room allows it.
  */
 export function joinOnLocalNetwork(view: RoomView, input: Omit<JoinRoomInput, 'role'>, ctx: CoreContext): JoinedRoom {
-    if (!view.room.policy.localJoin) {
-        throw new ProtocolError('unauthorized', 'this room is not open to the local network; ask its owner for an invite code');
+    if (view.room.policy.localJoin) {
+        return joinRoom(view, {...input, role: 'member'}, ctx);
     }
-    return joinRoom(view, {...input, role: 'member'}, ctx);
+    if (view.room.policy.type === 'protected') {
+        return joinRoom(view, {...input, role: 'guest'}, ctx);
+    }
+    throw new ProtocolError('unauthorized', 'this room cannot be joined by name; ask its owner for an invite code');
 }
 
 /**

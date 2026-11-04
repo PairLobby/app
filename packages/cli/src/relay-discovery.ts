@@ -86,6 +86,8 @@ export type LocalRoomMatch = RelayCandidate & {room: LocalRoom};
 export type LocalRoomDeps = Omit<DiscoveryDeps, 'probe'> & {
     /** Rooms open to the local network on one relay with this name; null when it cannot say. */
     lookup: (url: string, name?: string, signal?: AbortSignal) => Promise<LocalRoom[] | null>;
+    /** Relays asked as well as those found on the network: the saved endpoint's, which may be anywhere. */
+    saved?: RelayCandidate[];
 };
 
 /**
@@ -94,7 +96,7 @@ export type LocalRoomDeps = Omit<DiscoveryDeps, 'probe'> & {
  * out rooms already saved here. Relays that predate listing are skipped.
  */
 export async function listLocalRooms(known: ReadonlySet<string> = new Set(), deps: LocalRoomDeps = DEFAULT_LOCAL_ROOMS, signal?: AbortSignal): Promise<LocalRoomMatch[]> {
-    const candidates = [{url: deps.local, label: 'this device'}, ...(await Promise.all([deps.lan(signal), deps.tailnet(signal)])).flat()];
+    const candidates = [{url: deps.local, label: 'this device'}, ...(deps.saved ?? []), ...(await Promise.all([deps.lan(signal), deps.tailnet(signal)])).flat()];
     const unique = [...new Map(candidates.map((candidate) => [candidate.url, candidate])).values()];
     const answers = await Promise.all(unique.map(async (candidate) => ({...candidate, rooms: await deps.lookup(candidate.url, undefined, signal)})));
     const found = new Map<string, LocalRoomMatch>();
@@ -122,7 +124,7 @@ export const DEFAULT_LOCAL_ROOMS: LocalRoomDeps = {
  * seen through two addresses of the same relay counts once.
  */
 export async function findLocalRoom(name: string, deps: LocalRoomDeps = DEFAULT_LOCAL_ROOMS, only?: string): Promise<LocalRoomMatch> {
-    const candidates = only ? [{url: only, label: only}] : [{url: deps.local, label: 'this device'}, ...(await Promise.all([deps.lan(), deps.tailnet()])).flat()];
+    const candidates = only ? [{url: only, label: only}] : [{url: deps.local, label: 'this device'}, ...(deps.saved ?? []), ...(await Promise.all([deps.lan(), deps.tailnet()])).flat()];
     const unique = [...new Map(candidates.map((candidate) => [candidate.url, candidate])).values()];
     const answers = await Promise.all(unique.map(async (candidate) => ({...candidate, rooms: await deps.lookup(candidate.url, name)})));
     // A relay reached by two addresses (this device and its own LAN address) reports the same room twice; keep the first, this device's.

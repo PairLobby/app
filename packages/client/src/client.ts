@@ -677,7 +677,7 @@ export class PairLobbyClient {
         if (credential) {
             headers.set('authorization', `Bearer ${credential}`);
         }
-        if (this.accountToken && ((method === 'POST' && (path === '/v1/rooms' || path === '/v1/invites/redeem' || path.endsWith('/account-join') || path.endsWith('/invitations'))) || path.startsWith('/v1/directory/'))) {
+        if (this.accountToken && ((method === 'POST' && (path === '/v1/rooms' || path === '/v1/invites/redeem' || path.endsWith('/account-join') || path.endsWith('/invitations') || path.endsWith('/local-join'))) || path.startsWith('/v1/directory/'))) {
             headers.set('x-pairlobby-account-token', this.accountToken);
         }
         if (body !== undefined) {

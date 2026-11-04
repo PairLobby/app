@@ -50,6 +50,10 @@ describe('relay settings', () => {
         expect(() => relaySettings({}, {PAIRLOBBY_PORT: '70000'})).toThrow('--port (PAIRLOBBY_PORT) must be a whole number from 0 to 65535');
         expect(() => relaySettings({}, {PAIRLOBBY_PUBLIC_URL: 'team.example.com'})).toThrow('--public-url (PAIRLOBBY_PUBLIC_URL) must be a full address');
         expect(() => relaySettings({}, {PAIRLOBBY_TRUSTED_PROXY_HEADER: 'x forwarded'})).toThrow('must be a header name');
+        expect(() => relaySettings({}, {PAIRLOBBY_PROXY_IS_ACCESS_GATE: '1'})).toThrow('needs --public-url or --trusted-proxy-header');
+        expect(() => relaySettings({}, {PAIRLOBBY_PROXY_IS_ACCESS_GATE: 'maybe'})).toThrow('must be 1 or 0');
+        expect(relaySettings({}, {PAIRLOBBY_PROXY_IS_ACCESS_GATE: '1', PAIRLOBBY_TRUSTED_PROXY_HEADER: 'x-forwarded-for'}).proxyIsAccessGate).toBe(true);
+        expect(relaySettings({proxyIsAccessGate: true}, {PAIRLOBBY_PUBLIC_URL: 'https://relay.example.com'}).proxyIsAccessGate).toBe(true);
         expect(() => relaySettings({}, {PAIRLOBBY_ALLOWED_HOSTS: 'https://relay.internal'})).toThrow('PAIRLOBBY_ALLOWED_HOSTS takes Host values');
         expect(() => relaySettings({}, {PAIRLOBBY_LIMIT_CREATE_PER_MIN_IP: '0'})).toThrow('PAIRLOBBY_LIMIT_CREATE_PER_MIN_IP must be a whole number');
         expect(() => relaySettings({requestLog: 'verbose'}, {})).toThrow('must be all, writes or off');

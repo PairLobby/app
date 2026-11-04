@@ -334,6 +334,21 @@ describe('local server joins by name', () => {
         }
     });
 
+    test('test_a_proxy_that_is_the_access_gate_lets_callers_find_and_join_open_rooms_by_name', async () => {
+        const relay = await startServer({port: 0, dataFile: join(directory, 'gated.sqlite'), publicUrl: 'https://relay.example.com', proxyIsAccessGate: true});
+        try {
+            const base = `http://127.0.0.1:${relay.port}`;
+            const roomId = await openLocal(base, 'Town Square');
+            const found = (await (await fetch(`${base}/v1/rooms/local?name=town%20square`, {headers: {host: 'relay.example.com'}})).json()) as {rooms: {roomId: string}[]};
+            expect(found.rooms.map((room) => room.roomId)).toEqual([roomId]);
+            const joined = await fetch(`${base}/v1/rooms/${roomId}/local-join`, {method: 'POST', headers: {'content-type': 'application/json', host: 'relay.example.com'}, body: JSON.stringify({displayName: 'visitor', kind: 'human', participantCredential: newCredential('participant')})});
+            expect(joined.status).toBe(200);
+            expect(((await joined.json()) as {role: string}).role).toBe('member');
+        } finally {
+            await relay.close();
+        }
+    });
+
     test('test_joining_by_name_needs_a_transport_that_vouches_the_caller_is_local', async () => {
         const store = new SqliteRoomStore(join(directory, 'not-local.sqlite'));
         try {
@@ -458,6 +473,10 @@ describe('local server reachable from a network', () => {
                 await relay.close();
             }
         }
+    });
+
+    test('test_the_access_gate_setting_needs_a_proxy', async () => {
+        await expect(startServer({port: 0, dataFile: join(directory, 'gate-no-proxy.sqlite'), proxyIsAccessGate: true})).rejects.toThrow('proxyIsAccessGate needs publicUrl or trustedProxyHeader');
     });
 
     test('test_behind_a_proxy_each_forwarded_address_is_limited_on_its_own', async () => {

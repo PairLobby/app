@@ -19,7 +19,7 @@ export class RelaySettingsError extends Error {
     }
 }
 
-export type RelayFlags = {host?: string; port?: string; publicUrl?: string; trustedProxyHeader?: string; requestLog?: string; backup?: string; noRestore?: boolean};
+export type RelayFlags = {host?: string; port?: string; publicUrl?: string; trustedProxyHeader?: string; requestLog?: string; backup?: string; noRestore?: boolean; proxyIsAccessGate?: boolean};
 
 export type RelayEnvironment = Record<string, string | undefined>;
 
@@ -28,6 +28,8 @@ export type RelaySettings = {
     port?: number;
     publicUrl?: string;
     trustedProxyHeader?: string;
+    /** The proxy in front of the relay is the access gate: everyone it lets through may join rooms by name. */
+    proxyIsAccessGate?: boolean;
     createToken?: string;
     /** The members file: one JSON line per person who logs in with their own token. */
     membersFile?: string;
@@ -84,7 +86,7 @@ const LIMIT_VARIABLES: Record<keyof AdmissionLimits, string> = {
 const DISCOVERY_VARIABLES = ['PAIRLOBBY_DISCOVERY_NAME', 'PAIRLOBBY_LOGIN_MODE', 'PAIRLOBBY_LOGIN_HELP', 'PAIRLOBBY_SUPPORT_URL', 'PAIRLOBBY_MEMBERS_FILE', 'PAIRLOBBY_TEAM_TOKEN_LOGIN'];
 
 /** Every variable `serve` reads, for help text and documentation. */
-export const RELAY_VARIABLES = ['PAIRLOBBY_HOST', 'PAIRLOBBY_PORT', 'PAIRLOBBY_DATA_DIR', 'PAIRLOBBY_PUBLIC_URL', 'PAIRLOBBY_TRUSTED_PROXY_HEADER', 'PAIRLOBBY_ALLOWED_HOSTS', 'PAIRLOBBY_CREATE_TOKEN', 'PAIRLOBBY_CREATE_TOKEN_FILE', 'PAIRLOBBY_REQUEST_LOG', 'PAIRLOBBY_RECEIPT_MODE', 'PAIRLOBBY_BACKUP', 'PAIRLOBBY_BACKUP_INTERVAL', 'PAIRLOBBY_BACKUP_KEEP', 'PAIRLOBBY_BACKUP_S3_ENDPOINT', 'PAIRLOBBY_NO_RESTORE', ...DISCOVERY_VARIABLES, ...Object.values(LIMIT_VARIABLES), ...ROOM_LIMIT_VARIABLES.map(({variable}) => variable)];
+export const RELAY_VARIABLES = ['PAIRLOBBY_HOST', 'PAIRLOBBY_PORT', 'PAIRLOBBY_DATA_DIR', 'PAIRLOBBY_PUBLIC_URL', 'PAIRLOBBY_TRUSTED_PROXY_HEADER', 'PAIRLOBBY_PROXY_IS_ACCESS_GATE', 'PAIRLOBBY_ALLOWED_HOSTS', 'PAIRLOBBY_CREATE_TOKEN', 'PAIRLOBBY_CREATE_TOKEN_FILE', 'PAIRLOBBY_REQUEST_LOG', 'PAIRLOBBY_RECEIPT_MODE', 'PAIRLOBBY_BACKUP', 'PAIRLOBBY_BACKUP_INTERVAL', 'PAIRLOBBY_BACKUP_KEEP', 'PAIRLOBBY_BACKUP_S3_ENDPOINT', 'PAIRLOBBY_NO_RESTORE', ...DISCOVERY_VARIABLES, ...Object.values(LIMIT_VARIABLES), ...ROOM_LIMIT_VARIABLES.map(({variable}) => variable)];
 
 function described({flag, variable}: Source): string {
     return flag ? `--${flag} (${variable})` : variable;
@@ -189,12 +191,21 @@ export function relaySettings(flags: RelayFlags, environment: RelayEnvironment):
     if (teamTokenLogin === 'off' && !membersFile) {
         throw new RelaySettingsError('PAIRLOBBY_TEAM_TOKEN_LOGIN=off leaves nobody able to log in; set PAIRLOBBY_MEMBERS_FILE as well');
     }
+    const proxyGate = environment['PAIRLOBBY_PROXY_IS_ACCESS_GATE']?.trim().toLowerCase();
+    if (proxyGate && !['1', 'true', '0', 'false'].includes(proxyGate)) {
+        throw new RelaySettingsError(`PAIRLOBBY_PROXY_IS_ACCESS_GATE must be 1 or 0, not "${proxyGate}"`);
+    }
+    const proxyIsAccessGate = Boolean(flags.proxyIsAccessGate) || proxyGate === '1' || proxyGate === 'true';
+    if (proxyIsAccessGate && !publicUrl && !proxyHeader) {
+        throw new RelaySettingsError('--proxy-is-access-gate (PAIRLOBBY_PROXY_IS_ACCESS_GATE) says the proxy in front of the relay lets only the right callers through, so it needs --public-url or --trusted-proxy-header');
+    }
     return {
         ...(host ? {host} : {}),
         // 0 lets the system choose a free port.
         ...(port ? {port: wholeNumber(port, {flag: 'port', variable: 'PAIRLOBBY_PORT'}, 0, 65_535)} : {}),
         ...(publicUrl ? {publicUrl: parsePublicUrl(publicUrl)} : {}),
         ...(proxyHeader ? {trustedProxyHeader: proxyHeader} : {}),
+        ...(proxyIsAccessGate ? {proxyIsAccessGate: true} : {}),
         ...(token ? {createToken: token} : {}),
         ...(membersFile ? {membersFile} : {}),
         ...(teamTokenLogin === 'off' ? {teamTokenLogin: false} : {}),

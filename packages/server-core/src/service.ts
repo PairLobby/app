@@ -88,7 +88,7 @@ type MintedInvite = {code: string; expiresAt: number | null; reusable: boolean};
 type SentEventResult = {event: RoomEvent; deduplicated: boolean};
 export type RequestResolutionResult = {event: RoomEvent; request: MessageRequest; deduplicated: boolean};
 
-type GuestJoinInput = Identity & {participantCredential: string};
+type GuestJoinInput = Identity & {participantCredential: string; member?: string | undefined};
 
 export interface InterruptResult {
     event: RoomEvent;
@@ -1157,7 +1157,8 @@ export class RoomService {
                 kind: input.kind,
                 nameSource: input.nameSource,
                 sessionId: input.sessionId ?? null,
-                capabilities: input.capabilities ?? null
+                capabilities: input.capabilities ?? null,
+                ...(input.member ? {member: input.member} : {})
             },
             this.ctx()
         );
