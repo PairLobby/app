@@ -112,6 +112,7 @@ export const QUOTA_EXEMPT_EVENT_TYPES = [
     'room.auto_close_changed',
     'room.local_join_changed',
     'room.type_changed',
+    'room.visibility_changed',
     'room.invitation_changed',
     'room.permissions_changed',
     'participant.permissions_changed',

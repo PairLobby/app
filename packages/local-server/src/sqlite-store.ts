@@ -6,7 +6,7 @@ import {ProtocolError, mergeMessageRequest} from '@pairlobby/protocol';
 import * as sqlite from 'node:sqlite';
 import {DatabaseSync} from 'node:sqlite';
 
-import type {FileRecord, HandoverRecord, InviteRecord, ListingRecord, LocalRoom, MessageRequest, ParticipantRecord, RequestPage, RoomEvent, RoomRecord} from '@pairlobby/protocol';
+import type {DefaultVisibility, FileRecord, HandoverRecord, InviteRecord, ListingRecord, LocalRoom, MessageRequest, ParticipantRecord, RequestPage, RoomEvent, RoomRecord} from '@pairlobby/protocol';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 import {REQUEST_BACKFILL_SQL} from '@pairlobby/server-core';
 import type {DirectoryStore, EventPage, FileStore, IdempotencyRecord, RoomStore} from '@pairlobby/server-core';
@@ -82,6 +82,13 @@ export class SqliteRoomStore implements RoomStore {
         lastMessageAt: async (roomId, participantId) => {
             const row = this.db.prepare("SELECT json_extract(body, '$.at') AS at FROM events WHERE room_id = ? AND json_extract(body, '$.senderId') = ? AND json_extract(body, '$.type') = 'message' ORDER BY seq DESC LIMIT 1").get(roomId, participantId) as {at: number} | undefined;
             return row ? Number(row.at) : null;
+        },
+        memberDefault: async (handle) => {
+            const row = this.db.prepare('SELECT body FROM member_defaults WHERE handle = ?').get(handle) as BodyRow | undefined;
+            return row ? (JSON.parse(row.body) as DefaultVisibility) : null;
+        },
+        setMemberDefault: async (handle, visibility) => {
+            this.db.prepare('INSERT INTO member_defaults (handle, body) VALUES (?, ?) ON CONFLICT (handle) DO UPDATE SET body = excluded.body').run(handle, JSON.stringify(visibility));
         },
     };
 

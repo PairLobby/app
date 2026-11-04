@@ -26,7 +26,7 @@ import {settingsPage, statusPage} from './room-settings.js';
 import {describeAutoClose, describeCloseReason} from './auto-close.js';
 import {loadAgentRoster} from './agent-roster.js';
 import {offlineReceivers, wakeOfflineReceivers} from './receiver.js';
-import {invitationTerms, roleChange} from './render.js';
+import {invitationTerms, roleChange, visibleTo} from './render.js';
 import {closeRequest, recoverRequest} from './request-recovery.js';
 import {requestsPage} from './request-panel.js';
 import {collapseMessage, formatMessageText} from './message-format.js';
@@ -936,6 +936,8 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
             return event.payload.localJoin ? `${sender} let anyone on the local network join by name` : `${sender} turned off joining by name on the local network`;
         case 'room.type_changed':
             return `${sender} made the room ${event.payload.type}: ${ROOM_TYPE_SUMMARY[event.payload.type]}`;
+        case 'room.visibility_changed':
+            return `${sender} made the room visible to ${visibleTo(event.payload.visibility)}`;
         case 'message.delivery_failed':
             return `${failureLabel(event.payload.stage)} [${event.payload.eventId}]: ${event.payload.reason} (failed attempt)`;
         case 'message.received':

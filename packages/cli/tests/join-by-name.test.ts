@@ -74,3 +74,18 @@ test('test_a_logged_in_device_joins_by_name_on_its_saved_relay', async () => {
     const student = (await owner.snapshot(room.roomId, room.participantCredential)).participants.find((person) => person.displayName === 'student');
     expect(student).toMatchObject({role: 'guest', member: 'maria'});
 });
+
+test('test_a_logged_in_owner_sets_a_default_and_a_room_visibility_and_is_told_who_no_longer_sees_it', async () => {
+    await cli(['setup', relay.url, '--name', 'team', '--yes']);
+    await cli(['login'], {PAIRLOBBY_ACCOUNT_TOKEN: token, PAIRLOBBY_ACCOUNT_TOKEN_ORIGIN: relay.url});
+    expect(JSON.parse(await cli(['visibility', '--default', '@zoe,@omar', '--server', relay.url, '--json']))).toEqual({visibility: {handles: ['zoe', 'omar']}});
+    const created = JSON.parse(await cli(['create', '--name', 'plans', '--type', 'public', '--visible-to', 'everyone', '--server', relay.url, '--as', 'maria', '--human', '--json'])) as {roomId: string};
+    expect(JSON.parse(await cli(['visibility', created.roomId, '--json']))).toEqual({roomId: created.roomId, owner: 'maria', visibility: 'everyone'});
+
+    // A guest let in with the owner's code, without a login, is no one the relay can name.
+    const owner = new PairLobbyClient(relay.url);
+    const guest = await owner.redeemInvite((JSON.parse(await cli(['invite', created.roomId, '--json'])) as {code: string}).code, {displayName: 'guest', kind: 'human'});
+    const narrowed = JSON.parse(await cli(['visibility', created.roomId, 'default', '--json'])) as {visibility: string; outside: {participantId: string; displayName: string}[]};
+    expect(narrowed).toEqual({roomId: created.roomId, visibility: 'default', outside: [{participantId: guest.participantId, displayName: 'guest'}]});
+    expect(JSON.parse(await cli(['visibility', created.roomId, '--json']))).toEqual({roomId: created.roomId, owner: 'maria', visibility: 'default', resolved: {handles: ['zoe', 'omar']}});
+});

@@ -1,8 +1,8 @@
 //! Terminal output. Machine-readable JSON goes to stdout under --json;
 //! everything diagnostic goes to stderr so a piped command stays parseable.
 
-import type {ParticipantRole, RoomEvent, RoomInvitationChange, RoomSnapshot} from '@pairlobby/protocol';
-import {ROOM_TYPE_SUMMARY, failureLabel, formatFileSize, roomType} from '@pairlobby/protocol';
+import type {ParticipantRole, RoomEvent, RoomInvitationChange, RoomSnapshot, RoomVisibility} from '@pairlobby/protocol';
+import {ROOM_TYPE_SUMMARY, describeVisibility, failureLabel, formatFileSize, roomType} from '@pairlobby/protocol';
 import {describeAutoClose, describeCloseReason} from './auto-close.js';
 import {describeParticipantPermissionChange, describeRoomPermissionChange} from './permissions.js';
 import type {OpenRequest, RoomEntry} from '@pairlobby/client';
@@ -145,6 +145,14 @@ export function renderRoomList(entries: RoomListEntry[], now = Date.now()): void
     }
 }
 
+/** Who a visibility setting names, in words. */
+export function visibleTo(visibility: RoomVisibility): string {
+    if (visibility === 'default') {
+        return 'its owner\'s default';
+    }
+    return visibility === 'everyone' ? 'everyone on the relay' : `${describeVisibility(visibility)} and its owner`;
+}
+
 /** What a role change made someone: an admin, a member who can now post, or a member again. */
 export function roleChange(role: ParticipantRole, previous: ParticipantRole): string {
     if (role === 'controller') {
@@ -280,6 +288,8 @@ function describe(event: RoomEvent): string {
             return event.payload.localJoin ? 'anyone on the local network can now join by name' : 'joining by name on the local network is now off';
         case 'room.type_changed':
             return `the room is now ${event.payload.type}: ${ROOM_TYPE_SUMMARY[event.payload.type]}`;
+        case 'room.visibility_changed':
+            return `the room is now visible to ${visibleTo(event.payload.visibility)}`;
         case 'message.delivery_failed':
             return `${failureLabel(event.payload.stage)} for ${event.payload.eventId}: ${event.payload.reason} (failed attempt)`;
         case 'message.request_closed':

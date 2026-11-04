@@ -108,4 +108,9 @@ CREATE TABLE IF NOT EXISTS listings (
 ) STRICT;
 CREATE UNIQUE INDEX IF NOT EXISTS listings_by_participant ON listings (room_id, participant_id);
 CREATE INDEX IF NOT EXISTS listings_by_owner ON listings (owner);
+
+CREATE TABLE IF NOT EXISTS member_defaults (
+    handle TEXT PRIMARY KEY,
+    body   TEXT NOT NULL
+) STRICT;
 `;

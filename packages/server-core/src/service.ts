@@ -1,11 +1,12 @@
 //! Room operations shared by every transport. The Cloudflare Durable Object and
 //! the Node server both run this; only the store and the socket layer differ.
 
-import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_RETAINED_FILE_BYTES, DEFAULT_ROOM_POLICY, PROTOCOL_VERSION, ProtocolError, UNATTACHED_FILE_LIFETIME_MS, formatFileSize, hashCredential, newId, newInviteCode, normalizeInviteCode, roomType, safeFileName} from '@pairlobby/protocol';
+import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_RETAINED_FILE_BYTES, DEFAULT_ROOM_POLICY, PROTOCOL_VERSION, ProtocolError, UNATTACHED_FILE_LIFETIME_MS, canSee, formatFileSize, hashCredential, newId, newInviteCode, normalizeInviteCode, roomType, safeFileName} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
     Attachment,
     AutoClosePolicy,
+    DefaultVisibility,
     FileRecord,
     MessageRequest,
     RequestPage,
@@ -28,6 +29,7 @@ import type {
     RoomInvitationChange,
     RoomPolicy,
     RoomType,
+    RoomVisibility,
     RoomSnapshot,
     ResolveRequestRequest,
     RoomFile,
@@ -67,6 +69,7 @@ import {
     setParticipantRole,
     setRoomPermissions,
     setRoomType,
+    setRoomVisibility,
     emptyMutation,
     findParticipant,
     isActive,
@@ -128,6 +131,8 @@ export interface CreateRoomInput extends Identity {
     roomId?: string;
     /** The relay member creating the room, verified by the relay from a personal token. Never taken from a client request. */
     owner?: string | undefined;
+    /** Who sees the room; needs an owner. Absent means the owner's default. */
+    visibility?: RoomVisibility | undefined;
 }
 
 export interface CreatedRoom {
@@ -165,7 +170,12 @@ export type ListingSubject = {participantId: string; agentName: string; roomName
 export type RoomServiceOptions = {
     /** How plain receipts are kept (`RECEIPT_MODES`); `both` until every client in use reads watermarks. */
     receiptMode?: ReceiptMode;
+    /** A member's default visibility for their rooms, from the directory; absent or null means everyone. */
+    memberDefault?: (handle: string) => Promise<DefaultVisibility | null>;
 };
+
+/** Why a code made by a member, or a join by name, did not let someone in. */
+const NOT_VISIBLE = 'the room\'s owner has not let you see this room: ask them for a code, or log in to the relay as someone who can see it (pairlobby login)';
 
 /** Requests a watermark marks received in one write; the rest wait for the next one. */
 const WATERMARK_REQUEST_LIMIT = 2000;
@@ -207,6 +217,7 @@ export class RoomService {
     private readonly now: Clock;
     readonly turns: TurnCoordinator;
     readonly receiptMode: ReceiptMode;
+    private readonly memberDefault: (handle: string) => Promise<DefaultVisibility | null>;
 
     /**
      * `roomPolicy` is what a new room gets when the caller names no policy, such as a
@@ -221,6 +232,7 @@ export class RoomService {
     ) {
         this.now = now;
         this.receiptMode = options.receiptMode ?? 'both';
+        this.memberDefault = options.memberDefault ?? (async () => null);
         this.store = new AutoCloseStore(store, () => this.now());
         this.turns = new TurnCoordinator(this.store, now);
     }
@@ -353,6 +365,7 @@ export class RoomService {
                 capabilities: input.capabilities ?? null,
                 ...(input.member ? {member: input.member} : {}),
                 ...(input.owner ? {owner: input.owner} : {}),
+                ...(input.visibility ? {visibility: input.visibility} : {}),
                 ...(input.expiresAt !== undefined ? {expiresAt: input.expiresAt} : {}),
                 policy: input.policy ?? this.roomPolicy,
                 ...(input.type ? {type: input.type} : {})
@@ -476,6 +489,10 @@ export class RoomService {
         // Codes from before the room became personal, or from a member, admit nobody now.
         if (roomType(view.room.policy) === 'personal' && invite.issuedBy !== 'owner' && invite.issuedBy !== 'admin') {
             throw new ProtocolError('unauthorized', 'this is a personal room: only codes from its owner admit anyone');
+        }
+        // The owner and admins choose who they give a code to; a member's code admits only someone who sees the room.
+        if (invite.issuedBy === 'member' && !(await this.sees(view.room, input.member))) {
+            throw new ProtocolError('unauthorized', NOT_VISIBLE);
         }
         const reserved = await this.store.reserveInvite(digest, input.attemptId, credentialHash, expectedOccupantId);
         if (!reserved) {
@@ -1119,6 +1136,17 @@ export class RoomService {
         return this.applyOne(setRoomType(await this.view(roomId), await hashCredential(credential), type, this.ctx()));
     }
 
+    /** Sets who sees the room; null when it already was. Owner or admin, on a room with an owner. */
+    async setVisibility(roomId: string, credential: string, visibility: RoomVisibility): Promise<RoomEvent | null> {
+        const mutation = setRoomVisibility(await this.view(roomId), await hashCredential(credential), visibility, this.ctx());
+        return mutation ? this.applyOne(mutation) : null;
+    }
+
+    /** Whether the member with this handle sees the room, after its owner's default. */
+    async sees(room: RoomRecord, handle: string | null | undefined): Promise<boolean> {
+        return canSee(room, room.owner ? await this.memberDefault(room.owner) : null, handle);
+    }
+
     /** Adds "invited @handle" or "withdrew the invitation" to the transcript. For relays that hold accounts; there is no HTTP route for it. */
     async recordInvitation(roomId: string, credential: string, change: RoomInvitationChange): Promise<RoomEvent> {
         return this.applyOne(recordInvitation(await this.view(roomId), await hashCredential(credential), change, this.ctx()));
@@ -1135,6 +1163,10 @@ export class RoomService {
      * itself must also allow it.
      */
     async joinOnLocalNetwork(roomId: string, input: GuestJoinInput): Promise<RedeemResult> {
+        const view = await this.view(roomId);
+        if (!(await this.sees(view.room, input.member))) {
+            throw new ProtocolError('unauthorized', NOT_VISIBLE);
+        }
         return this.joinWithoutInvite(roomId, input, joinOnLocalNetwork);
     }
 

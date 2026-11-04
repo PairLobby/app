@@ -2,7 +2,7 @@
 //! imitating a database API, so a Durable Object's SQL transaction and a Node
 //! server's SQLite transaction implement the same small surface.
 
-import type {FileRecord, HandoverRecord, ListingRecord, MessageRequest, RequestPage, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
+import type {DefaultVisibility, FileRecord, HandoverRecord, ListingRecord, MessageRequest, RequestPage, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 
 type IdempotencyKey = {key: string; requestDigest: string} | null;
@@ -115,4 +115,7 @@ export interface DirectoryStore {
     listings(after: string, limit: number): Promise<ListingRecord[]>;
     /** When this participant last sent a message in the room, or null; an index, not a transcript scan. */
     lastMessageAt(roomId: string, participantId: string): Promise<number | null>;
+    /** A member's default visibility for their rooms, or null before they set one, which means everyone. */
+    memberDefault(handle: string): Promise<DefaultVisibility | null>;
+    setMemberDefault(handle: string, visibility: DefaultVisibility): Promise<void>;
 }

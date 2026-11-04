@@ -17,6 +17,7 @@ import type {
     RoomPolicy,
     RoomRecord,
     RoomType,
+    RoomVisibility,
     SendEventRequest
 } from '@pairlobby/protocol';
 
@@ -51,6 +52,8 @@ export interface CreateRoomInput extends Identity {
     type?: RoomType | undefined;
     /** The relay member creating the room, already verified by the relay. */
     owner?: string | undefined;
+    /** Who sees the room; only a room with an owner has one. */
+    visibility?: RoomVisibility | undefined;
 }
 
 export interface CreatedRoom {
@@ -60,6 +63,9 @@ export interface CreatedRoom {
 }
 
 export function createRoom(input: CreateRoomInput, ctx: CoreContext): CreatedRoom {
+    if (input.visibility && !input.owner) {
+        throw new ProtocolError('invalid_request', NO_OWNER_VISIBILITY);
+    }
     const base = input.policy ?? DEFAULT_ROOM_POLICY;
     const policy = input.type ? {...base, type: input.type, ...ROOM_TYPE_ACCESS[input.type]} : base;
     const room: RoomRecord = {
@@ -72,6 +78,7 @@ export function createRoom(input: CreateRoomInput, ctx: CoreContext): CreatedRoo
         policy,
         controllerCredentialHash: input.controllerCredentialHash,
         ...(input.owner ? {owner: input.owner} : {}),
+        ...(input.visibility && input.visibility !== 'default' ? {visibility: input.visibility} : {}),
         controlRevision: 0,
         nextSeq: 1,
         retainedEventBytes: 0,
@@ -472,6 +479,31 @@ export function setRoomType(view: RoomView, credentialHash: string, type: RoomTy
     const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
     const room = {...view.room, policy: {...view.room.policy, type, ...ROOM_TYPE_ACCESS[type]}};
     const {room: updated, event} = appendEvent(room, {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'room.type_changed', payload: {type, previous}}}, ctx);
+    return emptyMutation(updated, event);
+}
+
+/** Why a room without an owner has no visibility of its own. */
+const NO_OWNER_VISIBILITY = 'this room was made without a personal login, so everyone on the relay sees it; visibility needs a room made after pairlobby login';
+
+/**
+ * Sets who sees the room: its owner's default, everyone, or a list of handles. Members already in
+ * stay; the owner removes anyone who should not. Owner or admin only, on a room with an owner.
+ */
+export function setRoomVisibility(view: RoomView, credentialHash: string, visibility: RoomVisibility, ctx: CoreContext): Mutation | null {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    if (!view.room.owner) {
+        throw new ProtocolError('invalid_request', NO_OWNER_VISIBILITY);
+    }
+    const previous = view.room.visibility ?? 'default';
+    if (JSON.stringify(previous) === JSON.stringify(visibility)) {
+        return null;
+    }
+    const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
+    const {visibility: _, ...rest} = view.room;
+    const room = visibility === 'default' ? rest : {...rest, visibility};
+    const {room: updated, event} = appendEvent(room, {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'room.visibility_changed', payload: {visibility, previous}}}, ctx);
     return emptyMutation(updated, event);
 }
 

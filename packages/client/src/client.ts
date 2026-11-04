@@ -34,6 +34,8 @@ import type {
     RoomFile,
     RoomSnapshot,
     RoomType,
+    RoomVisibility,
+    DefaultVisibility,
     SendEventRequest,
     SendEventResponse,
     ShareListingRequest
@@ -114,7 +116,7 @@ export class PairLobbyClient {
         this.serverUrl = serverUrl.replace(/\/+$/, '');
     }
 
-    async createRoom(name: string, identity: ClientIdentity, expiresAt?: number | null, access?: RoomAccountAccess, type?: RoomType): Promise<CreatedRoom> {
+    async createRoom(name: string, identity: ClientIdentity, expiresAt?: number | null, access?: RoomAccountAccess, type?: RoomType, visibility?: RoomVisibility): Promise<CreatedRoom> {
         // Both credentials are generated here, so a lost response never strands a secret the caller does not hold.
         const controllerCredential = newCredential('controller');
         const participantCredential = newCredential('participant');
@@ -125,7 +127,8 @@ export class PairLobbyClient {
             ...identity,
             ...(expiresAt !== undefined ? {expiresAt} : {}),
             ...access,
-            ...(type ? {type} : {})
+            ...(type ? {type} : {}),
+            ...(visibility ? {visibility} : {})
         });
         return {roomId: body.room.roomId, participantId: body.participantId, controllerCredential, participantCredential, invite: body.invite, room: body.room};
     }
@@ -505,7 +508,8 @@ export class PairLobbyClient {
     async localRooms(name?: string, timeoutMs = 1500): Promise<LocalRoom[] | null> {
         try {
             // Without a name the relay lists them all; one that predates listing answers 400, hence null.
-            const response = await fetch(`${this.serverUrl}/v1/rooms/local${name === undefined ? '' : `?name=${encodeURIComponent(name)}`}`, {headers: {[PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)}, redirect: 'error', signal: AbortSignal.timeout(timeoutMs)});
+            // On a relay with personal tokens, the login decides which rooms are listed.
+            const response = await fetch(`${this.serverUrl}/v1/rooms/local${name === undefined ? '' : `?name=${encodeURIComponent(name)}`}`, {headers: {[PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION), ...(this.accountToken ? {'x-pairlobby-account-token': this.accountToken} : {})}, redirect: 'error', signal: AbortSignal.timeout(timeoutMs)});
             if (!response.ok) {
                 return null;
             }
@@ -541,6 +545,20 @@ export class PairLobbyClient {
 
     setRoomType(roomId: string, credential: string, type: RoomType): Promise<RoomEventResult> {
         return this.call('POST', `/v1/rooms/${roomId}/type`, credential, {type});
+    }
+
+    /** Sets who sees the room; the event is null when it already was. */
+    setVisibility(roomId: string, credential: string, visibility: RoomVisibility): Promise<{event: RoomEvent | null}> {
+        return this.call('PUT', `/v1/rooms/${roomId}/visibility`, credential, {visibility});
+    }
+
+    /** The logged-in member's default visibility for their rooms. Needs the account token. */
+    async memberDefault(): Promise<DefaultVisibility> {
+        return (await this.call<{visibility: DefaultVisibility}>('GET', '/v1/directory/defaults', null)).visibility;
+    }
+
+    async setMemberDefault(visibility: DefaultVisibility): Promise<DefaultVisibility> {
+        return (await this.call<{visibility: DefaultVisibility}>('PUT', '/v1/directory/defaults', null, {visibility})).visibility;
     }
 
     setExpiry(roomId: string, credential: string, expiresAt: number | null): Promise<RoomEventResult> {

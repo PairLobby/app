@@ -104,6 +104,7 @@ export function toSnapshot(view: RoomView): RoomSnapshot {
         turnMode: view.room.turnMode ?? 'sequential',
         name: view.room.name,
         ...(view.room.owner ? {owner: view.room.owner} : {}),
+        ...(view.room.visibility ? {visibility: view.room.visibility} : {}),
         lifecycle: view.room.lifecycle,
         locked: view.room.locked ?? false,
         createdAt: view.room.createdAt,

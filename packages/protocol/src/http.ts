@@ -12,6 +12,7 @@ import {RoomFile} from './files.js';
 import {AutoClosePolicySchema} from './auto-close.js';
 import {PermissionChange} from './permissions.js';
 import {RoomType} from './room-types.js';
+import {DefaultVisibility, RoomVisibility} from './visibility.js';
 
 export const ROUTES = {
     createRoom: {method: 'POST', path: '/v1/rooms'},
@@ -72,7 +73,9 @@ export const CreateRoomRequest = z.intersection(
         controllerCredential: z.string().min(32).max(256),
         participantCredential: z.string().min(32).max(256),
         /** Absent creates a room without a type, as relays did before types. */
-        type: RoomType.optional()
+        type: RoomType.optional(),
+        /** Who sees the room; needs a personal token, since a room without an owner is seen by everyone. Absent means the owner's default. */
+        visibility: RoomVisibility.optional()
     })
 );
 export type CreateRoomRequest = z.infer<typeof CreateRoomRequest>;
@@ -165,7 +168,7 @@ export type LiveTransport = (typeof LIVE_TRANSPORTS)[number];
  * Names a relay lists in `features`. A client checks for one before relying on it;
  * a relay that does not describe itself is assumed to have whatever was usual before descriptions existed.
  */
-export const RELAY_FEATURES = ['message-stages', 'files', 'local-join', 'invite-probe', 'create-token', 'token-login', 'receipt-watermark', 'member-tokens', 'directory', 'room-types'] as const;
+export const RELAY_FEATURES = ['message-stages', 'files', 'local-join', 'invite-probe', 'create-token', 'token-login', 'receipt-watermark', 'member-tokens', 'directory', 'room-types', 'room-visibility'] as const;
 export type RelayFeature = (typeof RELAY_FEATURES)[number];
 
 /**
@@ -273,6 +276,13 @@ export type SetLocalJoinRequest = z.infer<typeof SetLocalJoinRequest>;
 
 export const SetRoomTypeRequest = z.object({type: RoomType});
 export type SetRoomTypeRequest = z.infer<typeof SetRoomTypeRequest>;
+
+export const SetVisibilityRequest = z.object({visibility: RoomVisibility});
+export type SetVisibilityRequest = z.infer<typeof SetVisibilityRequest>;
+
+/** A member's default visibility for their rooms; `everyone` until they set one. */
+export const MemberDefaultVisibility = z.object({visibility: DefaultVisibility});
+export type MemberDefaultVisibility = z.infer<typeof MemberDefaultVisibility>;
 
 /** A room that devices on the relay's network may join by name. Only what is needed to choose one. */
 /** `type` says what joining by name gives: public, a member; protected, a visitor. Absent from older relays, which list only public rooms. */

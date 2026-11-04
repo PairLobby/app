@@ -1,11 +1,12 @@
 import type {LocalStore, PairLobbyClient, RoomAccountRestrictions} from '@pairlobby/client';
 import type {AutoClosePolicy, RoomPermission, RoomSnapshot} from '@pairlobby/protocol';
-import {ProtocolError, ROOM_PERMISSIONS, ROOM_TYPES, ROOM_TYPE_SUMMARY, RoomType, effectivePermissions, roomPermissions, roomType} from '@pairlobby/protocol';
+import {ProtocolError, ROOM_PERMISSIONS, ROOM_TYPES, ROOM_TYPE_SUMMARY, RoomType, describeVisibility, effectivePermissions, parseVisibility, roomPermissions, roomType} from '@pairlobby/protocol';
 import type {RoomPanelPage, RoomPanelRow, PanelEdit} from './room-panel.js';
 import {parseExpiry} from './when.js';
 import {AUTO_CLOSE_CHOICES, describeAutoClose, formatAutoClose, parseAutoClose} from './auto-close.js';
 import {PERMISSION_LABELS, authorityFor} from './permissions.js';
 import {loadRoomStatus, roomStatusRows} from './room-status.js';
+import {visibleTo} from './render.js';
 
 export type RoomSettingsContext = {client: PairLobbyClient; roomId: string; credential: string; participantId: string; controllerCredential?: string | undefined; store?: LocalStore};
 type SettingsAccess = {room: RoomSnapshot; authority: string | undefined};
@@ -66,6 +67,10 @@ export async function settingsPage(context: RoomSettingsContext): Promise<RoomPa
     edit('auto-close', 'Auto-close discussion', `${describeAutoClose(autoClose)}${closes}`, 'Lifecycle', {kind: 'edit', initial: formatAutoClose(autoClose), choices: AUTO_CLOSE_CHOICES, hint: 'Closing keeps history readable and exportable; it does not stop agent processes or undo work already started. Custom: idle:<duration> or age:<duration>, e.g. idle:90m.', confirm: (value) => closesNow(room, parseAutoClose(value)) ? `${describeAutoClose(parseAutoClose(value))}: this room is already past that limit and will close immediately. Continue?` : `Set auto-close to: ${describeAutoClose(parseAutoClose(value)).toLowerCase()}?`, save: (value) => change(context, (owner) => context.client.setAutoClose(context.roomId, owner, parseAutoClose(value)))}, Boolean(room.autoCloseSupported));
     const type = roomType(room.policy);
     edit('type', 'Room type', `${type}${room.policy.type ? '' : ' (from its settings)'}`, 'Privacy', {kind: 'edit', initial: type, choices: ROOM_TYPES.map((choice) => ({label: `${choice[0]!.toUpperCase()}${choice.slice(1)}: ${ROOM_TYPE_SUMMARY[choice]}`, value: choice})), hint: 'Who can find and join the room. People already in stay; remove anyone the new type would not admit.', confirm: (value) => `Make ${room.name} ${value}? ${ROOM_TYPE_SUMMARY[RoomType.parse(value)]}.`, save: (value) => change(context, (owner) => context.client.setRoomType(context.roomId, owner, RoomType.parse(value)))});
+    if (room.owner) {
+        const visibility = room.visibility ?? 'default';
+        edit('visibility', 'Visible to', visibleTo(visibility), 'Privacy', {kind: 'edit', initial: describeVisibility(visibility), hint: 'Which members of the relay see the room: everyone, default (the owner\'s default), or handles such as @maria @joe. It decides who finds it by name and its agents in the directory, and whom a member\'s code lets in. People already in stay.', save: (value) => change(context, (owner) => context.client.setVisibility(context.roomId, owner, parseVisibility(value)))});
+    }
     const mayInvite = roomPermissions(room.policy.permissions, room.policy.type)['invite'];
     edit('members-invite', 'Members may invite', mayInvite ? 'Yes' : 'No, owner and admins only', 'Privacy', {kind: 'edit', initial: mayInvite ? 'yes' : 'no', choices: [{label: 'Yes: members may create invite codes', value: 'yes'}, {label: 'No: only the owner and admins', value: 'no'}], hint: room.policy.type === 'personal' ? 'Members never invite in a personal room.' : 'Invitations by members never grant admin rights.', save: (value) => change(context, (owner) => context.client.setRoomPermissions(context.roomId, owner, {invite: value === 'yes'}))}, room.policy.type !== 'personal');
     edit('privacy', 'Visitor access', room.policy.joinPolicy === 'invite_only' ? 'Invite only' : 'Anyone with room ID (read only)', 'Privacy', {kind: 'edit', initial: room.policy.joinPolicy, choices: [{label: 'Invite only — require an invitation', value: 'invite_only'}, {label: 'Anyone with room ID may read as a visitor', value: 'open_to_guests'}], hint: 'Visitor access controls reading. Visitors cannot send messages or invite others. Existing memberships remain.', confirm: (value) => value === 'open_to_guests' ? 'Allow anyone who knows this room ID to read its retained transcript as a visitor?' : 'Require invitations for new visitors? Existing members and visitors remain.', save: (value) => change(context, (owner) => context.client.setJoinPolicy(context.roomId, owner, value === 'open_to_guests' ? 'open_to_guests' : 'invite_only'))});

@@ -3,13 +3,14 @@
 
 import {z} from 'zod';
 
-import {NameSource} from './names.js';
+import {MemberHandle, NameSource} from './names.js';
 import {AdapterCapabilities, ControlOutcome, ParticipantKind, ParticipantRole} from './events.js';
 import {AttemptId, EventId, HandoverId, ListingId, ParticipantId, RoomId, SessionId} from './ids.js';
 import {HandoverDocument, HandoverState} from './handover.js';
 import {AutoClosePolicySchema, CloseReasonSchema} from './auto-close.js';
 import {PermissionSet} from './permissions.js';
 import {RoomType} from './room-types.js';
+import {RoomVisibility} from './visibility.js';
 import {ABSOLUTE_MAX_FILE_BYTES} from './files.js';
 
 export const RoomLifecycle = z.enum(['open', 'closed', 'expired', 'deleted']);
@@ -45,10 +46,6 @@ export const ReceiptMark = z.object({
 });
 export type ReceiptMark = z.infer<typeof ReceiptMark>;
 
-/** A person on a relay with personal tokens, by the handle others find them by: the same form as a hosted account's handle. */
-export const MemberHandle = z.string().regex(/^[a-z0-9][a-z0-9_-]{2,29}$/, 'expected a member handle');
-export type MemberHandle = z.infer<typeof MemberHandle>;
-
 /** What a colleague who reaches a shared agent through the directory may ask: questions answered without changing anything, or work as if invited. */
 export const ListingContact = z.enum(['questions', 'tasks']);
 export type ListingContact = z.infer<typeof ListingContact>;
@@ -78,6 +75,8 @@ export const RoomRecord = z.object({
     controllerCredentialHash: z.string().length(64),
     /** The member whose personal token created the room. Absent when it was created without one. */
     owner: MemberHandle.optional(),
+    /** Which members see the room; absent means its owner's default. */
+    visibility: RoomVisibility.optional(),
     /** Bumped by every control request so a late acknowledgement cannot overwrite newer state. */
     controlRevision: z.number().int().nonnegative(),
     turnMode: z.enum(['sequential', 'parallel']).optional(),
@@ -246,6 +245,8 @@ export const RoomSnapshot = z.object({
     name: z.string(),
     /** The relay member who created the room; absent on rooms created without a personal token and on older relays. */
     owner: MemberHandle.optional(),
+    /** Which members see the room, on a room with an owner; absent means the owner's default. */
+    visibility: RoomVisibility.optional(),
     lifecycle: RoomLifecycle,
     locked: z.boolean().optional(),
     createdAt: z.number().int().nonnegative(),

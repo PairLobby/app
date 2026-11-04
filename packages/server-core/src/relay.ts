@@ -26,6 +26,8 @@ import {
     normalizeInviteCode,
     SetLocalJoinRequest,
     SetRoomTypeRequest,
+    SetVisibilityRequest,
+    MemberDefaultVisibility,
     RenameRoomRequest,
     RenameSelfRequest,
     SendEventRequest,
@@ -114,8 +116,11 @@ export interface RelayOptions {
      * means never, so joining by name is refused.
      */
     peerIsLocal?: (request: Request, context: RequestContext) => boolean;
-    /** Open rooms that allow local joins, matching a name or all of them; answers `GET /v1/rooms/local[?name=]`. */
-    localRooms?: (name?: string) => Promise<LocalRoom[]>;
+    /**
+     * Open rooms that allow local joins, matching a name or all of them; answers `GET /v1/rooms/local[?name=]`.
+     * `member` is the logged-in caller, if any: on a relay with personal tokens, only rooms they see are listed.
+     */
+    localRooms?: (name?: string, member?: RelayMember | null) => Promise<LocalRoom[]>;
     /** The create token and rate limits; absent means anyone who reaches the relay may create rooms and try codes freely. */
     admission?: Admission;
     /** Answers `GET /.well-known/pairlobby.json`, which tells `pairlobby setup` who this relay is and how to log in. */
@@ -358,6 +363,9 @@ async function edgeRoute(request: Request, context: RequestContext, options: Rel
  */
 async function directoryEdge(request: Request, segments: string[], method: string, options: RelayOptions): Promise<Response | RoomRoute> {
     const {directory, admission} = options;
+    if (directory && admission?.memberTokens && segments[2] === 'defaults' && segments.length === 3) {
+        return memberDefaults(request, method, directory, await admission.member(request));
+    }
     if (!directory || !admission?.memberTokens || segments[2] !== 'listings' || segments.length > 5) {
         return errorResponse('invalid_request', 'unknown path', 404);
     }
@@ -387,6 +395,22 @@ async function directoryEdge(request: Request, segments: string[], method: strin
     }
     if (segments.length === 5 && segments[4] === 'presence' && method === 'PUT') {
         return {roomId: listing.roomId, request: claiming(request, member)};
+    }
+    return errorResponse('invalid_request', 'unknown path', 404);
+}
+
+/** `GET` and `PUT /v1/directory/defaults`: the caller's own default visibility for their rooms, `everyone` until set. */
+async function memberDefaults(request: Request, method: string, directory: DirectoryStore, member: RelayMember | null): Promise<Response> {
+    if (!member) {
+        return errorResponse('unauthorized', DIRECTORY_NEEDS_MEMBER, 403);
+    }
+    if (method === 'GET') {
+        return json({visibility: (await directory.memberDefault(member.handle)) ?? 'everyone'});
+    }
+    if (method === 'PUT') {
+        const {visibility} = MemberDefaultVisibility.parse(await request.json());
+        await directory.setMemberDefault(member.handle, visibility);
+        return json({visibility});
     }
     return errorResponse('invalid_request', 'unknown path', 404);
 }
@@ -488,13 +512,13 @@ async function routeLocal(request: Request, context: RequestContext, options: Re
     if (lookup) {
         // No name at all lists every room open to the local network, for the room list.
         if (!url.searchParams.has('name')) {
-            return json({rooms: await options.localRooms!()});
+            return json({rooms: await options.localRooms!(undefined, member)});
         }
         const name = (url.searchParams.get('name') ?? '').trim();
         if (name.length === 0 || name.length > 64) {
             return errorResponse('invalid_request', 'name must be 1–64 characters', 400);
         }
-        return json({rooms: await options.localRooms!(name)});
+        return json({rooms: await options.localRooms!(name, member)});
     }
     await options.admission?.beforeRedeem(request, context);
     return {roomId: RoomId.parse(segments[2]), request: claiming(request, member)};
@@ -514,6 +538,7 @@ export function describe(options: RelayOptions): ServerDescription {
         ...(options.directory && options.admission?.memberTokens ? ['directory'] : []),
         ...(profile.receiptMode !== 'events' ? ['receipt-watermark'] : []),
         'room-types',
+        ...(options.directory && options.admission?.memberTokens ? ['room-visibility'] : []),
         ...(options.features ?? [])
     ];
     const transport = options.transport ?? (options.changes ? 'long-poll' : undefined);
@@ -753,6 +778,10 @@ async function roomRoute(request: Request, roomId: string, context: RequestConte
         case 'POST type': {
             const {type} = SetRoomTypeRequest.parse(await request.json());
             return json({event: await service.setRoomType(roomId, credential, type)});
+        }
+        case 'PUT visibility': {
+            const {visibility} = SetVisibilityRequest.parse(await request.json());
+            return json({event: await service.setVisibility(roomId, credential, visibility)});
         }
         case 'POST auto-close': {
             const {autoClose} = SetAutoCloseRequest.parse(await request.json());
