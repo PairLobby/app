@@ -12,7 +12,7 @@ import {issueMemberToken, startServer} from '@pairlobby/local-server';
 import type {RunningServer} from '@pairlobby/local-server';
 import {afterEach, beforeEach, expect, test} from 'vitest';
 
-import {findLocalRoom} from '../src/relay-discovery.js';
+import {findLocalRoom, listLocalRooms} from '../src/relay-discovery.js';
 import {relayLocalRooms} from '../src/relay-probe.js';
 
 const execute = promisify(execFile);
@@ -53,6 +53,15 @@ test('test_the_saved_relay_is_asked_with_its_login_alongside_the_network', async
     expect(await findLocalRoom('Town Square', deps)).toMatchObject({url: relay.url, label: 'team', room: {roomId: room.roomId, type: 'public'}});
     // Without the login the relay behind its proxy lists nothing, and the room is not found.
     await expect(findLocalRoom('town square', {...deps, lookup: (url: string, name?: string) => relayLocalRooms(url, name)})).rejects.toThrow();
+});
+
+test('test_a_hosted_account_relay_is_asked_once_the_service_names_it', async () => {
+    const room = await new PairLobbyClient(relay.url, token).createRoom('office hours', {displayName: 'maria', kind: 'human'}, undefined, undefined, 'protected');
+    const deps = {local: 'http://127.0.0.1:1', lan: async () => [], tailnet: async () => [], account: async () => [{url: relay.url, label: 'pairlobby.com'}], lookup: (url: string, name?: string) => relayLocalRooms(url, name, undefined, url === relay.url ? token : undefined)};
+    expect(await findLocalRoom('Office Hours', deps)).toMatchObject({url: relay.url, label: 'pairlobby.com', room: {roomId: room.roomId, type: 'protected'}});
+    expect((await listLocalRooms(new Set(), deps)).map((match) => match.room.roomId)).toEqual([room.roomId]);
+    // Without a login there is no account relay to ask.
+    await expect(findLocalRoom('office hours', {...deps, account: async () => []})).rejects.toThrow();
 });
 
 test('test_a_logged_in_device_joins_by_name_on_its_saved_relay', async () => {

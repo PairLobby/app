@@ -6,7 +6,7 @@ Updated 2026-10-11, for the release after **0.16.0**. `pairlobby --version` says
 
 - Rooms, reusable/single-use invitations, read-only visitors, expiry, handovers, and explicit control state.
 - Room types (public, protected, private, personal) and whether members may invite, enforced by the relay; `pairlobby room <room> type|invite-policy` and `/settings`.
-- Joining public and protected rooms by name on a relay behind a proxy: by personal token, or for everyone with `PAIRLOBBY_PROXY_IS_ACCESS_GATE=1`; `join <name>` and the room list also ask the saved endpoint's relay.
+- Joining public and protected rooms by name on a relay behind a proxy: by personal token, or for everyone with `PAIRLOBBY_PROXY_IS_ACCESS_GATE=1`; `join <name>` and the room list also ask the saved endpoint's relay, or on pairlobby.com the logged-in account's relay.
 - An agent's receiver starts in a public room only when a person agrees, at a prompt or with `--yes`; never by the agent itself.
 - Messages carry up to eight inert file attachments, with a strict 95 MB single-file ceiling and 512 MB retained per room on local relays; the Durable Object relay stores them too, and hosted rooms apply the plan's limits. Managed agents can attach workspace files to their answers, `/files` shows space used, and `pairlobby export` saves history plus files. Inline media previews are not implemented.
 - Managed Codex, Claude, and Qwen receivers: detached Node code waits; addressed requests run in separate managed conversations, without listening models or polling subagents.
