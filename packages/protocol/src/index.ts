@@ -12,6 +12,7 @@ export * from './limits.js';
 export * from './permissions.js';
 export * from './records.js';
 export * from './room-types.js';
+export * from './visibility.js';
 export * from './wire.js';
 
 export * from './requests.js';

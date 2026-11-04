@@ -14,7 +14,7 @@ import {parseArgs} from 'node:util';
 
 import {LocalStore, PairLobbyClient, openRequests, owedByMe, unreceipted} from '@pairlobby/client';
 import type {JoinedRoom, RoomEntry, RoomPreset, Settings} from '@pairlobby/client';
-import {ParticipantName, ProtocolError, effectivePermissions, requestState, newId, normalizeInviteCode, MessageAction, roomPermissions, safeFileName} from '@pairlobby/protocol';
+import {ParticipantName, ProtocolError, effectivePermissions, requestState, newId, normalizeInviteCode, MessageAction, parseVisibility, roomPermissions, safeFileName} from '@pairlobby/protocol';
 import type {AdapterCapabilities, MessageRequest, RoomType} from '@pairlobby/protocol';
 import type {RelayFlags} from '@pairlobby/local-server/settings';
 
@@ -36,6 +36,7 @@ import {receiverRuntimeName} from './receiver-runtime.js';
 import {discoverableNote, joinCommand, localOnlyNote, parseJoinLink, shareTarget} from './share.js';
 import {DEFAULT_SHARE, listingStatus, shareCommand, sharedCommand} from './directory-share.js';
 import {createType, roomCommand} from './room-type.js';
+import {visibilityCommand} from './visibility.js';
 import {publicRoomHold} from './public-room.js';
 import type {PublicRoomHold} from './public-room.js';
 import {invitationNotice, rememberInvitations, scheduleInvitationCheck} from './invitation-notice.js';
@@ -158,6 +159,8 @@ const OPTIONS = {
     'data-dir': {type: 'string'},
     topic: {type: 'string'},
     type: {type: 'string'},
+    'visible-to': {type: 'string'},
+    default: {type: 'boolean'},
     contact: {type: 'string'},
     help: {type: 'boolean'}
 } as const;
@@ -181,6 +184,10 @@ const HELP = `pairlobby
                                     show or set whether members may invite (owner/admin)
   pairlobby room <room> member|admin <name or id>
                                     make a visitor a member, or a member an admin (owner/admin)
+  pairlobby visibility <room> [everyone|default|@a,@b]
+                                    show or set which members see the room, on a relay with logins
+  pairlobby visibility --default [everyone|@a,@b]
+                                    show or set your default for rooms that follow it
   pairlobby delete <room>            delete a room (controller only)
   pairlobby forget <room>            drop the local record, leave the server alone
   pairlobby settings                 interactive menu for this device's preferences and new-room defaults
@@ -410,6 +417,8 @@ async function main(argv: string[]): Promise<number> {
             return setLocalJoin(store, values, positionals[1]);
         case 'room':
             return roomCommand(store, positionals[1], {words: positionals.slice(2), session: str(values, 'session'), json: flag(values, 'json')});
+        case 'visibility':
+            return visibilityCommand(store, {words: positionals.slice(1), asDefault: flag(values, 'default'), server: str(values, 'server'), session: str(values, 'session'), json: flag(values, 'json')});
         case 'delete':
             return deleteRoom(store, values, positionals[1]);
         case 'setup':
@@ -1399,6 +1408,10 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
     }
     const settings = store.settings();
     const type = createType({type: str(values, 'type'), openLocal: flag(values, 'open-local'), online, settings});
+    if (str(values, 'visible-to') !== undefined && online) {
+        throw new UsageError('--visible-to applies to rooms on a relay with personal logins; online rooms use --private and --allow');
+    }
+    const visibleTo = str(values, 'visible-to') !== undefined ? parseVisibility(str(values, 'visible-to')!) : undefined;
     const preset = roomPreset(store, str(values, 'preset'));
     // The device default decides when neither flag is given.
     const privateRoom = online && (flag(values, 'private') || (settings.defaultPrivateOnline && !flag(values, 'public')));
@@ -1428,7 +1441,8 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
                       .filter(Boolean)
               }
             : undefined,
-        type
+        type,
+        visibleTo
     );
 
     store.upsertRoom({roomId: created.roomId, name, serverUrl, createdAt: created.room.createdAt, expiresAt: created.room.expiresAt, controls: true, sessions: []});

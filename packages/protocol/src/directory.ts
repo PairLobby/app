@@ -5,7 +5,8 @@
 import {z} from 'zod';
 
 import {ListingId, ParticipantId, RoomId} from './ids.js';
-import {ListingContact, MemberHandle} from './records.js';
+import {MemberHandle} from './names.js';
+import {ListingContact} from './records.js';
 
 /** How long a listing stays as its last heartbeat said before it reads as offline. */
 export const LISTING_OFFLINE_AFTER_MS = 3 * 60_000;

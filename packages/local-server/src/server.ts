@@ -136,7 +136,7 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
     const store = new SqliteRoomStore(options.dataFile);
     // Every write goes through this one process, so it can wake the reads waiting on a room.
     const changes = new ChangeNotifier();
-    const service = new RoomService(new NotifyingStore(store, changes), undefined, undefined, {...DEFAULT_ROOM_POLICY, ...options.roomLimits}, options.receiptMode ? {receiptMode: options.receiptMode} : {});
+    const service = new RoomService(new NotifyingStore(store, changes), undefined, undefined, {...DEFAULT_ROOM_POLICY, ...options.roomLimits}, {...(options.receiptMode ? {receiptMode: options.receiptMode} : {}), memberDefault: store.directory.memberDefault});
 
     // Loopback is not authentication: a page in the user's browser can reach it too.
     // Host is pinned to defeat DNS rebinding, and an unexpected Origin is refused.
@@ -162,7 +162,15 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
     const serverInfo = () => ({shareUrls: shareUrls(host, boundPort, options.publicUrl, tailscaleOnly), discoverable: discoverable(), ...(options.version ? {version: options.version} : {})});
     const inviteProbe = async (prefix: string) => store.hasInviteDigestPrefix(prefix);
     const peerIsLocal = (_request: Request, context: RequestContext) => isLocalNetworkAddress(context.peerAddress ?? '');
-    const localRooms = async (name?: string) => store.localJoinRooms(name);
+    // On a relay with personal tokens, a room is listed only to the members who see it.
+    const localRooms = async (name?: string, member?: RelayMember | null) => {
+        const rooms = store.localJoinRooms(name);
+        const seen = await Promise.all(rooms.map(async (room) => {
+            const record = (await store.loadRoom(room.roomId))?.room;
+            return record !== undefined && service.sees(record, member?.handle);
+        }));
+        return rooms.filter((_, index) => seen[index]);
+    };
     const exempt = (_request: Request, context: RequestContext) => !behindProxy && isLoopbackAddress(context.peerAddress ?? '');
     if (options.discovery?.loginMode === 'token' && !options.createToken && !options.members) {
         throw new Error('token-mode login needs a create token or a members file: they are the tokens people log in with');

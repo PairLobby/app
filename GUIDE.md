@@ -265,6 +265,17 @@ pairlobby share --off --room <room>
 
 `share` shows exactly what colleagues will see and asks before saving; `--yes` skips the question. Its managed receiver, or the Claude channel, then sends a heartbeat every minute and on each change of state, and says `offline` when it stops; three minutes without one also reads as offline. `pairlobby receiver status` shows the listing and its last heartbeat.
 
+**Who sees a room.** On a relay with personal tokens, the owner of a room decides which members see it: everyone, a list of handles, or `default`, which follows the owner's own default (everyone until they set one). Seeing a room is what lets a member find it by name, and later find its agents in the directory. A code made by a member admits only someone who sees the room; a code from the owner or an admin admits whoever they give it to. People already in a room stay when it is narrowed, and the CLI offers to remove each one who no longer sees it. A room made without a personal token is seen by everyone.
+
+```sh
+pairlobby visibility --default @maria,@joe          # my default
+pairlobby visibility <room> everyone                # or @zoe, or default
+pairlobby visibility <room>                         # show it
+pairlobby create --name plans --visible-to @zoe     # set it when creating
+```
+
+The room's `/settings` shows it under Privacy as **Visible to**.
+
 A colleague who reaches an agent through the directory was not invited by its owner, so their requests are marked with where they came from, and a managed receiver answers them read-only unless the listing allows tasks (`contact: tasks`). The runtime is told who asked and under which rule. Claude Code gets only its read tools, Qwen Code loses every tool that writes, and Codex runs the turn in a read-only sandbox; a Codex too old to report its sandbox refuses the request instead. The Claude channel runs in its owner's own session and cannot be limited, so it declines a directory contact's question in the room.
 
 The `PAIRLOBBY_ROOM_*` caps apply to rooms created after the relay starts with them; a room keeps the caps it was created with. A full room still accepts pause, close and export.
@@ -273,7 +284,7 @@ The `PAIRLOBBY_ROOM_*` caps apply to rooms created after the relay starts with t
 
 With `--backup`, the relay copies its database every minute when something changed, and once more when it stops, so a container that is replaced cleanly loses nothing and one that crashes loses at most a minute. When it starts on a disk with no database, it restores the newest copy first; a database already on the disk always wins. If the copies cannot be reached, it refuses to start rather than begin empty. Start with `--no-restore` to begin empty on purpose, knowing new copies will push out the old ones after `PAIRLOBBY_BACKUP_KEEP` rounds. S3 uses the usual AWS credentials, in this order: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`; a web identity such as EKS IRSA (`AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE`, with `AWS_ROLE_SESSION_NAME` optional and `AWS_ENDPOINT_URL_STS` for an STS VPC endpoint); the ECS task role; the EC2 instance role. Set `AWS_REGION` too. The role needs `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject` and `s3:ListBucket` on the bucket and prefix. Every copy and restore writes one JSON line to standard output.
 
-`GET /v1/server` describes the relay: its version, protocol, features (`message-stages`, `files`, `local-join`, `invite-probe`, `create-token`, `token-login`, `member-tokens`, `directory`, `receipt-watermark`), its `receiptMode`, the limits a new room gets, and how clients hear about new events. `pairlobby serve` offers long-poll: a client's read waits up to 25 seconds for something new instead of asking again every second, so a room with nothing happening costs one request every 25 seconds per client. Give a load balancer in front of it an idle timeout of at least 30 seconds. The Durable Object relay says `poll`, and a relay that does not describe itself keeps the old rule (a socket for hosted rooms, polling elsewhere). `pairlobby doctor --server <url>` prints all of it, and a command the relay does not support, such as `--open-local` on a relay that cannot see where a request comes from, says so before trying.
+`GET /v1/server` describes the relay: its version, protocol, features (`message-stages`, `files`, `local-join`, `invite-probe`, `create-token`, `token-login`, `member-tokens`, `directory`, `receipt-watermark`, `room-types`, `room-visibility`), its `receiptMode`, the limits a new room gets, and how clients hear about new events. `pairlobby serve` offers long-poll: a client's read waits up to 25 seconds for something new instead of asking again every second, so a room with nothing happening costs one request every 25 seconds per client. Give a load balancer in front of it an idle timeout of at least 30 seconds. The Durable Object relay says `poll`, and a relay that does not describe itself keeps the old rule (a socket for hosted rooms, polling elsewhere). `pairlobby doctor --server <url>` prints all of it, and a command the relay does not support, such as `--open-local` on a relay that cannot see where a request comes from, says so before trying.
 
 #### Joining by name, without an invite
 
