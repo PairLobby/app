@@ -18,7 +18,7 @@ export type RelayAnswer = {status: number; body: unknown};
 const MAX_ANSWER_BYTES = 1024 * 1024;
 
 /** The relay's JSON answer, or null when it cannot be reached in time, was aborted, or did not send JSON. */
-export function askRelay(url: string, timeoutMs = 1500, signal?: AbortSignal): Promise<RelayAnswer | null> {
+export function askRelay(url: string, timeoutMs = 1500, signal?: AbortSignal, headers: Record<string, string> = {}): Promise<RelayAnswer | null> {
     return new Promise((resolve) => {
         if (signal?.aborted) {
             resolve(null);
@@ -43,7 +43,7 @@ export function askRelay(url: string, timeoutMs = 1500, signal?: AbortSignal): P
             resolve(null);
             return;
         }
-        const request = (target.protocol === 'https:' ? httpsRequest : httpRequest)(target, {method: 'GET', headers: {[PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)}, agent: false}, (response) => {
+        const request = (target.protocol === 'https:' ? httpsRequest : httpRequest)(target, {method: 'GET', headers: {...headers, [PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)}, agent: false}, (response) => {
             const chunks: Buffer[] = [];
             let size = 0;
             response.on('data', (chunk: Buffer) => {
@@ -87,12 +87,12 @@ export async function probeRelayForInvite(url: string, probe: string, signal?: A
 }
 
 /**
- * Rooms on this relay open to its local network: those named `name`, or all of
+ * Rooms on this relay that can be joined by name: those named `name`, or all of
  * them without one. Null when the relay cannot say: unreachable, older than this
- * question, or not counting this device as local.
+ * question, or not letting this device in. `token` is the login for this relay, never another's.
  */
-export async function relayLocalRooms(url: string, name?: string, signal?: AbortSignal): Promise<LocalRoom[] | null> {
-    const answer = await askRelay(`${url}/v1/rooms/local${name === undefined ? '' : `?name=${encodeURIComponent(name)}`}`, 1500, signal);
+export async function relayLocalRooms(url: string, name?: string, signal?: AbortSignal, token?: string): Promise<LocalRoom[] | null> {
+    const answer = await askRelay(`${url}/v1/rooms/local${name === undefined ? '' : `?name=${encodeURIComponent(name)}`}`, 1500, signal, token ? {'x-pairlobby-account-token': token} : {});
     if (!answer || answer.status < 200 || answer.status > 299) {
         return null;
     }

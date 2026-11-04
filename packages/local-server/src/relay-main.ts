@@ -28,6 +28,7 @@ Settings (a flag wins over its variable)
   --port <port>            PAIRLOBBY_PORT                 default 8790
   --public-url <url>       PAIRLOBBY_PUBLIC_URL           the address invites show
   --trusted-proxy-header   PAIRLOBBY_TRUSTED_PROXY_HEADER such as x-forwarded-for, behind a load balancer
+  --proxy-is-access-gate   PAIRLOBBY_PROXY_IS_ACCESS_GATE 1 when only allowed callers can reach the proxy
   --request-log <mode>     PAIRLOBBY_REQUEST_LOG          all, writes or off (default)
   --backup <place>         PAIRLOBBY_BACKUP               s3://bucket/prefix or an absolute folder
   --no-restore             PAIRLOBBY_NO_RESTORE=1         start empty on an empty disk
@@ -95,6 +96,7 @@ async function serve(flags: RelayFlags, dataDir: string | undefined): Promise<nu
         dataFile: join(dataDir, 'rooms.sqlite'),
         ...(settings.publicUrl ? {publicUrl: settings.publicUrl} : {}),
         ...(settings.trustedProxyHeader ? {trustedProxyHeader: settings.trustedProxyHeader} : {}),
+        ...(settings.proxyIsAccessGate ? {proxyIsAccessGate: true} : {}),
         ...(settings.createToken ? {createToken: settings.createToken} : {}),
         ...(settings.membersFile ? {members: {file: settings.membersFile, log: writeLine}} : {}),
         ...(settings.teamTokenLogin === false ? {teamTokenLogin: false} : {}),
@@ -140,6 +142,7 @@ async function main(argv: string[]): Promise<number> {
             'request-log': {type: 'string'},
             backup: {type: 'string'},
             'no-restore': {type: 'boolean'},
+            'proxy-is-access-gate': {type: 'boolean'},
         },
     });
     if (values.help) {
@@ -168,6 +171,7 @@ async function main(argv: string[]): Promise<number> {
         ...(values['request-log'] !== undefined ? {requestLog: values['request-log']} : {}),
         ...(values.backup !== undefined ? {backup: values.backup} : {}),
         ...(values['no-restore'] ? {noRestore: true} : {}),
+        ...(values['proxy-is-access-gate'] ? {proxyIsAccessGate: true} : {}),
     };
     return serve(flags, values['data-dir'] ?? (process.env['PAIRLOBBY_DATA_DIR']?.trim() || undefined));
 }

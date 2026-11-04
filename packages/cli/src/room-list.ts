@@ -160,7 +160,7 @@ export function roomRows(entries: RoomListEntry[], icons: IconSet = 'symbols', n
 }
 
 /** A room found on the network and open to it, which this device has not joined. */
-export type NetworkRoom = {url: string; label: string; room: {roomId: string; name: string; createdAt: number; participantCount: number}};
+export type NetworkRoom = {url: string; label: string; room: {roomId: string; name: string; createdAt: number; participantCount: number; type?: 'public' | 'protected' | undefined}};
 
 export const NETWORK_STATE = 'on network';
 
@@ -168,7 +168,7 @@ export const NETWORK_STATE = 'on network';
 export function networkRows(found: NetworkRoom[], icons: IconSet = 'symbols'): ListRow[] {
     return found.map(({url, label, room}) => {
         const location = roomLocation(url, true);
-        const values = {where: LOCATION_ICONS[icons][location], name: room.name, type: 'public', state: NETWORK_STATE, agents: 'Unknown', people: `${room.participantCount} in room`, latest: 'Unknown', created: listDate(room.createdAt), expires: 'Unknown', id: room.roomId, relay: label === url || label === 'local network' ? relayLabel(url) : `${relayLabel(url)} (${label})`};
+        const values = {where: LOCATION_ICONS[icons][location], name: room.name, type: room.type ?? 'public', state: NETWORK_STATE, agents: 'Unknown', people: `${room.participantCount} in room`, latest: 'Unknown', created: listDate(room.createdAt), expires: 'Unknown', id: room.roomId, relay: label === url || label === 'local network' ? relayLabel(url) : `${relayLabel(url)} (${label})`};
         return {id: room.roomId, roomId: room.roomId, values, sortValues: {...values, where: location, agents: null, people: room.participantCount, latest: null, created: room.createdAt, expires: null}};
     });
 }

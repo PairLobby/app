@@ -326,7 +326,7 @@ export class RoomBrowser {
     /** Joining writes to the room, so it is confirmed like every other action here. */
     private confirmJoin(found: NetworkRoom): void {
         const {room, url} = found;
-        const page: RoomPanelPage = {id: 'join-network-room', closeOnCancel: true, title: 'Join room on the network', note: `${room.name} (${room.roomId}) at ${url}`, reload: async () => page, rows: [{id: 'confirm', label: 'Join room', value: room.name, section: 'Confirmation', action: {kind: 'command', closeAfterSave: true, confirm: `Join ${room.name} at ${url} as a member? Everyone in the room will see you join, and it stays in this list afterwards.`, run: async () => {
+        const page: RoomPanelPage = {id: 'join-network-room', closeOnCancel: true, title: 'Join room on the network', note: `${room.name} (${room.roomId}) at ${url}`, reload: async () => page, rows: [{id: 'confirm', label: 'Join room', value: room.name, section: 'Confirmation', action: {kind: 'command', closeAfterSave: true, confirm: `Join ${room.name} at ${url} as ${room.type === 'protected' ? 'a read-only visitor' : 'a member'}? Everyone in the room will see you join, and it stays in this list afterwards.`, run: async () => {
             this.join = {roomId: room.roomId, joinAt: url};
         }}}]};
         this.details.show(page);

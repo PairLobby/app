@@ -275,7 +275,8 @@ export const SetRoomTypeRequest = z.object({type: RoomType});
 export type SetRoomTypeRequest = z.infer<typeof SetRoomTypeRequest>;
 
 /** A room that devices on the relay's network may join by name. Only what is needed to choose one. */
-export const LocalRoom = z.object({roomId: RoomId, name: z.string(), createdAt: z.number().int().nonnegative(), participantCount: z.number().int().nonnegative()});
+/** `type` says what joining by name gives: public, a member; protected, a visitor. Absent from older relays, which list only public rooms. */
+export const LocalRoom = z.object({roomId: RoomId, name: z.string(), createdAt: z.number().int().nonnegative(), participantCount: z.number().int().nonnegative(), type: z.enum(['public', 'protected']).optional()});
 export type LocalRoom = z.infer<typeof LocalRoom>;
 
 export const LocalRoomsResponse = z.object({rooms: z.array(LocalRoom)});

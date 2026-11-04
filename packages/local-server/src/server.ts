@@ -54,6 +54,11 @@ export interface ServeOptions {
      * reaching the relay directly could write the header themselves.
      */
     trustedProxyHeader?: string;
+    /**
+     * Treat every caller that reaches this relay through its proxy as being on the local network, so rooms
+     * opened to the network can be found and joined by name. Only for a proxy that is itself the access gate.
+     */
+    proxyIsAccessGate?: boolean;
     /** Rate limits on creating rooms and redeeming invites; callers on this device are exempt unless the relay is behind a proxy. */
     limits?: Partial<AdmissionLimits>;
     /** Caps for rooms created from now on, over the built-in defaults; rooms that already exist keep theirs. */
@@ -150,6 +155,9 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
     // Behind a proxy every caller arrives from the proxy's address, which looks local, so the
     // socket can no longer vouch that a caller is on this network.
     const behindProxy = Boolean(options.publicUrl || options.trustedProxyHeader);
+    if (options.proxyIsAccessGate && !behindProxy) {
+        throw new Error('proxyIsAccessGate needs publicUrl or trustedProxyHeader: it says the proxy in front of the relay lets only the right callers through');
+    }
     const discoverable = () => !behindProxy && !isLoopback(host) && (options.advertise === true || (boundPort === DEFAULT_PORT && (wildcard || isTailscaleAddress(host))));
     const serverInfo = () => ({shareUrls: shareUrls(host, boundPort, options.publicUrl, tailscaleOnly), discoverable: discoverable(), ...(options.version ? {version: options.version} : {})});
     const inviteProbe = async (prefix: string) => store.hasInviteDigestPrefix(prefix);
@@ -174,7 +182,7 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
     const executor = queueExecutor();
     // One timer for the whole relay, aimed at the earliest auto-close deadline; every write plans it again.
     const scheduler = timerScheduler(() => void relay.tick('auto-close'));
-    const relay: Relay = createRelay({service, executor, scheduler, behindProxy, allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo, changes, inviteProbe, peerIsLocal, localRooms, admission, directory: store.directory, ...(discovery ? {discovery: () => discovery} : {}), ...(accountCheck ? {accountCheck} : {})});
+    const relay: Relay = createRelay({service, executor, scheduler, behindProxy, ...(options.proxyIsAccessGate ? {proxyIsAccessGate: true} : {}), allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo, changes, inviteProbe, peerIsLocal, localRooms, admission, directory: store.directory, ...(discovery ? {discovery: () => discovery} : {}), ...(accountCheck ? {accountCheck} : {})});
     void relay.tick('auto-close');
     const sweep = members ? setInterval(() => void relay.tick('directory-sweep').catch(() => {}), DIRECTORY_SWEEP_MS) : undefined;
     sweep?.unref();

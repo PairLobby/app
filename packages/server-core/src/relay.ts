@@ -74,6 +74,13 @@ export interface RelayOptions {
      */
     behindProxy?: boolean;
     /**
+     * True when the proxy in front of the relay is itself the access gate: it lets through only
+     * callers who may use the relay (a company network, a VPN). Every caller behind it then counts
+     * as local, so finding and joining rooms by name work for all of them. Set it only when nothing
+     * but that proxy can reach the relay. Ignored without `behindProxy`.
+     */
+    proxyIsAccessGate?: boolean;
+    /**
      * Exact origins a browser may call from. A CLI sends no `Origin`, so an
      * unexpected one means a web page is talking to us — including a malicious
      * page reaching for loopback.
@@ -201,7 +208,7 @@ export function createRelay(options: RelayOptions): Relay {
     const {service} = options;
     const executor = options.executor ?? directExecutor();
     const inviteRoom = options.inviteRoom ?? ((digest: string) => service.inviteRoom(digest));
-    const peerIsLocal = (request: Request, context: RequestContext) => !options.behindProxy && Boolean(options.peerIsLocal?.(request, context));
+    const peerIsLocal = (request: Request, context: RequestContext) => options.behindProxy ? Boolean(options.proxyIsAccessGate && options.peerIsLocal) : Boolean(options.peerIsLocal?.(request, context));
 
     async function edge(request: Request, context: RequestContext = {}): Promise<Response | RoomRoute> {
         try {
@@ -455,10 +462,12 @@ function claimedMember(request: Request): string | undefined {
 }
 
 const NOT_LOCAL = 'joining by name is only open to devices on this relay\'s local network or tailnet; ask for an invite code';
+const NOT_LOGGED_IN = 'joining by name on this relay needs your personal token: pairlobby login';
 
 /**
- * Finding and joining rooms by name: both need a transport that vouches the caller is local.
- * A lookup is answered here; a join that passes the check goes on to its room.
+ * Finding and joining rooms by name: both need a caller the transport vouches is local, or on a
+ * relay with personal tokens, a member. A lookup is answered here; a join is counted like an
+ * invite redemption and goes on to its room carrying the member, who the room then records.
  */
 async function routeLocal(request: Request, context: RequestContext, options: RelayOptions, peerIsLocal: PeerCheck): Promise<Response | RoomRoute | null> {
     const url = new URL(request.url);
@@ -472,8 +481,9 @@ async function routeLocal(request: Request, context: RequestContext, options: Re
     if (lookup && !options.localRooms) {
         return errorResponse('invalid_request', 'unknown path', 404);
     }
-    if (!peerIsLocal(request, context)) {
-        return errorResponse('unauthorized', NOT_LOCAL, 401);
+    const member = options.admission?.memberTokens ? await options.admission.member(request) : null;
+    if (!member && !peerIsLocal(request, context)) {
+        return errorResponse('unauthorized', options.admission?.memberTokens ? NOT_LOGGED_IN : NOT_LOCAL, 401);
     }
     if (lookup) {
         // No name at all lists every room open to the local network, for the room list.
@@ -486,7 +496,8 @@ async function routeLocal(request: Request, context: RequestContext, options: Re
         }
         return json({rooms: await options.localRooms!(name)});
     }
-    return {roomId: RoomId.parse(segments[2]), request};
+    await options.admission?.beforeRedeem(request, context);
+    return {roomId: RoomId.parse(segments[2]), request: claiming(request, member)};
 }
 
 /** The relay's own account of itself, from what this router was given: nothing is claimed that it was not. */
@@ -494,7 +505,8 @@ export function describe(options: RelayOptions): ServerDescription {
     const profile = options.service.relayProfile();
     const features = [
         ...(profile.files ? ['files'] : []),
-        ...(options.peerIsLocal && options.localRooms && !options.behindProxy ? ['local-join'] : []),
+        // Joining by name needs rooms to list and a way to tell who may: the connection, or a personal token.
+        ...(options.localRooms && ((options.peerIsLocal && (!options.behindProxy || options.proxyIsAccessGate)) || options.admission?.memberTokens) ? ['local-join'] : []),
         ...(options.inviteProbe ? ['invite-probe'] : []),
         ...(options.admission?.createTokenRequired ? ['create-token'] : []),
         ...(options.accountCheck && options.admission ? ['token-login'] : []),
@@ -577,7 +589,8 @@ async function roomRoute(request: Request, roomId: string, context: RequestConte
 
     if (method === 'POST' && segments.length === 4 && segments[3] === 'local-join') {
         const input = LocalJoinRequest.parse(await request.json());
-        const result = await service.joinOnLocalNetwork(roomId, input);
+        const member = claimedMember(request);
+        const result = await service.joinOnLocalNetwork(roomId, {...input, ...(member ? {member} : {})});
         return json({roomId: result.roomId, participantId: result.participantId, role: result.role, room: result.snapshot});
     }
 

@@ -24,7 +24,7 @@ import {runChatRoom} from './chat.js';
 import {chooseHumanSession, selectHumanSession} from './human-session.js';
 import {WhenError, formatDuration, parseDuration, parseExpiry} from './when.js';
 import {pickExpiry} from './picker.js';
-import {DEFAULT_LOCAL_SERVER, DEFAULT_RELAY_PORT, UsageError, controllerCredential, moderationCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
+import {DEFAULT_LOCAL_SERVER, DEFAULT_RELAY_PORT, UsageError, controllerCredential, hostedAccountToken, moderationCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
 import type {Selection} from './context.js';
 import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
@@ -40,6 +40,8 @@ import {invitationNotice, rememberInvitations, scheduleInvitationCheck} from './
 import {BUILT_IN_ORIGIN, activeEndpoint, endpointRelay, useEndpointOverride} from './endpoints.js';
 import {DEFAULT_SETUP, setupCommand} from './setup.js';
 import {DEFAULT_LOCAL_ROOMS, findLocalRoom, findRelayForInvite, listLocalRooms} from './relay-discovery.js';
+import type {LocalRoomDeps} from './relay-discovery.js';
+import {relayLocalRooms} from './relay-probe.js';
 import {routeForRoom} from './mentions.js';
 import type {RoutedChatMessage} from './mentions.js';
 import {tailscaleNames, tailscaleView} from './tailscale.js';
@@ -635,9 +637,18 @@ function networkRoomSearch(store: LocalStore): RoomBrowserOptions['discover'] {
     if (process.env['PAIRLOBBY_NO_NETWORK_SEARCH'] || !store.settings().networkRooms) {
         return undefined;
     }
-    // "This device's relay" is the one its commands use by default, which PAIRLOBBY_SERVER or the profile may name.
-    const deps = {...DEFAULT_LOCAL_ROOMS, local: resolveServer({server: store.profile().server})};
+    const deps = localRoomDeps(store);
     return (known, signal) => listLocalRooms(known, deps, signal);
+}
+
+/**
+ * Where to look for rooms by name: this device's relay (the one its commands use by default, which
+ * PAIRLOBBY_SERVER or the profile may name), the saved endpoint's relay with its login, and the network.
+ */
+function localRoomDeps(store: LocalStore): LocalRoomDeps {
+    const saved = endpointRelay(store);
+    const token = saved ? hostedAccountToken(store, saved) : undefined;
+    return {...DEFAULT_LOCAL_ROOMS, local: resolveServer({server: store.profile().server}), saved: saved ? [{url: saved, label: activeEndpoint(store).name}] : [], lookup: (url, name, signal) => relayLocalRooms(url, name, signal, url === saved ? token : undefined)};
 }
 
 /** Selects this person's saved seat, or creates one through another saved local membership. */
@@ -1515,20 +1526,21 @@ async function joinRoom(store: LocalStore, values: Values, code?: string, online
 }
 
 /**
- * Joins a room open to the local network by name, or by id with --server: asks the
- * relays this device can see, joins the single match as a member.
+ * Joins a room by name, or by id with --server: asks the relays this device can see and its
+ * saved relay, and joins the single match, as a member of a public room or a visitor of a protected one.
  */
 async function joinLocalRoom(store: LocalStore, values: Values, reference: string): Promise<number> {
     const named = namesNoRelay(store, values) ? undefined : resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local')});
     if (reference.startsWith('rm_') && !named) {
         throw new UsageError('joining by room id needs its relay: pairlobby join local <room-id> --server <address>');
     }
-    const match = reference.startsWith('rm_') ? {url: named!, roomId: reference} : await findLocalRoom(reference, undefined, named).then((found) => ({url: found.url, roomId: found.room.roomId}));
+    const match = reference.startsWith('rm_') ? {url: named!, roomId: reference} : await findLocalRoom(reference, localRoomDeps(store), named).then((found) => ({url: found.url, roomId: found.room.roomId}));
     if (!named && match.url !== DEFAULT_LOCAL_SERVER) {
         note(`found ${reference} at ${match.url}`);
     }
     const identity = identityFrom(store, values, 'agent');
-    const joined = await new PairLobbyClient(match.url).joinOnLocalNetwork(match.roomId, identity);
+    // The saved endpoint's relay may know people by their login rather than by where they connect from.
+    const joined = await new PairLobbyClient(match.url, hostedAccountToken(store, match.url)).joinOnLocalNetwork(match.roomId, identity);
     return finishJoin(store, values, joined, match.url, identity);
 }
 
