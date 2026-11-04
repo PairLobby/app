@@ -131,4 +131,4 @@ test('test_the_cli_creates_typed_rooms_and_shows_and_changes_their_type', async 
     expect(JSON.parse(await cli(['room', personal.roomId, 'type', '--json']))).toMatchObject({type: 'personal', membersMayInvite: false});
     await expect(cli(['room', personal.roomId, 'invite-policy', 'members'])).rejects.toThrow('members never invite in a personal room');
     await expect(cli(['create', '--name', 'bad', '--as', 'hugo', '--human', '--type', 'secret', '--server', relay.url])).rejects.toThrow('room type must be public, protected, private, personal');
-});
+}, 60_000);

@@ -6,10 +6,11 @@ import {setTimeout as sleep} from 'node:timers/promises';
 import {promisify} from 'node:util';
 import {PairLobbyClient} from '@pairlobby/client';
 import type {LocalStore, SessionEntry} from '@pairlobby/client';
-import {newCredential, newId, ProtocolError} from '@pairlobby/protocol';
+import {newCredential, newId, ProtocolError, roomType} from '@pairlobby/protocol';
 import type {RoomSnapshot} from '@pairlobby/protocol';
 import {select, UsageError} from './context.js';
 import {accountTokenFor} from './online.js';
+import {publicRoomWarning} from './public-room.js';
 import {receiverStatus, startReceiver, stopReceiver} from './receiver.js';
 import type {ReceiverStatus} from './receiver.js';
 import type {ReceiverRuntimeName} from './receiver-runtime.js';
@@ -26,7 +27,7 @@ type SpawnOperation = {
     phase: SpawnPhase; invite?: string; participantId?: string; joinedAt: number;
 };
 export type SpawnContext = {store: LocalStore; roomId: string; sessionId: string};
-export type SpawnResult = {operationId: string; roomId: string; sessionId: string; participantId: string; name: string; runtime: string; model?: string; effort?: string; workdir: string; idleTimeoutMs: number; absoluteTimeoutMs: number; receiver: ReceiverStatus | null};
+export type SpawnResult = {operationId: string; roomId: string; sessionId: string; participantId: string; name: string; runtime: string; model?: string; effort?: string; workdir: string; idleTimeoutMs: number; absoluteTimeoutMs: number; receiver: ReceiverStatus | null; publicRoomWarning?: string};
 export type SpawnDependencies = {start?: typeof startReceiver; preflight?: typeof preflightRuntime};
 type SpawnMetadata = {actorSessionId: string; invite?: string; model?: string};
 
@@ -240,7 +241,8 @@ export async function spawnAgent(context: SpawnContext, options: SpawnOptions, d
             await (dependencies.start ?? startReceiver)(store, roomId, operation.sessionId, {workdir: operation.cwd, executable: operation.executable, idleTimeoutMs: operation.idleTimeoutMs, absoluteTimeoutMs: operation.absoluteTimeoutMs, ...(operation.model ? {model: operation.model} : {}), ...(operation.effort ? {effort: operation.effort} : {})});
             operation.phase = 'ready';
             save(db, operation);
-            return result(store, operation);
+            // The person spawning it decides; they are told what a public room means for it.
+            return roomType(snapshot.policy) === 'public' ? {...result(store, operation), publicRoomWarning: publicRoomWarning(snapshot.name)} : result(store, operation);
         } catch (error) {
             operation.phase = 'cleanup';
             save(db, operation);
@@ -263,7 +265,7 @@ export async function spawnAgent(context: SpawnContext, options: SpawnOptions, d
 }
 
 export function formatSpawnResult(value: SpawnResult): string {
-    return `${value.name} joined · ${value.runtime} · receiver ${value.receiver?.state ?? 'not configured'}\nModel: ${value.model ?? 'provider default'}${value.effort ? ` · effort: ${value.effort}` : ''}\nManaged request limits: inactivity ${formatDuration(value.idleTimeoutMs)} · absolute ${formatDuration(value.absoluteTimeoutMs)}\nSession: ${value.sessionId}\nReceiver readiness does not verify provider access; send @${value.name} a task to start work.`;
+    return `${value.name} joined · ${value.runtime} · receiver ${value.receiver?.state ?? 'not configured'}\nModel: ${value.model ?? 'provider default'}${value.effort ? ` · effort: ${value.effort}` : ''}\nManaged request limits: inactivity ${formatDuration(value.idleTimeoutMs)} · absolute ${formatDuration(value.absoluteTimeoutMs)}\nSession: ${value.sessionId}\nReceiver readiness does not verify provider access; send @${value.name} a task to start work.${value.publicRoomWarning ? `\n${value.publicRoomWarning}` : ''}`;
 }
 
 export async function runAgentCommand(line: string, context: SpawnContext): Promise<string> {
