@@ -6,7 +6,7 @@ const SUBCOMMANDS: Record<string, string[]> = {
     '/agent': ['start', 'stop'],
     '/turns': ['sequential', 'parallel', 'skip', 'cancel'],
     '/requests': ['retry', 'reassign', 'dismiss', 'cancel'],
-    '/invite': ['as', 'member', 'observer'],
+    '/invite': ['as', 'member', 'visitor'],
     '/invites': ['revoke'],
     '/permissions': ['allow', 'deny', 'reset'],
     '/preset': ['list', 'save', 'show', 'apply', 'delete', 'default']

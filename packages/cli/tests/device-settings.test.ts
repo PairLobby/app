@@ -34,6 +34,7 @@ async function cli(args: string[]): Promise<string> {
 test('test_setting_values_accept_short_names_and_reject_others', () => {
     const invites = SETTING_KEYS['default-invites']!;
     expect(parseSettingValue('default-invites', invites, 'observer')).toBe('guest');
+    expect(parseSettingValue('default-invites', invites, 'visitor')).toBe('guest');
     expect(parseSettingValue('default-invites', invites, 'Member')).toBe('member');
     expect(parseSettingValue('default-guest-access', SETTING_KEYS['default-guest-access']!, 'open')).toBe('open_to_guests');
     expect(parseSettingValue('default-reply-mode', SETTING_KEYS['default-reply-mode']!, 'parallel')).toBe('parallel');
@@ -41,7 +42,7 @@ test('test_setting_values_accept_short_names_and_reject_others', () => {
     expect(parseSettingValue('default-expiry', SETTING_KEYS['default-expiry']!, 'never')).toBeNull();
     expect(parseSettingValue('managed-task-timeout', SETTING_KEYS['managed-task-timeout']!, '2h')).toBe(7_200_000);
     expect(() => parseSettingValue('managed-task-timeout', SETTING_KEYS['managed-task-timeout']!, 'never')).toThrow('duration');
-    expect(describeSettingValue(invites, 'guest')).toBe('Read-only observers');
+    expect(describeSettingValue(invites, 'guest')).toBe('Read-only visitors');
     expect(describeSettingValue(SETTING_KEYS['auto-update']!, true)).toBe('On');
 });
 

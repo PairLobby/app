@@ -38,7 +38,7 @@ const BOLD = '\u001b[1m';
 const RESET = '\u001b[0m';
 
 export interface ChatOptions {
-    /** Guests may watch and leave; the composer is disabled for them. */
+    /** Visitors may watch and leave; the composer is disabled for them. */
     readOnly?: boolean;
     requireHuman?: boolean;
     useHumanProfile?: boolean;
@@ -88,9 +88,9 @@ const HELP = `  <message>          address all eligible agents (same as @all)
   /name <new name>   change your name in this room (default profile unchanged)
   /invite            create an invite (members can speak; the room's /settings may make it read-only)
   /invite member     create an invite for a member who can speak
-  /invite observer   create a read-only observer invite
+  /invite visitor    create a read-only visitor invite
   /invite as <name>  create a member invite with a default name
-  /invite @handle    hosted rooms: ask an account in by its handle (add observer for read-only); owner and admins
+  /invite @handle    hosted rooms: ask an account in by its handle (add visitor for read-only); owner and admins
   /invites           hosted rooms: who was invited by handle; /invites revoke @handle withdraws one
   /lock              block joining, rejoining, and new invites (owner/admin, or members the room allows)
   /unlock            allow joining and invitations again
@@ -425,7 +425,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 return;
             }
             if (options.readOnly === true) {
-                emit(`${DIM}  you are a read-only guest in this room${RESET}`);
+                emit(`${DIM}  you are a read-only visitor in this room${RESET}`);
                 return;
             }
             if (line === '/agents') {
@@ -818,7 +818,7 @@ function header(snapshot: RoomSnapshot, participantId: string, sessionId: string
     emit(
         `${DIM}registered in this room:${RESET} ${active.length}  (${plural(people, 'person', 'people')}, ${plural(agents, 'agent', 'agents')})  ${DIM}${active.map((participant) => participant.displayName).join(', ')}${RESET}`
     );
-    emit(`${DIM}${me?.role === 'guest' ? 'Read-only observer. /quit to leave.' : '/help for commands, /quit to leave'}${snapshot.locked ? ' Room locked.' : ''}${RESET}`);
+    emit(`${DIM}${me?.role === 'guest' ? 'Read-only visitor. /quit to leave.' : '/help for commands, /quit to leave'}${snapshot.locked ? ' Room locked.' : ''}${RESET}`);
     emit('');
 }
 
@@ -829,7 +829,7 @@ function who(snapshot: RoomSnapshot, showIds = false): string {
             const control =
                 participant.controlRevision > 0 ? `  ${DIM}control ${participant.controlRevision}: ${participant.acknowledgedOutcome ?? 'no acknowledgement yet'}${RESET}` : '';
             const id = showIds ? `  ${DIM}${participant.participantId}${RESET}` : '';
-            return `  ${participant.displayName}${id}  ${DIM}${participant.kind}${participant.paused ? ', paused' : ''}${participant.muted ? ', muted' : ''}${participant.role === 'guest' ? ', observer' : ''}${RESET}${control}`;
+            return `  ${participant.displayName}${id}  ${DIM}${participant.kind}${participant.paused ? ', paused' : ''}${participant.muted ? ', muted' : ''}${participant.role === 'guest' ? ', visitor' : ''}${RESET}${control}`;
         })
         .join('\n');
 }
@@ -929,7 +929,7 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
             if (event.payload.inviteRole) {
                 return event.payload.inviteRole === 'guest' ? `${sender} made new invitations read-only` : `${sender} made new invitations admit members who can speak`;
             }
-            return event.payload.joinPolicy === 'open_to_guests' ? `${sender} opened the room to read-only guests` : `${sender} made the room invite only`;
+            return event.payload.joinPolicy === 'open_to_guests' ? `${sender} opened the room to read-only visitors` : `${sender} made the room invite only`;
         case 'room.invitation_changed':
             return event.payload.state === 'withdrawn' ? `${sender} withdrew the invitation to @${event.payload.handle}` : `${sender} invited @${event.payload.handle}${invitationTerms(event.payload)}`;
         case 'room.local_join_changed':

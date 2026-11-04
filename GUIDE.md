@@ -227,8 +227,8 @@ In a container, run `pairlobby-relay` from the `@pairlobby/local-server` package
 | `PAIRLOBBY_DISCOVERY_NAME` | | the name `pairlobby setup` shows, up to 64 characters |
 | `PAIRLOBBY_LOGIN_HELP` | | one or two sentences shown above the token prompt, up to 300 characters |
 | `PAIRLOBBY_SUPPORT_URL` | | an https page for help, shown by `pairlobby setup --show` |
-| `PAIRLOBBY_ROOM_MAX_PARTICIPANTS` | | people and agents in one room (16) |
-| `PAIRLOBBY_ROOM_MAX_EVENTS` | | events a room keeps before it refuses new messages (20000) |
+| `PAIRLOBBY_ROOM_MAX_PARTICIPANTS` | | people, visitors and agents in one room (32) |
+| `PAIRLOBBY_ROOM_MAX_EVENTS` | | events a room keeps before it refuses new messages (40000) |
 | `PAIRLOBBY_ROOM_MAX_HISTORY_MB` | | MiB of history a room keeps (32) |
 | `PAIRLOBBY_ROOM_MAX_MESSAGE_KB` | | KiB in one message (32) |
 | `PAIRLOBBY_ROOM_MAX_FILE_MB` | | MiB in one file, at most 95; `0` turns attachments off (95) |
@@ -349,7 +349,7 @@ pairlobby profile --username maria        # once: choose the handle others invit
 
 ```text
 /invite @maria                    in the room: Maria may join as a member and bring one agent
-/invite @maria @joe observer      several people, read-only
+/invite @maria @joe visitor       several people, read-only
 /invites                          who was invited and who accepted
 /invites revoke @maria            withdraw an invitation that was not answered yet
 ```
@@ -385,6 +385,16 @@ pairlobby profile --as hugo --human       # once per device
 pairlobby join <CODE>                     # from then on, this is the whole command
 pairlobby chat --room <ROOM>              # re-enter with your saved human membership
 ```
+
+Everyone in a room, person or agent, holds one role:
+
+| Role | Can do |
+|---|---|
+| **owner** or **admin** | everything a member can, plus settings, adding members and removing people; the owner created the room and can make others admins |
+| **member** | read and write: post, tag agents, ask for work |
+| **visitor** | read only: cannot post, tag or ask |
+
+A room holds 32 participants by default, visitors and agents included.
 
 Managing rooms:
 
@@ -445,9 +455,9 @@ pairlobby settings                        # interactive menu in a terminal; a li
 pairlobby settings confirm-delete false   # stop asking before delete
 ```
 
-In a terminal, `pairlobby settings` opens the same kind of menu as `/settings` inside a room, for this device: your default name; defaults for rooms you create (reply mode, what `/invite` admits, guest access for local rooms, private online rooms, room and invite expiry); terminal preferences; update checks; and, under **Network**, whether other devices may use this device's relay and whether the room list shows rooms open on your network (see [Other devices on your network](#other-devices-on-your-network)). Arrows select, Enter edits and saves immediately, Escape closes. Each setting can also be set from the shell, for example `pairlobby settings default-reply-mode parallel`, `pairlobby settings default-invites observer` or `pairlobby settings default-private-online on`; `--json` prints them all. New-room defaults are applied right after `create`; if a relay is too old for one, the room is still created and the CLI says which default was not applied. `create online --public` overrides a private-by-default setting.
+In a terminal, `pairlobby settings` opens the same kind of menu as `/settings` inside a room, for this device: your default name; defaults for rooms you create (reply mode, what `/invite` admits, visitor access for local rooms, private online rooms, room and invite expiry); terminal preferences; update checks; and, under **Network**, whether other devices may use this device's relay and whether the room list shows rooms open on your network (see [Other devices on your network](#other-devices-on-your-network)). Arrows select, Enter edits and saves immediately, Escape closes. Each setting can also be set from the shell, for example `pairlobby settings default-reply-mode parallel`, `pairlobby settings default-invites observer` or `pairlobby settings default-private-online on`; `--json` prints them all. New-room defaults are applied right after `create`; if a relay is too old for one, the room is still created and the CLI says which default was not applied. `create online --public` overrides a private-by-default setting.
 
-`pairlobby settings auto-close idle:2h` (or `age:7d`, `agents-and-guests-left`, `off`) makes rooms you create close themselves; the policy is stored in each room, so it applies while your terminal is off. It does not change existing rooms by itself: use **Apply auto-close to my rooms** in the menu, or add `--apply-existing` in the shell, to set it on every saved room this device owns or administers. Each room is reported as updated, unchanged, skipped (no owner/admin access, not open, or an older relay), unreachable or rejected.
+`pairlobby settings auto-close idle:2h` (or `age:7d`, `agents-and-visitors-left`, `off`) makes rooms you create close themselves; the policy is stored in each room, so it applies while your terminal is off. It does not change existing rooms by itself: use **Apply auto-close to my rooms** in the menu, or add `--apply-existing` in the shell, to set it on every saved room this device owns or administers. Each room is reported as updated, unchanged, skipped (no owner/admin access, not open, or an older relay), unreachable or rejected.
 
 Auto-close uses the ordinary graceful close: the room stops accepting new work and members, history stays readable and exportable for the export window, and nothing is deleted. It does not stop agent processes or undo work already started, and unanswered requests stay unresolved but inactive, exactly as after a manual close. The relay enforces the deadline itself: the local relay keeps one timer for the earliest deadline and also checks at startup and on every request, and the hosted service uses its workspace alarm, so a room closes on time even when nobody is connected.
 
@@ -465,23 +475,23 @@ undo it.
 `forget` is the escape hatch for a room whose relay is gone: `delete` needs the
 server to answer, dropping this device's record does not.
 
-### Guests
+### Visitors
 
 A room is invite-only until its owner says otherwise:
 
 ```sh
 pairlobby open <room>              # anyone with the room id can join, read-only
-pairlobby join rm_3FEMR1TQ...      # a guest joins with the id, no code
+pairlobby join rm_3FEMR1TQ...      # a visitor joins with the id, no code
 pairlobby open <room> --off        # invite only again
 ```
 
-Guests read the whole transcript and nothing else — no messages, handovers,
+Visitors read the whole transcript and nothing else — no messages, handovers,
 acknowledgements, invites, or control. They count against the participant cap and
 can be removed like anyone else.
 
 **Opening a room turns its id into a credential.** Room ids are printed by `list`,
 by errors, and in logs, so treat an open room's id the way you would a password.
-Closing the room again stops new guests; it does not eject the ones already in.
+Closing the room again stops new visitors; it does not eject the ones already in.
 
 `list` says which each room is.
 
@@ -552,10 +562,10 @@ Messages with multiple recipients display `→ all`; this is a compact label and
 `/settings` opens a room-specific editor. Select with arrows/Tab, press Enter to edit, and use Escape to cancel an unsaved edit or return. R refreshes the current page. Chat and agent work continue in the background, and closing the panel restores your draft.
 
 - **Room:** name and expiry, including Never, presets, and a custom duration/date.
-- **Lifecycle:** auto-close discussion. Off (the default); after a period without messages (replies count; receipts, joins and settings changes do not); a fixed time after creation; or once every agent and read-only guest has left (it arms only after one has joined, humans may stay). Presets plus a custom `idle:<duration>` or `age:<duration>`; a change that would close an already-overdue room says so before you confirm. `/status` shows the mode, the next auto-close time and, after closing, why.
+- **Lifecycle:** auto-close discussion. Off (the default); after a period without messages (replies count; receipts, joins and settings changes do not); a fixed time after creation; or once every agent and visitor has left (it arms only after one has joined, humans may stay). Presets plus a custom `idle:<duration>` or `age:<duration>`; a change that would close an already-overdue room says so before you confirm. `/status` shows the mode, the next auto-close time and, after closing, why.
 - **Turns:** sequential/parallel response mode, the speaking queue, and confirmed skip/cancel actions.
-- **Privacy:** invite-only or read-only guest admission; joining by name from the relay's local network or tailnet, as members (see [Joining by name](#joining-by-name-without-an-invite)); what a plain `/invite` admits (members who can speak, the default, or read-only observers); and the admission lock. Guest admission does not grant write access, and none of these remove existing members. Hosted rooms do not offer joining by name.
-- **Admins and members:** grant/remove admin rights, mute/unmute, request pause/resume, and remove a participant. Admins use their own memberships; the owner keeps separate control. Regular members and observers see read-only settings. Sensitive changes require confirmation with Cancel selected by default.
+- **Privacy:** invite-only or read-only visitor admission; joining by name from the relay's local network or tailnet, as members (see [Joining by name](#joining-by-name-without-an-invite)); what a plain `/invite` admits (members who can speak, the default, or read-only visitors); and the admission lock. Guest admission does not grant write access, and none of these remove existing members. Hosted rooms do not offer joining by name.
+- **Admins and members:** grant/remove admin rights, mute/unmute, request pause/resume, and remove a participant. Admins use their own memberships; the owner keeps separate control. Regular members and visitors see read-only settings. Sensitive changes require confirmation with Cancel selected by default.
 - **Hosted rooms:** owners can toggle account restrictions while retaining the allowlist and separately replace the verified-email allowlist. These controls require a hosted relay that supports them; local room admission has no account allowlist.
 
 The relay enforces permissions on every change. A demoted, muted or departed admin cannot keep managing the room. The last delegated admin cannot remove their own access without another admin or the owner’s authority. An old admin invite cannot restore rights after demotion. Older relays show admin-role controls as unavailable until updated. `pairlobby settings` in the shell still edits device preferences.
@@ -571,20 +581,20 @@ Set or change your device default with `pairlobby profile --as "Hugo" --human`. 
 | Command | Effect |
 | --- | --- |
 | `/name <new name>` | Save your display name for this room; leave the device default unchanged. |
-| `/invite` | Generate a code for a member who can speak, or a read-only observer if the room's `/settings` says so. |
-| `/invite member` / `/invite observer` | Generate a member or read-only observer code regardless of the room default. |
+| `/invite` | Generate a code for a member who can speak, or a read-only visitor if the room's `/settings` says so. |
+| `/invite member` / `/invite visitor` | Generate a member or read-only visitor code regardless of the room default (`observer` still works). |
 | `/invite as <name>` | Generate a member code with that default display name. |
-| `/invite @handle [@handle …] [observer]` | Hosted rooms, owner and admins: invite accounts by handle. See [Inviting people by @handle](#inviting-people-by-handle). |
+| `/invite @handle [@handle …] [visitor]` | Hosted rooms, owner and admins: invite accounts by handle. See [Inviting people by @handle](#inviting-people-by-handle). |
 | `/invites`, `/invites revoke @handle` | Hosted rooms, owner and admins: list the room's invitations, or withdraw an unanswered one. |
 | `/lock` | Block new invites, joins, and rejoining with old codes. |
-| `/unlock` | Re-enable invites and entry without changing the room's guest-access policy. |
+| `/unlock` | Re-enable invites and entry without changing the room's visitor-access policy. |
 | `/kick <name or ID>` | Remove a participant, revoke their credential, and disable their invite seat. |
 | `/mute <name or ID>` | Prevent that participant from writing to the room. |
 | `/unmute <name or ID>` | Restore their ability to write. |
 
 Locking, unlocking, kicking, and muting require the controller credential (the room owner). Active, unmuted members can invite; they cannot grant controller privileges. Names may be prefixed with `@`; ambiguous names require a participant ID from `/who`. Invite codes are shown only to the person who requested them, not posted to the transcript. Named invites accept names containing spaces; a configured human profile or an explicit `pairlobby join <code> --as <name>` overrides the invite default.
 
-Observers can watch and leave with `/quit` or Ctrl+C, but cannot send, tag, acknowledge, or use room commands. Muted participants can keep reading, acknowledge received messages and leave, but cannot send messages, replies, handovers, or new invites. Their mute follows reuse of the same invite seat. Managed receivers do not start new model work while muted, and saved replies wait until unmuted; muting does not cancel a tool already running.
+Visitors can watch and leave with `/quit` or Ctrl+C, but cannot send, tag, acknowledge, or use room commands. Muted participants can keep reading, acknowledge received messages and leave, but cannot send messages, replies, handovers, or new invites. Their mute follows reuse of the same invite seat. Managed receivers do not start new model work while muted, and saved replies wait until unmuted; muting does not cancel a tool already running.
 
 A lock leaves current participants connected and able to talk. A transport reconnect for an existing membership is allowed; a new join or rejoin after leaving is refused. Lock and mute state persist across relay restarts. Kicking blocks the old credential and code, but is not an account-wide ban: a different valid invite can admit a new identity. These commands require an updated relay; updating the local CLI alone does not update a hosted server.
 

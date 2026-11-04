@@ -10,7 +10,7 @@ import {UsageError} from './context.js';
 import type {PanelChoice} from './room-panel.js';
 import {WhenError, formatDuration, parseDuration} from './when.js';
 
-export const AUTO_CLOSE_USAGE = 'off, idle:<duration>, age:<duration> or agents-and-guests-left (for example idle:2h)';
+export const AUTO_CLOSE_USAGE = 'off, idle:<duration>, age:<duration> or agents-and-visitors-left (for example idle:2h)';
 
 function duration(text: string): number {
     try {
@@ -32,7 +32,7 @@ export function parseAutoClose(spec: string): AutoClosePolicy {
     if (['off', 'never', 'none', 'no'].includes(value)) {
         return {mode: 'off'};
     }
-    if (['agents-and-guests-left', 'agents_and_guests_left', 'agents-left', 'departure'].includes(value)) {
+    if (['agents-and-visitors-left', 'agents-and-guests-left', 'agents_and_guests_left', 'agents-left', 'departure'].includes(value)) {
         return {mode: 'agents_and_guests_left'};
     }
     const match = /^(idle|inactivity|age):(.+)$/.exec(value);
@@ -65,7 +65,7 @@ export function describeAutoClose(policy: AutoClosePolicy | undefined): string {
     switch (policy?.mode ?? 'off') {
         case 'inactivity':             return `After ${formatDuration((policy as {afterMs: number}).afterMs)} without messages`;
         case 'age':                    return `${formatDuration((policy as {afterMs: number}).afterMs)} after creation`;
-        case 'agents_and_guests_left': return 'When all agents and guests have left';
+        case 'agents_and_guests_left': return 'When all agents and visitors have left';
         default:                       return 'Off';
     }
 }
@@ -74,7 +74,7 @@ export function describeCloseReason(reason: CloseReason | undefined): string {
     switch (reason) {
         case 'inactivity':             return 'closed automatically after inactivity';
         case 'age':                    return 'closed automatically at its age limit';
-        case 'agents_and_guests_left': return 'closed automatically after all agents and guests left';
+        case 'agents_and_guests_left': return 'closed automatically after all agents and visitors left';
         default:                       return 'closed';
     }
 }
@@ -86,7 +86,7 @@ export const AUTO_CLOSE_CHOICES: PanelChoice[] = [
     {label: 'After 7 days without messages', value: 'idle:7d'},
     {label: '24 hours after creation', value: 'age:24h'},
     {label: '7 days after creation', value: 'age:7d'},
-    {label: 'When all agents and guests have left', value: 'agents-and-guests-left'},
+    {label: 'When all agents and visitors have left', value: 'agents-and-guests-left'},
     {label: 'Custom — type idle:<duration> or age:<duration>', value: 'custom', custom: true},
 ];
 

@@ -176,8 +176,8 @@ test('test_a_permission_never_reaches_an_admin_an_observer_or_a_demoted_admin', 
     await expect(runRoomCommand('/permissions deny kick ada', owner)).rejects.toThrow('Admins can already use every command');
 
     const observer = await client.redeemInvite((await client.mintInvite(room.roomId, room.controllerCredential, 'guest')).code, {displayName: 'reader', kind: 'human'});
-    await expect(client.setMuted(room.roomId, observer.participantCredential, maria.participantId, true)).rejects.toThrow('guests can read this room');
-    await expect(runRoomCommand('/permissions allow mute reader', owner)).rejects.toThrow('read-only observer cannot use room commands');
+    await expect(client.setMuted(room.roomId, observer.participantCredential, maria.participantId, true)).rejects.toThrow('visitors can read this room');
+    await expect(runRoomCommand('/permissions allow mute reader', owner)).rejects.toThrow('read-only visitor cannot use room commands');
 
     // An allowance held as a member does not come back after being an admin.
     await runRoomCommand('/permissions deny kick mute', owner);

@@ -102,11 +102,11 @@ test('test_invite_by_handle_in_chat_asks_each_account_and_lists_and_withdraws_th
 
     const invited = await runRoomCommand('/invite @Maria @nobody observer', context);
     expect(invited.split('\n')).toHaveLength(2);
-    expect(invited).toMatch(/Invited @maria — read-only observer, may bring 1 agent · they accept with pairlobby invitations/);
+    expect(invited).toMatch(/Invited @maria — read-only visitor, may bring 1 agent · they accept with pairlobby invitations/);
     expect(invited).toMatch(/@nobody was not invited: No account has the handle @nobody/);
     expect(service.calls.filter((call) => call.request.endsWith('/invitations') && call.request.startsWith('POST')).every((call) => call.token)).toBe(true);
 
-    expect(await runRoomCommand('/invites', context)).toMatch(/@maria — read-only observer, may bring 1 agent · not answered yet/);
+    expect(await runRoomCommand('/invites', context)).toMatch(/@maria — read-only visitor, may bring 1 agent · not answered yet/);
     expect(await runRoomCommand('/invites revoke @maria', context)).toBe('Invitation to @maria withdrawn.');
     expect(await runRoomCommand('/invites', context)).toMatch(/Nobody has been invited/);
     await expect(runRoomCommand('/invites revoke @maria', context)).rejects.toThrow('No invitation to @maria');

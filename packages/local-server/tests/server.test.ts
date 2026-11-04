@@ -612,7 +612,7 @@ type Described = {features: string[]; limits: {maxParticipants: number}};
 describe('relay description and long-poll', () => {
     test('test_the_relay_describes_its_transport_features_and_limits', async () => {
         const described = (await (await call('/v1/server')).json()) as Described;
-        expect(described).toMatchObject({protocol: 1, transport: {live: 'long-poll', maxWaitMs: 25_000}, limits: {maxParticipants: 16, maxFileBytes: 95 * 1024 * 1024}});
+        expect(described).toMatchObject({protocol: 1, transport: {live: 'long-poll', maxWaitMs: 25_000}, limits: {maxParticipants: 32, maxFileBytes: 95 * 1024 * 1024}});
         expect(described.features).toEqual(expect.arrayContaining(['message-stages', 'files', 'local-join', 'invite-probe']));
         expect(described.features).not.toContain('create-token');
 

@@ -335,7 +335,7 @@ export class RoomBrowser {
 
     /** Accepting gives this account access and joining announces it, so both happen only after a yes. */
     private confirmAccept(invitation: RoomInvite): void {
-        const terms = invitation.role === 'guest' ? 'a read-only observer' : 'a member';
+        const terms = invitation.role === 'guest' ? 'a read-only visitor' : 'a member';
         const page: RoomPanelPage = {id: 'accept-invitation', closeOnCancel: true, title: 'Accept invitation', note: `${invitation.roomName} (${invitation.roomId}), invited by ${invitation.invitedBy}`, reload: async () => page, rows: [{id: 'confirm', label: 'Accept and join', value: invitation.roomName, section: 'Confirmation', action: {kind: 'command', closeAfterSave: true, confirm: `Accept ${invitation.invitedBy}'s invitation to ${invitation.roomName} and join as ${terms}? Everyone in the room will see you join.`, run: async () => {
             this.join = {roomId: invitation.roomId, invitationId: invitation.id};
         }}}]};

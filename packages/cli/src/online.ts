@@ -112,7 +112,7 @@ export async function setHandle(store: LocalStore, handle: string): Promise<stri
     return (await request<{handle: string}>(activeEndpoint(store), '/api/online/handle', requireToken(store, 'choose a handle'), {method: 'PUT', body: {handle}}, store)).handle;
 }
 
-/** An invitation this account received and has not answered. `guest` is a read-only observer. */
+/** An invitation this account received and has not answered. `guest` is a read-only visitor. */
 export type ReceivedInvitation = {id: string; roomId: string; roomName: string; invitedBy: string; role: 'member' | 'guest'; agents: number; createdAt: number; expiresAt: number};
 
 export async function receivedInvitations(store: LocalStore): Promise<ReceivedInvitation[]> {

@@ -78,14 +78,18 @@ const HOUR = 60 * MINUTE;
  * payload admits only ~320 maximum-size events, which one 16-participant session
  * exchanging handovers can reach. Retention is raised to 32 MiB and given an
  * explicit event-count companion so both bounds are legible.
+ *
+ * A room holds 32 participants, visitors and agents included. Every recipient's
+ * receipt is a retained event, so the event count doubled with the seats: a busy
+ * room keeps as many messages as it did at 16.
  */
 export const DEFAULT_ROOM_POLICY: RoomPolicy = {
     joinPolicy: 'invite_only',
     inviteRole: 'member',
-    maxParticipants: 16,
+    maxParticipants: 32,
     maxEventPayloadBytes: 32 * KIB,
     maxRetainedEventBytes: 32 * MIB,
-    maxRetainedEvents: 20_000,
+    maxRetainedEvents: 40_000,
     roomLifetimeMs: null,
     inviteLifetimeMs: null,
     exportWindowMs: 24 * HOUR,
