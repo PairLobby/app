@@ -8,6 +8,7 @@ import type {RoomSnapshot} from '@pairlobby/protocol';
 
 import {UsageError, controllerCredential, moderationCredential, resolveRoom} from './context.js';
 import {requireRelayFeature} from './doctor.js';
+import {publicRoomWarning} from './public-room.js';
 import {json, note, out} from './render.js';
 
 export const ROOM_USAGE = 'pairlobby room <room> type [public|protected|private|personal], or pairlobby room <room> invite-policy [members|owner]';
@@ -98,6 +99,10 @@ async function setType(client: PairLobbyClient, store: LocalStore, room: RoomEnt
     out(`${room.name} is now ${roomTypeLine(snapshot)}`);
     if (type === 'personal') {
         note('codes made before, or by anyone but you and your admins, no longer admit anyone. Make new ones with: pairlobby invite');
+    }
+    const agents = snapshot.participants.filter((person) => person.kind === 'agent' && person.role !== 'guest' && !person.left && !person.revoked);
+    if (type === 'public' && agents.length) {
+        note(`${publicRoomWarning(snapshot.name)} Agents in it now: ${agents.map((person) => person.displayName).join(', ')}. Pause or remove any that should not take requests from everyone.`);
     }
     if (outside.length) {
         note(`still in the room: ${outside.map((person) => person.displayName).join(', ')}. Remove anyone who should not stay with /kick <name> in the room.`);

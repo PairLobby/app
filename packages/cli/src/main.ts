@@ -36,6 +36,8 @@ import {receiverRuntimeName} from './receiver-runtime.js';
 import {discoverableNote, joinCommand, localOnlyNote, parseJoinLink, shareTarget} from './share.js';
 import {DEFAULT_SHARE, listingStatus, shareCommand, sharedCommand} from './directory-share.js';
 import {createType, roomCommand} from './room-type.js';
+import {publicRoomHold} from './public-room.js';
+import type {PublicRoomHold} from './public-room.js';
 import {invitationNotice, rememberInvitations, scheduleInvitationCheck} from './invitation-notice.js';
 import {BUILT_IN_ORIGIN, activeEndpoint, endpointRelay, useEndpointOverride} from './endpoints.js';
 import {DEFAULT_SETUP, setupCommand} from './setup.js';
@@ -353,8 +355,12 @@ async function main(argv: string[]): Promise<number> {
                 json(await refreshReceivers(store));
                 return 0;
             }
-            const {room, session} = select(store, str(values, 'room'), str(values, 'session'));
+            const {room, session, client, credential} = select(store, str(values, 'room'), str(values, 'session'));
             if (action === 'start') {
+                const held = await publicRoomHold({room: await client.snapshot(room.roomId, credential), roomId: room.roomId, sessionId: session.sessionId, yes: flag(values, 'yes'), json: false});
+                if (held) {
+                    throw new UsageError(`${held.reason}\nTo start it: ${held.command}`);
+                }
                 json(await startReceiver(store, room.roomId, session.sessionId, receiverStartOptions(values)));
             } else if (action === 'stop') {
                 await stopReceiver(store, session.sessionId);
@@ -1281,18 +1287,30 @@ function localDetail(values: Values): LocalRuntimeDetail {
     return {...(runtime ? {runtime} : {}), ...(conversationId ? {conversationId} : {}), ...(detected.terminal ? {terminal: detected.terminal} : {}), pid: detected.pid};
 }
 
-async function enableReceiver(store: LocalStore, values: Values, roomId: string, sessionId: string): Promise<ReceiverStatus | null> {
-    const {session} = select(store, roomId, sessionId);
+async function enableReceiver(store: LocalStore, values: Values, roomId: string, sessionId: string): Promise<EnabledReceiver> {
+    const {session, client, credential} = select(store, roomId, sessionId);
     if (flag(values, 'manual-receive') || session.kind !== 'agent' || session.role === 'guest' || !receiverRuntimeName(session.runtime)) {
-        return null;
+        return {receiver: null, held: null};
+    }
+    // In a public room everyone who joins can instruct the agent, so a person decides whether it listens there.
+    const held = await publicRoomHold({room: await client.snapshot(roomId, credential), roomId, sessionId, yes: flag(values, 'yes'), json: flag(values, 'json')});
+    if (held) {
+        if (!flag(values, 'json')) {
+            note(held.reason);
+            note(`to start it: ${held.command}`);
+        }
+        return {receiver: null, held};
     }
     const receiver = await startReceiver(store, roomId, sessionId, receiverStartOptions(values));
     if (!flag(values, 'json')) {
         const name = receiver.runtime === 'claude' ? 'Claude' : receiver.runtime === 'qwen' ? 'Qwen' : 'Codex';
         note(`Automatic receiver available. Room requests run in a managed ${name} session; no reader or listening agent is needed.`);
     }
-    return receiver;
+    return {receiver, held: null};
 }
+
+/** The receiver a join or create started, or why it was held back in a public room. */
+type EnabledReceiver = {receiver: ReceiverStatus | null; held: PublicRoomHold | null};
 
 function receiverStartOptions(values: Values): ReceiverStartOptions {
     const model = str(values, 'model');
@@ -1436,10 +1454,10 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
             note(`Room created, but it could not be opened to the local network: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
-    const receiver = await enableReceiver(store, values, created.roomId, identity.sessionId);
+    const {receiver, held} = await enableReceiver(store, values, created.roomId, identity.sessionId);
     const share = await joinCommand(serverUrl, created.invite.code);
     if (flag(values, 'json')) {
-        json({roomId: created.roomId, name, serverUrl, shareServerUrl: share.target.localOnly ? null : share.target.serverUrl, joinCommand: share.command, participantId: created.participantId, sessionId: identity.sessionId, invite: created.invite, ...(flag(values, 'open-local') ? {localJoin: openLocal} : {}), ...localDetail(values), receiver});
+        json({roomId: created.roomId, name, serverUrl, shareServerUrl: share.target.localOnly ? null : share.target.serverUrl, joinCommand: share.command, participantId: created.participantId, sessionId: identity.sessionId, invite: created.invite, ...(flag(values, 'open-local') ? {localJoin: openLocal} : {}), ...localDetail(values), receiver, ...(held ? {publicRoom: held} : {})});
         return 0;
     }
     const detail = localDetail(values);
@@ -1578,7 +1596,7 @@ function saveJoinedMembership(store: LocalStore, values: Values, joined: JoinedR
 async function finishJoin(store: LocalStore, values: Values, joined: JoinedRoom, serverUrl: string, identity: LocalIdentity, code?: string): Promise<number> {
     saveJoinedMembership(store, values, joined, serverUrl, identity, code);
 
-    const receiver = await enableReceiver(store, values, joined.roomId, identity.sessionId);
+    const {receiver, held} = await enableReceiver(store, values, joined.roomId, identity.sessionId);
     if (flag(values, 'json')) {
         json({
             roomId: joined.roomId,
@@ -1588,6 +1606,7 @@ async function finishJoin(store: LocalStore, values: Values, joined: JoinedRoom,
             sessionId: identity.sessionId,
             role: joined.role,
             receiver,
+            ...(held ? {publicRoom: held} : {}),
             ...localDetail(values),
             participants: joined.room.participants.map((participant) => ({participantId: participant.participantId, displayName: participant.displayName}))
         });
