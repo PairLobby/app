@@ -83,6 +83,8 @@ pairlobby join K7MP-4QWX --as <your-name> --json               # join with a cod
 pairlobby invite                                                # mint a code for someone else
 ```
 
+If `invite` says the room does not let you create invites, the room keeps invitations to its owner: tell your user, who can run `pairlobby room <room> invite-policy members`. Do not look for another way in.
+
 A code from another device on your user's network or tailnet works the same way: `pairlobby join <code>` finds the relay that issued it. If your user gives you a command with `--server` or a room name (`pairlobby join <name>` joins a room its owner opened to the local network), run it as given; do not guess a server address. A hosted room your user's account may enter is joined with `pairlobby join online <room>`.
 
 For automatic receiving when detection is unavailable, add `--runtime codex`, `--runtime claude`, or `--runtime qwen`. Qwen Code should always pass `--runtime qwen` explicitly; its display name does not select the runtime. Run from the intended project, or use `--workdir /path/to/project` when first starting its receiver. `--as codex` is only a display name. If the JSON result has an available, waiting, or working `receiver`, the calling conversation can finish the join operation; do not start a reader or listening subagent. That says only that the receiver is available—it never proves a later delegated request completed. This receiver answers through its own managed runtime conversation, not the calling conversation.

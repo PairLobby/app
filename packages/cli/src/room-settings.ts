@@ -1,6 +1,6 @@
 import type {LocalStore, PairLobbyClient, RoomAccountRestrictions} from '@pairlobby/client';
 import type {AutoClosePolicy, RoomPermission, RoomSnapshot} from '@pairlobby/protocol';
-import {ProtocolError, ROOM_PERMISSIONS, effectivePermissions, roomPermissions} from '@pairlobby/protocol';
+import {ProtocolError, ROOM_PERMISSIONS, ROOM_TYPES, ROOM_TYPE_SUMMARY, RoomType, effectivePermissions, roomPermissions, roomType} from '@pairlobby/protocol';
 import type {RoomPanelPage, RoomPanelRow, PanelEdit} from './room-panel.js';
 import {parseExpiry} from './when.js';
 import {AUTO_CLOSE_CHOICES, describeAutoClose, formatAutoClose, parseAutoClose} from './auto-close.js';
@@ -64,12 +64,16 @@ export async function settingsPage(context: RoomSettingsContext): Promise<RoomPa
     const autoClose = room.policy.autoClose ?? {mode: 'off' as const};
     const closes = room.autoCloseAt ? ` · closes ${new Date(room.autoCloseAt).toLocaleString()}` : autoClose.mode === 'agents_and_guests_left' && !room.autoCloseArmed ? ' · waiting for an agent or visitor to join' : '';
     edit('auto-close', 'Auto-close discussion', `${describeAutoClose(autoClose)}${closes}`, 'Lifecycle', {kind: 'edit', initial: formatAutoClose(autoClose), choices: AUTO_CLOSE_CHOICES, hint: 'Closing keeps history readable and exportable; it does not stop agent processes or undo work already started. Custom: idle:<duration> or age:<duration>, e.g. idle:90m.', confirm: (value) => closesNow(room, parseAutoClose(value)) ? `${describeAutoClose(parseAutoClose(value))}: this room is already past that limit and will close immediately. Continue?` : `Set auto-close to: ${describeAutoClose(parseAutoClose(value)).toLowerCase()}?`, save: (value) => change(context, (owner) => context.client.setAutoClose(context.roomId, owner, parseAutoClose(value)))}, Boolean(room.autoCloseSupported));
+    const type = roomType(room.policy);
+    edit('type', 'Room type', `${type}${room.policy.type ? '' : ' (from its settings)'}`, 'Privacy', {kind: 'edit', initial: type, choices: ROOM_TYPES.map((choice) => ({label: `${choice[0]!.toUpperCase()}${choice.slice(1)}: ${ROOM_TYPE_SUMMARY[choice]}`, value: choice})), hint: 'Who can find and join the room. People already in stay; remove anyone the new type would not admit.', confirm: (value) => `Make ${room.name} ${value}? ${ROOM_TYPE_SUMMARY[RoomType.parse(value)]}.`, save: (value) => change(context, (owner) => context.client.setRoomType(context.roomId, owner, RoomType.parse(value)))});
+    const mayInvite = roomPermissions(room.policy.permissions, room.policy.type)['invite'];
+    edit('members-invite', 'Members may invite', mayInvite ? 'Yes' : 'No, owner and admins only', 'Privacy', {kind: 'edit', initial: mayInvite ? 'yes' : 'no', choices: [{label: 'Yes: members may create invite codes', value: 'yes'}, {label: 'No: only the owner and admins', value: 'no'}], hint: room.policy.type === 'personal' ? 'Members never invite in a personal room.' : 'Invitations by members never grant admin rights.', save: (value) => change(context, (owner) => context.client.setRoomPermissions(context.roomId, owner, {invite: value === 'yes'}))}, room.policy.type !== 'personal');
     edit('privacy', 'Visitor access', room.policy.joinPolicy === 'invite_only' ? 'Invite only' : 'Anyone with room ID (read only)', 'Privacy', {kind: 'edit', initial: room.policy.joinPolicy, choices: [{label: 'Invite only — require an invitation', value: 'invite_only'}, {label: 'Anyone with room ID may read as a visitor', value: 'open_to_guests'}], hint: 'Visitor access controls reading. Visitors cannot send messages or invite others. Existing memberships remain.', confirm: (value) => value === 'open_to_guests' ? 'Allow anyone who knows this room ID to read its retained transcript as a visitor?' : 'Require invitations for new visitors? Existing members and visitors remain.', save: (value) => change(context, (owner) => context.client.setJoinPolicy(context.roomId, owner, value === 'open_to_guests' ? 'open_to_guests' : 'invite_only'))});
     edit('local-join', 'Join by name', room.policy.localJoin ? 'Anyone on the local network, as members' : 'Off', 'Privacy', {kind: 'edit', initial: room.policy.localJoin ? 'on' : 'off', choices: [{label: 'Off — invitations only', value: 'off'}, {label: 'On — anyone on this relay\'s local network or tailnet, as members', value: 'on'}], hint: 'Members who join by name can send messages. Only devices on the relay\'s local network or tailnet can, and only on a relay run with pairlobby serve. A lock still refuses them; existing members remain.', confirm: (value) => value === 'on' ? 'Let anyone on this relay\'s local network or tailnet join by name and send messages?' : 'Stop joins by name? Members who joined that way remain.', save: (value) => change(context, (owner) => context.client.setLocalJoin(context.roomId, owner, value === 'on'))});
     edit('invites', 'Invitations', room.policy.inviteRole === 'guest' ? 'Read-only visitors' : 'Members who can speak', 'Privacy', {kind: 'edit', initial: room.policy.inviteRole ?? 'member', choices: [{label: 'Members — invitees can send messages', value: 'member'}, {label: 'Read-only visitors — invitees can only read', value: 'guest'}], hint: 'What a plain /invite admits. /invite member and /invite visitor still choose explicitly. Existing invites keep their role.', save: (value) => change(context, (owner) => context.client.setInviteRole(context.roomId, owner, value === 'guest' ? 'guest' : 'member'))}, Boolean(room.inviteRoleSupported));
     edit('lock', 'Admission lock', room.locked ? 'Locked' : 'Unlocked', 'Privacy', {kind: 'edit', initial: room.locked ? 'locked' : 'unlocked', choices: [{label: 'Unlocked — normal admission policy', value: 'unlocked'}, {label: 'Locked — block joins, rejoins and new invites', value: 'locked'}], hint: 'A lock blocks admission but does not remove current members.', save: (value) => change(context, (owner) => context.client.setLocked(context.roomId, owner, value === 'locked'))});
     if (room.permissionsSupported) {
-        const allowed = ROOM_PERMISSIONS.filter((permission) => roomPermissions(room.policy.permissions)[permission]);
+        const allowed = ROOM_PERMISSIONS.filter((permission) => roomPermissions(room.policy.permissions, room.policy.type)[permission]);
         rows.push({id: 'permissions', label: 'Command permissions', value: allowed.length ? `Members may: ${allowed.join(', ')}` : 'Owner and admins only', section: 'Admin', hint: 'Which room commands members may use. The owner and admins may always use all of them.', action: {kind: 'menu', load: () => permissionsPage(context)}});
     }
     rows.push({id: 'members', label: 'Admins and members', value: `${room.participants.filter((person) => !person.left && !person.revoked).length} joined`, section: 'Admin', action: {kind: 'menu', load: () => membersPage(context)}});
@@ -77,9 +81,18 @@ export async function settingsPage(context: RoomSettingsContext): Promise<RoomPa
         rows.push({id: 'queue', label: 'Speaking queue', value: 'Inspect, skip or cancel turns', section: 'Turns', action: {kind: 'menu', load: () => turnsPage(context)}});
     }
     rows.push({id: 'permission', label: 'Your access', value: authority ? context.controllerCredential ? 'Owner' : 'Admin' : 'Read only', section: 'Admin', hint: 'Admins manage settings and members. The owner retains control when admin roles change.'});
+    if (room.policy.type) {
+        // The type sets these; changing one means changing the type.
+        for (const row of rows.filter((candidate) => candidate.id === 'privacy' || candidate.id === 'local-join')) {
+            delete row.action;
+            row.hint = 'Set by the room type above.';
+        }
+    }
     if (hosted) {
         // A hosted relay cannot tell where a request comes from, so it never admits joins by name.
         rows.splice(rows.findIndex((row) => row.id === 'local-join'), 1);
+        // Hosted rooms keep their privacy in account restrictions, below, until they have types.
+        rows.splice(rows.findIndex((row) => row.id === 'type'), 1);
         const guestAccess = rows.find((row) => row.id === 'privacy')!;
         delete guestAccess.action;
         guestAccess.hint = 'Hosted rooms require invitations. Account restrictions are configured below.';
@@ -129,7 +142,7 @@ async function turnsPage(context: RoomSettingsContext): Promise<RoomPanelPage> {
 
 async function permissionsPage(context: RoomSettingsContext): Promise<RoomPanelPage> {
     const {room, authority} = await access(context);
-    const members = roomPermissions(room.policy.permissions);
+    const members = roomPermissions(room.policy.permissions, room.policy.type);
     const rows: RoomPanelRow[] = ROOM_PERMISSIONS.map((permission) => {
         const decided = room.policy.permissions?.[permission] !== undefined;
         const differing = room.participants.filter((person) => !person.left && !person.revoked && person.role === 'member' && person.permissions?.[permission] !== undefined).length;
@@ -178,8 +191,8 @@ async function memberPage(context: RoomSettingsContext, id: string): Promise<Roo
         control('kick', 'kick', 'Remove from room', 'Kick participant', `Remove ${person.displayName}? Their credential and invite seat will no longer grant access.`, (owner) => context.client.revoke(context.roomId, owner, id));
     }
     if (room.permissionsSupported && person.role === 'member') {
-        const members = roomPermissions(room.policy.permissions);
-        const effective = effectivePermissions(person, room.policy.permissions);
+        const members = roomPermissions(room.policy.permissions, room.policy.type);
+        const effective = effectivePermissions(person, room.policy.permissions, room.policy.type);
         for (const permission of ROOM_PERMISSIONS) {
             const own = person.permissions?.[permission];
             const row: RoomPanelRow = {id: `permission-${permission}`, label: capitalize(PERMISSION_LABELS[permission]), value: `${effective[permission] ? 'Allowed' : 'Not allowed'}${own === undefined ? ' (room setting)' : ''}`, section: 'Command permissions', hint: authority ? 'This member\'s own setting comes before the room\'s.' : 'Read only — owner or admin access is required.'};

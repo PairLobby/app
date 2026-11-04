@@ -3,6 +3,8 @@
 
 import {z} from 'zod';
 
+import type {RoomType} from './room-types.js';
+
 /**
  * `invite` mints invite codes; `rename` renames the room; `lock` locks and unlocks
  * admission; `mute` and `kick` act on another participant; `pause` pauses, resumes
@@ -29,18 +31,24 @@ export const DEFAULT_MEMBER_PERMISSIONS: Record<RoomPermission, boolean> = {invi
 
 type PermissionHolder = {role: 'guest' | 'member' | 'controller'; permissions?: PermissionSet | undefined};
 
-/** The room-wide answer for members, with the built-in default filled in. */
-export function roomPermissions(room: PermissionSet | undefined): Record<RoomPermission, boolean> {
-    return overlay(DEFAULT_MEMBER_PERMISSIONS, room);
+/**
+ * The room-wide answer for members, with the built-in default filled in. In a room with a type
+ * other than public, members invite only when the room allows it; in a personal room, never.
+ */
+export function roomPermissions(room: PermissionSet | undefined, type?: RoomType): Record<RoomPermission, boolean> {
+    const defaults = type && type !== 'public' ? {...DEFAULT_MEMBER_PERMISSIONS, invite: false} : DEFAULT_MEMBER_PERMISSIONS;
+    const result = overlay(defaults, room);
+    return type === 'personal' ? {...result, invite: false} : result;
 }
 
 /** What one participant may actually do: an admin everything, a guest nothing, a member their own decision before the room's. */
-export function effectivePermissions(holder: PermissionHolder, room: PermissionSet | undefined): Record<RoomPermission, boolean> {
+export function effectivePermissions(holder: PermissionHolder, room: PermissionSet | undefined, type?: RoomType): Record<RoomPermission, boolean> {
     if (holder.role !== 'member') {
         const all = holder.role === 'controller';
         return {invite: all, attach: all, rename: all, lock: all, mute: all, kick: all, pause: all, turns: all};
     }
-    return overlay(roomPermissions(room), holder.permissions);
+    const result = overlay(roomPermissions(room, type), holder.permissions);
+    return type === 'personal' ? {...result, invite: false} : result;
 }
 
 /** Applies a change to a set, dropping cleared commands so an empty result means "nothing decided". */

@@ -9,6 +9,7 @@ import {HandoverDocument} from './handover.js';
 import {AutoClosePolicySchema, CloseReasonSchema} from './auto-close.js';
 import {Attachment, MAX_ATTACHMENTS_PER_MESSAGE} from './files.js';
 import {PermissionSet} from './permissions.js';
+import {RoomType} from './room-types.js';
 
 export const PROTOCOL_VERSION = 1;
 export const PROTOCOL_VERSION_HEADER = 'pairlobby-protocol';
@@ -133,6 +134,7 @@ export const EventBody = z.discriminatedUnion('type', [
     z.object({type: z.literal('room.expiry_changed'), payload: roomExpiryChangedPayload}),
     z.object({type: z.literal('room.access_changed'), payload: roomAccessChangedPayload}),
     z.object({type: z.literal('room.local_join_changed'), payload: z.object({localJoin: z.boolean()})}),
+    z.object({type: z.literal('room.type_changed'), payload: z.object({type: RoomType, previous: RoomType})}),
     z.object({type: z.literal('room.invitation_changed'), payload: roomInvitationChangedPayload}),
     z.object({type: z.literal('room.lock_changed'), payload: z.object({locked: z.boolean()})}),
     z.object({type: z.literal('participant.mute_changed'), payload: z.object({participantId: ParticipantId, muted: z.boolean()})}),

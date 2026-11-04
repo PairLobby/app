@@ -11,6 +11,7 @@ import {ERROR_CODES} from './errors.js';
 import {RoomFile} from './files.js';
 import {AutoClosePolicySchema} from './auto-close.js';
 import {PermissionChange} from './permissions.js';
+import {RoomType} from './room-types.js';
 
 export const ROUTES = {
     createRoom: {method: 'POST', path: '/v1/rooms'},
@@ -46,6 +47,7 @@ export const ROUTES = {
     setRoomPermissions: {method: 'POST', path: '/v1/rooms/:roomId/permissions'},
     setParticipantPermissions: {method: 'POST', path: '/v1/rooms/:roomId/participants/:participantId/permissions'},
     setAccess: {method: 'POST', path: '/v1/rooms/:roomId/access'},
+    setRoomType: {method: 'POST', path: '/v1/rooms/:roomId/type'},
     joinAsGuest: {method: 'POST', path: '/v1/rooms/:roomId/guests'},
     closeRoom: {method: 'POST', path: '/v1/rooms/:roomId/close'},
     exportRoom: {method: 'GET', path: '/v1/rooms/:roomId/export'},
@@ -68,7 +70,9 @@ export const CreateRoomRequest = z.intersection(
         expiresAt: z.number().int().nonnegative().nullable().optional(),
         /** Client-generated so a lost response never strands a credential the caller does not hold. */
         controllerCredential: z.string().min(32).max(256),
-        participantCredential: z.string().min(32).max(256)
+        participantCredential: z.string().min(32).max(256),
+        /** Absent creates a room without a type, as relays did before types. */
+        type: RoomType.optional()
     })
 );
 export type CreateRoomRequest = z.infer<typeof CreateRoomRequest>;
@@ -161,7 +165,7 @@ export type LiveTransport = (typeof LIVE_TRANSPORTS)[number];
  * Names a relay lists in `features`. A client checks for one before relying on it;
  * a relay that does not describe itself is assumed to have whatever was usual before descriptions existed.
  */
-export const RELAY_FEATURES = ['message-stages', 'files', 'local-join', 'invite-probe', 'create-token', 'token-login', 'receipt-watermark', 'member-tokens', 'directory'] as const;
+export const RELAY_FEATURES = ['message-stages', 'files', 'local-join', 'invite-probe', 'create-token', 'token-login', 'receipt-watermark', 'member-tokens', 'directory', 'room-types'] as const;
 export type RelayFeature = (typeof RELAY_FEATURES)[number];
 
 /**
@@ -266,6 +270,9 @@ export type LocalJoinRequest = JoinAsGuestRequest;
 
 export const SetLocalJoinRequest = z.object({localJoin: z.boolean()});
 export type SetLocalJoinRequest = z.infer<typeof SetLocalJoinRequest>;
+
+export const SetRoomTypeRequest = z.object({type: RoomType});
+export type SetRoomTypeRequest = z.infer<typeof SetRoomTypeRequest>;
 
 /** A room that devices on the relay's network may join by name. Only what is needed to choose one. */
 export const LocalRoom = z.object({roomId: RoomId, name: z.string(), createdAt: z.number().int().nonnegative(), participantCount: z.number().int().nonnegative()});

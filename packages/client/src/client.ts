@@ -33,6 +33,7 @@ import type {
     RoomEvent,
     RoomFile,
     RoomSnapshot,
+    RoomType,
     SendEventRequest,
     SendEventResponse,
     ShareListingRequest
@@ -113,7 +114,7 @@ export class PairLobbyClient {
         this.serverUrl = serverUrl.replace(/\/+$/, '');
     }
 
-    async createRoom(name: string, identity: ClientIdentity, expiresAt?: number | null, access?: RoomAccountAccess): Promise<CreatedRoom> {
+    async createRoom(name: string, identity: ClientIdentity, expiresAt?: number | null, access?: RoomAccountAccess, type?: RoomType): Promise<CreatedRoom> {
         // Both credentials are generated here, so a lost response never strands a secret the caller does not hold.
         const controllerCredential = newCredential('controller');
         const participantCredential = newCredential('participant');
@@ -123,7 +124,8 @@ export class PairLobbyClient {
             participantCredential,
             ...identity,
             ...(expiresAt !== undefined ? {expiresAt} : {}),
-            ...access
+            ...access,
+            ...(type ? {type} : {})
         });
         return {roomId: body.room.roomId, participantId: body.participantId, controllerCredential, participantCredential, invite: body.invite, room: body.room};
     }
@@ -535,6 +537,10 @@ export class PairLobbyClient {
 
     setLocalJoin(roomId: string, credential: string, localJoin: boolean): Promise<RoomEventResult> {
         return this.call('POST', `/v1/rooms/${roomId}/local-access`, credential, {localJoin});
+    }
+
+    setRoomType(roomId: string, credential: string, type: RoomType): Promise<RoomEventResult> {
+        return this.call('POST', `/v1/rooms/${roomId}/type`, credential, {type});
     }
 
     setExpiry(roomId: string, credential: string, expiresAt: number | null): Promise<RoomEventResult> {

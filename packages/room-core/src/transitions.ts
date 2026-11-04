@@ -1,7 +1,7 @@
 //! Room state transitions. Each returns one atomic mutation for a storage
 //! adapter to apply together with its idempotency record.
 
-import {RenameSelfRequest, DEFAULT_ROOM_POLICY, ProtocolError, applyPermissionChange, newId, samePermissions} from '@pairlobby/protocol';
+import {RenameSelfRequest, DEFAULT_ROOM_POLICY, ProtocolError, ROOM_TYPE_ACCESS, applyPermissionChange, newId, roomType, samePermissions} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
     EventSubmission,
@@ -16,6 +16,7 @@ import type {
     RoomInvitationChange,
     RoomPolicy,
     RoomRecord,
+    RoomType,
     SendEventRequest
 } from '@pairlobby/protocol';
 
@@ -46,6 +47,8 @@ export interface CreateRoomInput extends Identity {
     controllerCredentialHash: string;
     participantCredentialHash: string;
     policy?: RoomPolicy;
+    /** Sets the policy's type and the switches it implies; absent keeps the policy as given. */
+    type?: RoomType | undefined;
     /** The relay member creating the room, already verified by the relay. */
     owner?: string | undefined;
 }
@@ -57,7 +60,8 @@ export interface CreatedRoom {
 }
 
 export function createRoom(input: CreateRoomInput, ctx: CoreContext): CreatedRoom {
-    const policy = input.policy ?? DEFAULT_ROOM_POLICY;
+    const base = input.policy ?? DEFAULT_ROOM_POLICY;
+    const policy = input.type ? {...base, type: input.type, ...ROOM_TYPE_ACCESS[input.type]} : base;
     const room: RoomRecord = {
         roomId: input.roomId,
         name: input.name,
@@ -385,8 +389,9 @@ export function setJoinPolicy(view: RoomView, credentialHash: string, joinPolicy
     assertController(actor);
     assertRoomWritable(view, ctx.now);
     if (view.room.policy.joinPolicy === joinPolicy) {
-        throw new ProtocolError('invalid_request', joinPolicy === 'open_to_guests' ? 'this room is already open to guests' : 'this room is already invite only');
+        throw new ProtocolError('invalid_request', joinPolicy === 'open_to_guests' ? 'this room is already open to visitors' : 'this room is already invite only');
     }
+    assertUntyped(view.room.policy.type, joinPolicy === 'open_to_guests' ? 'protected' : 'private');
     const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
     const room = {...view.room, policy: {...view.room.policy, joinPolicy}};
     const {room: updated, event} = appendEvent(
@@ -403,7 +408,7 @@ export function setInviteRole(view: RoomView, credentialHash: string, inviteRole
     assertController(actor);
     assertRoomWritable(view, ctx.now);
     if ((view.room.policy.inviteRole ?? 'member') === inviteRole) {
-        throw new ProtocolError('invalid_request', inviteRole === 'guest' ? 'invitations already admit read-only observers' : 'invitations already admit members');
+        throw new ProtocolError('invalid_request', inviteRole === 'guest' ? 'invitations already admit read-only visitors' : 'invitations already admit members');
     }
     const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
     const room = {...view.room, policy: {...view.room.policy, inviteRole}};
@@ -434,6 +439,7 @@ export function setLocalJoin(view: RoomView, credentialHash: string, localJoin: 
     if ((view.room.policy.localJoin ?? false) === localJoin) {
         throw new ProtocolError('invalid_request', localJoin ? 'this room is already open to the local network' : 'this room is already closed to the local network');
     }
+    assertUntyped(view.room.policy.type, localJoin ? 'public' : 'private');
     const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
     const room = {...view.room, policy: {...view.room.policy, localJoin}};
     const {room: updated, event} = appendEvent(
@@ -441,6 +447,31 @@ export function setLocalJoin(view: RoomView, credentialHash: string, localJoin: 
         {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'room.local_join_changed', payload: {localJoin}}},
         ctx
     );
+    return emptyMutation(updated, event);
+}
+
+/** A room with a type keeps the switches its type sets; changing one means changing the type. */
+function assertUntyped(type: RoomType | undefined, suggested: RoomType): void {
+    if (type) {
+        throw new ProtocolError('invalid_request', `this is a ${type} room; make it ${suggested} instead: pairlobby room <room> type ${suggested}`);
+    }
+}
+
+/**
+ * Sets the room's type, and with it joining by name and joining as a visitor. People already
+ * in the room stay; the owner removes anyone the new type would not have admitted. Owner or admin only.
+ */
+export function setRoomType(view: RoomView, credentialHash: string, type: RoomType, ctx: CoreContext): Mutation {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    if (view.room.policy.type === type) {
+        throw new ProtocolError('invalid_request', `this room is already ${type}`);
+    }
+    const previous = roomType(view.room.policy);
+    const senderId = actor.kind === 'participant' ? actor.participant.participantId : null;
+    const room = {...view.room, policy: {...view.room.policy, type, ...ROOM_TYPE_ACCESS[type]}};
+    const {room: updated, event} = appendEvent(room, {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'room.type_changed', payload: {type, previous}}}, ctx);
     return emptyMutation(updated, event);
 }
 

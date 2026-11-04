@@ -25,6 +25,7 @@ import {
     newId,
     normalizeInviteCode,
     SetLocalJoinRequest,
+    SetRoomTypeRequest,
     RenameRoomRequest,
     RenameSelfRequest,
     SendEventRequest,
@@ -500,6 +501,7 @@ export function describe(options: RelayOptions): ServerDescription {
         ...(options.admission?.memberTokens ? ['member-tokens'] : []),
         ...(options.directory && options.admission?.memberTokens ? ['directory'] : []),
         ...(profile.receiptMode !== 'events' ? ['receipt-watermark'] : []),
+        'room-types',
         ...(options.features ?? [])
     ];
     const transport = options.transport ?? (options.changes ? 'long-poll' : undefined);
@@ -734,6 +736,10 @@ async function roomRoute(request: Request, roomId: string, context: RequestConte
         case 'POST local-access': {
             const {localJoin} = SetLocalJoinRequest.parse(await request.json());
             return json({event: await service.setLocalJoin(roomId, credential, localJoin)});
+        }
+        case 'POST type': {
+            const {type} = SetRoomTypeRequest.parse(await request.json());
+            return json({event: await service.setRoomType(roomId, credential, type)});
         }
         case 'POST auto-close': {
             const {autoClose} = SetAutoCloseRequest.parse(await request.json());

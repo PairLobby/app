@@ -41,7 +41,7 @@ export function authorityFor(snapshot: RoomSnapshot, participantId: string, perm
     if (!self || self.left || self.revoked || self.muted) {
         return undefined;
     }
-    return effectivePermissions(self, snapshot.policy.permissions)[permission] ? credential : undefined;
+    return effectivePermissions(self, snapshot.policy.permissions, snapshot.policy.type)[permission] ? credential : undefined;
 }
 
 export function notPermitted(permission: RoomPermission): ProtocolError {
@@ -68,7 +68,7 @@ export function describeParticipantPermissionChange(name: string, permissions: P
 
 /** The whole picture for `/permissions`: the room's answer per command, then each member who differs from it. */
 export function permissionsReport(snapshot: RoomSnapshot): string {
-    const room = roomPermissions(snapshot.policy.permissions);
+    const room = roomPermissions(snapshot.policy.permissions, snapshot.policy.type);
     const width = Math.max(...ROOM_PERMISSIONS.map((permission) => permission.length));
     const lines = ['Commands members may use (the owner and admins may always use all of them):'];
     for (const permission of ROOM_PERMISSIONS) {

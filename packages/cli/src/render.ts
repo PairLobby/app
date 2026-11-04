@@ -2,7 +2,7 @@
 //! everything diagnostic goes to stderr so a piped command stays parseable.
 
 import type {RoomEvent, RoomInvitationChange, RoomSnapshot} from '@pairlobby/protocol';
-import {failureLabel, formatFileSize} from '@pairlobby/protocol';
+import {ROOM_TYPE_SUMMARY, failureLabel, formatFileSize, roomType} from '@pairlobby/protocol';
 import {describeAutoClose, describeCloseReason} from './auto-close.js';
 import {describeParticipantPermissionChange, describeRoomPermissionChange} from './permissions.js';
 import type {OpenRequest, RoomEntry} from '@pairlobby/client';
@@ -154,10 +154,11 @@ export function invitationTerms(payload: RoomInvitationChange): string {
     return ` (${payload.role === 'guest' ? 'read-only visitor' : 'member'}${agents})`;
 }
 
-/** Says plainly whether knowing the room id is enough to get in. */
+/** Says plainly what type the room is and whether knowing the room id is enough to get in. */
 function joinPolicyLine(snapshot: RoomSnapshot): string {
-    const base = snapshot.policy.joinPolicy === 'open_to_guests' ? 'open — anyone with the room id can join as a read-only visitor' : 'private — an invite code is required, the room id alone is not enough';
-    return snapshot.policy.localJoin ? `${base}; anyone on the relay's local network or tailnet can join by name as a member` : base;
+    const byId = snapshot.policy.joinPolicy === 'open_to_guests' ? 'anyone with the room id can join as a read-only visitor' : 'an invite code is required, the room id alone is not enough';
+    const byName = snapshot.policy.localJoin ? '; anyone on the relay\'s local network or tailnet can join by name as a member' : '';
+    return `${roomType(snapshot.policy)}: ${byId}${byName}`;
 }
 
 export function renderSnapshot(snapshot: RoomSnapshot, now = Date.now()): void {
@@ -269,6 +270,8 @@ function describe(event: RoomEvent): string {
             return event.payload.state === 'withdrawn' ? `the invitation to @${event.payload.handle} was withdrawn` : `@${event.payload.handle} was invited${invitationTerms(event.payload)}`;
         case 'room.local_join_changed':
             return event.payload.localJoin ? 'anyone on the local network can now join by name' : 'joining by name on the local network is now off';
+        case 'room.type_changed':
+            return `the room is now ${event.payload.type}: ${ROOM_TYPE_SUMMARY[event.payload.type]}`;
         case 'message.delivery_failed':
             return `${failureLabel(event.payload.stage)} for ${event.payload.eventId}: ${event.payload.reason} (failed attempt)`;
         case 'message.request_closed':

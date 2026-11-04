@@ -2,7 +2,7 @@ import {platform} from 'node:os';
 
 import {PairLobbyClient} from '@pairlobby/client';
 import type {LocalStore, RoomEntry, SessionEntry} from '@pairlobby/client';
-import {ProtocolError} from '@pairlobby/protocol';
+import {ProtocolError, roomType} from '@pairlobby/protocol';
 import type {RoomSnapshot} from '@pairlobby/protocol';
 import {lastMessage} from './find.js';
 import type {RoomListEntry} from './render.js';
@@ -23,7 +23,7 @@ export type ListedRoom = Omit<RoomEntry, 'sessions'> & {sessions: ListedSession[
 export type RoomListJson = {count: number; rooms: ListedRoom[]};
 
 export const ROOM_COLUMNS: ListColumn[] = [
-    {key: 'where', label: '', width: 2}, {key: 'name', label: 'Room', width: 26},
+    {key: 'where', label: '', width: 2}, {key: 'name', label: 'Room', width: 26}, {key: 'type', label: 'Type', width: 10},
     {key: 'state', label: 'State', width: 14}, {key: 'agents', label: 'Agents', width: 8, name: 'Agents'},
     {key: 'people', label: 'People', width: 8, name: 'People'}, {key: 'latest', label: 'Latest message', width: 16},
     {key: 'created', label: 'Created (UTC)', width: 17}, {key: 'expires', label: 'Expires (UTC)', width: 17},
@@ -154,7 +154,7 @@ export function roomRows(entries: RoomListEntry[], icons: IconSet = 'symbols', n
         const created = snapshot?.createdAt ?? room.createdAt;
         const expires = snapshot ? snapshot.expiresAt : room.expiresAt;
         const location = roomLocation(room.serverUrl, snapshot?.policy.localJoin);
-        const values = {where: LOCATION_ICONS[icons][location], name: snapshot?.name ?? room.name, state: roomState(entry), agents: agents === null ? 'Unknown' : String(agents), people: people === null ? 'Unknown' : String(people), latest, created: listDate(created), expires: expires === null ? 'Never' : listDate(expires), id: room.roomId, relay: relayLabel(room.serverUrl)};
+        const values = {where: LOCATION_ICONS[icons][location], name: snapshot?.name ?? room.name, type: snapshot && !isHostedUrl(room.serverUrl) ? roomType(snapshot.policy) : 'Unknown', state: roomState(entry), agents: agents === null ? 'Unknown' : String(agents), people: people === null ? 'Unknown' : String(people), latest, created: listDate(created), expires: expires === null ? 'Never' : listDate(expires), id: room.roomId, relay: relayLabel(room.serverUrl)};
         return {id: room.roomId, roomId: room.roomId, values, sortValues: {...values, where: location, agents, people, latest: lastMessageAt ?? null, created, expires: expires ?? Number.POSITIVE_INFINITY}};
     });
 }
@@ -168,7 +168,7 @@ export const NETWORK_STATE = 'on network';
 export function networkRows(found: NetworkRoom[], icons: IconSet = 'symbols'): ListRow[] {
     return found.map(({url, label, room}) => {
         const location = roomLocation(url, true);
-        const values = {where: LOCATION_ICONS[icons][location], name: room.name, state: NETWORK_STATE, agents: 'Unknown', people: `${room.participantCount} in room`, latest: 'Unknown', created: listDate(room.createdAt), expires: 'Unknown', id: room.roomId, relay: label === url || label === 'local network' ? relayLabel(url) : `${relayLabel(url)} (${label})`};
+        const values = {where: LOCATION_ICONS[icons][location], name: room.name, type: 'public', state: NETWORK_STATE, agents: 'Unknown', people: `${room.participantCount} in room`, latest: 'Unknown', created: listDate(room.createdAt), expires: 'Unknown', id: room.roomId, relay: label === url || label === 'local network' ? relayLabel(url) : `${relayLabel(url)} (${label})`};
         return {id: room.roomId, roomId: room.roomId, values, sortValues: {...values, where: location, agents: null, people: room.participantCount, latest: null, created: room.createdAt, expires: null}};
     });
 }
@@ -181,7 +181,7 @@ export const INVITED_STATE = 'invited';
 /** Rows for rooms this account was invited into and has not answered; nothing from inside the room is known yet. */
 export function invitationRows(invitations: RoomInvite[], icons: IconSet = 'symbols'): ListRow[] {
     return invitations.map((invitation) => {
-        const values = {where: LOCATION_ICONS[icons].online, name: invitation.roomName, state: INVITED_STATE, agents: 'Unknown', people: `by ${invitation.invitedBy}`, latest: 'Unknown', created: listDate(invitation.createdAt), expires: 'Unknown', id: invitation.roomId, relay: `answer by ${new Date(invitation.expiresAt).toISOString().slice(0, 10)}`};
+        const values = {where: LOCATION_ICONS[icons].online, name: invitation.roomName, type: 'Unknown', state: INVITED_STATE, agents: 'Unknown', people: `by ${invitation.invitedBy}`, latest: 'Unknown', created: listDate(invitation.createdAt), expires: 'Unknown', id: invitation.roomId, relay: `answer by ${new Date(invitation.expiresAt).toISOString().slice(0, 10)}`};
         return {id: invitation.roomId, roomId: invitation.roomId, values, sortValues: {...values, where: 'online', agents: null, people: null, latest: null, created: invitation.createdAt, expires: null}};
     });
 }
@@ -221,7 +221,7 @@ export function roomListJson(store: LocalStore, entries: RoomListEntry[], sort: 
     return {count: entries.length, rooms: sortListRows(roomRows(entries), sort).map((row) => {
         const entry = byId.get(row.id)!;
         const sessions = new Map(sessionRows(store, entry).map((session) => [session.id, session]));
-        return {...entry.room, name: entry.snapshot?.name ?? entry.room.name, reachable: entry.reachable, error: entry.why ?? null, live: entry.snapshot ?? null, sessions: entry.room.sessions.map((session) => {
+        return {...entry.room, name: entry.snapshot?.name ?? entry.room.name, type: row.values['type'] === 'Unknown' ? null : row.values['type'], reachable: entry.reachable, error: entry.why ?? null, live: entry.snapshot ?? null, sessions: entry.room.sessions.map((session) => {
             const values = sessions.get(session.sessionId)!.values;
             const model = values['model']!;
             return {...session, displayName: values['name']!, state: values['state']!, receiverState: values['receiver'] === 'Not managed' ? null : values['receiver']!, reportedModel: model.endsWith('*') || ['—', 'Not started', 'Not reported'].includes(model) ? null : model};
