@@ -26,7 +26,7 @@ import {settingsPage, statusPage} from './room-settings.js';
 import {describeAutoClose, describeCloseReason} from './auto-close.js';
 import {loadAgentRoster} from './agent-roster.js';
 import {offlineReceivers, wakeOfflineReceivers} from './receiver.js';
-import {invitationTerms} from './render.js';
+import {invitationTerms, roleChange} from './render.js';
 import {closeRequest, recoverRequest} from './request-recovery.js';
 import {requestsPage} from './request-panel.js';
 import {collapseMessage, formatMessageText} from './message-format.js';
@@ -905,7 +905,7 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
         case 'participant.mute_changed':
             return `${names.get(event.payload.participantId) ?? event.payload.participantId} was ${event.payload.muted ? 'muted' : 'unmuted'}`;
         case 'participant.role_changed':
-            return `${names.get(event.payload.participantId) ?? event.payload.participantId} is now ${event.payload.role === 'controller' ? 'an admin' : 'a member'}`;
+            return `${names.get(event.payload.participantId) ?? event.payload.participantId} is now ${roleChange(event.payload.role, event.payload.previousRole)}`;
         case 'room.permissions_changed':
             return `${event.senderId ? sender : 'the owner'} changed command permissions: ${describeRoomPermissionChange(event.payload.permissions, event.payload.previous)}`;
         case 'participant.permissions_changed':

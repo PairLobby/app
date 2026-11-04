@@ -1,17 +1,18 @@
-//! `pairlobby room <room> type` and `invite-policy`: what kind of room it is, and whether
-//! members may invite. The relay enforces both; this only asks and explains.
+//! `pairlobby room <room> type`, `invite-policy`, `member` and `admin`: what kind of room it is,
+//! whether members may invite, and who may post or manage it. The relay enforces all of them;
+//! this only asks and explains.
 
 import {PairLobbyClient} from '@pairlobby/client';
 import type {LocalStore, RoomEntry, Settings} from '@pairlobby/client';
 import {ROOM_TYPES, ROOM_TYPE_SUMMARY, RoomType, roomPermissions, roomType} from '@pairlobby/protocol';
 import type {RoomSnapshot} from '@pairlobby/protocol';
 
-import {UsageError, controllerCredential, moderationCredential, resolveRoom} from './context.js';
+import {UsageError, controllerCredential, moderationCredential, resolveRecipient, resolveRoom} from './context.js';
 import {requireRelayFeature} from './doctor.js';
 import {publicRoomWarning} from './public-room.js';
-import {json, note, out} from './render.js';
+import {json, note, out, roleChange} from './render.js';
 
-export const ROOM_USAGE = 'pairlobby room <room> type [public|protected|private|personal], or pairlobby room <room> invite-policy [members|owner]';
+export const ROOM_USAGE = 'pairlobby room <room> type [public|protected|private|personal], pairlobby room <room> invite-policy [members|owner], or pairlobby room <room> member|admin <name or id>';
 
 export type RoomCommandOptions = {words: string[]; session?: string | undefined; json: boolean};
 
@@ -60,11 +61,17 @@ export function roomTypeLine(snapshot: RoomSnapshot): string {
 
 export async function roomCommand(store: LocalStore, reference: string | undefined, options: RoomCommandOptions): Promise<number> {
     const [what, value, ...rest] = options.words;
-    if ((what !== 'type' && what !== 'invite-policy') || rest.length) {
+    if ((what !== 'type' && what !== 'invite-policy' && what !== 'member' && what !== 'admin') || rest.length) {
         throw new UsageError(ROOM_USAGE);
     }
     const room = resolveRoom(store, reference);
     const client = new PairLobbyClient(room.serverUrl);
+    if (what === 'member' || what === 'admin') {
+        if (value === undefined) {
+            throw new UsageError(ROOM_USAGE);
+        }
+        return setRole(client, store, room, {who: value, role: what === 'admin' ? 'controller' : 'member', session: options.session, json: options.json});
+    }
     if (value === undefined) {
         const snapshot = await client.snapshot(room.roomId, moderationCredential(store, room, options.session));
         if (options.json) {
@@ -106,6 +113,29 @@ async function setType(client: PairLobbyClient, store: LocalStore, room: RoomEnt
     }
     if (outside.length) {
         note(`still in the room: ${outside.map((person) => person.displayName).join(', ')}. Remove anyone who should not stay with /kick <name> in the room.`);
+    }
+    return 0;
+}
+
+type RoleChange = {who: string; role: 'member' | 'controller'; session?: string | undefined; json: boolean};
+
+/** Makes a visitor a member, who can post, or a member an admin. People get read only again by being muted or removed. */
+async function setRole(client: PairLobbyClient, store: LocalStore, room: RoomEntry, {who, role, session, json: asJson}: RoleChange): Promise<number> {
+    const credential = moderationCredential(store, room, session);
+    const before = await client.snapshot(room.roomId, credential);
+    const participantId = resolveRecipient(before.participants, who);
+    const person = before.participants.find((participant) => participant.participantId === participantId)!;
+    if (person.role === 'guest' && role === 'controller') {
+        throw new UsageError(`${person.displayName} is a visitor; make them a member first: pairlobby room ${room.name} member ${who}`);
+    }
+    await client.setRole(room.roomId, credential, participantId, role);
+    if (asJson) {
+        json({roomId: room.roomId, participantId, role, previousRole: person.role});
+        return 0;
+    }
+    out(`${person.displayName} is now ${roleChange(role, person.role)} in ${room.name}.`);
+    if (role === 'member' && person.role === 'guest' && before.participants.some((participant) => participant.kind === 'agent' && !participant.left && !participant.revoked)) {
+        note(`agents in ${room.name} now act on what ${person.displayName} posts.`);
     }
     return 0;
 }
