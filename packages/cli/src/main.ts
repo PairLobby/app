@@ -649,12 +649,24 @@ function networkRoomSearch(store: LocalStore): RoomBrowserOptions['discover'] {
 
 /**
  * Where to look for rooms by name: this device's relay (the one its commands use by default, which
- * PAIRLOBBY_SERVER or the profile may name), the saved endpoint's relay with its login, and the network.
+ * PAIRLOBBY_SERVER or the profile may name), the saved endpoint's relay with its login, on a hosted
+ * service the logged-in account's relay, and the network.
  */
 function localRoomDeps(store: LocalStore): LocalRoomDeps {
+    const endpoint = activeEndpoint(store);
     const saved = endpointRelay(store);
-    const token = saved ? hostedAccountToken(store, saved) : undefined;
-    return {...DEFAULT_LOCAL_ROOMS, local: resolveServer({server: store.profile().server}), saved: saved ? [{url: saved, label: activeEndpoint(store).name}] : [], lookup: (url, name, signal) => relayLocalRooms(url, name, signal, url === saved ? token : undefined)};
+    // Relays the login may go to: the saved one, and the account's relay once the service names it.
+    const ours = new Set(saved ? [saved] : []);
+    const account = async () => {
+        try {
+            const {server} = await onlineAccount(store);
+            ours.add(server);
+            return [{url: server, label: endpoint.name}];
+        } catch {
+            return [];
+        }
+    };
+    return {...DEFAULT_LOCAL_ROOMS, local: resolveServer({server: store.profile().server}), saved: saved ? [{url: saved, label: endpoint.name}] : [], ...(endpoint.hosted && accountToken(store, endpoint) ? {account} : {}), lookup: (url, name, signal) => relayLocalRooms(url, name, signal, ours.has(url) ? hostedAccountToken(store, url) : undefined)};
 }
 
 /** Selects this person's saved seat, or creates one through another saved local membership. */
