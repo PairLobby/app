@@ -209,7 +209,8 @@ export async function spawnAgent(context: SpawnContext, options: SpawnOptions, d
         }
         if (operation.phase === 'minting') {
             // A lost mint response cannot have created a membership. Its unused invite expires shortly.
-            const invite = await client.mintInvite(roomId, actor.credential, 'member', false, Date.now() + 300_000);
+            // The owner mints with the owner's credential, which a room that keeps invites to its owner accepts.
+            const invite = await client.mintInvite(roomId, store.credential(roomId, 'controller') ?? actor.credential, 'member', false, Date.now() + 300_000);
             operation.invite = invite.code;
             operation.phase = 'redeeming';
             save(db, operation);

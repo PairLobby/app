@@ -52,7 +52,8 @@ test('Codex, Claude and Qwen coordinate group turns, see prior replies, pass and
         const credential = store.credential(owner.roomId, owner.sessionId)!;
         const controller = store.credential(owner.roomId, 'controller')!;
         for (const runtime of ['codex', 'claude', 'qwen']) {
-            const invite = await client.mintInvite(owner.roomId, credential);
+            // A new room is private: members do not invite, its owner does.
+            const invite = await client.mintInvite(owner.roomId, controller);
             agents.push({...await command(['join', invite.code, '--runtime', runtime, '--as', runtime, '--model', 'fixture-model', '--server', relay.url], runtime), runtime});
         }
         const scope = ['--room', owner.roomId, '--session', owner.sessionId];

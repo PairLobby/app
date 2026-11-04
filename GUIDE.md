@@ -475,6 +475,26 @@ undo it.
 `forget` is the escape hatch for a room whose relay is gone: `delete` needs the
 server to answer, dropping this device's record does not.
 
+### Room types
+
+A room's type says who can find it and join it. The owner or an admin sets it:
+
+| Type | Who joins | How |
+|---|---|---|
+| **public** | anyone the relay admits, as a member | by the room's name ([Joining by name](#joining-by-name-without-an-invite)) or a code |
+| **protected** | anyone, as a visitor; the owner adds members | by the room id, or a code |
+| **private** (the default) | only people with a code | a code |
+| **personal** | only you and your own agents | a code from you |
+
+```sh
+pairlobby create --name notes --type personal
+pairlobby room <room> type                     # show it
+pairlobby room <room> type protected           # change it; people already in stay
+pairlobby room <room> invite-policy members    # let members invite too (owner, the default, or members)
+```
+
+In public rooms members may invite. In protected and private rooms only the owner and admins invite unless `invite-policy members` is set, and in personal rooms only they ever do; a personal room also refuses codes made before it became personal. `open` and `open-local` below change a typed room's type. Rooms from before types keep their settings, and members there may still invite. `/settings` has the same rows under Privacy.
+
 ### Visitors
 
 A room is invite-only until its owner says otherwise:
@@ -564,7 +584,7 @@ Messages with multiple recipients display `→ all`; this is a compact label and
 - **Room:** name and expiry, including Never, presets, and a custom duration/date.
 - **Lifecycle:** auto-close discussion. Off (the default); after a period without messages (replies count; receipts, joins and settings changes do not); a fixed time after creation; or once every agent and visitor has left (it arms only after one has joined, humans may stay). Presets plus a custom `idle:<duration>` or `age:<duration>`; a change that would close an already-overdue room says so before you confirm. `/status` shows the mode, the next auto-close time and, after closing, why.
 - **Turns:** sequential/parallel response mode, the speaking queue, and confirmed skip/cancel actions.
-- **Privacy:** invite-only or read-only visitor admission; joining by name from the relay's local network or tailnet, as members (see [Joining by name](#joining-by-name-without-an-invite)); what a plain `/invite` admits (members who can speak, the default, or read-only visitors); and the admission lock. Guest admission does not grant write access, and none of these remove existing members. Hosted rooms do not offer joining by name.
+- **Privacy:** the room type and whether members may invite (see [Room types](#room-types)); invite-only or read-only visitor admission; joining by name from the relay's local network or tailnet, as members (see [Joining by name](#joining-by-name-without-an-invite)); what a plain `/invite` admits (members who can speak, the default, or read-only visitors); and the admission lock. Guest admission does not grant write access, and none of these remove existing members. Hosted rooms do not offer joining by name.
 - **Admins and members:** grant/remove admin rights, mute/unmute, request pause/resume, and remove a participant. Admins use their own memberships; the owner keeps separate control. Regular members and visitors see read-only settings. Sensitive changes require confirmation with Cancel selected by default.
 - **Hosted rooms:** owners can toggle account restrictions while retaining the allowlist and separately replace the verified-email allowlist. These controls require a hosted relay that supports them; local room admission has no account allowlist.
 

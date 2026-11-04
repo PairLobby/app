@@ -15,7 +15,7 @@ import {parseArgs} from 'node:util';
 import {LocalStore, PairLobbyClient, openRequests, owedByMe, unreceipted} from '@pairlobby/client';
 import type {JoinedRoom, RoomEntry, RoomPreset, Settings} from '@pairlobby/client';
 import {ParticipantName, ProtocolError, effectivePermissions, requestState, newId, normalizeInviteCode, MessageAction, roomPermissions, safeFileName} from '@pairlobby/protocol';
-import type {AdapterCapabilities, MessageRequest} from '@pairlobby/protocol';
+import type {AdapterCapabilities, MessageRequest, RoomType} from '@pairlobby/protocol';
 import type {RelayFlags} from '@pairlobby/local-server/settings';
 
 import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
@@ -35,6 +35,7 @@ import type {ReceiverStartOptions, ReceiverStatus} from './receiver.js';
 import {receiverRuntimeName} from './receiver-runtime.js';
 import {discoverableNote, joinCommand, localOnlyNote, parseJoinLink, shareTarget} from './share.js';
 import {DEFAULT_SHARE, listingStatus, shareCommand, sharedCommand} from './directory-share.js';
+import {createType, roomCommand} from './room-type.js';
 import {invitationNotice, rememberInvitations, scheduleInvitationCheck} from './invitation-notice.js';
 import {BUILT_IN_ORIGIN, activeEndpoint, endpointRelay, useEndpointOverride} from './endpoints.js';
 import {DEFAULT_SETUP, setupCommand} from './setup.js';
@@ -152,6 +153,7 @@ const OPTIONS = {
     port: {type: 'string'},
     'data-dir': {type: 'string'},
     topic: {type: 'string'},
+    type: {type: 'string'},
     contact: {type: 'string'},
     help: {type: 'boolean'}
 } as const;
@@ -169,10 +171,15 @@ const HELP = `pairlobby
   pairlobby open <room>              let anyone with the room id join as a visitor
   pairlobby open <room> --off        back to invite only
   pairlobby open-local <room>        let anyone on your network or tailnet join by name, as a member (--off to stop)
+  pairlobby room <room> type [public|protected|private|personal]
+                                    show or set who can find and join the room (owner/admin)
+  pairlobby room <room> invite-policy [members|owner]
+                                    show or set whether members may invite (owner/admin)
   pairlobby delete <room>            delete a room (controller only)
   pairlobby forget <room>            drop the local record, leave the server alone
   pairlobby settings                 interactive menu for this device's preferences and new-room defaults
   pairlobby create --name <name>     start a room and print an invite
+  pairlobby create --name <name> --type <type>  public, protected, private (default) or personal
   pairlobby create --name <name> --preset <name|none>  start it from a saved preset, or from the built-in defaults
   pairlobby presets                  saved room setups on this device: list, show <name>, delete <name>, default <name|none>
   pairlobby presets save|apply <name> --room <room>  save a room's setup, or apply one (--yes applies; owner/admin)
@@ -391,6 +398,8 @@ async function main(argv: string[]): Promise<number> {
             return setAccess(store, values, positionals[1]);
         case 'open-local':
             return setLocalJoin(store, values, positionals[1]);
+        case 'room':
+            return roomCommand(store, positionals[1], {words: positionals.slice(2), session: str(values, 'session'), json: flag(values, 'json')});
         case 'delete':
             return deleteRoom(store, values, positionals[1]);
         case 'setup':
@@ -792,7 +801,10 @@ async function setLocalJoin(store: LocalStore, values: Values, reference?: strin
     if (localJoin) {
         await requireRelayFeature(client, 'local-join', 'joining by name');
     }
-    await client.setLocalJoin(room.roomId, controllerCredential(store, room), localJoin);
+    const credential = controllerCredential(store, room);
+    if (!(await switchByType(client, room.roomId, credential, localJoin ? 'public' : null, 'public'))) {
+        await client.setLocalJoin(room.roomId, credential, localJoin);
+    }
     if (flag(values, 'json')) {
         json({roomId: room.roomId, localJoin});
         return 0;
@@ -818,11 +830,31 @@ async function printLocalJoin(serverUrl: string, name: string): Promise<void> {
     }
 }
 
+/**
+ * In a room with a type, `open` and `open-local` are part of the type, so they change it: on makes
+ * the room `on`'s type, off makes a room of that type private. False for a room without a type.
+ */
+async function switchByType(client: PairLobbyClient, roomId: string, credential: string, on: RoomType | null, turnedOff: RoomType): Promise<boolean> {
+    const snapshot = await client.snapshot(roomId, credential);
+    const current = snapshot.policy.type;
+    if (!current) {
+        return false;
+    }
+    const wanted = on ?? (current === turnedOff ? 'private' : current);
+    if (wanted !== current) {
+        await client.setRoomType(roomId, credential, wanted);
+    }
+    return true;
+}
+
 async function setAccess(store: LocalStore, values: Values, reference?: string): Promise<number> {
     const room = resolveRoom(store, reference ?? str(values, 'room'));
     const joinPolicy = flag(values, 'off') ? ('invite_only' as const) : ('open_to_guests' as const);
     const credential = controllerCredential(store, room);
-    await new PairLobbyClient(room.serverUrl).setJoinPolicy(room.roomId, credential, joinPolicy);
+    const client = new PairLobbyClient(room.serverUrl);
+    if (!(await switchByType(client, room.roomId, credential, joinPolicy === 'open_to_guests' ? 'protected' : null, 'protected'))) {
+        await client.setJoinPolicy(room.roomId, credential, joinPolicy);
+    }
 
     if (flag(values, 'json')) {
         json({roomId: room.roomId, joinPolicy});
@@ -1267,7 +1299,7 @@ function receiverStartOptions(values: Values): ReceiverStartOptions {
 }
 
 /** Applies this device's defaults for new rooms; a relay that refuses one keeps the room and says so. */
-async function applyRoomDefaults(client: PairLobbyClient, roomId: string, controller: string, settings: Settings, online: boolean): Promise<void> {
+async function applyRoomDefaults(client: PairLobbyClient, roomId: string, controller: string, settings: Settings, accessDecided: boolean): Promise<void> {
     const changes: [string, () => Promise<unknown>][] = [];
     if (settings.defaultTurnMode === 'parallel') {
         changes.push(['parallel replies', () => client.setTurnMode(roomId, controller, 'parallel')]);
@@ -1278,7 +1310,7 @@ async function applyRoomDefaults(client: PairLobbyClient, roomId: string, contro
     if (settings.defaultInviteRole === 'guest') {
         changes.push(['read-only invitations', () => client.setInviteRole(roomId, controller, 'guest')]);
     }
-    if (!online && settings.defaultGuestAccess === 'open_to_guests') {
+    if (!accessDecided && settings.defaultGuestAccess === 'open_to_guests') {
         changes.push(['open visitor access', () => client.setJoinPolicy(roomId, controller, 'open_to_guests')]);
     }
     for (const [label, apply] of changes) {
@@ -1323,6 +1355,7 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
         throw new UsageError('--private and --public apply to online rooms: pairlobby create online --name <name> --private');
     }
     const settings = store.settings();
+    const type = createType({type: str(values, 'type'), openLocal: flag(values, 'open-local'), online, settings});
     const preset = roomPreset(store, str(values, 'preset'));
     // The device default decides when neither flag is given.
     const privateRoom = online && (flag(values, 'private') || (settings.defaultPrivateOnline && !flag(values, 'public')));
@@ -1351,7 +1384,8 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
                       .map((s) => s.trim())
                       .filter(Boolean)
               }
-            : undefined
+            : undefined,
+        type
     );
 
     store.upsertRoom({roomId: created.roomId, name, serverUrl, createdAt: created.room.createdAt, expiresAt: created.room.expiresAt, controls: true, sessions: []});
@@ -1371,7 +1405,9 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
     });
 
     // A preset decides reply mode, invitations and auto-close in place of the device defaults for them.
-    await applyRoomDefaults(client, created.roomId, created.controllerCredential, preset ? {...settings, defaultTurnMode: 'sequential', defaultInviteRole: 'member', defaultAutoClose: 'off'} : settings, online);
+    // Online rooms and rooms with a type already have their access; a room from an older relay gets the device default.
+    const typed = created.room.policy.type !== undefined;
+    await applyRoomDefaults(client, created.roomId, created.controllerCredential, preset ? {...settings, defaultTurnMode: 'sequential', defaultInviteRole: 'member', defaultAutoClose: 'off'} : settings, online || typed);
     if (preset) {
         const changes = presetChanges(preset, await client.snapshot(created.roomId, created.participantCredential), {client, roomId: created.roomId});
         for (const line of await applyPresetChanges(changes, created.controllerCredential)) {
@@ -1380,8 +1416,8 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
             }
         }
     }
-    let openLocal = false;
-    if (flag(values, 'open-local')) {
+    let openLocal = typed && created.room.policy.localJoin === true;
+    if (flag(values, 'open-local') && !typed) {
         try {
             await client.setLocalJoin(created.roomId, created.controllerCredential, true);
             openLocal = true;
@@ -2217,7 +2253,8 @@ async function invite(store: LocalStore, values: Values): Promise<number> {
     // --expires-in wins, then the device default, then the room's own policy.
     const lifetime = str(values, 'expires-in') !== undefined ? parseLifetime(str(values, 'expires-in')!) : store.settings().defaultInviteLifetimeMs;
     const expiresAt = lifetime === null ? null : Date.now() + lifetime;
-    const minted = await client.mintInvite(room.roomId, credential, 'member', !flag(values, 'once'), expiresAt);
+    // The owner's credential when this device holds it: a room may keep invitations to its owner and admins.
+    const minted = await client.mintInvite(room.roomId, store.credential(room.roomId, 'controller') ?? credential, 'member', !flag(values, 'once'), expiresAt);
     const share = await joinCommand(room.serverUrl, minted.code);
 
     if (flag(values, 'json')) {
@@ -2464,7 +2501,7 @@ async function permissions(store: LocalStore, values: Values, words: string[]): 
     const report = await runPermissionCommand(words.join(' '), context);
     if (flag(values, 'json')) {
         const snapshot = await client.snapshot(room.roomId, credential);
-        json({roomId: room.roomId, members: roomPermissions(snapshot.policy.permissions), room: snapshot.policy.permissions ?? {}, participants: snapshot.participants.filter((person) => !person.left && !person.revoked).map((person) => ({participantId: person.participantId, displayName: person.displayName, role: person.role, own: person.permissions ?? {}, effective: effectivePermissions(person, snapshot.policy.permissions)}))});
+        json({roomId: room.roomId, members: roomPermissions(snapshot.policy.permissions, snapshot.policy.type), room: snapshot.policy.permissions ?? {}, participants: snapshot.participants.filter((person) => !person.left && !person.revoked).map((person) => ({participantId: person.participantId, displayName: person.displayName, role: person.role, own: person.permissions ?? {}, effective: effectivePermissions(person, snapshot.policy.permissions, snapshot.policy.type)}))});
         return 0;
     }
     out(report);

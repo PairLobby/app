@@ -65,7 +65,7 @@ export function assertPermitted(view: RoomView, actor: Actor, permission: RoomPe
         return;
     }
     const participant = assertCanWrite(actor);
-    if (!effectivePermissions(participant, view.room.policy.permissions)[permission]) {
+    if (!effectivePermissions(participant, view.room.policy.permissions, view.room.policy.type)[permission]) {
         throw new ProtocolError('unauthorized', `this room does not let you ${PERMISSION_LABELS[permission]}; ask its owner or an admin`);
     }
 }

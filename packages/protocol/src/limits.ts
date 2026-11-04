@@ -2,6 +2,7 @@
 //! limits and not commercial entitlements.
 
 import type {PermissionSet} from './permissions.js';
+import type {RoomType} from './room-types.js';
 
 /**
  * How a room may be joined.
@@ -30,6 +31,8 @@ export type CloseReason = 'manual' | 'inactivity' | 'age' | 'agents_and_guests_l
 export const MIN_AUTO_CLOSE_MS = 1000;
 
 export interface RoomPolicy {
+    /** Absent on rooms created before types; `roomType` reads their switches instead. */
+    type?: RoomType;
     /** Which commands members may use; an absent command takes the built-in default. Owner and admins are never limited. */
     permissions?: PermissionSet;
     joinPolicy: JoinPolicy;
@@ -108,6 +111,7 @@ export const QUOTA_EXEMPT_EVENT_TYPES = [
     'room.access_changed',
     'room.auto_close_changed',
     'room.local_join_changed',
+    'room.type_changed',
     'room.invitation_changed',
     'room.permissions_changed',
     'participant.permissions_changed',

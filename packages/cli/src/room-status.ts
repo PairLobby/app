@@ -1,4 +1,5 @@
 import {stripVTControlCharacters} from 'node:util';
+import {roomType} from '@pairlobby/protocol';
 import type {RoomSnapshot, TurnQueue} from '@pairlobby/protocol';
 import type {PairLobbyClient} from '@pairlobby/client';
 import {describeAutoClose, describeCloseReason} from './auto-close.js';
@@ -60,6 +61,7 @@ export function roomStatusRows(status: RoomStatus): RoomPanelRow[] {
         {id: 'name', section: 'Room', label: 'Name', value: cleanName},
         {id: 'room-id', section: 'Room', label: 'Room ID', value: room.roomId},
         {id: 'state', section: 'Room', label: 'State', value: room.lifecycle},
+        {id: 'type', section: 'Room', label: 'Room type', value: `${roomType(room.policy)}${room.policy.type ? '' : ' (from its settings)'}`},
         {id: 'privacy', section: 'Room', label: 'Visitor access', value: room.policy.joinPolicy === 'invite_only' ? 'Invite only' : 'Anyone with room ID (read only)'},
         {id: 'local-join', section: 'Room', label: 'Join by name', value: room.policy.localJoin ? 'Anyone on the local network, as members' : 'Off'},
         {id: 'invites', section: 'Room', label: 'Invitations', value: room.policy.inviteRole === 'guest' ? 'Read-only visitors' : 'Members who can speak'},

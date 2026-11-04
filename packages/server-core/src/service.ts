@@ -1,7 +1,7 @@
 //! Room operations shared by every transport. The Cloudflare Durable Object and
 //! the Node server both run this; only the store and the socket layer differ.
 
-import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_RETAINED_FILE_BYTES, DEFAULT_ROOM_POLICY, PROTOCOL_VERSION, ProtocolError, UNATTACHED_FILE_LIFETIME_MS, formatFileSize, hashCredential, newId, newInviteCode, normalizeInviteCode, safeFileName} from '@pairlobby/protocol';
+import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_RETAINED_FILE_BYTES, DEFAULT_ROOM_POLICY, PROTOCOL_VERSION, ProtocolError, UNATTACHED_FILE_LIFETIME_MS, formatFileSize, hashCredential, newId, newInviteCode, normalizeInviteCode, roomType, safeFileName} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
     Attachment,
@@ -27,6 +27,7 @@ import type {
     RoomEvent,
     RoomInvitationChange,
     RoomPolicy,
+    RoomType,
     RoomSnapshot,
     ResolveRequestRequest,
     RoomFile,
@@ -65,6 +66,7 @@ import {
     setParticipantPermissions,
     setParticipantRole,
     setRoomPermissions,
+    setRoomType,
     emptyMutation,
     findParticipant,
     isActive,
@@ -117,6 +119,8 @@ export interface CreateRoomInput extends Identity {
     participantCredential: string;
     expiresAt?: number | null | undefined;
     policy?: RoomPolicy;
+    /** Absent creates a room without a type, as before types existed. */
+    type?: RoomType | undefined;
     /**
      * Chosen by a server that routes by room id before the room exists, such as a
      * relay with one Durable Object per room. Never taken from a client request.
@@ -350,7 +354,8 @@ export class RoomService {
                 ...(input.member ? {member: input.member} : {}),
                 ...(input.owner ? {owner: input.owner} : {}),
                 ...(input.expiresAt !== undefined ? {expiresAt: input.expiresAt} : {}),
-                policy: input.policy ?? this.roomPolicy
+                policy: input.policy ?? this.roomPolicy,
+                ...(input.type ? {type: input.type} : {})
             },
             this.ctx()
         );
@@ -367,6 +372,7 @@ export class RoomService {
         if (role === 'controller') {
             assertController(actor);
         }
+        const issuedBy = actor.kind === 'controller' ? 'owner' : actor.participant.role === 'controller' ? 'admin' : 'member';
         if (defaultName !== undefined && (!defaultName.trim() || defaultName.trim().length > 64)) {
             throw new ProtocolError('invalid_request', 'invite name must be between 1 and 64 characters');
         }
@@ -398,6 +404,7 @@ export class RoomService {
             expiresAt: deadline,
             state: 'unused',
             ...(defaultName !== undefined ? {defaultName: defaultName.trim()} : {}),
+            issuedBy,
             reusable,
             boundAttemptId: null,
             boundCredentialHash: null,
@@ -466,6 +473,10 @@ export class RoomService {
             throw new ProtocolError('invite_expired', 'that invite code has expired');
         }
 
+        // Codes from before the room became personal, or from a member, admit nobody now.
+        if (roomType(view.room.policy) === 'personal' && invite.issuedBy !== 'owner' && invite.issuedBy !== 'admin') {
+            throw new ProtocolError('unauthorized', 'this is a personal room: only codes from its owner admit anyone');
+        }
         const reserved = await this.store.reserveInvite(digest, input.attemptId, credentialHash, expectedOccupantId);
         if (!reserved) {
             throw new ProtocolError('invite_already_redeemed', 'that invite code is being redeemed by another attempt');
@@ -1104,6 +1115,10 @@ export class RoomService {
         return this.applyOne(setLocalJoin(await this.view(roomId), await hashCredential(credential), localJoin, this.ctx()));
     }
 
+    async setRoomType(roomId: string, credential: string, type: RoomType): Promise<RoomEvent> {
+        return this.applyOne(setRoomType(await this.view(roomId), await hashCredential(credential), type, this.ctx()));
+    }
+
     /** Adds "invited @handle" or "withdrew the invitation" to the transcript. For relays that hold accounts; there is no HTTP route for it. */
     async recordInvitation(roomId: string, credential: string, change: RoomInvitationChange): Promise<RoomEvent> {
         return this.applyOne(recordInvitation(await this.view(roomId), await hashCredential(credential), change, this.ctx()));
@@ -1248,6 +1263,9 @@ export class RoomService {
         if (actor.participant.member !== undefined && actor.participant.member !== member) {
             throw new ProtocolError('unauthorized', 'this agent joined as another member; only they can share it');
         }
+        if (roomType(view.room.policy) === 'personal') {
+            throw new ProtocolError('unauthorized', 'agents in a personal room cannot be shared; share one from a room others may join');
+        }
         return {participantId: actor.participant.participantId, agentName: actor.participant.displayName, roomName: view.room.name, at: now};
     }
 
@@ -1255,7 +1273,7 @@ export class RoomService {
     async listable(roomId: string, participantId: string): Promise<boolean> {
         const view = await this.store.loadRoom(roomId);
         const participant = view ? findParticipant(view, participantId) : undefined;
-        return Boolean(view && participant && view.room.lifecycle === 'open' && (view.room.expiresAt === null || this.now() < view.room.expiresAt) && isActive(participant));
+        return Boolean(view && participant && roomType(view.room.policy) !== 'personal' && view.room.lifecycle === 'open' && (view.room.expiresAt === null || this.now() < view.room.expiresAt) && isActive(participant));
     }
 
     /** Makes the room inaccessible immediately; physical cleanup may lag. */

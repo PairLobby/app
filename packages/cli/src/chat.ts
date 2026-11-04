@@ -6,7 +6,7 @@
 import type {Interface} from 'node:readline';
 import {ChatTerminal} from './chat-terminal.js';
 
-import {ProtocolError, requestState, newId, messageActionLabel, failureLabel} from '@pairlobby/protocol';
+import {ProtocolError, ROOM_TYPE_SUMMARY, requestState, newId, messageActionLabel, failureLabel} from '@pairlobby/protocol';
 import type {Attachment, MessageRequest, RoomEvent, RoomSnapshot, TurnQueue} from '@pairlobby/protocol';
 import {LocalStore, PairLobbyClient, ReceiptCoalescer} from '@pairlobby/client';
 
@@ -934,6 +934,8 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
             return event.payload.state === 'withdrawn' ? `${sender} withdrew the invitation to @${event.payload.handle}` : `${sender} invited @${event.payload.handle}${invitationTerms(event.payload)}`;
         case 'room.local_join_changed':
             return event.payload.localJoin ? `${sender} let anyone on the local network join by name` : `${sender} turned off joining by name on the local network`;
+        case 'room.type_changed':
+            return `${sender} made the room ${event.payload.type}: ${ROOM_TYPE_SUMMARY[event.payload.type]}`;
         case 'message.delivery_failed':
             return `${failureLabel(event.payload.stage)} [${event.payload.eventId}]: ${event.payload.reason} (failed attempt)`;
         case 'message.received':

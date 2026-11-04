@@ -3,7 +3,7 @@
 //! configuration only, never a credential or a participant.
 
 import {ProtocolError, ROOM_PERMISSIONS, roomPermissions} from '@pairlobby/protocol';
-import type {PermissionChange, RoomSnapshot} from '@pairlobby/protocol';
+import type {PermissionChange, RoomSnapshot, RoomType} from '@pairlobby/protocol';
 import type {LocalStore, PairLobbyClient, RoomPreset} from '@pairlobby/client';
 
 import {describeAutoClose} from './auto-close.js';
@@ -42,8 +42,8 @@ export function presetFromRoom(name: string, room: RoomSnapshot, now = Date.now(
     return {name, savedAt: now, permissions: {...room.policy.permissions}, turnMode: room.turnMode ?? 'sequential', inviteRole: room.policy.inviteRole ?? 'member', autoClose: room.policy.autoClose ?? {mode: 'off'}};
 }
 
-function describePermissions(permissions: RoomPreset['permissions']): string {
-    const members = roomPermissions(permissions);
+function describePermissions(permissions: RoomPreset['permissions'], type?: RoomType): string {
+    const members = roomPermissions(permissions, type);
     const allowed = ROOM_PERMISSIONS.filter((permission) => members[permission]);
     return allowed.length ? `members may ${allowed.join(', ')}` : 'owner and admins only';
 }
@@ -62,12 +62,13 @@ export function describePreset(preset: RoomPreset): string {
 export function presetChanges(preset: RoomPreset, room: RoomSnapshot, target: PresetTarget): PresetChange[] {
     const {client, roomId} = target;
     const changes: PresetChange[] = [];
-    const current = roomPermissions(room.policy.permissions);
-    const wanted = roomPermissions(preset.permissions);
+    // Compared in the room's type, whose defaults apply to whatever the preset leaves undecided.
+    const current = roomPermissions(room.policy.permissions, room.policy.type);
+    const wanted = roomPermissions(preset.permissions, room.policy.type);
     if (ROOM_PERMISSIONS.some((permission) => current[permission] !== wanted[permission])) {
         // The preset replaces the room's decisions entirely: a command it leaves undecided goes back to the default.
         const change: PermissionChange = Object.fromEntries(ROOM_PERMISSIONS.map((permission) => [permission, preset.permissions[permission] ?? null]));
-        changes.push({label: 'Command permissions', from: describePermissions(room.policy.permissions ?? {}), to: describePermissions(preset.permissions), apply: (authority) => client.setRoomPermissions(roomId, authority, change)});
+        changes.push({label: 'Command permissions', from: describePermissions(room.policy.permissions ?? {}, room.policy.type), to: describePermissions(preset.permissions, room.policy.type), apply: (authority) => client.setRoomPermissions(roomId, authority, change)});
     }
     if ((room.turnMode ?? 'sequential') !== preset.turnMode) {
         changes.push({label: 'Reply mode', from: room.turnMode ?? 'sequential', to: preset.turnMode, apply: (authority) => client.setTurnMode(roomId, authority, preset.turnMode)});

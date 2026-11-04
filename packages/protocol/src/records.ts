@@ -9,12 +9,14 @@ import {AttemptId, EventId, HandoverId, ListingId, ParticipantId, RoomId, Sessio
 import {HandoverDocument, HandoverState} from './handover.js';
 import {AutoClosePolicySchema, CloseReasonSchema} from './auto-close.js';
 import {PermissionSet} from './permissions.js';
+import {RoomType} from './room-types.js';
 import {ABSOLUTE_MAX_FILE_BYTES} from './files.js';
 
 export const RoomLifecycle = z.enum(['open', 'closed', 'expired', 'deleted']);
 export type RoomLifecycle = z.infer<typeof RoomLifecycle>;
 
 export const RoomPolicySchema = z.object({
+    type: RoomType.optional(),
     joinPolicy: z.enum(['invite_only', 'open_to_guests']).default('invite_only'),
     inviteRole: z.enum(['member', 'guest']).optional(),
     autoClose: AutoClosePolicySchema.optional(),
@@ -134,6 +136,8 @@ export const InviteRecord = z.object({
     roomId: RoomId,
     role: ParticipantRole,
     defaultName: z.string().trim().min(1).max(64).optional(),
+    /** Who minted it; a personal room admits only codes from its owner and admins. Absent on older invites. */
+    issuedBy: z.enum(['owner', 'admin', 'member']).optional(),
     createdAt: z.number().int().nonnegative(),
     /** Null for an invite that does not expire. */
     expiresAt: z.number().int().nonnegative().nullable(),
