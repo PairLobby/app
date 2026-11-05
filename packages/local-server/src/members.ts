@@ -110,6 +110,9 @@ export class MembersFile {
 
     readonly lookup: MemberLookup = async (digest) => this.members.get(digest) ?? null;
 
+    /** The member with this handle, or null. */
+    readonly byHandle = (handle: string): RelayMember | null => [...this.members.values()].find((member) => member.handle === handle) ?? null;
+
     get size(): number {
         return this.members.size;
     }

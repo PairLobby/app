@@ -26,7 +26,8 @@ export type MemberLookup = (digest: string) => Promise<RelayMember | null>;
 /** Who a token in the create token header stands for: the team, or one member. */
 type Caller = {kind: 'team'} | {kind: 'member'; member: RelayMember};
 
-export type RateLimit = {perMinute: number};
+/** A rate, and how many may come at once; without `burst`, one minute's worth. */
+export type RateLimit = {perMinute: number; burst?: number};
 
 export type RateDecision = {ok: true} | {ok: false; retryAfterMs: number};
 
@@ -44,9 +45,15 @@ export type AdmissionLimits = {
     redeemPerMinuteGlobal: number;
     /** Team token checks (`GET /api/online/account`) one address may make a minute, counted apart from creating rooms. */
     accountCheckPerMinutePerAddress: number;
+    /** Directory reads one member may make a minute. */
+    directoryPerMinutePerMember: number;
+    /** Contacts one member may start a minute. */
+    contactPerMinutePerMember: number;
+    /** Contacts one listing may receive an hour, from everyone together. */
+    contactPerHourPerListing: number;
 };
 
-export const DEFAULT_ADMISSION_LIMITS: AdmissionLimits = {createPerMinutePerAddress: 10, redeemPerMinutePerAddress: 20, redeemPerMinuteGlobal: 300, accountCheckPerMinutePerAddress: 30};
+export const DEFAULT_ADMISSION_LIMITS: AdmissionLimits = {createPerMinutePerAddress: 10, redeemPerMinutePerAddress: 20, redeemPerMinuteGlobal: 300, accountCheckPerMinutePerAddress: 30, directoryPerMinutePerMember: 60, contactPerMinutePerMember: 10, contactPerHourPerListing: 30};
 
 export type AdmissionOptions = {
     /** When set, creating a room needs this token in the create token header. Joining with an invite never does. */
@@ -73,15 +80,15 @@ type BucketState = {tokens: number; updatedAt: number};
 
 type MemoryRateLimiterOptions = {now?: () => number; maxKeys?: number};
 
-/** Token buckets in memory: each key refills at its per-minute rate and holds at most one minute's worth. */
+/** Token buckets in memory: each key refills at its per-minute rate and holds at most its burst, one minute's worth unless said. */
 export function memoryRateLimiter({now = Date.now, maxKeys = 10_000}: MemoryRateLimiterOptions = {}): RateLimiter {
     const buckets = new Map<string, BucketState>();
     return {
-        async take(key, cost, {perMinute}) {
+        async take(key, cost, {perMinute, burst = perMinute}) {
             const at = now();
             const perMs = perMinute / 60_000;
             const previous = buckets.get(key);
-            const tokens = previous ? Math.min(perMinute, previous.tokens + (at - previous.updatedAt) * perMs) : perMinute;
+            const tokens = previous ? Math.min(burst, previous.tokens + (at - previous.updatedAt) * perMs) : burst;
             if (tokens < cost) {
                 buckets.set(key, {tokens, updatedAt: at});
                 return {ok: false, retryAfterMs: Math.ceil((cost - tokens) / perMs)};
@@ -90,7 +97,7 @@ export function memoryRateLimiter({now = Date.now, maxKeys = 10_000}: MemoryRate
             if (buckets.size > maxKeys) {
                 // A full bucket says nothing a fresh one would not, so forgetting it is free.
                 for (const [name, bucket] of buckets) {
-                    if (bucket.tokens + (at - bucket.updatedAt) * perMs >= perMinute) {
+                    if (bucket.tokens + (at - bucket.updatedAt) * perMs >= burst) {
                         buckets.delete(name);
                     }
                 }
@@ -168,6 +175,15 @@ export function createAdmission(options: AdmissionOptions) {
         async beforeRedeem(request: Request, context: RequestContext = {}): Promise<void> {
             await take(request, context, `redeem:address:${address(request, context)}`, 1, {perMinute: limits.redeemPerMinutePerAddress});
             await take(request, context, 'redeem:global', 1, {perMinute: limits.redeemPerMinuteGlobal});
+        },
+        /** Counts a directory read against the member making it. */
+        async beforeDirectory(request: Request, context: RequestContext, member: RelayMember): Promise<void> {
+            await take(request, context, `directory:member:${member.handle}`, 1, {perMinute: limits.directoryPerMinutePerMember});
+        },
+        /** Counts a contact against the member starting it and the listing it reaches. */
+        async beforeContact(request: Request, context: RequestContext, member: RelayMember, listingId: string): Promise<void> {
+            await take(request, context, `contact:member:${member.handle}`, 1, {perMinute: limits.contactPerMinutePerMember});
+            await take(request, context, `contact:listing:${listingId}`, 1, {perMinute: limits.contactPerHourPerListing / 60, burst: limits.contactPerHourPerListing});
         },
         /** A code that matched nothing costs the caller once more, so guessing is slower than joining. */
         async afterUnknownInvite(request: Request, context: RequestContext = {}): Promise<void> {

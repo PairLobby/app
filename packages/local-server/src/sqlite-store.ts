@@ -78,6 +78,7 @@ export class SqliteRoomStore implements RoomStore {
         deleteListing: async (listingId) => {
             this.db.prepare('DELETE FROM listings WHERE listing_id = ?').run(listingId);
         },
+        ownerListings: async (owner) => (this.db.prepare('SELECT body FROM listings WHERE owner = ? ORDER BY listing_id').all(owner) as unknown as BodyRow[]).map((row) => JSON.parse(row.body) as ListingRecord),
         listings: async (after, limit) => (this.db.prepare('SELECT body FROM listings WHERE listing_id > ? ORDER BY listing_id LIMIT ?').all(after, limit) as unknown as BodyRow[]).map((row) => JSON.parse(row.body) as ListingRecord),
         lastMessageAt: async (roomId, participantId) => {
             const row = this.db.prepare("SELECT json_extract(body, '$.at') AS at FROM events WHERE room_id = ? AND json_extract(body, '$.senderId') = ? AND json_extract(body, '$.type') = 'message' ORDER BY seq DESC LIMIT 1").get(roomId, participantId) as {at: number} | undefined;

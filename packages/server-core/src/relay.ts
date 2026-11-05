@@ -136,6 +136,8 @@ export interface RelayOptions {
      * offers `directory`: members share agents from their rooms under `/v1/directory`.
      */
     directory?: DirectoryStore;
+    /** The member with this handle, or null; lets the directory tell an unknown handle from one with nothing shared. */
+    memberByHandle?: (handle: string) => RelayMember | null;
 }
 
 /**
@@ -330,7 +332,7 @@ async function edgeRoute(request: Request, context: RequestContext, options: Rel
         return errorResponse('invalid_request', 'unknown path', 404);
     }
     if (segments[1] === 'directory') {
-        return directoryEdge(request, segments, method, options);
+        return directoryEdge(request, context, segments, method, options);
     }
     // A new room gets its id here, because a relay with an object per room routes by it.
     if (segments[1] === 'rooms' && segments.length === 2 && method === 'POST') {
@@ -361,8 +363,11 @@ async function edgeRoute(request: Request, context: RequestContext, options: Rel
  * The directory's routes. Each needs a personal token; sharing and heartbeats also go to the
  * listing's room, which checks the agent's credential. Someone else's listing is answered like a missing one.
  */
-async function directoryEdge(request: Request, segments: string[], method: string, options: RelayOptions): Promise<Response | RoomRoute> {
+async function directoryEdge(request: Request, context: RequestContext, segments: string[], method: string, options: RelayOptions): Promise<Response | RoomRoute> {
     const {directory, admission} = options;
+    if (directory && admission?.memberTokens && segments.length === 2 && method === 'GET') {
+        return directoryRead(request, context, directory, options);
+    }
     if (directory && admission?.memberTokens && segments[2] === 'defaults' && segments.length === 3) {
         return memberDefaults(request, method, directory, await admission.member(request));
     }
@@ -386,6 +391,14 @@ async function directoryEdge(request: Request, segments: string[], method: strin
     if (!member) {
         return errorResponse('unauthorized', DIRECTORY_NEEDS_MEMBER, 403);
     }
+    // Anyone who sees a listing may contact it; its room mints the code.
+    if (segments.length === 5 && segments[4] === 'contact' && method === 'POST') {
+        if (!listing || !(await options.service.listingVisible(listing, member.handle))) {
+            return errorResponse('invalid_request', 'no such listing', 404);
+        }
+        await admission.beforeContact(request, context, member, listing.listingId);
+        return {roomId: listing.roomId, request: claiming(request, member)};
+    }
     if (!listing || listing.owner !== member.handle) {
         return errorResponse('invalid_request', 'no such listing', 404);
     }
@@ -397,6 +410,30 @@ async function directoryEdge(request: Request, segments: string[], method: strin
         return {roomId: listing.roomId, request: claiming(request, member)};
     }
     return errorResponse('invalid_request', 'unknown path', 404);
+}
+
+/** Listings the caller sees: a room they cannot see, or a listing that no longer stands, is left out as if it did not exist. */
+async function visibleListings(listings: ListingRecord[], handle: string, service: RoomService): Promise<ListingRecord[]> {
+    const visible = await Promise.all(listings.map((listing) => service.listingVisible(listing, handle)));
+    return listings.filter((_, index) => visible[index]);
+}
+
+/** Listings read for a directory without an owner: the newest this many. */
+const DIRECTORY_PAGE = 500;
+
+/** `GET /v1/directory[?owner=]`: the shared agents the caller sees, one owner's or everyone's. */
+async function directoryRead(request: Request, context: RequestContext, directory: DirectoryStore, options: RelayOptions): Promise<Response> {
+    const member = await options.admission!.member(request);
+    if (!member) {
+        return errorResponse('unauthorized', DIRECTORY_NEEDS_MEMBER, 403);
+    }
+    await options.admission!.beforeDirectory(request, context, member);
+    const owner = new URL(request.url).searchParams.get('owner')?.trim().replace(/^@/, '').toLowerCase();
+    const all = owner ? await directory.ownerListings(owner) : await directory.listings('', DIRECTORY_PAGE);
+    const now = Date.now();
+    const listings = await Promise.all((await visibleListings(all, member.handle, options.service)).map(async (listing) => toListingView(listing, {now, lastMessageAt: await directory.lastMessageAt(listing.roomId, listing.participantId), ownerName: options.memberByHandle?.(listing.owner)?.name})));
+    const knownHandle = owner && options.memberByHandle ? {knownHandle: options.memberByHandle(owner) !== null || all.length > 0} : {};
+    return json({listings, ...knownHandle});
 }
 
 /** `GET` and `PUT /v1/directory/defaults`: the caller's own default visibility for their rooms, `everyone` until set. */
@@ -420,8 +457,16 @@ async function memberDefaults(request: Request, method: string, directory: Direc
  * is now, so an agent that left, a closed room or another participant's credential is refused.
  */
 async function listingInRoom(request: Request, roomId: string, segments: string[], method: string, directory: DirectoryStore, service: RoomService): Promise<Response> {
-    const credential = bearer(request);
     const member = claimedMember(request);
+    // A contact holds no credential in the room yet; the edge has checked their login and that they see it.
+    if (segments.length === 5 && segments[4] === 'contact' && method === 'POST' && member) {
+        const listing = await directory.listing(segments[3]!);
+        if (!listing || listing.roomId !== roomId) {
+            return errorResponse('invalid_request', 'no such listing', 404);
+        }
+        return json(await service.contactInvite(roomId, listing, member));
+    }
+    const credential = bearer(request);
     if (segments.length === 3 && method === 'POST' && member) {
         const input = ShareListingRequest.parse(await request.json());
         const {participantId, agentName, roomName, at} = await service.listingSubject(roomId, credential, member);
@@ -538,7 +583,7 @@ export function describe(options: RelayOptions): ServerDescription {
         ...(options.directory && options.admission?.memberTokens ? ['directory'] : []),
         ...(profile.receiptMode !== 'events' ? ['receipt-watermark'] : []),
         'room-types',
-        ...(options.directory && options.admission?.memberTokens ? ['room-visibility'] : []),
+        ...(options.directory && options.admission?.memberTokens ? ['room-visibility', 'directory-contact'] : []),
         ...(options.features ?? [])
     ];
     const transport = options.transport ?? (options.changes ? 'long-poll' : undefined);

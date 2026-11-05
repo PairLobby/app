@@ -97,6 +97,10 @@ export interface SavedEndpoint {
 export interface Settings {
     /** Ask before deleting a room. */
     confirmDelete: boolean;
+    /** Deleting a room this device owns while someone else is still in it only removes it from this device. */
+    leaveOccupiedRooms: boolean;
+    /** Deleting a room this device owns when no one else is in it deletes it for everyone, rather than only removing it from this device. */
+    deleteEmptyRooms: boolean;
     /** How often the live room asks for new events, in milliseconds. */
     pollIntervalMs: number;
     /** Print participant and room ids next to names in the live room. */
@@ -137,6 +141,8 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
     confirmDelete: true,
+    leaveOccupiedRooms: true,
+    deleteEmptyRooms: true,
     pollIntervalMs: 700,
     showIds: false,
     defaultRoomLifetimeMs: null,

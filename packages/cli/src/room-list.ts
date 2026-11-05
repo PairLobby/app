@@ -3,7 +3,7 @@ import {platform} from 'node:os';
 import {PairLobbyClient} from '@pairlobby/client';
 import type {LocalStore, RoomEntry, SessionEntry} from '@pairlobby/client';
 import {ProtocolError, roomType} from '@pairlobby/protocol';
-import type {RoomSnapshot} from '@pairlobby/protocol';
+import type {ParticipantView, RoomSnapshot} from '@pairlobby/protocol';
 import {lastMessage} from './find.js';
 import type {RoomListEntry} from './render.js';
 import {receiverConfiguration, receiverStatus, stopReceiver} from './receiver.js';
@@ -270,6 +270,22 @@ export type RoomRemoval = 'deleted' | 'already_gone';
  * (the room was created here), or one of its sessions is an active admin of the room.
  * `entry` is the room as the list last loaded it; without a snapshot only ownership is known.
  */
+/** Everyone still in the room apart from this device's own sessions. */
+export function othersInRoom(room: RoomEntry, snapshot: RoomSnapshot): ParticipantView[] {
+    const mine = new Set(room.sessions.map((session) => session.participantId));
+    return snapshot.participants.filter((person) => !person.left && !person.revoked && !mine.has(person.participantId));
+}
+
+/** A few of their names, for a sentence: "Ana, Bo and 3 others". */
+export function namesOf(people: ParticipantView[]): string {
+    const names = people.slice(0, 3).map((person) => person.displayName);
+    const rest = people.length - names.length;
+    if (rest > 0) {
+        return `${names.join(', ')} and ${rest} other${rest === 1 ? '' : 's'}`;
+    }
+    return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0] ?? '';
+}
+
 export function administersListedRoom(store: LocalStore, entry: RoomListEntry): boolean {
     if (store.credential(entry.room.roomId, 'controller')) {
         return true;
