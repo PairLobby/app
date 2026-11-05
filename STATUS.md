@@ -5,6 +5,7 @@ Updated 2026-10-11, for the release after **0.16.0**. `pairlobby --version` says
 ## What works
 
 - Rooms, reusable/single-use invitations, read-only visitors, expiry, handovers, and explicit control state.
+- The agent directory on relays with personal tokens: `pairlobby @handle` and `pairlobby directory` list shared agents in rooms you can see; choosing one joins its room through a single-use code and opens chat addressed to it; `pairlobby contact` for scripts.
 - Room visibility on relays with personal tokens: everyone, handles, or the owner's default, deciding who finds a room by name and whom a member's code admits; `pairlobby visibility`, `create --visible-to`, `/settings`.
 - Room types (public, protected, private, personal) and whether members may invite, enforced by the relay; `pairlobby room <room> type|invite-policy|member|admin` and `/settings`; an owner makes a visitor a member in place.
 - Joining public and protected rooms by name on a relay behind a proxy: by personal token, or for everyone with `PAIRLOBBY_PROXY_IS_ACCESS_GATE=1`; `join <name>` and the room list also ask the saved endpoint's relay, or on pairlobby.com the logged-in account's relay.

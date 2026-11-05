@@ -190,7 +190,7 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
     const executor = queueExecutor();
     // One timer for the whole relay, aimed at the earliest auto-close deadline; every write plans it again.
     const scheduler = timerScheduler(() => void relay.tick('auto-close'));
-    const relay: Relay = createRelay({service, executor, scheduler, behindProxy, ...(options.proxyIsAccessGate ? {proxyIsAccessGate: true} : {}), allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo, changes, inviteProbe, peerIsLocal, localRooms, admission, directory: store.directory, ...(discovery ? {discovery: () => discovery} : {}), ...(accountCheck ? {accountCheck} : {})});
+    const relay: Relay = createRelay({service, executor, scheduler, behindProxy, ...(options.proxyIsAccessGate ? {proxyIsAccessGate: true} : {}), allowedOrigins: options.allowedOrigins ?? [], allowedHosts: acceptHost, serverInfo, changes, inviteProbe, peerIsLocal, localRooms, admission, directory: store.directory, ...(members ? {memberByHandle: members.byHandle} : {}), ...(discovery ? {discovery: () => discovery} : {}), ...(accountCheck ? {accountCheck} : {})});
     void relay.tick('auto-close');
     const sweep = members ? setInterval(() => void relay.tick('directory-sweep').catch(() => {}), DIRECTORY_SWEEP_MS) : undefined;
     sweep?.unref();

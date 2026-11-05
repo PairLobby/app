@@ -15,12 +15,13 @@ import {parseArgs} from 'node:util';
 import {LocalStore, PairLobbyClient, openRequests, owedByMe, unreceipted} from '@pairlobby/client';
 import type {JoinedRoom, RoomEntry, RoomPreset, Settings} from '@pairlobby/client';
 import {ParticipantName, ProtocolError, effectivePermissions, requestState, newId, normalizeInviteCode, MessageAction, parseVisibility, roomPermissions, safeFileName} from '@pairlobby/protocol';
-import type {AdapterCapabilities, MessageRequest, RoomType} from '@pairlobby/protocol';
+import type {AdapterCapabilities, MessageRequest, ParticipantView, RoomType} from '@pairlobby/protocol';
 import type {RelayFlags} from '@pairlobby/local-server/settings';
 
 import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
 import {detectRuntime, sameRuntime} from './runtime-detect.js';
 import {runChatRoom} from './chat.js';
+import {contactBanner, directoryHandle, directoryLines, listingHint, listingLine} from './directory-contact.js';
 import {chooseHumanSession, selectHumanSession} from './human-session.js';
 import {WhenError, formatDuration, parseDuration, parseExpiry} from './when.js';
 import {pickExpiry} from './picker.js';
@@ -58,6 +59,7 @@ import {checkForInteractiveUpdate, checkForUpdate, installRelease, managedInstal
 import type {LatestRelease, UpdateCheck, UpdateChoice} from './updater.js';
 import {findRooms, formatFoundRooms} from './find.js';
 import {doctorCommand, requireRelayFeature} from './doctor.js';
+import {chooseFromMenu} from './picker.js';
 import {attachmentLabel, attachmentText, expandPath, filesReport, findRoomFile, saveFile, uploadFiles} from './files.js';
 import {runPermissionCommand} from './permissions.js';
 import {applyPresetChanges, presetChanges, runPresetCommand, runPresetLibraryCommand} from './presets.js';
@@ -66,7 +68,7 @@ import {spawnAgent, formatSpawnResult} from './spawn-agent.js';
 import {parseSpawnOptions, SPAWN_HELP} from './spawn-options.js';
 import {RoomBrowser} from './room-browser.js';
 import type {RoomBrowserOptions} from './room-browser.js';
-import {ROOM_COLUMNS, deleteListedRoom, loadRoomList, relayAdvice, roomListJson, roomRows, sortListRows} from './room-list.js';
+import {ROOM_COLUMNS, deleteListedRoom, forgetListedRoom, loadRoomList, namesOf, othersInRoom, relayAdvice, roomListJson, roomRows, sortListRows} from './room-list.js';
 import {closeRequest, recoverRequest} from './request-recovery.js';
 import {waitForReply} from './reply-wait.js';
 import {trustLocalCertificates} from './trust.js';
@@ -160,6 +162,7 @@ const OPTIONS = {
     topic: {type: 'string'},
     type: {type: 'string'},
     'visible-to': {type: 'string'},
+    owner: {type: 'string'},
     default: {type: 'boolean'},
     contact: {type: 'string'},
     help: {type: 'boolean'}
@@ -188,6 +191,9 @@ const HELP = `pairlobby
                                     show or set which members see the room, on a relay with logins
   pairlobby visibility --default [everyone|@a,@b]
                                     show or set your default for rooms that follow it
+  pairlobby @<handle>                agents this person shares; Enter contacts one and opens chat with it
+  pairlobby directory [--owner <h>]  every shared agent you can see (--json for scripts)
+  pairlobby contact <listing-id>     join a shared agent's room without opening chat (--json)
   pairlobby delete <room>            delete a room (controller only)
   pairlobby forget <room>            drop the local record, leave the server alone
   pairlobby settings                 interactive menu for this device's preferences and new-room defaults
@@ -348,7 +354,19 @@ async function main(argv: string[]): Promise<number> {
     scheduleInvitationCheck(store, command);
     useEndpointOverride(str(values, 'endpoint'));
 
+    if (command.startsWith('@')) {
+        return directoryCommand(store, values, directoryHandle(command));
+    }
     switch (command) {
+        case 'directory':
+            return directoryCommand(store, values, str(values, 'owner') === undefined ? undefined : directoryHandle(str(values, 'owner')!));
+        case 'contact': {
+            const listingId = positionals[1];
+            if (!listingId) {
+                throw new UsageError('pairlobby contact <listing-id>; find one with pairlobby directory');
+            }
+            return contactListing(store, values, directoryClient(store, values), listingId, false);
+        }
         case 'receiver-tools':
             return (await import('./receiver-tools.js')).runReceiverTools(store, str(values, 'room')!, str(values, 'session')!, str(values, 'request')!);
         case 'receiver-run':
@@ -1024,8 +1042,12 @@ async function deleteRoom(store: LocalStore, values: Values, reference: string |
     }
     const room = resolveRoom(store, reference);
     // Refuses here, before the question, when this device does not own the room.
-    controllerCredential(store, room);
+    const owner = controllerCredential(store, room);
     const confirm = store.settings().confirmDelete && !flag(values, 'force') && !flag(values, 'json') && process.stdin.isTTY;
+    const others = await occupants(room, owner);
+    if (others.length > 0 ? store.settings().leaveOccupiedRooms : !store.settings().deleteEmptyRooms) {
+        return leaveInstead(store, values, room, others, confirm);
+    }
     if (confirm) {
         const {createInterface} = await import('node:readline/promises');
         const terminal = createInterface({input: process.stdin, output: process.stdout});
@@ -1046,6 +1068,44 @@ async function deleteRoom(store: LocalStore, values: Values, reference: string |
         return 0;
     }
     out(`Deleted ${room.name}`);
+    return 0;
+}
+
+/** Who besides this device is still in the room; none when the relay cannot say, so deleting reports that itself. */
+async function occupants(room: RoomEntry, owner: string): Promise<ParticipantView[]> {
+    const client = new PairLobbyClient(room.serverUrl);
+    try {
+        return othersInRoom(room, await client.snapshot(room.roomId, owner));
+    } catch {
+        return [];
+    } finally {
+        client.closeLive();
+    }
+}
+
+/**
+ * `pairlobby delete` when this device's settings keep the room: others are still in it
+ * (leave-occupied-rooms), or no one is and delete-empty-rooms is off. The device leaves it.
+ */
+async function leaveInstead(store: LocalStore, values: Values, room: RoomEntry, others: ParticipantView[], confirm: boolean): Promise<number> {
+    const why = others.length > 0 ? `${namesOf(others)} ${others.length === 1 ? 'is' : 'are'} still in ${room.name}, so it is not deleted` : `delete-empty-rooms is off, so ${room.name} stays on its relay`;
+    if (confirm) {
+        const {createInterface} = await import('node:readline/promises');
+        const terminal = createInterface({input: process.stdin, output: process.stdout});
+        const answer = await terminal.question(`${why[0]!.toUpperCase()}${why.slice(1)}. Leave it and remove it from your rooms? This device no longer owns it afterwards. [y/N] `);
+        terminal.close();
+        if (answer.trim().toLowerCase() !== 'y') {
+            note('left alone');
+            return 0;
+        }
+    }
+    await forgetListedRoom(store, room.roomId);
+    if (flag(values, 'json')) {
+        json({roomId: room.roomId, deleted: false, left: true, others: others.length});
+        return 0;
+    }
+    out(`Left ${room.name}: ${why}.`);
+    note(others.length > 0 ? 'to delete rooms others are in, run pairlobby settings leave-occupied-rooms off' : 'to delete rooms no one is in, run pairlobby settings delete-empty-rooms on');
     return 0;
 }
 
@@ -1588,6 +1648,70 @@ async function joinLocalRoom(store: LocalStore, values: Values, reference: strin
     // The saved endpoint's relay may know people by their login rather than by where they connect from.
     const joined = await new PairLobbyClient(match.url, hostedAccountToken(store, match.url)).joinOnLocalNetwork(match.roomId, identity);
     return finishJoin(store, values, joined, match.url, identity);
+}
+
+/** A client for the directory on the relay this device logs in to, with its login. */
+function directoryClient(store: LocalStore, values: Values): PairLobbyClient {
+    const server = resolveServer({server: str(values, 'server') ?? store.profile().server, local: flag(values, 'local'), fallback: endpointRelay(store)});
+    const token = hostedAccountToken(store, server);
+    if (!token) {
+        throw new UsageError(`the directory needs your login to ${server}: run pairlobby login`);
+    }
+    return new PairLobbyClient(server, token);
+}
+
+/**
+ * `pairlobby @handle` and `pairlobby directory`: the shared agents this member sees, one owner's or
+ * everyone's. In a terminal, choosing one contacts it and opens chat with it; otherwise it prints them.
+ */
+async function directoryCommand(store: LocalStore, values: Values, owner?: string): Promise<number> {
+    const client = directoryClient(store, values);
+    await requireRelayFeature(client, 'directory-contact', 'the directory');
+    const found = await client.directory(owner);
+    if (flag(values, 'json')) {
+        json(found);
+        return 0;
+    }
+    if (process.stdin.isTTY !== true || process.stdout.isTTY !== true || found.listings.length === 0) {
+        for (const line of directoryLines(found, owner)) {
+            out(line);
+        }
+        return 0;
+    }
+    const chosen = await chooseFromMenu(owner ? `Agents @${owner} shares` : 'Shared agents', found.listings.map((listing) => ({label: listingLine(listing), hint: listingHint(listing), value: listing.listingId})));
+    if (chosen === undefined) {
+        return 0;
+    }
+    return contactListing(store, values, client, chosen, true);
+}
+
+/**
+ * Contacts a shared agent: joins its room as this person, or reuses a saved seat there, and either
+ * opens chat addressed to the agent or, for scripts, prints where the seat is.
+ */
+async function contactListing(store: LocalStore, values: Values, client: PairLobbyClient, listingId: string, openChat: boolean): Promise<number> {
+    const contact = await client.contact(listingId);
+    const saved = store.room(contact.roomId)?.sessions.find((session) => session.kind === 'human' && store.credential(contact.roomId, session.sessionId));
+    let seat: {sessionId: string; participantId: string; credential: string};
+    if (saved) {
+        seat = {sessionId: saved.sessionId, participantId: saved.participantId, credential: store.credential(contact.roomId, saved.sessionId)!};
+    } else {
+        const identity = identityFrom(store, {...values, human: true}, 'person');
+        const joined = await client.redeemInvite(contact.code, identity);
+        saveJoinedMembership(store, values, joined, client.serverUrl, identity);
+        seat = {sessionId: identity.sessionId, participantId: joined.participantId, credential: joined.participantCredential};
+    }
+    if (!openChat) {
+        const result = {roomId: contact.roomId, roomName: contact.roomName, serverUrl: client.serverUrl, sessionId: seat.sessionId, participantId: seat.participantId, agentId: contact.agentId, agentName: contact.agentName, owner: contact.owner, contact: contact.contact, connection: contact.connection, reused: Boolean(saved)};
+        if (flag(values, 'json')) {
+            json(result);
+        } else {
+            out(contactBanner(contact));
+            out(`Ask with: pairlobby send --room ${contact.roomId} --session ${seat.sessionId} --to ${contact.agentId} "<question>"`);
+        }
+        return 0;
+    }
+    return runChatRoom({store, client, roomId: contact.roomId, credential: seat.credential, sessionId: seat.sessionId, participantId: seat.participantId, requireHuman: true, recipientId: contact.agentId, banner: contactBanner(contact)});
 }
 
 /** Saves one successfully joined membership without deciding what the caller does next. */

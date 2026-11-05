@@ -1,11 +1,13 @@
 //! Room operations shared by every transport. The Cloudflare Durable Object and
 //! the Node server both run this; only the store and the socket layer differ.
 
-import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_RETAINED_FILE_BYTES, DEFAULT_ROOM_POLICY, PROTOCOL_VERSION, ProtocolError, UNATTACHED_FILE_LIFETIME_MS, canSee, formatFileSize, hashCredential, newId, newInviteCode, normalizeInviteCode, roomType, safeFileName} from '@pairlobby/protocol';
+import {ABSOLUTE_MAX_FILE_BYTES, CONTACT_INVITE_LIFETIME_MS, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_RETAINED_FILE_BYTES, DEFAULT_ROOM_POLICY, PROTOCOL_VERSION, ProtocolError, UNATTACHED_FILE_LIFETIME_MS, canSee, formatFileSize, hashCredential, newId, newInviteCode, normalizeInviteCode, roomType, safeFileName} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
     Attachment,
     AutoClosePolicy,
+    ContactResponse,
+    ListingRecord,
     DefaultVisibility,
     FileRecord,
     MessageRequest,
@@ -393,24 +395,9 @@ export class RoomService {
         const now = this.now();
         const lifetime = view.room.policy.inviteLifetimeMs;
         const deadline = expiresAt !== undefined ? expiresAt : lifetime === null ? null : now + lifetime;
-        let code = '',
-            normalized = '';
-        for (let attempt = 0; attempt < 8; attempt++) {
-            code = newInviteCode(this.directory ? 12 : 8);
-            normalized = normalizeInviteCode(code)!;
-            if (await this.store.inviteByDigest(await hashCredential(normalized))) {
-                continue;
-            }
-            if (!this.directory || (await this.directory.reserve(code, roomId, deadline))) {
-                break;
-            }
-            code = '';
-        }
-        if (!code || (await this.store.inviteByDigest(await hashCredential(normalized)))) {
-            throw new ProtocolError('server_unavailable', 'Could not allocate a unique invite; try again');
-        }
+        const {code, digest} = await this.allocateCode(roomId, deadline);
         await this.store.putInvite({
-            digest: await hashCredential(normalized),
+            digest,
             roomId,
             role,
             createdAt: now,
@@ -425,6 +412,67 @@ export class RoomService {
             recoverableUntil: deadline === null ? null : deadline + (deadline - now)
         });
         return {code, expiresAt: deadline, reusable};
+    }
+
+    /** A code no invite has, claimed in the directory when there is one. */
+    private async allocateCode(roomId: string, deadline: number | null): Promise<{code: string; digest: string}> {
+        let code = '',
+            normalized = '';
+        for (let attempt = 0; attempt < 8; attempt++) {
+            code = newInviteCode(this.directory ? 12 : 8);
+            normalized = normalizeInviteCode(code)!;
+            if (await this.store.inviteByDigest(await hashCredential(normalized))) {
+                continue;
+            }
+            if (!this.directory || (await this.directory.reserve(code, roomId, deadline))) {
+                break;
+            }
+            code = '';
+        }
+        const digest = await hashCredential(normalized);
+        if (!code || (await this.store.inviteByDigest(digest))) {
+            throw new ProtocolError('server_unavailable', 'Could not allocate a unique invite; try again');
+        }
+        return {code, digest};
+    }
+
+    /**
+     * A single-use code that lets a member who found a shared agent in the directory into its room,
+     * as a member who came through the directory, so the agent answers them on the listing's terms.
+     * The room checks again that the listing stands and that they see the room.
+     */
+    async contactInvite(roomId: string, listing: ListingRecord, handle: string): Promise<ContactResponse> {
+        const view = await this.view(roomId);
+        const now = this.now();
+        const agent = findParticipant(view, listing.participantId);
+        if (!agent || !(await this.listable(roomId, listing.participantId)) || !(await this.sees(view.room, handle))) {
+            throw new ProtocolError('invalid_request', 'no such listing');
+        }
+        const expiresAt = now + CONTACT_INVITE_LIFETIME_MS;
+        const {code, digest} = await this.allocateCode(roomId, expiresAt);
+        await this.store.putInvite({
+            digest,
+            roomId,
+            role: 'member',
+            createdAt: now,
+            expiresAt,
+            state: 'unused',
+            // Sharing the agent was the owner's consent; the room was checked against this member just now.
+            issuedBy: 'owner',
+            origin: {directory: true, handle, listingId: listing.listingId, contact: listing.contact},
+            reusable: false,
+            boundAttemptId: null,
+            boundCredentialHash: null,
+            redeemedParticipantId: null,
+            recoverableUntil: expiresAt + CONTACT_INVITE_LIFETIME_MS
+        });
+        return {code, expiresAt, roomId, agentId: agent.participantId, agentName: agent.displayName, roomName: view.room.name, owner: listing.owner, contact: listing.contact, connection: listing.connection};
+    }
+
+    /** Whether a member reaches this listing: it still stands, and they see its room. */
+    async listingVisible(listing: ListingRecord, handle: string): Promise<boolean> {
+        const view = await this.store.loadRoom(listing.roomId);
+        return Boolean(view) && (await this.listable(listing.roomId, listing.participantId)) && this.sees(view!.room, handle);
     }
 
     /**

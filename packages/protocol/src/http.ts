@@ -168,7 +168,7 @@ export type LiveTransport = (typeof LIVE_TRANSPORTS)[number];
  * Names a relay lists in `features`. A client checks for one before relying on it;
  * a relay that does not describe itself is assumed to have whatever was usual before descriptions existed.
  */
-export const RELAY_FEATURES = ['message-stages', 'files', 'local-join', 'invite-probe', 'create-token', 'token-login', 'receipt-watermark', 'member-tokens', 'directory', 'room-types', 'room-visibility'] as const;
+export const RELAY_FEATURES = ['message-stages', 'files', 'local-join', 'invite-probe', 'create-token', 'token-login', 'receipt-watermark', 'member-tokens', 'directory', 'room-types', 'room-visibility', 'directory-contact'] as const;
 export type RelayFeature = (typeof RELAY_FEATURES)[number];
 
 /**

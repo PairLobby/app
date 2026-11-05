@@ -55,6 +55,10 @@ export interface ChatOptions {
     showIds?: boolean;
     /** Start from the beginning of retained history rather than from the live edge. */
     fromStart?: boolean;
+    /** Addressed from the start, as after /to: the agent a directory contact came for. */
+    recipientId?: string | undefined;
+    /** Shown first, before anything from the room: where answers will come from. */
+    banner?: string | undefined;
 }
 
 const HELP = `  <message>          address all eligible agents (same as @all)
@@ -174,7 +178,8 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
     try {
         const terminal = view.input;
         const seen = new Set<string>();
-        let recipient: ParticipantMatch = null;
+        const preselected = options.recipientId ? snapshot.participants.find((participant) => participant.participantId === options.recipientId) : undefined;
+        let recipient: ParticipantMatch = preselected ? {id: preselected.participantId, name: preselected.displayName} : null;
         let closed = false;
         let suspended = false;
         let statusLoading = false;
@@ -598,6 +603,9 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         });
 
         setPrompt();
+        if (options.banner) {
+            emit(`${DIM}  ${options.banner}${RESET}`);
+        }
         terminal.prompt();
 
         let cursor = options.fromStart ? 0 : snapshot.latestSeq;

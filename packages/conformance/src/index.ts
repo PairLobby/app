@@ -355,6 +355,36 @@ export const CHECKS: Check[] = [
         }
     },
     {
+        id: 'directory',
+        title: 'a shared agent is listed without its room id, and a contact joins its room through the directory',
+        async run(context) {
+            needFeature(context, 'directory-contact');
+            if (!context.memberToken) {
+                throw new Skip('no member token was given');
+            }
+            const {owner, roomId, controllerCredential, guest} = await pair(context);
+            const member = new PairLobbyClient(context.relay, context.memberToken);
+            const shared = await member.shareListing(guest.participantCredential, {roomId, topic: 'Conformance', contact: 'questions', connection: 'separate'});
+            const found = await member.directory();
+            if (!found.listings.some((listing) => listing.listingId === shared.listingId)) {
+                fail('the shared agent is not in the directory');
+            }
+            if (JSON.stringify(found).includes(roomId)) {
+                fail('the directory shows a room id');
+            }
+            const contact = await member.contact(shared.listingId);
+            if (contact.roomId !== roomId || contact.agentId !== guest.participantId) {
+                fail('the contact names another room or agent');
+            }
+            const joined = await context.stranger().redeemInvite(contact.code, human);
+            const origin = joined.room.participants.find((person) => person.participantId === joined.participantId)?.origin;
+            if (origin?.listingId !== shared.listingId) {
+                fail('the contact did not join as someone who came through the directory');
+            }
+            await owner.delete(roomId, controllerCredential);
+        }
+    },
+    {
         id: 'long-poll',
         title: 'a waiting read answers when a message arrives, and empty at its deadline',
         async run(context) {

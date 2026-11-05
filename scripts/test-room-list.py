@@ -144,11 +144,27 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-room-browser-') as directory:
         keys(b'r'); wait_for('Room 30')
         choose('Room 30'); keys(b'\x7f'); wait_for('Remove room from this device')
         assert 'from this device? You leave the room' in text(), text()
-        keys(b'\x1b[B\r'); wait_for('Removed Room 30 from this device')
+        # The list never waits on the relay: frozen, it leaves the room's icon spinning until it answers.
+        relay.send_signal(signal.SIGSTOP)
+        keys(b'\x1b[B\r'); wait_for('Removing Room 30')
+        row = next(line for line in screen.display if 'Room 30' in line)
+        assert 'Remove room from this device' not in text() and any(frame in row for frame in '⠋⠙⠹⠸⠼⠴⠦⠧'), text()
+        keys(b'\x7f'); wait_for('Room 30 is still being removed')
+        relay.send_signal(signal.SIGCONT)
+        wait_for('Removed Room 30 from this device')
         assert all(room['roomId']!=theirs['roomId'] for room in run('list')['rooms'])
         remaining = json.loads(subprocess.check_output(cli+['status', '--room', theirs['roomId'], '--session', theirs['sessionId'], '--json'], env=other, text=True, timeout=10))
         assert remaining['lifecycle']=='open', 'the room is untouched for its owner'
         assert next(p for p in remaining['participants'] if p['participantId']==visitor['participantId'])['left'] is True
+        # An owned room someone else is still in is left to them rather than deleted.
+        occupied = run('create', '--name', 'Room 35', '--human', '--as', 'Owner', '--server', server)
+        guest = json.loads(subprocess.check_output(cli+['join', occupied['invite']['code'], '--human', '--as', 'Ana', '--server', server, '--json'], env=other, text=True, timeout=10))
+        keys(b'r'); wait_for('Room 35')
+        choose('Room 35'); keys(b'\x7f'); wait_for('Leave room, keep it for others')
+        assert 'Ana is still in it' in text(), text()
+        keys(b'\x1b[B\r'); wait_for('so it was not deleted')
+        assert all(room['roomId']!=occupied['roomId'] for room in run('list')['rooms'])
+        assert json.loads(subprocess.check_output(cli+['status', '--room', occupied['roomId'], '--session', guest['sessionId'], '--json'], env=other, text=True, timeout=10))['lifecycle']=='open'
         keys(b'\x1b'); terminal.wait(timeout=5)
         assert terminal.returncode==0, 'Escape still quits from the room list'
         # With confirm-delete off, Backspace deletes or removes at once, without the dialog.
