@@ -279,8 +279,8 @@ const HELP = `pairlobby
   pairlobby pause <who>              owner/admin, or members the room allows
   pairlobby resume <who>             controller only
   pairlobby serve                    run a local room server (shared as pairlobby settings network-sharing says)
-  pairlobby update                   check GitHub for a new release and offer to install it
-  pairlobby update --check           only report; --yes installs without asking
+  pairlobby update                   install the newest release from GitHub now
+  pairlobby update --check           only report; scripts and agents need --yes to install
   pairlobby serve --tailscale        also accept your Tailscale devices (encrypted by Tailscale)
   pairlobby serve --lan              also accept devices on your network (unencrypted HTTP)
   pairlobby serve --public-url <url> advertise this address in invites (Tailscale, proxy); joining by name is then off
@@ -2710,21 +2710,9 @@ async function updateCommand(store: LocalStore, values: Values): Promise<number>
     if (flag(values, 'check')) {
         return 0;
     }
-    if (!flag(values, 'yes')) {
-        if (!process.stdin.isTTY) {
-            note('Run pairlobby update --yes to install it.');
-            return 0;
-        }
-        const choice = await askUpdateChoice(check.latest);
-        if (choice === 'later') {
-            out('Not updated. You will be asked again next time.');
-            return 0;
-        }
-        if (choice === 'skip') {
-            writeUpdateState(store, {skipped: check.latest.version});
-            out(`Skipping PairLobby ${check.latest.version}.`);
-            return 0;
-        }
+    if (!flag(values, 'yes') && !process.stdin.isTTY) {
+        note('Run pairlobby update --yes to install it.');
+        return 0;
     }
     return (await installUpdate(store, check.latest)) ? 0 : 1;
 }
