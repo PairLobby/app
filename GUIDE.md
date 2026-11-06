@@ -688,7 +688,7 @@ An active human member can start a separate agent on the device running their te
 | Option | Behavior/default |
 | --- | --- |
 | `[model]` or `--model <id>` | Use one form, not both. Omit to use the runtime's provider configuration. |
-| `--name <name>` | Defaults to the runtime name, then `-2`, `-3`, etc. Explicit names must be valid and unambiguous; quote names with spaces. |
+| `--name <name>` | Defaults to your system user name and the runtime (`ana-claude` for the user `ana`), then `-2`, `-3`, etc. Explicit names must be valid and unambiguous; quote names with spaces. |
 | `--effort <level>` | Optional provider-specific override. Codex accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra` only when the model catalog supports it. Claude accepts `low`, `medium`, `high`, `xhigh`, or `max` only when advertised by the installed CLI; model support still varies. Qwen rejects this option. |
 | `--workdir <path>` | Defaults to the directory from which chat/the CLI was launched. Must exist; the receiver's project scope is saved. |
 | `--task-idle-timeout <duration>` | Stop a request after this long without runtime output. Defaults to the device setting, initially 10 minutes. |
@@ -696,7 +696,7 @@ An active human member can start a separate agent on the device running their te
 | `--resume <operation-id>` | Reuse a saved spawn operation's identity/settings; cannot be combined with new runtime/model/name/effort/workdir/timeout options. |
 | `--room`, `--session`, `--json` | Shell CLI options only; chat already supplies its room and human identity. |
 
-The optional positional argument is always the model; use `--name` and `--effort` for other settings. Tab completes the spawn commands and option names. Default names are `claude`, `claude-2`, etc. Each spawn gets its own participant credential, saved session, inbox, and managed runtime conversation. The human's profile and preferred chat session stay unchanged. The runtime must already be installed and signed in; spawning does not install software or change authentication.
+The optional positional argument is always the model; use `--name` and `--effort` for other settings. Tab completes the spawn commands and option names. Default names are `<user>-claude`, `<user>-claude-2`, etc., so everyone can tell whose agent is speaking. An agent joining with `pairlobby join --runtime <runtime>` and no `--as` gets the same kind of name. Each spawn gets its own participant credential, saved session, inbox, and managed runtime conversation. The human's profile and preferred chat session stay unchanged. The runtime must already be installed and signed in; spawning does not install software or change authentication.
 
 Outside chat, use `pairlobby spawn codex --room <room-id> --name reviewer --json`. The saved human session is selected when unambiguous; use `--session <human-session-id>` when needed. The room's existing relay and admission rules apply, including hosted-account access. A hosted room still executes the agent on the invoking device. Received room text never launches a process; these are local commands from a human session.
 

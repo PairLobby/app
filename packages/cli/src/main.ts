@@ -9,7 +9,6 @@
 import {mkdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join, relative} from 'node:path';
 import {spawn} from 'node:child_process';
-import {userInfo} from 'node:os';
 import {parseArgs} from 'node:util';
 
 import {LocalStore, PairLobbyClient, openRequests, owedByMe, unreceipted} from '@pairlobby/client';
@@ -25,7 +24,7 @@ import {contactBanner, directoryHandle, directoryLines, listingHint, listingLine
 import {chooseHumanSession, selectHumanSession} from './human-session.js';
 import {WhenError, formatDuration, parseDuration, parseExpiry} from './when.js';
 import {pickExpiry} from './picker.js';
-import {DEFAULT_LOCAL_SERVER, DEFAULT_RELAY_PORT, UsageError, controllerCredential, hostedAccountToken, moderationCredential, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
+import {DEFAULT_LOCAL_SERVER, DEFAULT_RELAY_PORT, UsageError, agentName, controllerCredential, hostedAccountToken, moderationCredential, osUserName, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
 import type {Selection} from './context.js';
 import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
@@ -1127,7 +1126,8 @@ function identityFrom(store: LocalStore, values: Values, fallbackName: string): 
     // them to "agent" made rooms report zero people in them.
     const looksLikeAgent = detected.runtime !== undefined || str(values, 'runtime') !== undefined || process.stdin.isTTY !== true;
     const kind = flag(values, 'human') ? 'human' : flag(values, 'agent') ? 'agent' : (profileApplies && profile.kind) || (looksLikeAgent ? 'agent' : 'human');
-    const displayName = str(values, 'as') ?? (profileApplies ? profile.displayName : undefined) ?? (kind === 'human' ? osUserName() : (str(values, 'runtime') ?? detected.runtime)?.replace('-cli', '') ?? fallbackName);
+    const agentRuntime = str(values, 'runtime') ?? detected.runtime;
+    const displayName = str(values, 'as') ?? (profileApplies ? profile.displayName : undefined) ?? (kind === 'human' ? osUserName() : agentRuntime ? agentName(agentRuntime) : fallbackName);
     const runtime = str(values, 'runtime') ?? (kind === 'human' ? undefined : (profile.runtime ?? detected.runtime));
     const capabilities: AdapterCapabilities | undefined = runtime ? {deliverUnsolicited: false, cancelTurn: false, cancelTool: false, runtime} : undefined;
     return {displayName: validatedName(displayName), nameSource: str(values, 'as') !== undefined ? 'room' : 'profile', kind, sessionId: newId('session'), ...(capabilities ? {capabilities} : {})};
@@ -1348,14 +1348,6 @@ async function profileCommand(store: LocalStore, values: Values): Promise<number
  * finds their own agent, not something other participants need.
  */
 /** A person's login name beats "agent" as a default label for a person. */
-function osUserName(): string {
-    try {
-        return userInfo().username || 'you';
-    } catch {
-        return 'you';
-    }
-}
-
 function localDetail(values: Values): LocalRuntimeDetail {
     const detected = detectRuntime();
     // A conversation id is only inherited when this really is the detected runtime
