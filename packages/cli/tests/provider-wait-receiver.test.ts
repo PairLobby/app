@@ -133,7 +133,8 @@ test('a receiver restart restores a due cooldown and automatically creates one r
         PAIRLOBBY_TEST_USAGE_LIMIT_ONCE: join(directory, 'usage-limit-reported'),
         PAIRLOBBY_TEST_USAGE_LIMIT_COUNT: '2',
         PAIRLOBBY_TEST_USAGE_LIMIT_TEXT: currentTorontoResetText(),
-        PAIRLOBBY_TEST_PROVIDER_BACKOFF_MS: '1000',
+        // Long enough that a slow runner still sees the second attempt waiting before the third starts.
+        PAIRLOBBY_TEST_PROVIDER_BACKOFF_MS: '4000',
         PAIRLOBBY_TEST_PROVIDER_GRACE_MS: '60000'
     };
     const cli = process.env['PAIRLOBBY_TEST_CLI'] ?? resolve('packages/cli/dist/main.js');
@@ -205,7 +206,7 @@ test('a receiver restart restores a due cooldown and automatically creates one r
         await relay.close();
         rmSync(directory, {recursive: true, force: true});
     }
-}, 30_000);
+}, 60_000);
 
 test('two Claude receivers sharing one profile fence together and only the targeted receiver probes capacity', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'pairlobby-provider-shared-'));
