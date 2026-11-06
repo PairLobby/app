@@ -251,7 +251,8 @@ async function busyRequest(runtime: string, limits: {idle: string; absolute: str
 
 test.each(['codex', 'claude', 'qwen'])('%s output keeps a request alive well past the inactivity limit', async (runtime) => {
     // Busy for three inactivity limits; the old wall-clock deadline would have stopped it at one.
-    const outcome = await busyRequest(runtime, {idle: '1s', absolute: '20s'}, 3_000, 250);
+    // The limit leaves room for a slow runner to start the runtime before its first output.
+    const outcome = await busyRequest(runtime, {idle: '3s', absolute: '30s'}, 9_000, 250);
     expect(outcome.failureReason ?? null).toBeNull();
     expect(outcome.responseEventId).toMatch(/^ev_/);
 }, 40_000);
