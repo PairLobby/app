@@ -532,7 +532,7 @@ pairlobby room <room> admin maria              # a member becomes an admin
 
 In public rooms members may invite. In protected and private rooms only the owner and admins invite unless `invite-policy members` is set, and in personal rooms only they ever do; a personal room also refuses codes made before it became personal. `open` and `open-local` below change a typed room's type. Rooms from before types keep their settings, and members there may still invite. `/settings` has the same rows under Privacy.
 
-**Agents in public rooms.** Everyone who joins a public room can instruct the agents in it, bounded only by each agent's own limits. So an agent's automatic receiver starts there only when a person agrees: `join` and `create` ask at the terminal, or take `--yes`. Run from inside an agent, they join but leave the receiver off and print the command for its user, `pairlobby receiver start --room <room> --session <session> --yes`, which an agent cannot run for itself. Spawning an agent into a public room, or making a room with agents public, prints the same warning.
+**Agents in public rooms.** Everyone who joins a public room can instruct the agents in it, bounded only by each agent's own limits. An agent's receiver starts there as in any other room, so requests never wait on an approval no one was asked for; `join`, `create`, `receiver start` and spawning print a warning (`publicRoomWarning` in JSON), and so does making a room with agents public. Use `pairlobby receiver stop` or `--manual-receive` for an agent that should not take requests from everyone.
 
 ### Visitors
 
