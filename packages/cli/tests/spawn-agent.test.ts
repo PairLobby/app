@@ -5,6 +5,7 @@ import {afterEach, beforeEach, expect, test, vi} from 'vitest';
 import {LocalStore, PairLobbyClient} from '@pairlobby/client';
 import {newId} from '@pairlobby/protocol';
 import {startServer} from '@pairlobby/local-server';
+import {agentName} from '../src/context.js';
 import {spawnAgent, runAgentCommand} from '../src/spawn-agent.js';
 import type {SpawnContext, SpawnDependencies} from '../src/spawn-agent.js';
 
@@ -37,17 +38,17 @@ test('simultaneous local spawns have distinct names/identities and preserve the 
     context.store.setProfile({displayName: 'human', kind: 'human'});
     context.store.rememberHumanSession(context.roomId, context.sessionId);
     const values = await Promise.all([spawnAgent(context, {runtime: 'codex'}, dependencies), spawnAgent(context, {runtime: 'codex'}, dependencies)]);
-    expect(values.map((value) => value.name).sort()).toEqual(['codex', 'codex-2']);
+    expect(values.map((value) => value.name).sort()).toEqual([agentName('codex'), `${agentName('codex')}-2`]);
     expect(new Set(values.map((value) => value.sessionId)).size).toBe(2);
     expect(context.store.room(context.roomId)?.preferredHumanSessionId).toBe(context.sessionId);
     expect(context.store.profile()).toEqual({displayName: 'human', kind: 'human'});
     expect((await client.snapshot(context.roomId, credential)).participants.filter((member) => member.kind === 'agent').every((member) => member.role === 'member')).toBe(true);
     expect((await client.readEvents(context.roomId, credential, 0, 100)).events.filter((event) => event.type === 'message')).toEqual([]);
-    await expect(spawnAgent(context, {runtime: 'codex', name: 'CODEX'}, dependencies)).rejects.toThrow('already named');
+    await expect(spawnAgent(context, {runtime: 'codex', name: agentName('codex').toUpperCase()}, dependencies)).rejects.toThrow('already named');
     const resumed = await spawnAgent(context, {resume: values[0]!.operationId}, dependencies);
     expect(resumed.sessionId).toBe(values[0]!.sessionId);
     expect((await client.snapshot(context.roomId, credential)).participants).toHaveLength(3);
-    expect(await runAgentCommand('/agents', context)).toContain('codex-2');
+    expect(await runAgentCommand('/agents', context)).toContain(`${agentName('codex')}-2`);
 });
 
 test('lost redemption response resumes the original membership, even from another LocalStore instance', async () => {
@@ -61,7 +62,7 @@ test('lost redemption response resumes the original membership, even from anothe
     const id = (error as Error).message.match(/Spawn operation (at_[A-Z0-9]+)/)![1]!;
     spy.mockRestore();
     const result = await spawnAgent({...context, store: new LocalStore(context.store.directory)}, {resume: id}, dependencies);
-    expect(result).toMatchObject({name: 'claude', model: 'chosen', effort: 'high'});
+    expect(result).toMatchObject({name: agentName('claude'), model: 'chosen', effort: 'high'});
     expect((await client.snapshot(context.roomId, credential)).participants).toHaveLength(2);
 });
 
@@ -70,7 +71,7 @@ test('startup failure removes the active membership and records a terminal rollb
     const snapshot = await client.snapshot(context.roomId, credential);
     expect(snapshot.participants.filter((member) => !member.left)).toHaveLength(1);
     expect(await runAgentCommand('/agents', context)).toContain('No agents currently');
-    expect((await spawnAgent(context, {runtime: 'codex'}, dependencies)).name).toBe('codex');
+    expect((await spawnAgent(context, {runtime: 'codex'}, dependencies)).name).toBe(agentName('codex'));
 });
 
 test('cleanup failure is recoverable and does not create another participant', async () => {

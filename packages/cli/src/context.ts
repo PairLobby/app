@@ -4,6 +4,8 @@
 //! in one checkout must not share a credential or consume each other's inbox. A
 //! command that cannot tell them apart says so instead of picking one.
 
+import {userInfo} from 'node:os';
+
 import {ProtocolError} from '@pairlobby/protocol';
 import {LocalStore, PairLobbyClient} from '@pairlobby/client';
 import type {RoomEntry, SessionEntry} from '@pairlobby/client';
@@ -18,6 +20,20 @@ type RecipientParticipant = {participantId: string; displayName: string; revoked
 export const DEFAULT_RELAY_PORT = 8790;
 
 export const DEFAULT_LOCAL_SERVER = `http://127.0.0.1:${DEFAULT_RELAY_PORT}`;
+
+/** The account name of whoever runs this device, or `you` when the system will not say. */
+export function osUserName(): string {
+    try {
+        return userInfo().username || 'you';
+    } catch {
+        return 'you';
+    }
+}
+
+/** An agent's default room name says whose it is: `ana-claude`, not `claude`. */
+export function agentName(runtime: string): string {
+    return `${osUserName()}-${runtime.replace(/-cli$/, '')}`;
+}
 
 /** A mistake the person can fix. `exitCode` is 2 unless a command documents another. */
 export class UsageError extends Error {
