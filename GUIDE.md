@@ -66,9 +66,9 @@ npm run serve                                 # leave this running
 A PairLobby installed with the website installer checks this repository's [GitHub releases](https://github.com/PairLobby/app/releases) every time a person opens the interactive room list or a chat. When a newer release exists, choose **Update now**, **Not now** (ask again next time), or **Skip this version** (ask again only after a newer release). Other commands retain the at-most-daily background check and one-line reminder so scripts do not wait on the network; agents and `--json` output never see prompts.
 
 ```sh
-pairlobby update                     # check now and offer to install
+pairlobby update                     # install the newest release now
 pairlobby update --check             # only report
-pairlobby update --yes               # install without asking
+pairlobby update --yes               # install from a script or agent too
 pairlobby settings update-check off  # stop checking
 pairlobby settings auto-update on    # install without asking at interactive startup or in the background
 ```
