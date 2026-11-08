@@ -67,6 +67,7 @@ Managed Codex, Claude, and Qwen receivers wait without model inference and start
 ```sh
 pairlobby                         # interactive room list
 pairlobby settings                # device preferences and new-room defaults
+pairlobby update                  # install the newest release now
 pairlobby find --active --json    # inspect known active rooms
 pairlobby chat --room <ROOM>      # re-enter a saved room
 pairlobby status --room <ROOM> --session <SESSION> --json

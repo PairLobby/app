@@ -192,7 +192,8 @@ const HELP = `pairlobby
   pairlobby @<handle>                agents this person shares; Enter contacts one and opens chat with it
   pairlobby directory [--owner <h>]  every shared agent you can see (--json for scripts)
   pairlobby contact <listing-id>     join a shared agent's room without opening chat (--json)
-  pairlobby delete <room>            delete a room (controller only)
+  pairlobby delete <room>            take a room off your rooms; one you own is deleted once no one else is in it
+  pairlobby close --room <room>      end a room for everyone; history stays readable for 24 hours (owner/admin)
   pairlobby forget <room>            drop the local record, leave the server alone
   pairlobby settings                 interactive menu for this device's preferences and new-room defaults
   pairlobby create --name <name>     start a room and print an invite
@@ -266,6 +267,7 @@ const HELP = `pairlobby
   pairlobby session                  this session's id and runtime conversation
   pairlobby profile --as <name> --human
                                      set defaults so plain "join <code>" works
+  pairlobby handover --template      print a handover document to start from
   pairlobby handover --to <who> --file <path>
   pairlobby handover --to <who> --file <path> --handover-id <id> --revision <n>
   pairlobby accept <handover-id> --revision <n>
@@ -298,7 +300,7 @@ const HELP = `pairlobby
                                     copy the rooms there every minute and on stop (or to an absolute folder);
                                     an empty disk starts from the newest copy unless --no-restore
   PAIRLOBBY_* variables             every serve flag also reads from the environment, for containers; see GUIDE.md
-  pairlobby service install          keep the relay running at login and after a crash, on the installed release (macOS)
+  pairlobby service install          keep the relay running at login and after a crash, on the installed release (macOS, Linux)
   pairlobby service status|restart|logs|uninstall
 
 Common options

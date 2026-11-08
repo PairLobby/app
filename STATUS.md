@@ -1,10 +1,12 @@
 # Where PairLobby is
 
-Updated 2026-10-11, for the release after **0.16.0**. `pairlobby --version` says what a device runs, and [the releases page](https://github.com/PairLobby/app/releases) what is published. This describes the current checkout, not a guarantee that a given download or the hosted service contains the same changes: the website installers still pin an old build, so install from a release archive or a checkout.
+Updated 2026-11-08, for release **0.32.0**. `pairlobby --version` says what a device runs, and [the releases page](https://github.com/PairLobby/app/releases) what is published. This describes the current checkout; the hosted service may run an older release.
 
 ## What works
 
 - Rooms, reusable/single-use invitations, read-only visitors, expiry, handovers, and explicit control state.
+- Deleting a room you own while others are still in it only leaves it, so it carries on for them; `leave-occupied-rooms` and `delete-empty-rooms` change that per device.
+- Per-command room permissions for members (`/permissions`, `pairlobby permissions`) and room presets saved on the device (`/preset`, `pairlobby presets`, `create --preset`).
 - The agent directory on relays with personal tokens: `pairlobby @handle` and `pairlobby directory` list shared agents in rooms you can see; choosing one joins its room through a single-use code and opens chat addressed to it; `pairlobby contact` for scripts.
 - Room visibility on relays with personal tokens: everyone, handles, or the owner's default, deciding who finds a room by name and whom a member's code admits; `pairlobby visibility`, `create --visible-to`, `/settings`.
 - Room types (public, protected, private, personal) and whether members may invite, enforced by the relay; `pairlobby room <room> type|invite-policy|member|admin` and `/settings`; an owner makes a visitor a member in place.
@@ -18,27 +20,27 @@ Updated 2026-10-11, for the release after **0.16.0**. `pairlobby --version` says
 - Per-message action stages, explicit no-action/declined decisions, stage-specific failures, and author-controlled linking of existing answers to recover unresolved requests.
 - Human profiles, room-only `/name`, saved human rejoining, and a terminal rejoin command printed on exit.
 - Direct/multiple mentions, untagged human chat as `@all`, room-wide sequential turns, parallel work, pass, skip, and cancellation fencing. Rooms of only people work too: with no agent to ask, untagged messages are posted to the room.
-- Reply selection and quotes, separate transport Received and explicit model Read receipts, separate explicit Working declarations, provider animations, and native terminal text selection through F4 or `/select`.
-- Human-local spawning through `/claude`, `/codex`, `/qwen`, `/spawn`, and `pairlobby spawn`. Includes model/name/workdir, supported Codex/Claude effort, separate identities, startup recovery, and local start/stop controls.
+- Reply selection and quotes, separate transport Received and explicit model Read receipts, separate explicit Working declarations, provider animations, double-click and triple-click to copy a word or a line, and native terminal text selection through F4 or `/select`.
+- Human-local spawning through `/claude`, `/codex`, `/qwen`, `/spawn`, and `pairlobby spawn`. Agents are named after their owner by default, such as `ana-claude`. Includes model/name/workdir, supported Codex/Claude effort, separate identities, startup recovery, and local start/stop controls.
 - `/agents`: a table of all agents currently in the room, with Origin, known model/conversation/invite metadata, and the last retained sent-message timestamp. Double-click/Enter copies complete cell values; navigation, refresh, paging, resizing, and draft-preserving close are covered.
 - Device-local room discovery through `pairlobby find`, and the account's hosted rooms through `pairlobby find online`.
 - Other devices without an account: `pairlobby settings network-sharing tailscale|lan` shares this device's relay; `pairlobby join <code>` finds the relay that issued a code on the local network or tailnet; `create --open-local` lets anyone there join by room name; the room list shows rooms open on the network.
 - Hosted rooms across accounts: `/invite @handle`, `/invites`, `pairlobby invitations` with accept and decline, and `pairlobby profile --username`. Answering an invitation is for a person; agents are refused. This needs the hosted service's matching release.
 - `/interrupt` and `pairlobby interrupt` stop one agent's current task, hold its queue, and report an acknowledged outcome.
 - Auto-close per room (idle, age, or once agents and visitors have left), with a device default and `/settings` row.
-- Browser-approved terminal login with per-terminal revocable tokens; update checks and installs from GitHub releases; automatic releases on merge, which also publish the shared `@pairlobby/*` packages to npm.
+- Browser-approved terminal login with per-terminal revocable tokens; update checks and installs from GitHub releases (`pairlobby update` installs at once); automatic releases on merge, which also publish the shared `@pairlobby/*` packages to npm.
 - Interactive `pairlobby settings` for this device and `/settings` for a room.
 - `pairlobby setup` saves a private login endpoint, switches between it and pairlobby.com, and keeps one login per endpoint.
 - A self-hosted relay can offer token-mode login (`PAIRLOBBY_LOGIN_MODE=token`): people log in once with the team token and use `create online`; it describes itself at `/.well-known/pairlobby.json`.
 - A self-hosted relay can give each person their own token (`PAIRLOBBY_MEMBERS_FILE`, `pairlobby-relay member-token`): `login` names them, and rooms and participants record the member who created or joined them.
-- With personal tokens the relay keeps the agent directory's listings (`/v1/directory/listings`, feature `directory`): a member shares an agent from an open room with the agent's credential and their own token, and heartbeats report its availability. `pairlobby share` lists an agent after showing what colleagues will see, `shared` lists what the device shares, and the agent's receiver or Claude channel sends the heartbeats, ending with `offline` when it stops. Finding and contacting shared agents comes later.
+- With personal tokens the relay keeps the agent directory's listings (`/v1/directory/listings`, feature `directory`): a member shares an agent from an open room with the agent's credential and their own token, and heartbeats report its availability. `pairlobby share` lists an agent after showing what colleagues will see, `shared` lists what the device shares, and the agent's receiver or Claude channel sends the heartbeats, ending with `offline` when it stops. `pairlobby @handle`, `directory` and `contact` find and reach them.
 - A participant who comes in through the directory carries its origin on its record and on every request it sends. Managed receivers answer such a request read-only unless the listing allows tasks: Claude gets the read tools only, Qwen loses its writing tools, and Codex runs that turn in a read-only sandbox, then restores the thread's own. The Claude channel, which cannot be limited, declines those requests in the room.
 - Relay backups to S3 authenticate with a web identity (EKS IRSA) as well as keys, the ECS task role and the EC2 instance role.
 - Relays describe themselves at `GET /v1/server` (features, transport, limits); `pairlobby serve` offers long-poll, `pairlobby doctor` prints the description, and `@pairlobby/conformance` checks the Node and Durable Object relays against one contract on every pull request.
 - One relay kernel (`createRelay`: `edge`, `inRoom`, `tick`) serves every relay; plain Received receipts can be one watermark per participant instead of an event per message (`PAIRLOBBY_RECEIPT_MODE`, default `both`).
 - A second relay implementation on Durable Objects that runs on Celld or Cloudflare and passes the same store contracts. It moved to its own repository, [PairLobby/durable-runtime](https://github.com/PairLobby/durable-runtime), on 2026-10-06.
 
-The latest full local run recorded **683 passing tests** (2026-10-11), including real MCP/HTTP reply-subscription checks, plus terminal tests driven through a real PTY. Spawning/provider-option tests use deterministic provider fixtures. Earlier real Codex and Claude checks, and Qwen's real-CLI/loopback-provider check, are historical evidence described in the [capability matrix](integrations/README.md#capability-evidence). They do not certify new live-provider behavior, every terminal host, overnight idle, or production load.
+The latest full local run recorded **915 passing tests** (2026-11-08), including real MCP/HTTP reply-subscription checks, plus terminal tests driven through a real PTY. Spawning/provider-option tests use deterministic provider fixtures. Earlier real Codex and Claude checks, and Qwen's real-CLI/loopback-provider check, are historical evidence described in the [capability matrix](integrations/README.md#capability-evidence). They do not certify new live-provider behavior, every terminal host, overnight idle, or production load.
 
 ## Read first
 
@@ -76,7 +78,7 @@ These tracked guides are the published references. `.docs/` (papercuts) and work
 
 ## Remaining work and known limits
 
-- Finer-grained command permissions/presets, cross-team account discovery with verified presence, model metadata sharing/name-hover details, runtime model completion, and Qwen effort mapping remain follow-ups.
+- Cross-team account discovery with verified presence, model metadata sharing/name-hover details, runtime model completion, and Qwen effort mapping remain follow-ups.
 - Invitations by email, contacts, organizations, and the website's handle and invitation pages are not built. Inviting by handle is for hosted rooms only.
 - Upload progress, resumable transfer, uploads from the website and iPhone app, and inline image/video previews remain follow-ups; local relay transfers are buffered in memory and intended for files below the enforced 95 MB ceiling.
 - Sharing a relay with `network-sharing lan` is plain HTTP; `tailscale` relies on Tailscale's encryption. Finding relays on the local network needs the macOS Local Network permission for the terminal app, and tailnet discovery only tries port 8790. None of this has been exercised across more than two real devices.
@@ -88,6 +90,6 @@ These tracked guides are the published references. `.docs/` (papercuts) and work
 - Local credentials share the OS user's trust boundary. Naming or marking a membership as human is not an independent OS security boundary.
 - Closing visitor admission does not eject existing visitors. Revocation affects a membership/seat, not every future identity of the same account.
 - Broader invite abuse controls and cleanup/retention operations remain separate from the CLI features.
-- The Windows relay service is not runtime-verified; no Linux login-service equivalent is implemented.
+- `pairlobby service` keeps the relay running on macOS (LaunchAgent) and Linux (systemd user unit). The Windows scheduled task, installed from a checkout, is not runtime-verified.
 
 Hosted/account implementation lives in the separate worker repository. Website scenarios live in the separate frontend repository; they are scripted demonstrations, not evidence of live-provider execution.
