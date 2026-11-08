@@ -8,7 +8,7 @@ import {PairLobbyClient} from '@pairlobby/client';
 import type {LocalStore, SessionEntry} from '@pairlobby/client';
 import {newCredential, newId, ProtocolError, roomType} from '@pairlobby/protocol';
 import type {RoomSnapshot} from '@pairlobby/protocol';
-import {select, UsageError} from './context.js';
+import {agentName, select, UsageError} from './context.js';
 import {accountTokenFor} from './online.js';
 import {publicRoomWarning} from './public-room.js';
 import {receiverStatus, startReceiver, stopReceiver} from './receiver.js';
@@ -196,12 +196,13 @@ export async function spawnAgent(context: SpawnContext, options: SpawnOptions, d
             const executable = await (dependencies.preflight ?? preflightRuntime)(runtime, cwd, options.effort);
             const reserved = (db.prepare('SELECT payload FROM operations').all() as {payload: string}[]).map((row) => JSON.parse(row.payload) as SpawnOperation).filter((entry) => entry.roomId === roomId && !['ready', 'failed'].includes(entry.phase));
             const names = new Set([...snapshot.participants.filter((member) => !member.left && !member.revoked).map((member) => member.displayName.toLowerCase()), ...reserved.map((entry) => entry.name.toLowerCase())]);
-            let name = options.name ?? runtime;
+            const base = agentName(runtime);
+            let name = options.name ?? base;
             if (options.name && names.has(name.toLowerCase())) {
                 throw new UsageError(`An active or starting participant is already named ${name}. Choose --name explicitly.`);
             }
             for (let suffix = 2; names.has(name.toLowerCase()); suffix++) {
-                name = `${runtime}-${suffix}`;
+                name = `${base}-${suffix}`;
             }
             const settings = store.settings();
             const deadline = validateManagedDeadline({idleMs: options.taskIdleTimeoutMs ?? settings.managedTaskIdleMs, absoluteMs: options.taskTimeoutMs ?? settings.managedTaskTimeoutMs});

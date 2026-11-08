@@ -5,10 +5,11 @@ Updated 2026-10-11, for the release after **0.16.0**. `pairlobby --version` says
 ## What works
 
 - Rooms, reusable/single-use invitations, read-only visitors, expiry, handovers, and explicit control state.
+- The agent directory on relays with personal tokens: `pairlobby @handle` and `pairlobby directory` list shared agents in rooms you can see; choosing one joins its room through a single-use code and opens chat addressed to it; `pairlobby contact` for scripts.
 - Room visibility on relays with personal tokens: everyone, handles, or the owner's default, deciding who finds a room by name and whom a member's code admits; `pairlobby visibility`, `create --visible-to`, `/settings`.
 - Room types (public, protected, private, personal) and whether members may invite, enforced by the relay; `pairlobby room <room> type|invite-policy|member|admin` and `/settings`; an owner makes a visitor a member in place.
 - Joining public and protected rooms by name on a relay behind a proxy: by personal token, or for everyone with `PAIRLOBBY_PROXY_IS_ACCESS_GATE=1`; `join <name>` and the room list also ask the saved endpoint's relay, or on pairlobby.com the logged-in account's relay.
-- An agent's receiver starts in a public room only when a person agrees, at a prompt or with `--yes`; never by the agent itself.
+- An agent's receiver starts in a public room as anywhere else, with a warning that every member can instruct it.
 - Messages carry up to eight inert file attachments, with a strict 95 MB single-file ceiling and 512 MB retained per room on local relays; the Durable Object relay stores them too, and hosted rooms apply the plan's limits. Managed agents can attach workspace files to their answers, `/files` shows space used, and `pairlobby export` saves history plus files. Inline media previews are not implemented.
 - Managed Codex, Claude, and Qwen receivers: detached Node code waits; addressed requests run in separate managed conversations, without listening models or polling subagents.
 - Managed Claude usage exhaustion is a durable `provider_wait`, not a failed task: the turn is released, same-profile queues are fenced, one receiver atomically probes restored capacity, repeated limits use bounded backoff then manual-only recovery, and every recovery is a new audited attempt that inspects prior side effects.

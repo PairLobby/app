@@ -13,8 +13,10 @@ import type {AgentRoster} from './agent-roster.js';
 import {RoomPanel} from './room-panel.js';
 import type {RoomPanelPage} from './room-panel.js';
 import {applyPopupLayout, fitPopup, visibleMessageRow} from './terminal-layout.js';
-import {pasteLine, readClipboard} from './clipboard.js';
+import {copyToClipboard, pasteLine, readClipboard} from './clipboard.js';
 import {createTerminalProgram} from './terminal-program.js';
+import {countClick, wordAt} from './text-selection.js';
+import type {Click} from './text-selection.js';
 import {statusTable} from './status-table.js';
 import type {StatusRow} from './status-table.js';
 import {agentActivities, activitySummary} from './agent-activity.js';
@@ -24,6 +26,9 @@ type ChatTerminalOptions = {names: Map<string, string>; participantId: string; f
 type TranscriptEntry = {text: string; event?: RoomEvent; alertId?: string};
 export type RequestAlert = {requestId: string; text: string};
 type ScreenKey = Key & {full?: string};
+/** Blessed's wrapped rows of an element, with each row's source line. */
+type WrappedLines = string[] & {rtof: number[]; fake: string[]};
+type SelectableText = {content: blessed.Widgets.TextElement; top: number; height: number};
 type MessageLayout = {event: RoomEvent; content: blessed.Widgets.TextElement; normalText: string; highlighted: boolean; top: number; height: number; selected: boolean; receipt?: blessed.Widgets.BoxElement; working?: blessed.Widgets.BoxElement};
 type ScrollBody = blessed.Widgets.BoxElement & {childBase: number};
 
@@ -77,6 +82,11 @@ export class ChatTerminal {
     private hintText = '';
     private revealReply = false;
     private selecting = false;
+    private selectable: SelectableText[] = [];
+    private selection: blessed.Widgets.BoxElement[] = [];
+    private lastClick: Click | undefined;
+    private flash = '';
+    private flashTimer: NodeJS.Timeout | undefined;
     private frameDepth = 0;
     private loadAgents: (() => Promise<AgentRoster>) | undefined;
     private agentTable = new AgentTable({screen: this.screen, close: () => { this.working.resume(); this.rebuild(); }, refresh: () => this.loadAgents ? this.loadAgents() : Promise.reject(new Error('No agent loader'))});
@@ -191,6 +201,9 @@ export class ChatTerminal {
                 void this.pasteClipboard();
                 return;
             }
+            if (event.action === 'mousedown' && (event as {button?: string}).button === 'left') {
+                this.selectAt(event.x, event.y);
+            }
             if (event.action === 'mousemove' && !this.pinned) {
                 // Scrolling moves an existing Seen element. Blessed may still
                 // consider it hovered, so mouseover alone is insufficient.
@@ -225,6 +238,74 @@ export class ChatTerminal {
         }));
         this.screen.program.enableMouse();
         this.renderInput();
+    }
+
+    /** A double click copies the word under the pointer and a triple click its whole line, as in an editor. */
+    private selectAt(x: number, y: number): void {
+        const cleared = this.selection.length > 0;
+        for (const box of this.selection) {
+            box.destroy();
+        }
+        this.selection = [];
+        this.lastClick = countClick(this.lastClick, x, y, Date.now());
+        if (this.lastClick.count === 1) {
+            if (cleared) {
+                this.renderInput();
+            }
+            return;
+        }
+        const bounds = this.body.lpos;
+        if (!bounds || x < bounds.xi || x >= bounds.xl || y < bounds.yi || y >= bounds.yl) {
+            return;
+        }
+        const offset = y - bounds.yi + (this.body as unknown as {childBase: number}).childBase;
+        const item = this.selectable.find(({top, height}) => offset >= top && offset < top + height);
+        if (!item) {
+            return;
+        }
+        const lines = (item.content as unknown as {_clines?: WrappedLines})._clines;
+        const row = offset - item.top;
+        if (!lines?.[row]) {
+            return;
+        }
+        const measure = (text: string): number => Number(this.body.strWidth(text));
+        const highlight = (rowIndex: number, left: string, text: string): void => {
+            this.selection.push(blessed.box({parent: this.body, top: item.top + rowIndex, left: measure(left), width: Math.max(1, measure(text)), height: 1, content: text, tags: false, style: {bg: 'blue', fg: 'white'}}));
+        };
+        let copied: string;
+        if (this.lastClick.count === 2) {
+            const plain = stripVTControlCharacters(lines[row]!);
+            const range = wordAt(plain, x - bounds.xi, measure);
+            if (!range) {
+                return;
+            }
+            copied = plain.slice(range.start, range.end);
+            highlight(row, plain.slice(0, range.start), copied);
+        } else {
+            const source = lines.rtof[row]!;
+            copied = stripVTControlCharacters(lines.fake[source] ?? '').trim();
+            if (!copied) {
+                return;
+            }
+            lines.forEach((line, index) => {
+                if (lines.rtof[index] === source) {
+                    highlight(index, '', stripVTControlCharacters(line).trimEnd() || ' ');
+                }
+            });
+        }
+        this.renderInput();
+        void copyToClipboard(copied).then((result) => this.showFlash(result), () => this.showFlash('Copy failed'));
+    }
+
+    private showFlash(text: string): void {
+        clearTimeout(this.flashTimer);
+        this.flash = text;
+        this.renderInput();
+        this.flashTimer = setTimeout(() => {
+            this.flash = '';
+            this.renderInput();
+        }, 3000);
+        this.flashTimer.unref();
     }
 
     private async pasteClipboard(): Promise<void> {
@@ -504,6 +585,7 @@ export class ChatTerminal {
         if (this.closed) {
             return;
         }
+        clearTimeout(this.flashTimer);
         this.working.close();
         this.agentTable.hide();
         this.roomPanel.hide();
@@ -528,6 +610,8 @@ export class ChatTerminal {
         }
         this.labels.clear();
         this.messageLayouts = [];
+        this.selectable = [];
+        this.selection = [];
         this.reply.sync(this.input.line ?? '', this.replyTargets());
         const workingHeight = this.working.rebuild(this.reply.active ? 3 : 2);
         this.body.bottom = (this.reply.active ? 4 : 3) + workingHeight;
@@ -556,6 +640,7 @@ export class ChatTerminal {
             const content = blessed.text({parent: this.body, top, left: 0, right: (isWorking ? 19 : message ? 9 : 1) + (foldable ? 2 : 0), height: 'shrink', content: selected && this.detailsId !== message?.eventId ? stripVTControlCharacters(text) : text, tags: false, wrap: true, style: selected ? {bg: 'blue', fg: 'white'} : {}});
             const lines = Math.max(1, content.getScreenLines().length);
             content.height = lines;
+            this.selectable.push({content, top, height: lines});
             const layout: MessageLayout | undefined = message ? {event: message, content, normalText: text, highlighted: false, top, height: lines, selected: Boolean(selected)} : undefined;
             if (layout) {
                 this.messageLayouts.push(layout);
@@ -762,7 +847,7 @@ export class ChatTerminal {
         }
         this.hint.setContent(this.selecting ? 'Select text: drag · use terminal Copy (⌘C on macOS) · F4/Esc resume' : this.reply.active
             ? this.reply.picking ? '↑/↓ choose a message · Enter/Tab select · Esc cancel' : 'Enter sends your reply · Delete /reply or Esc to cancel'
-            : this.hintText || 'Hover/click Status · F2 Status · F3 Working · F4 Select/copy · PgUp/PgDn scroll');
+            : this.flash || this.hintText || 'Double/triple-click copies · Hover/click Status · F2 Status · F3 Working · F4 Select/copy · PgUp/PgDn scroll');
         this.composer.setContent(this.promptText + line.slice(start, start + width));
         const summary = this.activityContext ? activitySummary(this.currentActivities()) : '';
         const mode = this.activityContext?.queue?.mode;

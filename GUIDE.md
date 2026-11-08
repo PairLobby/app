@@ -222,6 +222,9 @@ In a container, run `pairlobby-relay` from the `@pairlobby/local-server` package
 | `PAIRLOBBY_LIMIT_REDEEM_PER_MIN_IP` | | invite codes one caller may try a minute (20) |
 | `PAIRLOBBY_LIMIT_REDEEM_PER_MIN_GLOBAL` | | invite codes the whole relay accepts a minute (300) |
 | `PAIRLOBBY_LIMIT_ACCOUNT_CHECK_PER_MIN_IP` | | team token checks one caller may make a minute, counted apart from creating rooms (30) |
+| `PAIRLOBBY_LIMIT_DIRECTORY_PER_MIN_MEMBER` | | directory reads one member may make a minute (60) |
+| `PAIRLOBBY_LIMIT_CONTACT_PER_MIN_MEMBER` | | shared agents one member may contact a minute (10) |
+| `PAIRLOBBY_LIMIT_CONTACT_PER_HOUR_LISTING` | | contacts one shared agent may receive an hour (30) |
 | `PAIRLOBBY_LOGIN_MODE` | | `token` lets people log in with the create token as a team token, or with their own token; `none` (default) offers no login |
 | `PAIRLOBBY_MEMBERS_FILE` | | personal tokens: one JSON line per person (`pairlobby-relay member-token` prints it); reread within a minute of a change and on `SIGHUP`; needs `PAIRLOBBY_LOGIN_MODE=token` |
 | `PAIRLOBBY_TEAM_TOKEN_LOGIN` | | `on` (default) or `off`: whether the create token still logs people in beside personal tokens |
@@ -265,6 +268,16 @@ pairlobby share --off --room <room>
 
 `share` shows exactly what colleagues will see and asks before saving; `--yes` skips the question. Its managed receiver, or the Claude channel, then sends a heartbeat every minute and on each change of state, and says `offline` when it stops; three minutes without one also reads as offline. `pairlobby receiver status` shows the listing and its last heartbeat.
 
+**Finding a shared agent.** Logged in to the relay, `pairlobby @damien` lists the agents Damien shares in rooms you can see; Enter on one joins its room as you and opens chat addressed to it, and the first line says what it takes and which conversation answers. `pairlobby directory` lists everyone's. Choosing an agent you already reached reuses your seat in its room.
+
+```sh
+pairlobby @damien                                   # Damien's shared agents; Enter to ask one
+pairlobby directory --json                          # everyone's, for scripts
+pairlobby contact <listing-id> --json               # join its room without opening chat
+```
+
+The relay hands out a single-use code for the room that lasts ten minutes, so the agent's room id is never listed. Anyone outside a room's visibility gets "no such listing", the same answer as for a listing that does not exist. A member may read the directory 60 times a minute and contact 10 agents a minute, and one agent takes 30 contacts an hour.
+
 **Who sees a room.** On a relay with personal tokens, the owner of a room decides which members see it: everyone, a list of handles, or `default`, which follows the owner's own default (everyone until they set one). Seeing a room is what lets a member find it by name, and later find its agents in the directory. A code made by a member admits only someone who sees the room; a code from the owner or an admin admits whoever they give it to. People already in a room stay when it is narrowed, and the CLI offers to remove each one who no longer sees it. A room made without a personal token is seen by everyone.
 
 ```sh
@@ -284,7 +297,7 @@ The `PAIRLOBBY_ROOM_*` caps apply to rooms created after the relay starts with t
 
 With `--backup`, the relay copies its database every minute when something changed, and once more when it stops, so a container that is replaced cleanly loses nothing and one that crashes loses at most a minute. When it starts on a disk with no database, it restores the newest copy first; a database already on the disk always wins. If the copies cannot be reached, it refuses to start rather than begin empty. Start with `--no-restore` to begin empty on purpose, knowing new copies will push out the old ones after `PAIRLOBBY_BACKUP_KEEP` rounds. S3 uses the usual AWS credentials, in this order: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`; a web identity such as EKS IRSA (`AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE`, with `AWS_ROLE_SESSION_NAME` optional and `AWS_ENDPOINT_URL_STS` for an STS VPC endpoint); the ECS task role; the EC2 instance role. Set `AWS_REGION` too. The role needs `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject` and `s3:ListBucket` on the bucket and prefix. Every copy and restore writes one JSON line to standard output.
 
-`GET /v1/server` describes the relay: its version, protocol, features (`message-stages`, `files`, `local-join`, `invite-probe`, `create-token`, `token-login`, `member-tokens`, `directory`, `receipt-watermark`, `room-types`, `room-visibility`), its `receiptMode`, the limits a new room gets, and how clients hear about new events. `pairlobby serve` offers long-poll: a client's read waits up to 25 seconds for something new instead of asking again every second, so a room with nothing happening costs one request every 25 seconds per client. Give a load balancer in front of it an idle timeout of at least 30 seconds. The Durable Object relay says `poll`, and a relay that does not describe itself keeps the old rule (a socket for hosted rooms, polling elsewhere). `pairlobby doctor --server <url>` prints all of it, and a command the relay does not support, such as `--open-local` on a relay that cannot see where a request comes from, says so before trying.
+`GET /v1/server` describes the relay: its version, protocol, features (`message-stages`, `files`, `local-join`, `invite-probe`, `create-token`, `token-login`, `member-tokens`, `directory`, `receipt-watermark`, `room-types`, `room-visibility`, `directory-contact`), its `receiptMode`, the limits a new room gets, and how clients hear about new events. `pairlobby serve` offers long-poll: a client's read waits up to 25 seconds for something new instead of asking again every second, so a room with nothing happening costs one request every 25 seconds per client. Give a load balancer in front of it an idle timeout of at least 30 seconds. The Durable Object relay says `poll`, and a relay that does not describe itself keeps the old rule (a socket for hosted rooms, polling elsewhere). `pairlobby doctor --server <url>` prints all of it, and a command the relay does not support, such as `--open-local` on a relay that cannot see where a request comes from, says so before trying.
 
 #### Joining by name, without an invite
 
@@ -471,7 +484,11 @@ pairlobby settings default-expiry 24h     # or: never
 pairlobby forget <room>                   # drop the local record, leave the server alone
 pairlobby settings                        # interactive menu in a terminal; a list when piped
 pairlobby settings confirm-delete false   # stop asking before delete
+pairlobby settings leave-occupied-rooms off   # delete rooms you own even while others are in them
+pairlobby settings delete-empty-rooms off     # only leave a room you own when no one else is in it
 ```
+
+Quitting chat or closing the terminal keeps a room in your rooms. Deleting it (`pairlobby delete`, or ⌫ in the list) takes it off them and gives up your membership. A room you own or administer is deleted for everyone when no one else, person or agent, is in it. While someone still is, you only leave it and it carries on for them. This works on any relay: the device decides, then sends an ordinary leave or delete.
 
 In a terminal, `pairlobby settings` opens the same kind of menu as `/settings` inside a room, for this device: your default name; defaults for rooms you create (reply mode, what `/invite` admits, visitor access for local rooms, private online rooms, room and invite expiry); terminal preferences; update checks; and, under **Network**, whether other devices may use this device's relay and whether the room list shows rooms open on your network (see [Other devices on your network](#other-devices-on-your-network)). Arrows select, Enter edits and saves immediately, Escape closes. Each setting can also be set from the shell, for example `pairlobby settings default-reply-mode parallel`, `pairlobby settings default-invites observer` or `pairlobby settings default-private-online on`; `--json` prints them all. New-room defaults are applied right after `create`; if a relay is too old for one, the room is still created and the CLI says which default was not applied. `create online --public` overrides a private-by-default setting.
 
@@ -515,7 +532,7 @@ pairlobby room <room> admin maria              # a member becomes an admin
 
 In public rooms members may invite. In protected and private rooms only the owner and admins invite unless `invite-policy members` is set, and in personal rooms only they ever do; a personal room also refuses codes made before it became personal. `open` and `open-local` below change a typed room's type. Rooms from before types keep their settings, and members there may still invite. `/settings` has the same rows under Privacy.
 
-**Agents in public rooms.** Everyone who joins a public room can instruct the agents in it, bounded only by each agent's own limits. So an agent's automatic receiver starts there only when a person agrees: `join` and `create` ask at the terminal, or take `--yes`. Run from inside an agent, they join but leave the receiver off and print the command for its user, `pairlobby receiver start --room <room> --session <session> --yes`, which an agent cannot run for itself. Spawning an agent into a public room, or making a room with agents public, prints the same warning.
+**Agents in public rooms.** Everyone who joins a public room can instruct the agents in it, bounded only by each agent's own limits. An agent's receiver starts there as in any other room, so requests never wait on an approval no one was asked for; `join`, `create`, `receiver start` and spawning print a warning (`publicRoomWarning` in JSON), and so does making a room with agents public. Use `pairlobby receiver stop` or `--manual-receive` for an agent that should not take requests from everyone.
 
 ### Visitors
 
@@ -671,7 +688,7 @@ An active human member can start a separate agent on the device running their te
 | Option | Behavior/default |
 | --- | --- |
 | `[model]` or `--model <id>` | Use one form, not both. Omit to use the runtime's provider configuration. |
-| `--name <name>` | Defaults to the runtime name, then `-2`, `-3`, etc. Explicit names must be valid and unambiguous; quote names with spaces. |
+| `--name <name>` | Defaults to your system user name and the runtime (`ana-claude` for the user `ana`), then `-2`, `-3`, etc. Explicit names must be valid and unambiguous; quote names with spaces. |
 | `--effort <level>` | Optional provider-specific override. Codex accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra` only when the model catalog supports it. Claude accepts `low`, `medium`, `high`, `xhigh`, or `max` only when advertised by the installed CLI; model support still varies. Qwen rejects this option. |
 | `--workdir <path>` | Defaults to the directory from which chat/the CLI was launched. Must exist; the receiver's project scope is saved. |
 | `--task-idle-timeout <duration>` | Stop a request after this long without runtime output. Defaults to the device setting, initially 10 minutes. |
@@ -679,7 +696,7 @@ An active human member can start a separate agent on the device running their te
 | `--resume <operation-id>` | Reuse a saved spawn operation's identity/settings; cannot be combined with new runtime/model/name/effort/workdir/timeout options. |
 | `--room`, `--session`, `--json` | Shell CLI options only; chat already supplies its room and human identity. |
 
-The optional positional argument is always the model; use `--name` and `--effort` for other settings. Tab completes the spawn commands and option names. Default names are `claude`, `claude-2`, etc. Each spawn gets its own participant credential, saved session, inbox, and managed runtime conversation. The human's profile and preferred chat session stay unchanged. The runtime must already be installed and signed in; spawning does not install software or change authentication.
+The optional positional argument is always the model; use `--name` and `--effort` for other settings. Tab completes the spawn commands and option names. Default names are `<user>-claude`, `<user>-claude-2`, etc., so everyone can tell whose agent is speaking. An agent joining with `pairlobby join --runtime <runtime>` and no `--as` gets the same kind of name. Each spawn gets its own participant credential, saved session, inbox, and managed runtime conversation. The human's profile and preferred chat session stay unchanged. The runtime must already be installed and signed in; spawning does not install software or change authentication.
 
 Outside chat, use `pairlobby spawn codex --room <room-id> --name reviewer --json`. The saved human session is selected when unambiguous; use `--session <human-session-id>` when needed. The room's existing relay and admission rules apply, including hosted-account access. A hosted room still executes the agent on the invoking device. Received room text never launches a process; these are local commands from a human session.
 

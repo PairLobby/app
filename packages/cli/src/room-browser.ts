@@ -3,7 +3,7 @@ import type {Key} from 'node:readline';
 import {PairLobbyClient} from '@pairlobby/client';
 import type {LocalStore} from '@pairlobby/client';
 import type {RoomListEntry} from './render.js';
-import {INVITED_STATE, LOCATION_LABELS, MEMBER_ICONS, NETWORK_STATE, ROOM_COLUMNS, SESSION_COLUMNS, closeListedRoom, deleteListedRoom, forgetListedRoom, invitationRows, administersListedRoom, leaveListedSession, loadRoomList, networkRows, relayAdvice, relayLabel, roomRows, sessionRows, sortListRows} from './room-list.js';
+import {INVITED_STATE, LOCATION_LABELS, MEMBER_ICONS, NETWORK_STATE, ROOM_COLUMNS, SESSION_COLUMNS, closeListedRoom, deleteListedRoom, forgetListedRoom, invitationRows, administersListedRoom, leaveListedSession, loadRoomList, namesOf, networkRows, othersInRoom, relayAdvice, relayLabel, roomRows, sessionRows, sortListRows} from './room-list.js';
 import type {ListColumn, ListRow, ListSort, NetworkRoom, RoomInvite, RoomLocation} from './room-list.js';
 import {RoomPanel} from './room-panel.js';
 import type {RoomPanelPage} from './room-panel.js';
@@ -17,6 +17,8 @@ import {formatDuration} from './when.js';
 
 /** The room list opens on Room, past the icon column. */
 const ROOM_HOME_COLUMN = ROOM_COLUMNS.findIndex((column) => column.key === 'name');
+/** Replaces a room's icon while a request about it is still running. */
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
 
 /** A saved room or session to chat in, a network room to join, or an invitation to accept and join. */
 export type RoomBrowserSelection = {roomId: string; openChat: true} | {roomId: string; sessionId: string} | {roomId: string; joinAt: string} | {roomId: string; invitationId: string};
@@ -53,6 +55,10 @@ export class RoomBrowser {
     private request: AbortController | undefined;
     private finish: ((selection: RoomBrowserSelection | undefined) => void) | undefined;
     private initialRowId: string | undefined;
+    private working = new Set<string>();
+    private spinner: NodeJS.Timeout | undefined;
+    private frame = 0;
+    private queued: (() => void) | undefined;
 
     constructor(private readonly store: LocalStore, private readonly options: RoomBrowserOptions) {
         // A preceding readline prompt (for example the update choice) pauses stdin
@@ -67,6 +73,12 @@ export class RoomBrowser {
         this.details = new RoomPanel({screen: this.screen, close: () => {
             if (this.join) {
                 this.close(this.join);
+                return;
+            }
+            if (this.queued) {
+                const start = this.queued;
+                this.queued = undefined;
+                start();
                 return;
             }
             void this.refresh(this.actionNotice);
@@ -86,6 +98,7 @@ export class RoomBrowser {
 
     private close(selection?: RoomBrowserSelection): void {
         this.closed = true;
+        clearInterval(this.spinner);
         this.request?.abort();
         this.details.hide();
         this.screen.destroy();
@@ -189,10 +202,13 @@ export class RoomBrowser {
         this.note = 'Loading room snapshots…';
         this.render();
         try {
-            const entries = await loadRoomList(this.store, request.signal);
+            const loaded = await loadRoomList(this.store, request.signal);
             if (this.closed || this.request !== request) {
                 return;
             }
+            // A removal that finished while this was loading has already dropped the room from the device.
+            const saved = new Set(this.store.rooms().map((room) => room.roomId));
+            const entries = loaded.filter((entry) => saved.has(entry.room.roomId));
             this.entries = entries;
             this.network = this.network.filter((found) => !entries.some((entry) => entry.room.roomId === found.room.roomId));
             this.note = notice || relayAdvice(entries) || 'Snapshot updated. Listing does not join rooms or start agents.';
@@ -275,7 +291,7 @@ export class RoomBrowser {
 
     private openSelected(): void {
         const row = this.rows[this.selected];
-        if (!row) {
+        if (!row || this.stillWorking(row)) {
             return;
         }
         const found = this.roomId ? undefined : this.network.find((candidate) => candidate.room.roomId === row.roomId);
@@ -355,7 +371,7 @@ export class RoomBrowser {
 
     private confirmClose(): void {
         const row = this.rows[this.selected];
-        if (!row) {
+        if (!row || this.stillWorking(row)) {
             return;
         }
         const invitation = this.roomId || row.values['state'] !== INVITED_STATE ? undefined : this.invited.find((candidate) => candidate.roomId === row.roomId);
@@ -391,7 +407,7 @@ export class RoomBrowser {
      */
     private confirmDelete(): void {
         const row = this.rows[this.selected];
-        if (!row) {
+        if (!row || this.stillWorking(row)) {
             return;
         }
         const invitation = row.values['state'] !== INVITED_STATE ? undefined : this.invited.find((candidate) => candidate.roomId === row.roomId);
@@ -404,49 +420,82 @@ export class RoomBrowser {
             this.render();
             return;
         }
-        // The owner's device, or an admin's, deletes the room itself. Anyone else only takes it off their own list,
-        // and so does an owner whose relay cannot be reached, since nothing can be deleted there.
+        // The owner's device, or an admin's, deletes the room itself when no one else is in it, and only takes it off
+        // its own list while others are (both follow this device's settings). Anyone else only takes it off their own
+        // list, and so does an owner whose relay cannot be reached, since nothing can be deleted there.
         const entry = this.entries.find((candidate) => candidate.room.roomId === row.roomId);
         const offline = entry !== undefined && !entry.reachable && ['server_unavailable', 'unreachable'].includes(entry.why ?? '');
-        const owner = entry && !offline ? administersListedRoom(this.store, entry) : false;
+        const administers = entry && !offline ? administersListedRoom(this.store, entry) : false;
+        const others = administers && entry?.snapshot ? othersInRoom(entry.room, entry.snapshot) : [];
+        const settings = this.store.settings();
+        const owner = administers && (others.length === 0 ? settings.deleteEmptyRooms : !settings.leaveOccupiedRooms);
+        const leaves = administers && !owner;
         const name = row.values['name'];
         const description = owner
             ? `Delete ${name} (${row.roomId}) and its history for everyone? This cannot be undone.`
-            : offline
-                ? `Remove ${name} (${row.roomId}) from this device? Its relay at ${relayLabel(entry.room.serverUrl)} cannot be reached, so the room is not deleted there; this device only forgets it and stops its receivers.`
-                : `Remove ${name} (${row.roomId}) from this device? You leave the room and your receivers stop. The room carries on for everyone else. To come back you join again, which needs an invite if the room is invite-only.`;
-        const remove = async () => {
+            : leaves
+                ? `Remove ${name} (${row.roomId}) from your rooms? ${others.length > 0 ? `${namesOf(others)} ${others.length === 1 ? 'is' : 'are'} still in it, so it is not deleted` : 'No one else is in it, but delete-empty-rooms is off, so it stays on its relay'}: you leave, your receivers stop, and this device no longer owns it.`
+                : offline
+                    ? `Remove ${name} (${row.roomId}) from this device? Its relay at ${relayLabel(entry.room.serverUrl)} cannot be reached, so the room is not deleted there; this device only forgets it and stops its receivers.`
+                    : `Remove ${name} (${row.roomId}) from this device? You leave the room and your receivers stop. The room carries on for everyone else. To come back you join again, which needs an invite if the room is invite-only.`;
+        const remove = async (): Promise<string> => {
             if (owner) {
-                this.actionNotice = (await deleteListedRoom(this.store, row.roomId)) === 'deleted' ? `Deleted ${name} for everyone.` : `${name} was already gone; removed it from this device.`;
-            } else {
-                await forgetListedRoom(this.store, row.roomId);
-                this.actionNotice = offline ? `Removed ${name} from this device. Its relay could not be reached, so the room was not deleted there.` : `Removed ${name} from this device. The room itself is unchanged.`;
+                return (await deleteListedRoom(this.store, row.roomId)) === 'deleted' ? `Deleted ${name} for everyone.` : `${name} was already gone; removed it from this device.`;
             }
+            await forgetListedRoom(this.store, row.roomId);
+            if (leaves) {
+                return others.length > 0 ? `Left ${name}. ${namesOf(others)} ${others.length === 1 ? 'is' : 'are'} still in it, so it was not deleted.` : `Left ${name}. It stays on its relay, empty.`;
+            }
+            return offline ? `Removed ${name} from this device. Its relay could not be reached, so the room was not deleted there.` : `Removed ${name} from this device. The room itself is unchanged.`;
         };
+        const start = () => void this.removeInBackground(row.roomId, owner ? `Deleting ${name}…` : leaves ? `Leaving ${name}…` : `Removing ${name}…`, remove);
         if (!this.store.settings().confirmDelete) {
-            void this.deleteWithoutAsking(owner ? `Deleting ${name}…` : `Removing ${name}…`, remove);
+            start();
             return;
         }
-        const page: RoomPanelPage = {id: 'delete-selection', closeOnCancel: true, title: owner ? 'Delete room for everyone' : 'Remove room from this device', note: description, reload: async () => page, rows: [{id: 'confirm', label: owner ? 'Delete room' : 'Remove room', value: name ?? '', section: 'Confirm', action: {kind: 'command', confirm: description, closeAfterSave: true, run: remove}}]};
+        const page: RoomPanelPage = {id: 'delete-selection', closeOnCancel: true, title: owner ? 'Delete room for everyone' : leaves ? 'Leave room, keep it for others' : 'Remove room from this device', note: description, reload: async () => page, rows: [{id: 'confirm', label: owner ? 'Delete room' : leaves ? 'Leave room' : 'Remove room', value: name ?? '', section: 'Confirm', action: {kind: 'command', confirm: description, closeAfterSave: true, run: async () => {
+            this.queued = start;
+        }}}]};
         this.details.show(page);
         this.details.key(undefined, {name: 'enter'});
     }
 
-    private async deleteWithoutAsking(progress: string, remove: () => Promise<void>): Promise<void> {
-        this.loading = true;
+    /** The list stays usable while the relay answers: the room's icon spins, and the row goes once it is removed. */
+    private async removeInBackground(roomId: string, progress: string, remove: () => Promise<string>): Promise<void> {
+        this.working.add(roomId);
+        this.spinner ??= setInterval(() => {
+            this.frame++;
+            this.render();
+        }, 120).unref();
         this.note = progress;
         this.render();
         try {
-            await remove();
+            this.note = await remove();
+            this.entries = this.entries.filter((entry) => entry.room.roomId !== roomId);
         } catch (error) {
-            this.loading = false;
             this.note = `Delete failed: ${error instanceof Error ? error.message : String(error)}`;
-            this.render();
-            return;
+        } finally {
+            this.working.delete(roomId);
+            if (this.working.size === 0) {
+                clearInterval(this.spinner);
+                this.spinner = undefined;
+            }
         }
-        const notice = this.actionNotice;
-        this.actionNotice = '';
-        await this.refresh(notice);
+        if (!this.closed && !this.roomId) {
+            this.rebuildRows(this.rows[this.selected]?.id);
+        } else {
+            this.render();
+        }
+    }
+
+    /** A room whose removal is still running can only be watched. */
+    private stillWorking(row: ListRow): boolean {
+        if (this.roomId || !this.working.has(row.roomId)) {
+            return false;
+        }
+        this.note = `${row.values['name']} is still being removed.`;
+        this.render();
+        return true;
     }
 
     private showSession(): void {
@@ -601,7 +650,8 @@ export class RoomBrowser {
             });
             this.rows.slice(this.top, this.top + this.pageSize()).forEach((row, offset) => {
                 const rowIndex = this.top + offset;
-                const cell = this.cell(4 + offset, left, size, row.values[column.key] ?? '', rowIndex === this.selected, column.key === 'where');
+                const spinning = column.key === 'where' && !this.roomId && this.working.has(row.roomId);
+                const cell = this.cell(4 + offset, left, size, spinning ? SPINNER_FRAMES[this.frame % SPINNER_FRAMES.length]! : row.values[column.key] ?? '', rowIndex === this.selected, column.key === 'where');
                 cell.on('mousedown', (event: BrowserMouse) => {
                     if (event.button === 'left') {
                         this.selected = rowIndex;

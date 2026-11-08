@@ -26,6 +26,8 @@ import type {
     PermissionChange,
     ListingPresenceRequest,
     ListingResponse,
+    DirectoryResponse,
+    ContactResponse,
     ListingView,
     LiveTransport,
     ReadEventsResponse,
@@ -447,6 +449,16 @@ export class PairLobbyClient {
         return (await this.call<ListingResponse>('PUT', `/v1/directory/listings/${listingId}/presence`, credential, presence)).listing;
     }
 
+    /** The shared agents this client's member sees: one owner's, by handle, or everyone's. */
+    directory(owner?: string): Promise<DirectoryResponse> {
+        return this.call('GET', `/v1/directory${owner ? `?owner=${encodeURIComponent(owner.replace(/^@/, ''))}` : ''}`, null);
+    }
+
+    /** A single-use code into a shared agent's room, for this client's member. */
+    contact(listingId: string): Promise<ContactResponse> {
+        return this.call('POST', `/v1/directory/listings/${listingId}/contact`, null, {});
+    }
+
     /** Takes a listing down, with the personal token or the listed agent's credential. */
     async unshareListing(listingId: string, credential: string | null): Promise<void> {
         await this.call('DELETE', `/v1/directory/listings/${listingId}`, credential);
@@ -695,7 +707,7 @@ export class PairLobbyClient {
         if (credential) {
             headers.set('authorization', `Bearer ${credential}`);
         }
-        if (this.accountToken && ((method === 'POST' && (path === '/v1/rooms' || path === '/v1/invites/redeem' || path.endsWith('/account-join') || path.endsWith('/invitations') || path.endsWith('/local-join'))) || path.startsWith('/v1/directory/'))) {
+        if (this.accountToken && ((method === 'POST' && (path === '/v1/rooms' || path === '/v1/invites/redeem' || path.endsWith('/account-join') || path.endsWith('/invitations') || path.endsWith('/local-join'))) || path.startsWith('/v1/directory'))) {
             headers.set('x-pairlobby-account-token', this.accountToken);
         }
         if (body !== undefined) {

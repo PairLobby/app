@@ -99,6 +99,33 @@ export type ListingView = z.infer<typeof ListingView>;
 export const ListingResponse = z.object({listing: ListingView});
 export type ListingResponse = z.infer<typeof ListingResponse>;
 
+/**
+ * `GET /v1/directory[?owner=]`: the listings the caller may see. With `owner`, `knownHandle`
+ * says whether anyone on the relay has that handle, so "no such person" differs from "nothing shared".
+ */
+export const DirectoryResponse = z.object({listings: z.array(ListingView), knownHandle: z.boolean().optional()});
+export type DirectoryResponse = z.infer<typeof DirectoryResponse>;
+
+/** How long the code a contact gets stays usable. */
+export const CONTACT_INVITE_LIFETIME_MS = 10 * 60_000;
+
+/**
+ * `POST /v1/directory/listings/:id/contact`: a single-use code into the listing's room, and who to
+ * address there. Redeeming it marks the joiner as having come through the directory.
+ */
+export const ContactResponse = z.object({
+    code: z.string(),
+    expiresAt: z.number().int().nonnegative(),
+    roomId: RoomId,
+    agentId: ParticipantId,
+    agentName: z.string(),
+    roomName: z.string(),
+    owner: MemberHandle,
+    contact: ListingContact,
+    connection: ListingConnection
+});
+export type ContactResponse = z.infer<typeof ContactResponse>;
+
 /** Availability as of `now`: no heartbeat yet is unknown, none for three minutes is offline. */
 export function listingAvailability(listing: ListingRecord, now: number): ListingAvailability {
     if (listing.lastSeenAt === null || listing.availability === null) {

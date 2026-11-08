@@ -15,7 +15,7 @@ import pyte
 
 cli = ['node', os.environ.get('PAIRLOBBY_TEST_CLI', 'packages/cli/dist/main.js')]
 with tempfile.TemporaryDirectory(prefix='pairlobby-people-') as directory:
-    base = {**os.environ, 'TERM': 'xterm-256color', 'PAIRLOBBY_NO_UPDATE_CHECK': '1'}
+    base = {**os.environ, 'TERM': 'xterm-256color', 'PAIRLOBBY_NO_UPDATE_CHECK': '1', 'SSH_TTY': '/dev/null'}
     for variable in ['CLAUDE_CODE_SESSION_ID', 'CODEX_SESSION_ID', 'CODEX_THREAD_ID', 'CODEX_CONVERSATION_ID', 'PAIRLOBBY_SESSION', 'PAIRLOBBY_SERVER']:
         base.pop(variable, None)
     relay = subprocess.Popen(cli + ['serve', '--port', '0', '--data-dir', directory + '/relay'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=base)
@@ -69,6 +69,33 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-people-') as directory:
         for line in ['hello from bob', '@all still just people', '@ana @cy both of you']:
             assert line in said, said
         print('PASS three people without an agent: untagged, @all and several names all reach the room.')
+
+        # SSH_TTY above sends copies to the terminal (OSC 52), never to this machine's clipboard.
+        def clicks(count, x, y):
+            for _ in range(count):
+                for end in 'Mm':
+                    os.write(master, f'\x1b[<0;{x + 1};{y + 1}{end}'.encode())
+                    time.sleep(.03)
+
+        def highlighted(row):
+            return ''.join(screen.buffer[row][x].data for x in range(120) if screen.buffer[row][x].bg == 'blue')
+
+        os.write(master, b'see rm_C4AADNTWSBB8N6BS7EYVN2A85D/path now.\r')
+        wait_for('rm_C4AA')
+        pump(.5)
+        row = next(index for index, line in enumerate(screen.display) if 'rm_C4AA' in line)
+        column = screen.display[row].index('rm_C4AA') + 3
+        clicks(2, column, row)
+        wait_for('Copy request sent')
+        assert highlighted(row) == 'rm_C4AADNTWSBB8N6BS7EYVN2A85D/path', highlighted(row)
+        time.sleep(.6)
+        clicks(3, column, row)
+        pump(1)
+        assert 'see rm_C4AADNTWSBB8N6BS7EYVN2A85D/path now.' in highlighted(row), highlighted(row)
+        clicks(1, 1, 1)
+        pump(.5)
+        assert not highlighted(row), highlighted(row)
+        print('PASS a double click copies a word, a triple click its line, and a click clears it.')
     finally:
         if terminal:
             # The chat keeps running on SIGTERM; /quit is how a person leaves it.

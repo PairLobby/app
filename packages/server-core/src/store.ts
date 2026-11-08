@@ -113,6 +113,8 @@ export interface DirectoryStore {
     deleteListing(listingId: string): Promise<void>;
     /** Listings in `listingId` order after `after`, for the sweep. */
     listings(after: string, limit: number): Promise<ListingRecord[]>;
+    /** One member's listings, for the directory read that names them. */
+    ownerListings(owner: string): Promise<ListingRecord[]>;
     /** When this participant last sent a message in the room, or null; an index, not a transcript scan. */
     lastMessageAt(roomId: string, participantId: string): Promise<number | null>;
     /** A member's default visibility for their rooms, or null before they set one, which means everyone. */
