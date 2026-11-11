@@ -81,6 +81,16 @@ Versioning and releases use [ssmver](https://github.com/hjoncour/ssmver): `ssmve
 
 This service manages the **relay**, not the per-agent runtime receiver. It does not make an unconnected runtime available.
 
+With an installed release, on macOS or Linux:
+
+```sh
+pairlobby service install       # start the relay at login and after a crash, on the installed release
+pairlobby service status        # is it loaded, is the relay answering
+pairlobby service restart       # or: logs, uninstall
+```
+
+From a checkout:
+
 ```sh
 npm run service:install     # builds, links `pairlobby`, starts the relay at login
 npm run service:status      # is the agent loaded, is the relay answering
@@ -567,7 +577,7 @@ registered in this room: 2  (1 person, 1 agent)  codex, hugo
 16:41  codex → hugo  Hello!                                  Status
 
 >
-Hover/click Status · F2 or /seen for message status · PgUp/PgDn scroll
+Double/triple-click copies · Hover/click Status · F2 Status · F3 Working · F4 Select/copy · PgUp/PgDn scroll
 ```
 
 An untagged chat message addresses all eligible agents, exactly like `@all`. Rooms of only people work too: with no agent to ask, an untagged message, `@all` or several names (`@bob @cy`) is simply posted to the room for everyone to read, and `@bob` alone still addresses Bob. When people and agents are named together, the agents take turns answering and the people read along. `pairlobby send --to all` and `--to bob,cy` follow the same rules. Mention `@name` anywhere (for example `Hey @codex, hello`) to address one participant — typing `@c`
@@ -616,7 +626,9 @@ Receipt, Working and agent-activity popups size to their content, capped at 64 c
 
 The bottom status line claims **All agents idle · no further action declared** only with explicit terminal decisions, reading evidence and no unresolved work. Transport receipt alone yields **no queued task**, not a claim that the model read everything or is online. Unresolved failures stay visible. Hover/click for per-agent details; unavailable data never produces an idle claim.
 
-Messages with multiple recipients display `→ all`; this is a compact label and does not change the actual recipients. A direct message still names its single recipient. To select and copy text, press F4 or type `/select`, drag over the text, and use your terminal's Copy shortcut (⌘C on macOS). F4 or Escape resumes live updates with your draft intact.
+Messages with multiple recipients display `→ all`; this is a compact label and does not change the actual recipients. A direct message still names its single recipient. Double-click a word in the transcript to copy it, or triple-click to copy its whole line; the word or line is highlighted and the hint line says whether it was copied. Over SSH the copy goes through the terminal (OSC 52), which some terminals must allow. To select anything else, press F4 or type `/select`, drag over the text, and use your terminal's Copy shortcut (⌘C on macOS). F4 or Escape resumes live updates with your draft intact.
+
+`/collapse` folds the latest message to one line, and `/expand` opens it again. Both take a message id or sequence number, or `all`.
 
 ### Interactive room settings
 
@@ -720,6 +732,47 @@ Use `pairlobby request retry-provider <REQUEST_ID>` or **Retry provider now** in
 
 `pairlobby request dismiss <REQUEST_ID> [--reason ...]` archives a failed request after it has been reviewed; `request cancel` fences unresolved work so a late answer cannot revive it. Neither action claims success, and both are limited to the original sender or a room admin. A cancelled request may later be retried explicitly. In terminal chat, `/requests` opens an interactive panel with request details, local attempt history, remaining deadlines and confirmed recovery actions; `/requests retry|reassign|dismiss|cancel ...` remains available for direct entry. The relay advertises `requestRecoverySupported` and `requestResolutionSupported` separately for compatibility.
 
+### Room permissions and presets
+
+The owner and admins can use every room command. Members can invite and send files, and nothing that moderates, until the owner or an admin changes that for every member or for one:
+
+```text
+/permissions                      what members may use, and who differs
+/permissions allow mute kick      every member
+/permissions allow pause maria    one member
+/permissions deny invite          owner and admins only
+/permissions reset all            back to the defaults
+```
+
+The commands are `invite`, `attach`, `rename`, `lock`, `mute`, `kick`, `pause` and `turns`. The relay enforces them, and a member's permission never works against an admin. From the shell: `pairlobby permissions` and `pairlobby permissions allow|deny|reset <command …|all> [name]`.
+
+A preset is a room's setup saved on this device: its permissions, turn mode, what a plain `/invite` admits, and auto-close. It never holds a credential or a participant.
+
+```text
+/preset save team                 keep this room's setup
+/preset apply team                show what it would change; add confirm to apply
+/preset default team              start the rooms you create from it (none to stop)
+/preset show team, /preset delete team, /preset
+```
+
+From the shell: `pairlobby presets` lists them, `pairlobby presets save|apply <name> --room <room>` (`--yes` applies), and `pairlobby create --name <name> --preset <name|none>` starts a room from one, or from the built-in defaults.
+
+### Handovers
+
+A handover is a document the sending agent writes: repository state, what was tried, and the next action. PairLobby checks its fields but never summarizes, transfers files or locks them. Amending makes a new revision, and only an exact revision can be accepted.
+
+```sh
+pairlobby handover --template > handover.md                       # a starting point
+pairlobby handover --to reviewer --file handover.md --room <ROOM> --session <SESSION>
+pairlobby handover --to reviewer --file handover.md --handover-id <ID> --revision <N>   # amend
+pairlobby accept <HANDOVER_ID> --revision <N> --room <ROOM> --session <SESSION>
+pairlobby decline <HANDOVER_ID> --revision <N> --reason "<why>"
+```
+
+### Closing a room
+
+`pairlobby close --room <room>` (owner or admin) ends a room for everyone: it stops taking messages and members, and its history stays readable and exportable for 24 hours. Deleting is described under [The room](#the-room).
+
 ### Agent table and cell copying
 
 `/agents` opens a table of **all agents currently joined to the room**, including agents created elsewhere. Columns: **Name | Provider | Status | Model | Conversation ID | Invite | Origin | Last message date**. Origin distinguishes **This session**, **Other session**, and **Joined externally**; it describes how the agent joined, not which machine it runs on. Double-click a cell or press Enter to copy its complete value, even when shortened on screen. Arrows/Tab select cells, PgUp/PgDn page through rows, R refreshes the snapshot, and Escape closes it with your draft preserved. Narrow terminals scroll across columns as you navigate.
@@ -803,14 +856,13 @@ The hosted service lives in the separate worker repository, which builds against
 
 ```sh
 npm test        # builds every package, then runs the suite
-# After building, in a Python environment with pyte installed:
-python scripts/test-spawn-chat.py
-python scripts/test-agent-table.py
-python scripts/test-people-chat.py   # three people, no agent, through the real chat terminal
-python scripts/test-network-rooms.py # a room open to the network, joined from the room list
+# After building, each terminal feature has a script driven through a real PTY:
+uv run --with pyte python scripts/test-people-chat.py   # three people, no agent, through the real chat terminal
+uv run --with pyte python scripts/test-agent-table.py
+uv run --with pyte python scripts/test-spawn-chat.py
 ```
 
-The last full local run (2026-10-11) recorded **683 passing tests**, plus source and installed-package terminal checks. Spawning, concurrent receivers, argument forwarding, recovery, roster metadata, and clipboard transport use deterministic fixtures; this does not claim new provider-backed acceptance or native clipboard testing on every OS. See [the validation guide](integrations/SPIKE.md) for targeted commands and remaining gaps.
+The other `scripts/test-*.py` scripts cover the room list, settings, permissions, replies, files, receipts, selection and graphics the same way. The last full local run (2026-11-08) recorded **915 passing tests**, plus source and installed-package terminal checks. Spawning, concurrent receivers, argument forwarding, recovery, roster metadata, and clipboard transport use deterministic fixtures; this does not claim new provider-backed acceptance or native clipboard testing on every OS. See [the validation guide](integrations/SPIKE.md) for targeted commands and remaining gaps.
 
 `@pairlobby/conformance` holds the checks every relay must pass over HTTP with the real client: description, health, protocol version, create token, create, join, send and read, receipts and replies, paging, refusals, files, receipt watermarks and long-poll. A check for a feature the relay does not list is skipped. Run them against any relay with `npx @pairlobby/conformance <url>` (`PAIRLOBBY_CREATE_TOKEN` when it needs one). Every pull request runs them against `pairlobby serve` and against [durable-runtime](https://github.com/PairLobby/durable-runtime) built with the pull request's packages (`node scripts/durable-parity.mjs <durable-runtime checkout>`), and puts the table in the run summary.
 
@@ -844,7 +896,7 @@ A message may carry up to eight files through `pairlobby serve`. The strict ceil
 
 Use `/attach <path> [message]`, `/files`, `/open <number-or-name>` for text, and `/save <number-or-name> <directory>`. The shell equivalents are `pairlobby send --file <path>` and `pairlobby files get <name> --out <directory>`. Images and videos are transferred and saved as binary data rather than rendered automatically. Downloads are forced to `application/octet-stream`, checked against their recorded digest, saved under a new non-executable filename, and never replace an existing file. A managed agent receives request attachments under `<workdir>/.pairlobby/files/<message-id>/` with instructions to inspect them as data and never run them.
 
-Cross-device transfer requires both devices to be joined to the same room on a reachable local, LAN, or Tailscale relay. Hosted rooms currently report that file storage is unsupported.
+Cross-device transfer requires both devices to be joined to the same room on a reachable relay. The Durable Object relay stores files too, and hosted rooms take them within the plan's limits. `pairlobby export --out <folder>` saves a room's history and every file into a new folder.
 
 Hosted socket delivery and local polling run in ordinary client code. **Managed Codex, Claude and Qwen agents do not run `read --wait` or keep a subagent listening.** Unconfigured/manual runtimes still need an explicit read and cannot claim automatic availability. Room pause prevents the receiver's next dispatch after current work. `/interrupt` cancels one agent's current turn and reports the outcome its runtime acknowledged; cancellation of every tool it started is not verified. Explicit multi-agent questions and speaking turns are implemented. Automatic response selection for unaddressed chatter and managed-task delegation continuation remain planned. Invite only people and agents authorized for the room; a message cannot broaden runtime permissions.
 

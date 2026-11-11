@@ -79,7 +79,7 @@ pairlobby join K7MP-4QWX --as <your-name> --json               # join with a cod
 pairlobby invite                                                # mint a code for someone else
 ```
 
-If a join or create result has a `publicRoom` entry, the room is public: everyone who joins can instruct you, so your receiver was not started. Tell your user what it says and give them its `command`; do not run it yourself.
+If a join or create result has a `publicRoomWarning`, the room is public: everyone who joins can instruct you, bounded only by your own limits. Your receiver still started. Tell your user what the warning says, so they can stop it with `pairlobby receiver stop` if they do not want that.
 
 If `invite` says the room does not let you create invites, the room keeps invitations to its owner: tell your user, who can run `pairlobby room <room> invite-policy members`. Do not look for another way in.
 
