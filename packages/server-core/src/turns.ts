@@ -1,3 +1,4 @@
+import {retryRoomConflict} from './commit.js';
 import {ACK_TIMEOUT_MS, ProtocolError, TURN_LEASE_MS, hashCredential, newCredential, newId} from '@pairlobby/protocol';
 import type {MessageRequest, ProviderWait, TurnAction, TurnGrant, TurnMode, TurnQueue} from '@pairlobby/protocol';
 import {appendEvent, assertCanWrite, assertController, assertMayTarget, assertPermitted, assertRoomWritable, authenticate, emptyMutation} from '@pairlobby/room-core';
@@ -22,15 +23,33 @@ export class TurnCoordinator {
     constructor(private readonly store: RoomStore, private readonly now: () => number) {}
 
     private async view(roomId: string): Promise<RoomView> {
-        const view = await this.store.loadRoom(roomId);
+        const view = await this.store.loadRoom(roomId, {handovers: false});
         if (!view) {
             throw new ProtocolError('room_not_found', 'room not found');
         }
         return view;
     }
 
+    private async requests(roomId: string): Promise<MessageRequest[]> {
+        const requests: MessageRequest[] = [];
+        let after = 0;
+        while (requests.length <= 1000) {
+            const page = await this.store.messageRequests(roomId, after, 200);
+            requests.push(...page.requests);
+            if (!page.hasMore) {
+                return requests;
+            }
+            const next = page.requests.at(-1)?.seq;
+            if (next === undefined || next <= after) {
+                throw new ProtocolError('server_unavailable', 'request pagination did not advance');
+            }
+            after = next;
+        }
+        throw new ProtocolError('server_unavailable', 'pending request limit exceeded');
+    }
+
     private async pending(roomId: string): Promise<MessageRequest[]> {
-        return (await this.store.messageRequests(roomId, 0, 1000)).requests.filter((request) => !request.failureAt && !request.responseEventId && request.requiresReply);
+        return (await this.requests(roomId)).filter((request) => !request.failureAt && !request.responseEventId && request.requiresReply);
     }
 
     async resolve(roomId: string, requestId: string, participantId?: string): Promise<MessageRequest | null> {
@@ -64,7 +83,7 @@ export class TurnCoordinator {
     async status(roomId: string, credential: string): Promise<TurnQueue> {
         const view = await this.view(roomId);
         authenticate(view, await hashCredential(credential), this.now());
-        const pending = (await this.store.messageRequests(roomId, 0, 1000)).requests;
+        const pending = await this.requests(roomId);
         const hasRunning = pending.some((request) => !request.failureAt && request.turnStatus === 'running');
         const next = pending.find((request) => !request.failureAt && this.eligible(view, request));
         return {
@@ -80,6 +99,7 @@ export class TurnCoordinator {
                     state: request.failureAt ? 'failed' : request.providerWait ? 'provider_wait' : request.turnStatus === 'running' ? ((request.turnExpiresAt ?? 0) <= this.now() ? 'stalled' : request.action === 'waiting' || request.action === 'reply_pending' ? 'waiting' : 'answering') : unavailable ? 'unavailable' : paused ? 'paused' : overdue ? 'stalled' : 'waiting',
                     ...(request.workingAt !== undefined && !unavailable && !paused ? {workingAt: request.workingAt} : {}),
                     ...(participant?.capabilities?.runtime ? {runtime: participant.capabilities.runtime} : {}),
+                    ...(!hasRunning && request.eventId === next?.eventId ? {stallAt: Math.max(request.at, view.room.turnChangedAt ?? 0) + ACK_TIMEOUT_MS} : {}),
                     expiresAt: request.turnExpiresAt ?? null
                 };
             })
@@ -180,106 +200,116 @@ export class TurnCoordinator {
     }
 
     async renew(roomId: string, credential: string, requestId: string, token: string): Promise<TurnGrant> {
-        const view = await this.view(roomId);
-        const actor = authenticate(view, await hashCredential(credential), this.now());
-        const participant = assertCanWrite(actor);
-        assertRoomWritable(view, this.now());
-        const request = await this.resolve(roomId, requestId, participant.participantId);
-        if (!request || request.to !== participant.participantId) {
-            throw new ProtocolError('unauthorized', 'this turn belongs to another participant');
-        }
-        if (!request.turnRequired) {
-            throw new ProtocolError('turn_required', 'claim the speaking turn first');
-        }
-        assertTurn(request, token, this.now());
-        const revision = view.room.turnRevision ?? 0;
-        const next = {...request, turnExpiresAt: this.now() + TURN_LEASE_MS, turnRevision: revision + 1};
-        await this.store.updateTurns({...view.room, turnRevision: revision + 1}, [next], revision);
-        return {state: 'granted', token, expiresAt: next.turnExpiresAt};
+        return retryRoomConflict(async () => {
+            const view = await this.view(roomId);
+            const actor = authenticate(view, await hashCredential(credential), this.now());
+            const participant = assertCanWrite(actor);
+            assertRoomWritable(view, this.now());
+            const request = await this.resolve(roomId, requestId, participant.participantId);
+            if (!request || request.to !== participant.participantId) {
+                throw new ProtocolError('unauthorized', 'this turn belongs to another participant');
+            }
+            if (!request.turnRequired) {
+                throw new ProtocolError('turn_required', 'claim the speaking turn first');
+            }
+            assertTurn(request, token, this.now());
+            const revision = view.room.turnRevision ?? 0;
+            const next = {...request, turnExpiresAt: this.now() + TURN_LEASE_MS, turnRevision: revision + 1};
+            await this.store.updateTurns({...view.room, turnRevision: revision + 1}, [next], revision);
+            return {state: 'granted', token, expiresAt: next.turnExpiresAt};
+        });
     }
 
     async pass(roomId: string, credential: string, requestId: string, token: string): Promise<void> {
-        const view = await this.view(roomId);
-        const actor = authenticate(view, await hashCredential(credential), this.now());
-        assertRoomWritable(view, this.now());
-        const participant = assertCanWrite(actor);
-        const request = await this.resolve(roomId, requestId, participant.participantId);
-        if (!request || request.to !== participant.participantId) {
-            throw new ProtocolError('unauthorized', 'this turn belongs to another participant');
-        }
-        if (request.turnStatus === 'passed') {
-            return;
-        }
-        if (!request.turnRequired) {
-            throw new ProtocolError('turn_required', 'claim the speaking turn first');
-        }
-        assertTurn(request, token, this.now());
-        await this.change(view, actor, [{...request, requiresReply: false, turnStatus: 'passed', turnToken: '', turnExpiresAt: 0}], 'passed');
+        return retryRoomConflict(async () => {
+            const view = await this.view(roomId);
+            const actor = authenticate(view, await hashCredential(credential), this.now());
+            assertRoomWritable(view, this.now());
+            const participant = assertCanWrite(actor);
+            const request = await this.resolve(roomId, requestId, participant.participantId);
+            if (!request || request.to !== participant.participantId) {
+                throw new ProtocolError('unauthorized', 'this turn belongs to another participant');
+            }
+            if (request.turnStatus === 'passed') {
+                return;
+            }
+            if (!request.turnRequired) {
+                throw new ProtocolError('turn_required', 'claim the speaking turn first');
+            }
+            assertTurn(request, token, this.now());
+            await this.change(view, actor, [{...request, requiresReply: false, turnStatus: 'passed', turnToken: '', turnExpiresAt: 0}], 'passed');
+        });
     }
 
     async defer(roomId: string, credential: string, requestId: string, token: string, providerWait: ProviderWait): Promise<void> {
-        const view = await this.view(roomId);
-        const actor = authenticate(view, await hashCredential(credential), this.now());
-        const participant = assertCanWrite(actor);
-        assertRoomWritable(view, this.now());
-        const request = await this.resolve(roomId, requestId, participant.participantId);
-        if (!request || request.to !== participant.participantId) {
-            throw new ProtocolError('unauthorized', 'this request belongs to another participant');
-        }
-        if (request.providerWait) {
-            return;
-        }
-        if (!request.turnRequired || request.turnStatus !== 'running' || !token || request.turnToken !== token) {
-            throw new ProtocolError('turn_required', 'only the receiver holding this speaking turn may defer it');
-        }
-        const next: MessageRequest = {...request, providerWait, action: 'provider_wait', actionAt: this.now(), actionReason: providerWait.displayMessage, turnToken: '', turnExpiresAt: 0};
-        delete next.workingAt;
-        delete next.turnStatus;
-        delete next.turnClaimId;
-        await this.change(view, actor, [next], 'deferred', view.room.turnMode ?? 'sequential', providerWait.displayMessage);
+        return retryRoomConflict(async () => {
+            const view = await this.view(roomId);
+            const actor = authenticate(view, await hashCredential(credential), this.now());
+            const participant = assertCanWrite(actor);
+            assertRoomWritable(view, this.now());
+            const request = await this.resolve(roomId, requestId, participant.participantId);
+            if (!request || request.to !== participant.participantId) {
+                throw new ProtocolError('unauthorized', 'this request belongs to another participant');
+            }
+            if (request.providerWait) {
+                return;
+            }
+            if (!request.turnRequired || request.turnStatus !== 'running' || !token || request.turnToken !== token) {
+                throw new ProtocolError('turn_required', 'only the receiver holding this speaking turn may defer it');
+            }
+            const next: MessageRequest = {...request, providerWait, action: 'provider_wait', actionAt: this.now(), actionReason: providerWait.displayMessage, turnToken: '', turnExpiresAt: 0};
+            delete next.workingAt;
+            delete next.turnStatus;
+            delete next.turnClaimId;
+            await this.change(view, actor, [next], 'deferred', view.room.turnMode ?? 'sequential', providerWait.displayMessage);
+        });
     }
 
     async resume(roomId: string, credential: string, requestId: string): Promise<MessageRequest> {
-        const view = await this.view(roomId);
-        const actor = authenticate(view, await hashCredential(credential), this.now());
-        const participant = assertCanWrite(actor);
-        assertRoomWritable(view, this.now());
-        const request = await this.resolve(roomId, requestId, participant.participantId);
-        if (!request || request.to !== participant.participantId) {
-            throw new ProtocolError('unauthorized', 'this request belongs to another participant');
-        }
-        if (!request.providerWait) {
-            return request;
-        }
-        if (!request.requiresReply || request.responseEventId || request.resolution || request.recoveredByEventId) {
-            throw new ProtocolError('invalid_request', 'this request is no longer actionable');
-        }
-        if (view.controls.find((control) => control.targetParticipantId === participant.participantId)?.paused) {
-            throw new ProtocolError('invalid_request', 'provider retry is held while this participant is paused');
-        }
-        const next: MessageRequest = {...request, attempt: (request.attempt ?? 1) + 1};
-        delete next.providerWait;
-        delete next.action;
-        delete next.actionAt;
-        delete next.actionReason;
-        delete next.turnStatus;
-        delete next.turnToken;
-        delete next.turnExpiresAt;
-        delete next.turnClaimId;
-        delete next.workingAt;
-        await this.change(view, actor, [next], 'resumed', view.room.turnMode ?? 'sequential', 'Provider capacity retry started.');
-        return next;
+        return retryRoomConflict(async () => {
+            const view = await this.view(roomId);
+            const actor = authenticate(view, await hashCredential(credential), this.now());
+            const participant = assertCanWrite(actor);
+            assertRoomWritable(view, this.now());
+            const request = await this.resolve(roomId, requestId, participant.participantId);
+            if (!request || request.to !== participant.participantId) {
+                throw new ProtocolError('unauthorized', 'this request belongs to another participant');
+            }
+            if (!request.providerWait) {
+                return request;
+            }
+            if (!request.requiresReply || request.responseEventId || request.resolution || request.recoveredByEventId) {
+                throw new ProtocolError('invalid_request', 'this request is no longer actionable');
+            }
+            if (view.controls.find((control) => control.targetParticipantId === participant.participantId)?.paused) {
+                throw new ProtocolError('invalid_request', 'provider retry is held while this participant is paused');
+            }
+            const next: MessageRequest = {...request, attempt: (request.attempt ?? 1) + 1};
+            delete next.providerWait;
+            delete next.action;
+            delete next.actionAt;
+            delete next.actionReason;
+            delete next.turnStatus;
+            delete next.turnToken;
+            delete next.turnExpiresAt;
+            delete next.turnClaimId;
+            delete next.workingAt;
+            await this.change(view, actor, [next], 'resumed', view.room.turnMode ?? 'sequential', 'Provider capacity retry started.');
+            return next;
+        });
     }
 
     async mode(roomId: string, credential: string, mode: TurnMode): Promise<TurnQueue> {
-        const view = await this.view(roomId);
-        const actor = authenticate(view, await hashCredential(credential), this.now());
-        assertController(actor);
-        if (mode === 'sequential' && (await this.pending(roomId)).filter((request) => request.turnStatus === 'running').length > 1) {
-            throw new ProtocolError('turn_conflict', 'wait for the active parallel turns to finish or cancel them first');
-        }
-        await this.change(view, actor, [], 'mode', mode);
-        return this.status(roomId, credential);
+        return retryRoomConflict(async () => {
+            const view = await this.view(roomId);
+            const actor = authenticate(view, await hashCredential(credential), this.now());
+            assertController(actor);
+            if (mode === 'sequential' && (await this.pending(roomId)).filter((request) => request.turnStatus === 'running').length > 1) {
+                throw new ProtocolError('turn_conflict', 'wait for the active parallel turns to finish or cancel them first');
+            }
+            await this.change(view, actor, [], 'mode', mode);
+            return this.status(roomId, credential);
+        });
     }
 
     /**
@@ -288,34 +318,38 @@ export class TurnCoordinator {
      * Queued requests are left alone; a pause holds them. Returns the fenced request ids.
      */
     async fenceRunning(roomId: string, credential: string, participantId: string): Promise<string[]> {
-        const view = await this.view(roomId);
-        const actor = authenticate(view, await hashCredential(credential), this.now());
-        assertPermitted(view, actor, 'pause');
-        const target = view.participants.find((participant) => participant.participantId === participantId);
-        if (target) {
-            assertMayTarget(actor, target);
-        }
-        const running = (await this.pending(roomId)).filter((request) => request.to === participantId && request.turnStatus === 'running');
-        if (running.length) {
-            await this.change(view, actor, running.map((request) => ({...request, requiresReply: false, turnStatus: 'skipped' as const, turnToken: '', turnExpiresAt: 0})), 'skipped');
-        }
-        return running.map((request) => request.eventId);
+        return retryRoomConflict(async () => {
+            const view = await this.view(roomId);
+            const actor = authenticate(view, await hashCredential(credential), this.now());
+            assertPermitted(view, actor, 'pause');
+            const target = view.participants.find((participant) => participant.participantId === participantId);
+            if (target) {
+                assertMayTarget(actor, target);
+            }
+            const running = (await this.pending(roomId)).filter((request) => request.to === participantId && request.turnStatus === 'running');
+            if (running.length) {
+                await this.change(view, actor, running.map((request) => ({...request, requiresReply: false, turnStatus: 'skipped' as const, turnToken: '', turnExpiresAt: 0})), 'skipped');
+            }
+            return running.map((request) => request.eventId);
+        });
     }
 
     async control(roomId: string, credential: string, action: TurnAction): Promise<TurnQueue> {
-        const view = await this.view(roomId);
-        const actor = authenticate(view, await hashCredential(credential), this.now());
-        assertPermitted(view, actor, 'turns');
-        const pending = (await this.store.messageRequests(roomId, 0, 1000)).requests;
-        const chosen = action.requestId
-            ? pending.find((request) => request.eventId === action.requestId || request.conversationId === action.requestId)
-            : action.participantId ? pending.find((request) => request.to === action.participantId) : pending.find((request) => request.turnStatus === 'running') ?? pending.find((request) => !request.failureAt && this.eligible(view, request)) ?? pending.find((request) => request.turnRequired);
-        if (!chosen) {
-            throw new ProtocolError('invalid_request', 'no matching pending turn');
-        }
-        const selected = action.action === 'cancel' && chosen.conversationId ? pending.filter((request) => request.conversationId === chosen.conversationId) : [chosen];
-        const turnStatus = action.action === 'skip' ? 'skipped' : 'cancelled';
-        await this.change(view, actor, selected.map((request) => ({...request, requiresReply: false, turnStatus, turnToken: '', turnExpiresAt: 0})), turnStatus);
-        return this.status(roomId, credential);
+        return retryRoomConflict(async () => {
+            const view = await this.view(roomId);
+            const actor = authenticate(view, await hashCredential(credential), this.now());
+            assertPermitted(view, actor, 'turns');
+            const pending = await this.requests(roomId);
+            const chosen = action.requestId
+                ? pending.find((request) => request.eventId === action.requestId || request.conversationId === action.requestId)
+                : action.participantId ? pending.find((request) => request.to === action.participantId) : pending.find((request) => request.turnStatus === 'running') ?? pending.find((request) => !request.failureAt && this.eligible(view, request)) ?? pending.find((request) => request.turnRequired);
+            if (!chosen) {
+                throw new ProtocolError('invalid_request', 'no matching pending turn');
+            }
+            const selected = action.action === 'cancel' && chosen.conversationId ? pending.filter((request) => request.conversationId === chosen.conversationId) : [chosen];
+            const turnStatus = action.action === 'skip' ? 'skipped' : 'cancelled';
+            await this.change(view, actor, selected.map((request) => ({...request, requiresReply: false, turnStatus, turnToken: '', turnExpiresAt: 0})), turnStatus);
+            return this.status(roomId, credential);
+        });
     }
 }

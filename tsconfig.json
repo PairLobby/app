@@ -8,6 +8,7 @@
     {"path": "./packages/protocol"},
     {"path": "./packages/room-core"},
     {"path": "./packages/server-core"},
-    {"path": "./fixtures"}
+    {"path": "./fixtures"},
+    {"path": "./packages/sqlite"}
   ]
 }

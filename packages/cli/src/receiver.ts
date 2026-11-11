@@ -4,6 +4,7 @@ import {join, resolve} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {setTimeout as sleep} from 'node:timers/promises';
 import type {LocalStore, SessionEntry} from '@pairlobby/client';
+import {RoomSubscription} from '@pairlobby/client';
 import {ProtocolError, newId} from '@pairlobby/protocol';
 import type {Attachment, ListingPresenceRequest, MessageRequest, ProviderWait, ReportedAvailability} from '@pairlobby/protocol';
 import {select, UsageError} from './context.js';
@@ -363,6 +364,7 @@ export async function retryProviderNow(store: LocalStore, roomRef: string, sessi
 /** One ordinary process owns the participant; neither timers nor empty reads start a turn. */
 export async function runReceiver(store: LocalStore, roomRef: string, sessionRef: string): Promise<number> {
     const {room, session, credential, client} = select(store, roomRef, sessionRef);
+    const live = new RoomSubscription(client, room.roomId, credential);
     const location = paths(store, session.sessionId);
     const config = JSON.parse(readFileSync(location.config, 'utf8')) as ReceiverConfiguration;
     let lock: number;
@@ -419,7 +421,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
     const stop = () => {
         stopped = true;
         runtime?.close();
-        client.closeLive();
+        void live.stop();
         wakeReceiver?.();
         void receipts?.stop();
     };
@@ -584,6 +586,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         let interruptOutcome: InterruptOutcome | undefined;
         let requestCancelled = false;
         let watching = true;
+        const watchAbort = new AbortController();
         let renewing = false;
         let renewal: Promise<void> = Promise.resolve();
         const heartbeat = token ? setInterval(() => {
@@ -671,11 +674,14 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
             void (async () => {
                 let cursor = snapshot.latestSeq;
                 while (watching) {
-                    await client.waitForChange(room.roomId, credential, cursor, 30_000, 1000);
+                    const version = live.version;
+                    const page = await live.read(cursor, 200);
+                    if (!page.events.length) {
+                        await live.wait(version, 30_000, watchAbort.signal);
+                    }
                     if (!watching) {
                         return;
                     }
-                    const page = await client.readEvents(room.roomId, credential, cursor, 200);
                     for (const event of page.events) {
                         cursor = Math.max(cursor, event.seq);
                         if (event.type === 'control.pause' && event.payload.interrupt && event.payload.targetParticipantId === session.participantId) {
@@ -829,6 +835,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
             runtime = undefined;
         } finally {
             watching = false;
+            watchAbort.abort();
             clearInterval(heartbeat);
             await renewal;
             await interrupting?.catch((error: unknown) => status({detail: `Interrupt report failed: ${error instanceof Error ? error.message : String(error)}`}));
@@ -848,8 +855,8 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
     }
 
     try {
-        await client.snapshot(room.roomId, credential);
-        receipts = startReceiptMonitor({serverUrl: room.serverUrl, roomId: room.roomId, participantId: session.participantId, credential, cursorPath: join(location.directory, 'receipt-cursor.json'), onError: (message) => {
+        await live.snapshot();
+        receipts = startReceiptMonitor({serverUrl: room.serverUrl, roomId: room.roomId, participantId: session.participantId, credential, subscription: live, cursorPath: join(location.directory, 'receipt-cursor.json'), onError: (message) => {
             status({receiptError: message});
             if (message) {
                 process.stderr.write(`PairLobby receipt retry: ${message}\n`);
@@ -862,8 +869,9 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         const probeOwner = `${session.sessionId}:${process.pid}`;
         while (!stopped) {
             try {
+                const version = live.version;
                 await flush();
-                const snapshot = await client.snapshot(room.roomId, credential);
+                const snapshot = await live.snapshot();
                 const member = snapshot.participants.find((participant) => participant.participantId === session.participantId);
                 if (!member || member.revoked || member.left) {
                     break;
@@ -881,7 +889,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                     if (member.paused || member.muted) {
                         status({state: 'paused', providerWait, eventId: '', detail: `Provider retry held while this participant is ${member.paused ? 'paused' : 'muted'}.`});
                         failures = 0;
-                        await client.waitForChange(room.roomId, credential, snapshot.latestSeq, 300_000, 1000);
+                        await live.wait(version);
                         continue;
                     }
                     const due = Boolean(cooldown.manualTarget) || (cooldown.automaticRetry && cooldown.wakeAt !== null && Date.now() >= cooldown.wakeAt);
@@ -906,7 +914,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                 let waiting = false;
                 let providerWaiting = false;
                 try {
-                    let requests = await client.pendingRequests(room.roomId, credential, session.participantId);
+                    let requests = await live.requests(session.participantId);
                     if (claimedCooldown?.manualTarget) {
                         const manualRequestId = claimedCooldown.manualTarget.requestId;
                         if (!requests.some((request) => request.eventId === manualRequestId && !request.failureAt && !request.recoveredByEventId && !request.resolution)) {
@@ -953,7 +961,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                 }
                 status({state: member.paused || member.muted ? 'paused' : providerWaiting ? 'provider_wait' : waiting ? state.state : 'available', eventId: providerWaiting || waiting ? state.eventId ?? '' : '', detail: !providerWaiting && !waiting && state.detail === 'Waiting for a speaking turn.' ? '' : state.detail ?? ''});
                 failures = 0;
-                await client.waitForChange(room.roomId, credential, snapshot.latestSeq, 300_000, 1000);
+                await live.wait(version);
             } catch (error) {
                 if (stopped) {
                     break;
@@ -974,6 +982,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
     } finally {
         stop();
         await receipts?.stop();
+        await live.stop();
         await heartbeat?.stop();
         clearInterval(timer);
         process.removeListener('SIGTERM', stop);

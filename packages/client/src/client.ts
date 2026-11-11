@@ -2,7 +2,8 @@
 //! bodies back into `ProtocolError`, so callers handle one error type whether a
 //! failure came from local validation or from the server.
 
-import {MAX_EVENT_WAIT_MS, PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, ServerDescription, ServerFrame, newCredential, newId} from '@pairlobby/protocol';
+import {sha256} from '@noble/hashes/sha2.js';
+import {ABSOLUTE_MAX_FILE_BYTES, ExportStreamRecord, FILE_SIZE_HEADER, MAX_EVENT_WAIT_MS, PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, ServerDescription, ServerFrame, newCredential, newId} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
     Attachment,
@@ -43,7 +44,9 @@ import type {
     ShareListingRequest
 } from '@pairlobby/protocol';
 
-type RawUpload = {body: Uint8Array<ArrayBuffer>; contentType: string};
+type RawUpload = {body: Uint8Array<ArrayBuffer> | ReadableStream<Uint8Array>; contentType: string; size: number};
+type StreamingRequestInit = RequestInit & {duplex?: 'half'};
+export type StreamUpload = {name: string; body: ReadableStream<Uint8Array>; size: number; mediaType?: string};
 type RoomAccountAccess = {private: boolean; allowedAccounts: string[]};
 export type RoomAccountRestrictions = {private: boolean; accounts: string[]; preserveAllowlistSupported?: boolean};
 
@@ -52,6 +55,9 @@ type InviteAttempt = {attemptId: string; participantCredential: string};
 type OperationResult = {ok: boolean};
 export type MessageStatusOptions = {reason?: string; turnToken?: string; responseEventId?: string};
 export type ReadEventsOptions = {receiptsAfter?: number};
+export type SyncEventsOptions = {after: number; limit?: number; waitMs?: number; stateAfter: number; snapshotAfter?: number; receiptsAfter?: number; signal?: AbortSignal};
+export type LiveWaitOptions = {stateAfter?: number};
+export type DirectoryReadOptions = {owner?: string; after?: string; limit?: number};
 
 type HandoverRevisionResult = {revision: number; event: RoomEvent};
 
@@ -73,7 +79,7 @@ export interface CreatedRoom {
     participantId: string;
     controllerCredential: string;
     participantCredential: string;
-    invite: {code: string; expiresAt: number};
+    invite: {code: string; expiresAt: number | null};
     room: RoomSnapshot;
 }
 
@@ -111,6 +117,9 @@ export class PairLobbyClient {
     private liveRoom: string | null = null;
     private changed = new Set<() => void>();
     private description: Promise<ServerDescription | null> | null = null;
+    private liveRevision = 0;
+    private connecting: Promise<void> | null = null;
+    private readonly connectionId = newId('event');
     /** Cancels a held read or a poll sleep in progress, so `closeLive` wakes every kind of wait. */
     private liveWait = new AbortController();
 
@@ -122,7 +131,7 @@ export class PairLobbyClient {
         // Both credentials are generated here, so a lost response never strands a secret the caller does not hold.
         const controllerCredential = newCredential('controller');
         const participantCredential = newCredential('participant');
-        const body = await this.call<{room: RoomSnapshot; participantId: string; invite: {code: string; expiresAt: number}}>('POST', '/v1/rooms', null, {
+        const body = await this.call<{room: RoomSnapshot; participantId: string; invite: CreatedRoom['invite']}>('POST', '/v1/rooms', null, {
             name,
             controllerCredential,
             participantCredential,
@@ -192,10 +201,10 @@ export class PairLobbyClient {
             const parsed = ServerDescription.safeParse(raw);
             return parsed.success ? parsed.data : null;
         }, (error: unknown) => {
-            this.description = null;
             if (error instanceof ProtocolError && error.code === 'invalid_request') {
                 return null;
             }
+            this.description = null;
             throw error;
         });
         try {
@@ -265,8 +274,42 @@ export class PairLobbyClient {
 
     /** Stores a file on the relay and returns what to put in a message's `attachments`. It is not in the room until a message carries it. */
     async uploadFile(roomId: string, credential: string, name: string, bytes: Uint8Array, mediaType = 'application/octet-stream'): Promise<Attachment> {
-        const response = await this.raw('POST', `/v1/rooms/${roomId}/files?name=${encodeURIComponent(name)}`, credential, {body: bytes as Uint8Array<ArrayBuffer>, contentType: mediaType});
+        const response = await this.raw('POST', `/v1/rooms/${roomId}/files?name=${encodeURIComponent(name)}`, credential, {body: bytes as Uint8Array<ArrayBuffer>, contentType: mediaType, size: bytes.byteLength});
         return (JSON.parse(await response.text()) as {file: Attachment}).file;
+    }
+
+    async uploadFileStream(roomId: string, credential: string, upload: StreamUpload): Promise<Attachment> {
+        if (!(await this.describe(true))?.features?.includes('stream-files')) {
+            // Older hosted relays require a transport Content-Length. Fetch supplies it for the legacy byte-body API.
+            if (!Number.isSafeInteger(upload.size) || upload.size <= 0 || upload.size > ABSOLUTE_MAX_FILE_BYTES) {
+                throw new ProtocolError('payload_too_large', 'this file exceeds the supported upload size');
+            }
+            const bytes = new Uint8Array(upload.size);
+            const reader = upload.body.getReader();
+            let offset = 0;
+            try {
+                for (;;) {
+                    const {done, value} = await reader.read();
+                    if (done) {
+                        break;
+                    }
+                    if (offset + value.byteLength > upload.size) {
+                        throw new ProtocolError('invalid_request', 'the upload length changed');
+                    }
+                    bytes.set(value, offset);
+                    offset += value.byteLength;
+                }
+                if (offset !== upload.size) {
+                    throw new ProtocolError('invalid_request', 'the upload length changed');
+                }
+            } finally {
+                await reader.cancel().catch(() => {});
+                reader.releaseLock();
+            }
+            return this.uploadFile(roomId, credential, upload.name, bytes, upload.mediaType);
+        }
+        const response = await this.raw('POST', `/v1/rooms/${roomId}/files?name=${encodeURIComponent(upload.name)}`, credential, {body: upload.body, contentType: upload.mediaType ?? 'application/octet-stream', size: upload.size});
+        return (await response.json() as {file: Attachment}).file;
     }
 
     async files(roomId: string, credential: string): Promise<RoomFile[]> {
@@ -280,14 +323,35 @@ export class PairLobbyClient {
 
     /** The file's bytes, checked against the digest the relay recorded for it. */
     async downloadFile(roomId: string, credential: string, fileId: string): Promise<Uint8Array> {
+        return new Uint8Array(await new Response(await this.downloadFileStream(roomId, credential, fileId)).arrayBuffer());
+    }
+
+    /** Integrity is checked at EOF. Consumers must discard partial output when the stream fails. */
+    async downloadFileStream(roomId: string, credential: string, fileId: string): Promise<ReadableStream<Uint8Array>> {
         const response = await this.raw('GET', `/v1/rooms/${roomId}/files/${fileId}`, credential);
-        const bytes = new Uint8Array(await response.arrayBuffer());
-        const expected = response.headers.get('pairlobby-file-sha256');
-        const digest = Array.from(new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', bytes)), (byte) => byte.toString(16).padStart(2, '0')).join('');
-        if (expected && expected !== digest) {
-            throw new ProtocolError('server_unavailable', 'the file arrived damaged; try again');
+        if (!response.body) {
+            throw new ProtocolError('server_unavailable', 'the file response has no body');
         }
-        return bytes;
+        const expected = response.headers.get('pairlobby-file-sha256');
+        const length = response.headers.get('content-length');
+        const hash = sha256.create();
+        let received = 0;
+        return response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+            transform(chunk, controller) {
+                received += chunk.byteLength;
+                if (length !== null && received > Number(length)) {
+                    throw new ProtocolError('server_unavailable', 'the file arrived with an incorrect length');
+                }
+                hash.update(chunk);
+                controller.enqueue(chunk);
+            },
+            flush() {
+                const digest = Array.from(hash.digest(), (byte) => byte.toString(16).padStart(2, '0')).join('');
+                if ((expected && expected !== digest) || (length !== null && received !== Number(length))) {
+                    throw new ProtocolError('server_unavailable', 'the file arrived damaged; try again');
+                }
+            }
+        }));
     }
 
     /** A request whose body or answer is bytes rather than JSON. Errors still come back as `ProtocolError`. */
@@ -295,12 +359,16 @@ export class PairLobbyClient {
         const headers = new Headers({[PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION), authorization: `Bearer ${credential}`});
         if (upload) {
             headers.set('content-type', upload.contentType);
+            headers.set(FILE_SIZE_HEADER, String(upload.size));
         }
         let response: Response;
         try {
-            response = await fetch(`${this.serverUrl}${path}`, {method, headers, redirect: 'error', signal: this.signal ? AbortSignal.any([this.signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000), ...(upload ? {body: upload.body} : {})});
+            const init: StreamingRequestInit = {method, headers, redirect: 'error', signal: this.signal ? AbortSignal.any([this.signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000), ...(upload ? {body: upload.body, duplex: 'half'} : {})};
+            response = await fetch(`${this.serverUrl}${path}`, init);
         } catch (error) {
-            throw new ProtocolError('server_unavailable', `could not reach ${this.serverUrl}: ${error instanceof Error ? error.message : String(error)}`);
+            const unavailable = new ProtocolError('server_unavailable', `could not reach ${this.serverUrl}: ${error instanceof Error ? error.message : String(error)}`);
+            unavailable.cause = error;
+            throw unavailable;
         }
         if (!response.ok) {
             throw toProtocolError(response.status, await response.text());
@@ -325,13 +393,37 @@ export class PairLobbyClient {
         if (options.receiptsAfter !== undefined) {
             return this.call('GET', `/v1/rooms/${roomId}/events?after=${after}&limit=${limit}&receiptsAfter=${options.receiptsAfter}`, credential);
         }
-        if (this.liveRoom === roomId && this.socket?.readyState === WebSocket.OPEN) {
+        if (this.liveRoom === roomId && this.socket?.readyState === WebSocket.OPEN && (after === 0 || after >= this.earliestSeq - 1)) {
             const events = this.liveEvents.filter((event) => event.seq > after).slice(0, limit);
-            if (events[0]?.seq === after + 1 || after === this.watermark) {
+            if ((events.length > 0 && events.every((event, index) => event.seq === after + index + 1)) || after === this.watermark) {
                 return Promise.resolve({events, earliestSeq: this.earliestSeq, latestSeq: this.watermark, hasMore: (events.at(-1)?.seq ?? after) < this.watermark});
             }
         }
         return this.call('GET', `/v1/rooms/${roomId}/events?after=${after}&limit=${limit}`, credential);
+    }
+
+    /** One response carries events and changed-state revisions; callers keep their own consumption cursors. */
+    syncEvents(roomId: string, credential: string, options: SyncEventsOptions): Promise<ReadEventsResponse> {
+        const wait = Math.min(options.waitMs ?? 0, MAX_EVENT_WAIT_MS);
+        const query = new URLSearchParams({after: String(options.after), limit: String(options.limit ?? 200), wait: String(wait), stateAfter: String(options.stateAfter), receiptsAfter: String(options.receiptsAfter ?? 0)});
+        if (options.snapshotAfter !== undefined) {
+            query.set('snapshotAfter', String(options.snapshotAfter));
+        }
+        return this.call('GET', `/v1/rooms/${roomId}/events?${query}`, credential, undefined, wait + 15_000, options.signal);
+    }
+
+    get liveStateRevision(): number {
+        return this.liveRevision;
+    }
+
+    get liveLatestSeq(): number {
+        return this.watermark;
+    }
+
+    reconcileLive(): void {
+        if (this.socket?.readyState === WebSocket.OPEN) {
+            this.socket.send(JSON.stringify({type: 'state'}));
+        }
     }
 
     requests(roomId: string, credential: string, after = 0, limit = 100, recipientId?: string): Promise<RequestPage> {
@@ -367,9 +459,12 @@ export class PairLobbyClient {
     async pendingRequests(roomId: string, credential: string, recipientId?: string): Promise<MessageRequest[]> {
         const requests: MessageRequest[] = [];
         let after = 0;
-        for (let pageNumber = 0; pageNumber < 11; pageNumber++) {
+        for (let pageNumber = 0; pageNumber < 1101; pageNumber++) {
             const page = await this.requests(roomId, credential, after, 100, recipientId);
             requests.push(...page.requests);
+            if (requests.length > 1100) {
+                throw new ProtocolError('server_unavailable', 'pending request limit exceeded; inbox cannot be verified');
+            }
             if (!page.hasMore) {
                 return requests;
             }
@@ -450,8 +545,37 @@ export class PairLobbyClient {
     }
 
     /** The shared agents this client's member sees: one owner's, by handle, or everyone's. */
-    directory(owner?: string): Promise<DirectoryResponse> {
-        return this.call('GET', `/v1/directory${owner ? `?owner=${encodeURIComponent(owner.replace(/^@/, ''))}` : ''}`, null);
+    directoryPage(options: DirectoryReadOptions = {}): Promise<DirectoryResponse> {
+        const query = new URLSearchParams();
+        if (options.owner) {
+            query.set('owner', options.owner.replace(/^@/, ''));
+        }
+        if (options.after) {
+            query.set('after', options.after);
+        }
+        if (options.limit !== undefined) {
+            query.set('limit', String(options.limit));
+        }
+        return this.call('GET', `/v1/directory${query.size ? `?${query}` : ''}`, null);
+    }
+
+    async directory(owner?: string): Promise<DirectoryResponse> {
+        const result: DirectoryResponse = {listings: []};
+        let after: string | undefined;
+        for (;;) {
+            const page = await this.directoryPage({...(owner ? {owner} : {}), ...(after ? {after} : {})});
+            result.listings.push(...page.listings);
+            if (page.knownHandle !== undefined) {
+                result.knownHandle = Boolean(result.knownHandle || page.knownHandle);
+            }
+            if (!page.next) {
+                return result;
+            }
+            if (after && page.next <= after) {
+                throw new ProtocolError('server_unavailable', 'directory pagination did not advance');
+            }
+            after = page.next;
+        }
     }
 
     /** A single-use code into a shared agent's room, for this client's member. */
@@ -585,6 +709,46 @@ export class PairLobbyClient {
         return this.call('GET', `/v1/rooms/${roomId}/export`, credential);
     }
 
+    /** Incremental export for current relays; preserves compatibility with an older relay's JSON endpoint. */
+    async *exportRecords(roomId: string, credential: string): AsyncGenerator<ExportStreamRecord> {
+        if (!(await this.describe())?.features?.includes('stream-export')) {
+            const {events, ...metadata} = await this.export(roomId, credential);
+            yield {kind: 'metadata', metadata};
+            for (const event of events) {
+                yield {kind: 'event', event};
+            }
+            yield {kind: 'complete', events: events.length};
+            return;
+        }
+        const response = await this.raw('GET', `/v1/rooms/${roomId}/export?format=ndjson`, credential);
+        if (!response.body) {
+            throw new ProtocolError('server_unavailable', 'the export response has no body');
+        }
+        let started = false;
+        let complete = false;
+        let count = 0;
+        for await (const line of exportLines(response.body)) {
+            const record = ExportStreamRecord.parse(JSON.parse(line));
+            if (complete || (record.kind === 'metadata' ? started : !started)) {
+                throw new ProtocolError('server_unavailable', 'the export records arrived out of order');
+            }
+            if (record.kind === 'metadata') {
+                started = true;
+            } else if (record.kind === 'event') {
+                count++;
+            } else {
+                if (record.events !== count) {
+                    throw new ProtocolError('server_unavailable', 'the export ended before all events arrived');
+                }
+                complete = true;
+            }
+            yield record;
+        }
+        if (!complete) {
+            throw new ProtocolError('server_unavailable', 'the export did not finish; retry');
+        }
+    }
+
     async delete(roomId: string, credential: string): Promise<void> {
         await this.call('DELETE', `/v1/rooms/${roomId}`, credential);
     }
@@ -593,7 +757,7 @@ export class PairLobbyClient {
      * Returns when something newer than `after` may be in the room, or at `timeoutMs`. Uses the relay's
      * transport: a socket, a held read, or a sleep of `localIntervalMs` before the caller reads again.
      */
-    async waitForChange(roomId: string, credential: string, after: number, timeoutMs: number, localIntervalMs = 1000): Promise<void> {
+    async waitForChange(roomId: string, credential: string, after: number, timeoutMs: number, localIntervalMs = 1000, options: LiveWaitOptions = {}): Promise<void> {
         const transport = await this.liveTransport();
         const cancelled = this.liveWait.signal;
         if (transport === 'long-poll') {
@@ -616,60 +780,15 @@ export class PairLobbyClient {
             this.closeLive();
         }
         if (!this.socket) {
-            const {ticket} = await this.call<{ticket: string}>('POST', `/v1/rooms/${roomId}/connect-ticket`, credential, {});
-            const url = new URL(`${this.serverUrl}/v1/rooms/${roomId}/connect`);
-            url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-            url.searchParams.set('ticket', ticket);
-            const socket = new WebSocket(url);
-            this.socket = socket;
-            this.liveRoom = roomId;
-            this.watermark = after;
-            socket.addEventListener('message', (event) => {
-                let raw: unknown;
-                try {
-                    raw = JSON.parse(String(event.data));
-                    const frame = ServerFrame.parse(raw);
-                    if (frame.type === 'hello') {
-                        this.watermark = Math.max(this.watermark, frame.watermarkSeq);
-                        this.earliestSeq = frame.snapshot.earliestSeq;
-                    }
-                    if (frame.type === 'event') {
-                        this.watermark = Math.max(this.watermark, frame.event.seq);
-                        this.liveEvents.push(frame.event);
-                        this.liveBytes += new TextEncoder().encode(JSON.stringify(frame.event)).byteLength;
-                        while (this.liveEvents.length > 500 || this.liveBytes > 1024 * 1024)
-                            this.liveBytes -= new TextEncoder().encode(JSON.stringify(this.liveEvents.shift())).byteLength;
-                    }
-                    if (frame.type === 'error' && frame.fatal) {
-                        socket.close();
-                        return;
-                    }
-                    for (const wake of this.changed) wake();
-                } catch {
-                    // An event kind from a newer relay is not a broken connection: skip it,
-                    // and the gap it leaves makes the next read fetch it over HTTP instead.
-                    if (isEventFrame(raw)) {
-                        for (const wake of this.changed) wake();
-                        return;
-                    }
-                    socket.close();
-                }
-            });
-            const closed = () => {
-                if (this.socket === socket) {
-                    this.socket = null;
-                }
-                for (const wake of this.changed) wake();
-            };
-            socket.addEventListener('close', closed);
-            socket.addEventListener('error', closed);
+            this.connecting ??= this.openSocket(roomId, credential, after).finally(() => { this.connecting = null; });
+            await this.connecting;
         }
-        if (this.watermark > after) {
+        if (this.watermark > after || (options.stateAfter !== undefined && this.liveRevision > options.stateAfter)) {
             return;
         }
         await new Promise<void>((resolve, reject) => {
             const finish = () => {
-                if (this.watermark <= after && this.socket) {
+                if (this.watermark <= after && (options.stateAfter === undefined || this.liveRevision <= options.stateAfter) && this.socket) {
                     return;
                 }
                 clearTimeout(timer);
@@ -689,6 +808,75 @@ export class PairLobbyClient {
         });
     }
 
+    private async openSocket(roomId: string, credential: string, after: number): Promise<void> {
+        const cancelled = this.liveWait.signal;
+        this.liveRoom = roomId;
+        const {ticket} = await this.call<{ticket: string}>('POST', `/v1/rooms/${roomId}/connect-ticket`, credential, {sync: true, connectionId: this.connectionId}, undefined, cancelled);
+        if (cancelled.aborted) {
+            return;
+        }
+        const url = new URL(`${this.serverUrl}/v1/rooms/${roomId}/connect`);
+        url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+        url.searchParams.set('ticket', ticket);
+        const socket = new WebSocket(url);
+        this.socket = socket;
+        this.liveRoom = roomId;
+        this.watermark = after;
+        socket.addEventListener('message', (event) => {
+            if (event.data === 'pong') {
+                return;
+            }
+            let raw: unknown;
+            try {
+                raw = JSON.parse(String(event.data));
+                const frame = ServerFrame.parse(raw);
+                if (frame.type === 'hello') {
+                    this.watermark = Math.max(this.watermark, frame.watermarkSeq);
+                    this.earliestSeq = frame.snapshot.earliestSeq;
+                    this.liveRevision = Math.max(this.liveRevision, frame.snapshot.stateRevision ?? 0);
+                }
+                if (frame.type === 'state' && frame.roomId === roomId) {
+                    this.liveRevision = Math.max(this.liveRevision, frame.stateRevision);
+                    this.watermark = Math.max(this.watermark, frame.latestSeq);
+                    this.earliestSeq = Math.max(this.earliestSeq, frame.earliestSeq ?? 1);
+                    this.liveEvents = this.liveEvents.filter((event) => event.seq >= this.earliestSeq);
+                    this.liveBytes = this.liveEvents.reduce((size, event) => size + new TextEncoder().encode(JSON.stringify(event)).byteLength, 0);
+                }
+                if (frame.type === 'event') {
+                    this.watermark = Math.max(this.watermark, frame.event.seq);
+                    this.liveEvents.push(frame.event);
+                    this.liveBytes += new TextEncoder().encode(JSON.stringify(frame.event)).byteLength;
+                    while (this.liveEvents.length > 500 || this.liveBytes > 1024 * 1024)
+                        this.liveBytes -= new TextEncoder().encode(JSON.stringify(this.liveEvents.shift())).byteLength;
+                }
+                if (frame.type === 'error' && frame.fatal) {
+                    socket.close();
+                    return;
+                }
+                for (const wake of this.changed) wake();
+            } catch {
+                // An event kind from a newer relay is not a broken connection: skip it,
+                // and the gap it leaves makes the next read fetch it over HTTP instead.
+                if (isEventFrame(raw)) {
+                    this.liveEvents = [];
+                    this.liveBytes = 0;
+                    this.watermark = Math.max(this.watermark, raw.event.seq);
+                    for (const wake of this.changed) wake();
+                    return;
+                }
+                socket.close();
+            }
+        });
+        const closed = () => {
+            if (this.socket === socket) {
+                this.socket = null;
+            }
+            for (const wake of this.changed) wake();
+        };
+        socket.addEventListener('close', closed);
+        socket.addEventListener('error', closed);
+    }
+
     closeLive(): void {
         this.liveWait.abort();
         this.liveWait = new AbortController();
@@ -696,6 +884,7 @@ export class PairLobbyClient {
         this.socket = null;
         this.liveRoom = null;
         this.watermark = 0;
+        this.liveRevision = 0;
         this.liveEvents = [];
         this.liveBytes = 0;
         socket?.close();
@@ -769,7 +958,44 @@ function sleep(ms: number, cancelled: AbortSignal): Promise<void> {
     });
 }
 
-function isEventFrame(value: unknown): boolean {
+type UnknownEventFrame = {type: 'event'; event: {seq: number}};
+
+async function* exportLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+    const reader = body.getReader();
+    const decoder = new TextDecoder('utf-8', {fatal: true});
+    let pending = '';
+    try {
+        for (;;) {
+            const {done, value} = await reader.read();
+            pending += done ? decoder.decode() : decoder.decode(value, {stream: true});
+            let end: number;
+            while ((end = pending.indexOf('\n')) >= 0) {
+                if (end > 8 * 1024 * 1024) {
+                    throw new ProtocolError('payload_too_large', 'an export record is too large');
+                }
+                const line = pending.slice(0, end);
+                pending = pending.slice(end + 1);
+                if (line.trim()) {
+                    yield line;
+                }
+            }
+            if (pending.length > 8 * 1024 * 1024) {
+                throw new ProtocolError('payload_too_large', 'an export record is too large');
+            }
+            if (done) {
+                if (pending.trim()) {
+                    throw new ProtocolError('server_unavailable', 'the export ended within a record');
+                }
+                break;
+            }
+        }
+    } finally {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
+    }
+}
+
+function isEventFrame(value: unknown): value is UnknownEventFrame {
     const frame = value as {type?: unknown; event?: {seq?: unknown}} | null;
     return typeof frame === 'object' && frame !== null && frame.type === 'event' && typeof frame.event?.seq === 'number';
 }

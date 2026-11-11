@@ -64,6 +64,10 @@ export type ParticipantOrigin = z.infer<typeof ParticipantOrigin>;
 
 export const RoomRecord = z.object({
     roomId: RoomId,
+    /** Version of every authoritative room commit, including receipts and lease renewals. Absent on legacy data means zero. */
+    stateRevision: z.number().int().nonnegative().optional(),
+    requestRevision: z.number().int().nonnegative().optional(),
+    snapshotRevision: z.number().int().nonnegative().optional(),
     name: z.string().min(1).max(64),
     createdAt: z.number().int().nonnegative(),
     /** Null for a room that does not expire. */
@@ -88,6 +92,8 @@ export const RoomRecord = z.object({
     lastMessageAt: z.number().int().nonnegative().nullable().optional(),
     /** The agents-and-guests mode closes only after one has joined. */
     autoCloseArmed: z.boolean().optional(),
+    /** Materialized membership count used to refresh deadlines without reloading the roster on every message. */
+    activeAgentsAndGuests: z.number().int().nonnegative().optional(),
     /** The computed next auto-close deadline, or null; recomputed in every mutation. */
     autoCloseAt: z.number().int().nonnegative().nullable().optional(),
     closeReason: CloseReasonSchema.optional(),
@@ -213,6 +219,11 @@ export type ParticipantView = z.infer<typeof ParticipantView>;
 
 export const RoomSnapshot = z.object({
     roomId: RoomId,
+    stateRevision: z.number().int().nonnegative().optional(),
+    requestRevision: z.number().int().nonnegative().optional(),
+    snapshotRevision: z.number().int().nonnegative().optional(),
+    turnRevision: z.number().int().nonnegative().optional(),
+    syncSupported: z.boolean().optional(),
     /** Absent on older relays, which only accept addressed-recipient receipts. */
     messageReceiptScope: z.enum(['recipient', 'members']).optional(),
     /** How plain receipts are kept here (see `RECEIPT_MODES`). Absent on older relays, which keep them as events. */

@@ -5,19 +5,14 @@
 
 import {readFileSync, statSync} from 'node:fs';
 
-import {ABSOLUTE_MAX_FILE_BYTES, RECEIPT_MODES} from '@pairlobby/protocol';
-import type {ReceiptMode, RoomPolicy} from '@pairlobby/protocol';
-import type {AdmissionLimits} from '@pairlobby/server-core';
+import {LIMIT_VARIABLES, ROOM_LIMIT_VARIABLES, RelaySettingsError, relayPolicySettings, wholeSettingNumber as wholeNumber} from '@pairlobby/server-core';
+import type {ReceiptMode} from '@pairlobby/protocol';
+import type {AdmissionLimits, RoomLimits} from '@pairlobby/server-core';
 
 import type {RequestLogMode} from './request-log.js';
 
-/** A setting the relay cannot start with; the message names the flag or variable that holds it. */
-export class RelaySettingsError extends Error {
-    constructor(message: string) {
-        super(message);
-        this.name = 'RelaySettingsError';
-    }
-}
+export {RelaySettingsError} from '@pairlobby/server-core';
+export type {RoomLimits} from '@pairlobby/server-core';
 
 export type RelayFlags = {host?: string; port?: string; publicUrl?: string; trustedProxyHeader?: string; requestLog?: string; backup?: string; noRestore?: boolean; proxyIsAccessGate?: boolean};
 
@@ -56,35 +51,7 @@ export type RelayBackupSettings = {location: BackupLocation; intervalMs: number;
 
 export type BackupLocation = {kind: 'folder'; path: string} | {kind: 's3'; bucket: string; prefix: string};
 
-/** The per-room caps a relay operator may set. */
-export type RoomLimits = Pick<RoomPolicy, 'maxParticipants' | 'maxRetainedEvents' | 'maxRetainedEventBytes' | 'maxEventPayloadBytes' | 'maxFileBytes' | 'maxRetainedFileBytes'>;
-
 type Source = {flag?: string; variable: string};
-
-type RoomLimitVariable = {key: keyof RoomLimits; variable: string; minimum: number; maximum: number; unitBytes: number};
-
-const KIB = 1024;
-const MIB = 1024 * KIB;
-
-/** Sizes are whole KiB or MiB so a typo cannot turn into a byte count. */
-const ROOM_LIMIT_VARIABLES: RoomLimitVariable[] = [
-    {key: 'maxParticipants', variable: 'PAIRLOBBY_ROOM_MAX_PARTICIPANTS', minimum: 2, maximum: 1000, unitBytes: 1},
-    {key: 'maxRetainedEvents', variable: 'PAIRLOBBY_ROOM_MAX_EVENTS', minimum: 100, maximum: 10_000_000, unitBytes: 1},
-    {key: 'maxRetainedEventBytes', variable: 'PAIRLOBBY_ROOM_MAX_HISTORY_MB', minimum: 1, maximum: 10_240, unitBytes: MIB},
-    {key: 'maxEventPayloadBytes', variable: 'PAIRLOBBY_ROOM_MAX_MESSAGE_KB', minimum: 1, maximum: 4096, unitBytes: KIB},
-    {key: 'maxFileBytes', variable: 'PAIRLOBBY_ROOM_MAX_FILE_MB', minimum: 0, maximum: ABSOLUTE_MAX_FILE_BYTES / MIB, unitBytes: MIB},
-    {key: 'maxRetainedFileBytes', variable: 'PAIRLOBBY_ROOM_MAX_FILES_MB', minimum: 0, maximum: 102_400, unitBytes: MIB}
-];
-
-const LIMIT_VARIABLES: Record<keyof AdmissionLimits, string> = {
-    createPerMinutePerAddress: 'PAIRLOBBY_LIMIT_CREATE_PER_MIN_IP',
-    redeemPerMinutePerAddress: 'PAIRLOBBY_LIMIT_REDEEM_PER_MIN_IP',
-    redeemPerMinuteGlobal: 'PAIRLOBBY_LIMIT_REDEEM_PER_MIN_GLOBAL',
-    accountCheckPerMinutePerAddress: 'PAIRLOBBY_LIMIT_ACCOUNT_CHECK_PER_MIN_IP',
-    directoryPerMinutePerMember: 'PAIRLOBBY_LIMIT_DIRECTORY_PER_MIN_MEMBER',
-    contactPerMinutePerMember: 'PAIRLOBBY_LIMIT_CONTACT_PER_MIN_MEMBER',
-    contactPerHourPerListing: 'PAIRLOBBY_LIMIT_CONTACT_PER_HOUR_LISTING'
-};
 
 const DISCOVERY_VARIABLES = ['PAIRLOBBY_DISCOVERY_NAME', 'PAIRLOBBY_LOGIN_MODE', 'PAIRLOBBY_LOGIN_HELP', 'PAIRLOBBY_SUPPORT_URL', 'PAIRLOBBY_MEMBERS_FILE', 'PAIRLOBBY_TEAM_TOKEN_LOGIN'];
 
@@ -111,14 +78,6 @@ export function parsePublicUrl(value: string, source: Source = {flag: 'public-ur
         throw new RelaySettingsError(`${described(source)} must be an http(s) origin with no path, credentials, query or fragment`);
     }
     return url.origin;
-}
-
-function wholeNumber(value: string, source: Source, minimum: number, maximum: number): number {
-    const parsed = Number(value);
-    if (!/^\d+$/.test(value) || parsed < minimum || parsed > maximum) {
-        throw new RelaySettingsError(`${described(source)} must be a whole number from ${minimum} to ${maximum}, not "${value}"`);
-    }
-    return parsed;
 }
 
 /** The token from the variable, or from a file only its owner can read; never both, never from a flag. */
@@ -161,28 +120,12 @@ export function relaySettings(flags: RelayFlags, environment: RelayEnvironment):
             throw new RelaySettingsError(`PAIRLOBBY_ALLOWED_HOSTS takes Host values such as relay.internal or relay.internal:8790, not "${value}"`);
         }
     }
-    const limits: Partial<AdmissionLimits> = {};
-    for (const [key, variable] of Object.entries(LIMIT_VARIABLES) as [keyof AdmissionLimits, string][]) {
-        const value = environment[variable]?.trim();
-        if (value) {
-            limits[key] = wholeNumber(value, {variable}, 1, 1_000_000);
-        }
-    }
-    const roomLimits: Partial<RoomLimits> = {};
-    for (const {key, variable, minimum, maximum, unitBytes} of ROOM_LIMIT_VARIABLES) {
-        const value = environment[variable]?.trim();
-        if (value) {
-            roomLimits[key] = wholeNumber(value, {variable}, minimum, maximum) * unitBytes;
-        }
-    }
+    const {limits, roomLimits, receiptMode} = relayPolicySettings(environment);
     const requestLog = pick(flags.requestLog, environment, 'PAIRLOBBY_REQUEST_LOG');
     if (requestLog !== undefined && !['all', 'writes', 'off'].includes(requestLog)) {
         throw new RelaySettingsError(`${described({flag: 'request-log', variable: 'PAIRLOBBY_REQUEST_LOG'})} must be all, writes or off, not "${requestLog}"`);
     }
-    const receiptMode = environment['PAIRLOBBY_RECEIPT_MODE']?.trim() || undefined;
-    if (receiptMode !== undefined && !(RECEIPT_MODES as readonly string[]).includes(receiptMode)) {
-        throw new RelaySettingsError(`PAIRLOBBY_RECEIPT_MODE must be events, both or watermark, not "${receiptMode}"`);
-    }
+
     const token = createToken(environment);
     const backup = backupSettings(flags, environment);
     const membersFile = environment['PAIRLOBBY_MEMBERS_FILE']?.trim() || undefined;

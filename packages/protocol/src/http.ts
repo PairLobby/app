@@ -83,7 +83,7 @@ export type CreateRoomRequest = z.infer<typeof CreateRoomRequest>;
 export const CreateRoomResponse = z.object({
     room: RoomSnapshot,
     participantId: ParticipantId,
-    invite: z.object({code: z.string(), expiresAt: z.number().int().nonnegative()})
+    invite: z.object({code: z.string(), expiresAt: z.number().int().nonnegative().nullable()})
 });
 export type CreateRoomResponse = z.infer<typeof CreateRoomResponse>;
 
@@ -156,7 +156,9 @@ export const ReadEventsQuery = z.object({
     /** Milliseconds to hold the request open when nothing is newer than `after`; only a relay describing `long-poll` honours it. */
     wait: z.coerce.number().int().nonnegative().default(0),
     /** Also return the receipt watermarks that moved after this revision; only a relay describing `receipt-watermark` honours it. */
-    receiptsAfter: z.coerce.number().int().nonnegative().optional()
+    receiptsAfter: z.coerce.number().int().nonnegative().optional(),
+    stateAfter: z.coerce.number().int().nonnegative().optional(),
+    snapshotAfter: z.coerce.number().int().nonnegative().optional()
 });
 export type ReadEventsQuery = z.infer<typeof ReadEventsQuery>;
 
@@ -168,7 +170,7 @@ export type LiveTransport = (typeof LIVE_TRANSPORTS)[number];
  * Names a relay lists in `features`. A client checks for one before relying on it;
  * a relay that does not describe itself is assumed to have whatever was usual before descriptions existed.
  */
-export const RELAY_FEATURES = ['message-stages', 'files', 'local-join', 'invite-probe', 'create-token', 'token-login', 'receipt-watermark', 'member-tokens', 'directory', 'room-types', 'room-visibility', 'directory-contact'] as const;
+export const RELAY_FEATURES = ['message-stages', 'files', 'local-join', 'invite-probe', 'create-token', 'token-login', 'receipt-watermark', 'member-tokens', 'directory', 'room-types', 'room-visibility', 'directory-contact', 'room-sync'] as const;
 export type RelayFeature = (typeof RELAY_FEATURES)[number];
 
 /**
@@ -225,7 +227,15 @@ export const ReadEventsResponse = z.object({
     hasMore: z.boolean(),
     /** With `receiptsAfter`: the watermarks that moved since then, and the revision to ask after next time. */
     receipts: z.array(ReceiptUpdate).optional(),
-    receiptRevision: z.number().int().nonnegative().optional()
+    receiptRevision: z.number().int().nonnegative().optional(),
+    /** With stateAfter: independent revisions avoid refreshing unchanged request, turn and roster projections. */
+    stateRevision: z.number().int().nonnegative().optional(),
+    requestRevision: z.number().int().nonnegative().optional(),
+    snapshotRevision: z.number().int().nonnegative().optional(),
+    turnRevision: z.number().int().nonnegative().optional(),
+    snapshot: RoomSnapshot.optional(),
+    autoCloseAt: z.number().int().nonnegative().nullable().optional(),
+    lastMessageAt: z.number().int().nonnegative().nullable().optional()
 });
 export type ReadEventsResponse = z.infer<typeof ReadEventsResponse>;
 
@@ -306,9 +316,17 @@ export const ExportResponse = z.object({
     /** False when retention already dropped events older than `room.earliestSeq`. */
     complete: z.boolean(),
     /** Every file a message carries, on a relay that stores files. Fetch the bytes with the download route. */
-    files: z.array(RoomFile).optional()
+    files: z.array(RoomFile.partial({uploaderId: true, createdAt: true}).extend({archived: z.boolean().optional()})).optional()
 });
 export type ExportResponse = z.infer<typeof ExportResponse>;
+export const ExportMetadata = ExportResponse.omit({events: true}).passthrough();
+export type ExportMetadata = z.infer<typeof ExportMetadata>;
+export const ExportStreamRecord = z.discriminatedUnion('kind', [
+    z.object({kind: z.literal('metadata'), metadata: ExportMetadata}),
+    z.object({kind: z.literal('event'), event: RoomEvent}),
+    z.object({kind: z.literal('complete'), events: z.number().int().nonnegative()})
+]);
+export type ExportStreamRecord = z.infer<typeof ExportStreamRecord>;
 
 export const ErrorResponse = z.object({
     error: z.object({

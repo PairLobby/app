@@ -7,6 +7,7 @@ import {z} from 'zod';
 import {ErrorResponse} from './http.js';
 import {RoomEvent} from './events.js';
 import {RoomSnapshot} from './records.js';
+import {RoomId} from './ids.js';
 
 /**
  * Sent once at upgrade, before any live event. Replaying history up to
@@ -22,11 +23,15 @@ export const ServerHello = z.object({
 export const ServerEventFrame = z.object({type: z.literal('event'), event: RoomEvent});
 export const ServerErrorFrame = z.intersection(z.object({type: z.literal('error'), fatal: z.boolean()}), ErrorResponse);
 
-export const ServerFrame = z.union([ServerHello, ServerEventFrame, ServerErrorFrame]);
+/** A negotiated hint that committed state changed without necessarily appending an event. Read the durable state to reconcile. */
+export const ServerStateFrame = z.object({type: z.literal('state'), roomId: RoomId, stateRevision: z.number().int().nonnegative(), latestSeq: z.number().int().nonnegative(), earliestSeq: z.number().int().positive().optional()});
+
+export const ServerFrame = z.union([ServerHello, ServerEventFrame, ServerErrorFrame, ServerStateFrame]);
 export type ServerFrame = z.infer<typeof ServerFrame>;
 
 /** Consumption acknowledgement, separate from delivery: it moves the participant's read cursor. */
 export const ClientAckFrame = z.object({type: z.literal('ack'), throughSeq: z.number().int().nonnegative()});
 
-export const ClientFrame = ClientAckFrame;
+export const ClientStateFrame = z.object({type: z.literal('state')});
+export const ClientFrame = z.union([ClientAckFrame, ClientStateFrame]);
 export type ClientFrame = z.infer<typeof ClientFrame>;

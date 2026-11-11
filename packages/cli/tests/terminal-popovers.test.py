@@ -9,10 +9,10 @@ for width in (100, 60, 40):
     os.close(slave)
     screen = pyte.Screen(width, 24)
     stream = pyte.Stream(screen)
-    headings = ('Agent activity', 'Working on an answer', '| Receipt')
+    headings = ('Turns · sequential', 'Working on an answer', '| Receipt')
 
     def text():
-        return '\n'.join(screen.display)
+        return '\n'.join(screen.display).replace('~', '·')
 
     def pump(seconds=.18):
         end = time.monotonic() + seconds
@@ -48,18 +48,21 @@ for width in (100, 60, 40):
         assert 'keep my draft' in text(), text()
 
     try:
-        pump(.5)
+        ready = time.monotonic() + 5
+        while 'SHORT' not in text() and time.monotonic() < ready:
+            pump(.1)
+        assert 'SHORT' in text(), text()
         keys(b'/busy\r')
         keys(b'keep my draft')
         hover('Turns:')
-        only('Agent activity')
+        only('Turns · sequential')
         hover('Working')
         only('Working on an answer')
         hover('Turns:')
-        only('Agent activity')
+        only('Turns · sequential')
         click('Turns:')
         hover('OpenAI')
-        only('Agent activity')  # An incidental hover cannot replace a pinned popup.
+        only('Turns · sequential')  # An incidental hover cannot replace a pinned popup.
         keys(b'\x1bOR')  # F3 explicitly replaces the activity popup.
         only('Working on an answer')
         hover('Status')
@@ -69,17 +72,17 @@ for width in (100, 60, 40):
         keys(b'\x1bOR')
         only('Working on an answer')
         click('Turns:')
-        only('Agent activity')
+        only('Turns · sequential')
         click('Working')
         only('Working on an answer')
         keys(b'\x1b')
         only(None)
         hover('Turns:')
-        only('Agent activity')
+        only('Turns · sequential')
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 18, width, 0, 0))
         screen.resize(18, width)
         process.send_signal(signal.SIGWINCH)
-        only('Agent activity')
+        only('Turns · sequential')
         keys(b'\x1bOR')
         only('Working on an answer')
         keys(b'\x1b')

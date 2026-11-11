@@ -76,33 +76,42 @@ export type AdmissionOptions = {
     exempt?: (request: Request, context: RequestContext) => boolean;
 };
 
-type BucketState = {tokens: number; updatedAt: number};
+export type BucketState = {tokens: number; updatedAt: number};
+export type BucketDecision = {state: BucketState; fullAt: number; decision: RateDecision};
+type StoredBucket = {state: BucketState; fullAt: number};
+
+/** The same pure token-bucket decision for memory and durable stores. Persist state atomically before returning decision. */
+export function takeTokens(previous: BucketState | undefined, cost: number, {perMinute, burst = perMinute}: RateLimit, at: number): BucketDecision {
+    const perMs = perMinute / 60_000;
+    at = Math.max(at, previous?.updatedAt ?? at);
+    const tokens = previous ? Math.min(burst, previous.tokens + Math.max(0, at - previous.updatedAt) * perMs) : burst;
+    const ok = tokens >= cost;
+    const state = {tokens: ok ? tokens - cost : tokens, updatedAt: at};
+    return {state, fullAt: at + Math.ceil((burst - state.tokens) / perMs), decision: ok ? {ok: true} : {ok: false, retryAfterMs: Math.ceil((cost - tokens) / perMs)}};
+}
 
 type MemoryRateLimiterOptions = {now?: () => number; maxKeys?: number};
 
 /** Token buckets in memory: each key refills at its per-minute rate and holds at most its burst, one minute's worth unless said. */
 export function memoryRateLimiter({now = Date.now, maxKeys = 10_000}: MemoryRateLimiterOptions = {}): RateLimiter {
-    const buckets = new Map<string, BucketState>();
+    const buckets = new Map<string, StoredBucket>();
     return {
         async take(key, cost, {perMinute, burst = perMinute}) {
             const at = now();
-            const perMs = perMinute / 60_000;
-            const previous = buckets.get(key);
-            const tokens = previous ? Math.min(burst, previous.tokens + (at - previous.updatedAt) * perMs) : burst;
-            if (tokens < cost) {
-                buckets.set(key, {tokens, updatedAt: at});
-                return {ok: false, retryAfterMs: Math.ceil((cost - tokens) / perMs)};
-            }
-            buckets.set(key, {tokens: tokens - cost, updatedAt: at});
-            if (buckets.size > maxKeys) {
-                // A full bucket says nothing a fresh one would not, so forgetting it is free.
+            if (!buckets.has(key) && buckets.size >= maxKeys) {
                 for (const [name, bucket] of buckets) {
-                    if (bucket.tokens + (at - bucket.updatedAt) * perMs >= burst) {
+                    if (bucket.fullAt <= at) {
                         buckets.delete(name);
                     }
                 }
+                if (buckets.size >= maxKeys) {
+                    const next = Math.min(...[...buckets.values()].map((bucket) => bucket.fullAt));
+                    return {ok: false, retryAfterMs: Math.max(1, next - at)};
+                }
             }
-            return {ok: true};
+            const {state, fullAt, decision} = takeTokens(buckets.get(key)?.state, cost, {perMinute, burst}, at);
+            buckets.set(key, {state, fullAt});
+            return decision;
         }
     };
 }

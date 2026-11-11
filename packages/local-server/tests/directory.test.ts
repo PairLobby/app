@@ -66,6 +66,29 @@ function share(joined: Joined, topic = 'Payment reconciliation'): Record<string,
 }
 
 describe('directory listings', () => {
+    test('directory pagination advances across hidden candidates and bounds an owner query', async () => {
+        const relay = await fixture();
+        const entries = [];
+        for (let index = 0; index < 3; index++) {
+            const joined = await room(relay);
+            const result = await call(relay, '', 'POST', {credential: joined.agent, token: DAMIEN, body: share(joined)});
+            entries.push({joined, listingId: result.listing!.listingId});
+        }
+        // SQL uses byte order for identifiers, independent of the user's locale.
+        entries.sort((a, b) => a.listingId < b.listingId ? -1 : 1);
+        for (const entry of entries.slice(0, 2)) {
+            await relay.service.setVisibility(entry.joined.roomId, entry.joined.controller, {handles: ['damien']});
+        }
+        const first = await relay.relay.handle(new Request('http://relay/v1/directory?limit=2', {headers: {'x-pairlobby-account-token': HUGO}}));
+        const page = await first.json() as {listings: ListingView[]; next: string};
+        expect(page.listings).toEqual([]);
+        expect(page.next).toBe(entries[1]!.listingId);
+        const next = await relay.relay.handle(new Request(`http://relay/v1/directory?limit=2&after=${page.next}`, {headers: {'x-pairlobby-account-token': HUGO}}));
+        expect(await next.json()).toMatchObject({listings: [{listingId: entries[2]!.listingId}], next: null});
+        const owner = await relay.relay.handle(new Request('http://relay/v1/directory?owner=damien&limit=1', {headers: {'x-pairlobby-account-token': DAMIEN}}));
+        expect(await owner.json()).toMatchObject({listings: [{listingId: entries[0]!.listingId}], next: entries[0]!.listingId});
+    });
+
     test('test_a_member_shares_an_agent_and_sharing_it_again_updates_the_same_listing', async () => {
         const relay = await fixture();
         const joined = await room(relay);

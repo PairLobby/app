@@ -13,6 +13,7 @@ import {
     PROTOCOL_VERSION,
     PROTOCOL_VERSION_HEADER,
     FileId,
+    FILE_SIZE_HEADER,
     MAX_EVENT_WAIT_MS,
     ProtocolError,
     ReadEventsQuery,
@@ -47,20 +48,23 @@ import {
     SetExpiryRequest,
     ControlRequest,
     ListingPresenceRequest,
+    ListingId,
     ShareListingRequest,
     toListingView
 } from '@pairlobby/protocol';
 import type {ErrorCode, ListingRecord, LiveTransport, LocalRoom, ProviderWait, ReceiptMode, RelayLimits, ServerDescription} from '@pairlobby/protocol';
 
 import type {Admission, RelayMember} from './admission.js';
-import type {ChangeNotifier} from './changes.js';
+import type {RoomChangeNotifier} from './changes.js';
 import {directExecutor} from './ports.js';
-import type {RequestContext, RoomExecutor, Scheduler} from './ports.js';
-import type {RoomService} from './service.js';
+import type {RequestContext, RoomConnections, RoomExecutor, Scheduler} from './ports.js';
+import type {CreateRoomInput, RoomService} from './service.js';
 import type {DirectoryStore} from './store.js';
 
 export interface RelayOptions {
     service: RoomService;
+    /** Host account/quota hooks may have their own HTTP errors; protocol errors always retain the kernel's mapping. */
+    extensionError?: (error: unknown) => Response | undefined;
     /** Orders each room's work; defaults to running it as it comes, for a platform that orders it already. */
     executor?: RoomExecutor;
     /** Wakes `tick` for the next auto-close. Absent means the platform runs `tick` itself, such as from a Durable Object alarm. */
@@ -96,12 +100,15 @@ export interface RelayOptions {
      * Wakes held reads. Present means the relay offers long-poll: `GET .../events?wait=` waits for a change
      * instead of answering empty. Only a relay whose writes all pass through one process can offer it.
      */
-    changes?: ChangeNotifier;
+    changes?: RoomChangeNotifier;
     /**
      * How clients hear about new events, when the relay knows. Defaults to `long-poll` with `changes` and is
      * otherwise left out, so a client keeps its own rule; a relay with a socket hub says `websocket`.
      */
     transport?: LiveTransport;
+    connections?: RoomConnections;
+    /** Account/plan policy may prepare a creation; the kernel still validates the wire body and chooses the room ID. */
+    prepareCreate?: (context: RoomCreationContext) => Promise<CreateRoomInput>;
     /** Features beyond those the router can see for itself. */
     features?: string[];
     /**
@@ -139,6 +146,8 @@ export interface RelayOptions {
     /** The member with this handle, or null; lets the directory tell an unknown handle from one with nothing shared. */
     memberByHandle?: (handle: string) => RelayMember | null;
 }
+
+export type RoomCreationContext = {input: CreateRoomInput; body: Record<string, unknown>; request: Request};
 
 /**
  * Internal claim from `edge` to `inRoom`: the member whose personal token came with a room
@@ -221,19 +230,28 @@ export function createRelay(options: RelayOptions): Relay {
         try {
             return await edgeRoute(claiming(request, null), context, options, inviteRoom, peerIsLocal);
         } catch (error) {
-            return failure(error);
+            return failure(error, options);
         }
     }
 
     async function inRoom(request: Request, roomId: string, context: RequestContext = {}): Promise<Response> {
         const write = !['GET', 'HEAD'].includes(request.method.toUpperCase());
-        return executor.run(roomId, write, async () => {
-            try {
-                return await roomRoute(request, roomId, context, options);
-            } catch (error) {
-                return failure(error);
+        try {
+            if (request.method === 'POST' && new URL(request.url).pathname.endsWith('/files')) {
+                // Uploads enter the executor for reservation, each chunk and finalization, never while waiting on network bytes.
+                return await roomRoute(request, roomId, context, {...options, executor});
             }
-        });
+            if (request.method === 'GET' && new URL(request.url).pathname.endsWith('/events') && options.changes) {
+                const query = ReadEventsQuery.parse(Object.fromEntries(new URL(request.url).searchParams));
+                if (query.wait > 0) {
+                    return await readWaiting(options.service, options.changes, executor, request, roomId, bearer(request), query);
+                }
+            }
+            return await executor.run(roomId, write, () => roomRoute(request, roomId, context, options));
+        } catch (error) {
+            // Exceptions leave the executor before they become HTTP responses, so a transactional executor can roll back.
+            return failure(error, options);
+        }
     }
 
     async function tick(kind: 'auto-close' | 'directory-sweep'): Promise<void> {
@@ -247,9 +265,9 @@ export function createRelay(options: RelayOptions): Relay {
         await executor.run(null, true, async () => {
             try {
                 const result = await service.closeDueRooms();
-                scheduler?.plan(result.more ? Date.now() : result.nextAt);
+                await scheduler?.plan(result.more ? Date.now() : result.nextAt);
             } catch {
-                scheduler?.plan(Date.now() + 60_000);
+                await scheduler?.plan(Date.now() + 60_000);
             }
         });
     }
@@ -275,22 +293,26 @@ export function createRelay(options: RelayOptions): Relay {
             if (routed instanceof Response) {
                 return routed;
             }
-            const response = inRoom(routed.request, routed.roomId, context);
+            const response = await inRoom(routed.request, routed.roomId, context);
             // Every write may change an auto-close deadline, so the wake-up is planned again after it.
             if (options.scheduler && !['GET', 'HEAD'].includes(request.method.toUpperCase())) {
-                void tick('auto-close');
+                await tick('auto-close');
             }
             return response;
         }
     };
 }
 
-function failure(error: unknown): Response {
+function failure(error: unknown, options: RelayOptions): Response {
     if (error instanceof ProtocolError) {
         return errorResponse(error.code, error.message, error.httpStatus, error.details);
     }
-    if (isSchemaError(error)) {
+    if (isSchemaError(error) || error instanceof SyntaxError) {
         return errorResponse('invalid_request', 'the request body did not match the protocol schema', 400);
+    }
+    const extension = options.extensionError?.(error);
+    if (extension) {
+        return extension;
     }
     return errorResponse('server_unavailable', 'the server could not complete this request', 503);
 }
@@ -414,11 +436,10 @@ async function directoryEdge(request: Request, context: RequestContext, segments
 
 /** Listings the caller sees: a room they cannot see, or a listing that no longer stands, is left out as if it did not exist. */
 async function visibleListings(listings: ListingRecord[], handle: string, service: RoomService): Promise<ListingRecord[]> {
-    const visible = await Promise.all(listings.map((listing) => service.listingVisible(listing, handle)));
-    return listings.filter((_, index) => visible[index]);
+    return service.visibleListings(listings, handle);
 }
 
-/** Listings read for a directory without an owner: the newest this many. */
+/** Maximum candidates in one directory page, including candidates the caller cannot see. */
 const DIRECTORY_PAGE = 500;
 
 /** `GET /v1/directory[?owner=]`: the shared agents the caller sees, one owner's or everyone's. */
@@ -428,12 +449,19 @@ async function directoryRead(request: Request, context: RequestContext, director
         return errorResponse('unauthorized', DIRECTORY_NEEDS_MEMBER, 403);
     }
     await options.admission!.beforeDirectory(request, context, member);
-    const owner = new URL(request.url).searchParams.get('owner')?.trim().replace(/^@/, '').toLowerCase();
-    const all = owner ? await directory.ownerListings(owner) : await directory.listings('', DIRECTORY_PAGE);
+    const query = new URL(request.url).searchParams;
+    const owner = query.get('owner')?.trim().replace(/^@/, '').toLowerCase();
+    const after = query.has('after') ? ListingId.parse(query.get('after')) : '';
+    const limit = Number(query.get('limit') ?? DIRECTORY_PAGE);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > DIRECTORY_PAGE) {
+        throw new ProtocolError('invalid_request', `directory limit must be between 1 and ${DIRECTORY_PAGE}`);
+    }
+    const candidates = owner ? await directory.ownerListings(owner, after, limit + 1) : await directory.listings(after, limit + 1);
+    const all = candidates.slice(0, limit);
     const now = Date.now();
     const listings = await Promise.all((await visibleListings(all, member.handle, options.service)).map(async (listing) => toListingView(listing, {now, lastMessageAt: await directory.lastMessageAt(listing.roomId, listing.participantId), ownerName: options.memberByHandle?.(listing.owner)?.name})));
     const knownHandle = owner && options.memberByHandle ? {knownHandle: options.memberByHandle(owner) !== null || all.length > 0} : {};
-    return json({listings, ...knownHandle});
+    return json({listings, ...knownHandle, next: candidates.length > limit ? all.at(-1)!.listingId : null});
 }
 
 /** `GET` and `PUT /v1/directory/defaults`: the caller's own default visibility for their rooms, `everyone` until set. */
@@ -573,7 +601,7 @@ async function routeLocal(request: Request, context: RequestContext, options: Re
 export function describe(options: RelayOptions): ServerDescription {
     const profile = options.service.relayProfile();
     const features = [
-        ...(profile.files ? ['files'] : []),
+        ...(profile.files ? ['files', 'stream-files'] : []),
         // Joining by name needs rooms to list and a way to tell who may: the connection, or a personal token.
         ...(options.localRooms && ((options.peerIsLocal && (!options.behindProxy || options.proxyIsAccessGate)) || options.admission?.memberTokens) ? ['local-join'] : []),
         ...(options.inviteProbe ? ['invite-probe'] : []),
@@ -582,7 +610,7 @@ export function describe(options: RelayOptions): ServerDescription {
         ...(options.admission?.memberTokens ? ['member-tokens'] : []),
         ...(options.directory && options.admission?.memberTokens ? ['directory'] : []),
         ...(profile.receiptMode !== 'events' ? ['receipt-watermark'] : []),
-        'room-types',
+        'room-types', 'room-sync', 'stream-export',
         ...(options.directory && options.admission?.memberTokens ? ['room-visibility', 'directory-contact'] : []),
         ...(options.features ?? [])
     ];
@@ -612,14 +640,20 @@ export function describeRelay({limits, features, transport, receiptMode, info}: 
  * answered as soon as anything is newer than `after`, at the deadline, or on any other change
  * to the room, so the client rereads whatever else it watches.
  */
-async function readWaiting(service: RoomService, changes: ChangeNotifier, roomId: string, credential: string, query: ReadEventsQuery): Promise<Response> {
-    const waiting = changes.wait(roomId, Math.min(query.wait, MAX_EVENT_WAIT_MS));
+async function readWaiting(service: RoomService, changes: RoomChangeNotifier, executor: RoomExecutor, request: Request, roomId: string, credential: string, query: ReadEventsQuery): Promise<Response> {
+    const waiting = await changes.wait(roomId, Math.min(query.wait, MAX_EVENT_WAIT_MS), request.signal);
+    if (!waiting) {
+        throw new ProtocolError('rate_limited', 'the relay cannot hold another read right now; retry shortly', {retryAfterMs: 1000});
+    }
+    const read = () => executor.run(roomId, false, () => service.read(roomId, credential, query.after, query.limit, query.receiptsAfter, query.stateAfter === undefined ? undefined : {stateAfter: query.stateAfter, snapshotAfter: query.snapshotAfter}));
     try {
-        const page = await service.read(roomId, credential, query.after, query.limit, query.receiptsAfter);
-        if (page.events.length > 0 || (page.receipts?.length ?? 0) > 0 || !waiting || !(await waiting.changed)) {
+        const page = await read();
+        if (page.events.length > 0 || (page.receipts?.length ?? 0) > 0 || (query.stateAfter !== undefined && page.stateRevision !== query.stateAfter)) {
             return json(page);
         }
-        return json(await service.read(roomId, credential, query.after, query.limit, query.receiptsAfter));
+        await waiting.changed;
+        // A deadline also reconciles a missed notification. No transaction or room queue is held while waiting.
+        return json(await read());
     } finally {
         waiting?.cancel();
     }
@@ -627,7 +661,7 @@ async function readWaiting(service: RoomService, changes: ChangeNotifier, roomId
 
 /** Everything inside one room. Admission already happened in `edge`. */
 async function roomRoute(request: Request, roomId: string, context: RequestContext, options: RelayOptions): Promise<Response> {
-    const {service, admission, changes} = options;
+    const {service, admission} = options;
     const url = new URL(request.url);
     const segments = url.pathname.split('/').filter(Boolean);
     const method = request.method.toUpperCase();
@@ -637,9 +671,12 @@ async function roomRoute(request: Request, roomId: string, context: RequestConte
     }
 
     if (segments[1] === 'rooms' && segments.length === 2 && method === 'POST') {
-        const input = CreateRoomRequest.parse(await request.json());
+        const body = await request.json();
+        const input = CreateRoomRequest.parse(body);
         const member = claimedMember(request);
-        const created = await service.createRoom({...input, roomId, ...(member ? {owner: member, member} : {})});
+        const initial: CreateRoomInput = {...input, roomId, ...(member ? {owner: member, member} : {})};
+        const prepared = options.prepareCreate ? await options.prepareCreate({input: initial, body: body as Record<string, unknown>, request}) : initial;
+        const created = await service.createRoom({...prepared, roomId});
         return json({room: created.snapshot, participantId: created.participantId, invite: created.invite}, 201);
     }
 
@@ -671,6 +708,10 @@ async function roomRoute(request: Request, roomId: string, context: RequestConte
         return json({roomId: result.roomId, participantId: result.participantId, role: result.role, room: result.snapshot});
     }
 
+    if (method === 'GET' && segments.length === 4 && segments[3] === 'connect' && options.connections) {
+        return options.connections.connect(roomId, request, (participantId) => service.connectedSnapshot(roomId, participantId));
+    }
+
     const credential = bearer(request);
 
     if (segments.length === 3 && method === 'GET') {
@@ -682,6 +723,15 @@ async function roomRoute(request: Request, roomId: string, context: RequestConte
     }
 
     switch (`${method} ${segments[3]}`) {
+        case 'POST connect-ticket': {
+            if (!options.connections) {
+                throw new ProtocolError('unsupported_capability', 'this relay does not offer sockets');
+            }
+            const connection = await service.connection(roomId, credential);
+            const expiresAt = Date.now() + connection.snapshot.policy.connectTicketLifetimeMs;
+            const ticket = await options.connections.ticket(roomId, connection.participantId, expiresAt, request);
+            return json({ticket, expiresAt});
+        }
         case 'GET turns':
             return json(await service.turns.status(roomId, credential));
         case 'POST turns': {
@@ -748,23 +798,23 @@ async function roomRoute(request: Request, roomId: string, context: RequestConte
             if (!name.trim() || name.length > 1024) {
                 return errorResponse('invalid_request', 'name the file with ?name=', 400);
             }
-            const bytes = new Uint8Array(await request.arrayBuffer());
-            return json({file: await service.uploadFile(roomId, credential, {name, mediaType: request.headers.get('content-type') ?? '', bytes})}, 201);
+            const declared = request.headers.get(FILE_SIZE_HEADER) ?? request.headers.get('content-length');
+            if (!request.body || !declared || !/^\d+$/.test(declared)) {
+                return errorResponse('invalid_request', `declare the file's byte length with Content-Length or ${FILE_SIZE_HEADER}`, 400);
+            }
+            return json({file: await service.uploadFileStream(roomId, credential, {name, mediaType: request.headers.get('content-type') ?? '', size: Number(declared), body: request.body, signal: request.signal}, (action) => (options.executor ?? directExecutor()).run(roomId, true, action))}, 201);
         }
         case 'GET files': {
             if (!segments[4]) {
                 return json(await service.listFiles(roomId, credential));
             }
-            const {file, bytes} = await service.downloadFile(roomId, credential, FileId.parse(segments[4]));
+            const {file, body} = await service.downloadFileStream(roomId, credential, FileId.parse(segments[4]));
             // Always a download, never something a browser would render or run: the name and type came from another participant.
-            return new Response(bytes as Uint8Array<ArrayBuffer>, {status: 200, headers: {'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`, 'content-length': String(bytes.byteLength), 'x-content-type-options': 'nosniff', 'cache-control': 'private, no-store', 'pairlobby-file-sha256': file.sha256, [PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)}});
+            return new Response(body, {status: 200, headers: {'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`, 'content-length': String(file.size), 'x-content-type-options': 'nosniff', 'cache-control': 'private, no-store', 'pairlobby-file-sha256': file.sha256, [PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)}});
         }
         case 'GET events': {
             const query = ReadEventsQuery.parse(Object.fromEntries(new URL(request.url).searchParams));
-            if (changes && query.wait > 0) {
-                return readWaiting(service, changes, roomId, credential, query);
-            }
-            return json(await service.read(roomId, credential, query.after, query.limit, query.receiptsAfter));
+            return json(await service.read(roomId, credential, query.after, query.limit, query.receiptsAfter, query.stateAfter === undefined ? undefined : {stateAfter: query.stateAfter, snapshotAfter: query.snapshotAfter}));
         }
         case 'POST receipts':
             return json(await service.receipt(roomId, credential, ReceiptRequest.parse(await request.json()).throughSeq));
@@ -845,7 +895,7 @@ async function roomRoute(request: Request, roomId: string, context: RequestConte
         case 'POST leave':
             return json({event: await service.leave(roomId, credential)});
         case 'GET export':
-            return json(await service.export(roomId, credential));
+            return service.exportStream(roomId, credential, url.searchParams.get('format') === 'ndjson' ? 'ndjson' : 'json');
         case 'DELETE participants': {
             const participantId = segments[4];
             if (!participantId) {

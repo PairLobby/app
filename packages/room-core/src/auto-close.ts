@@ -30,21 +30,25 @@ function present(participant: ParticipantRecord): boolean {
  * membership after the mutation; `appended` is the event it adds, if any. Only an
  * accepted `message` (replies and progress included) moves the inactivity clock.
  */
-export function refreshAutoClose(room: RoomRecord, participants: ParticipantRecord[], appended: RoomEvent | null, now: number): RoomRecord {
+export function refreshAutoClose(room: RoomRecord, participants: ParticipantRecord[] | undefined, appended: RoomEvent | null, now: number): RoomRecord {
     const lastMessageAt = appended?.type === 'message' ? appended.at : (room.lastMessageAt ?? null);
     // Membership records outlive departures, so "has one ever joined" needs no extra history.
-    const armed = participants.some(countsForDeparture);
+    const armed = participants ? participants.some(countsForDeparture) : room.autoCloseArmed ?? false;
+    const activeAgentsAndGuests = participants ? participants.filter((participant) => present(participant) && countsForDeparture(participant)).length : room.activeAgentsAndGuests ?? 0;
     const policy = autoClosePolicy(room);
     let deadline: number | null = null;
     if (room.lifecycle === 'open') {
         switch (policy.mode) {
             case 'inactivity':             deadline = (lastMessageAt ?? room.createdAt) + policy.afterMs; break;
             case 'age':                    deadline = room.createdAt + policy.afterMs; break;
-            case 'agents_and_guests_left': deadline = armed && !participants.some((participant) => present(participant) && countsForDeparture(participant)) ? (room.autoCloseAt ?? now) : null; break;
+            case 'agents_and_guests_left': deadline = armed && activeAgentsAndGuests === 0 ? (room.autoCloseAt ?? now) : null; break;
             case 'off':                    deadline = null; break;
         }
     }
-    return {...room, lastMessageAt, autoCloseArmed: armed, autoCloseAt: deadline};
+    if (deadline !== null && room.expiresAt !== null && deadline >= room.expiresAt) {
+        deadline = null;
+    }
+    return {...room, lastMessageAt, autoCloseArmed: armed, activeAgentsAndGuests, autoCloseAt: deadline};
 }
 
 /** The reason an open room must close now, or null. An expired room is left to expiry. */

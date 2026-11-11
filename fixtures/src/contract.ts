@@ -14,6 +14,7 @@ import {runGroupContract} from './group-contract.js';
 import {runAdminContract} from './admin-contract.js';
 import {runAutoCloseContract} from './auto-close-contract.js';
 import {runInterruptContract} from './interrupt-contract.js';
+import {runAtomicContract} from './atomic-contract.js';
 import {FakeAgent} from './fake-agent.js';
 import {RoomHarness, fixedClock} from './harness.js';
 import type {Clock, TestableRoomStore} from './harness.js';
@@ -39,6 +40,7 @@ export function runRoomContract(label: string, makeStore: StoreFactory): void {
     runAdminContract(label, makeStore);
     runAutoCloseContract(label, makeStore);
     runInterruptContract(label, makeStore);
+    runAtomicContract(label, makeStore);
     describe(label, () => {
         const opened: RoomHarness[] = [];
         function track(harness: RoomHarness): RoomHarness {

@@ -51,9 +51,11 @@ export function runAdminContract(label: string, makeStore: StoreFactory): void {
             await expect(service.setLocked(roomId, member.credential, true)).rejects.toMatchObject({code: 'unauthorized'});
             await service.setMuted(roomId, owner, second.id, true);
             await expect(service.setLocked(roomId, second.credential, true)).rejects.toMatchObject({code: 'participant_muted'});
+            await expect(service.delete(roomId, second.credential)).rejects.toMatchObject({code: 'participant_muted'});
             await service.setMuted(roomId, owner, second.id, false);
             await service.leave(roomId, second.credential);
             await expect(service.setLocked(roomId, second.credential, true)).rejects.toMatchObject({code: 'participant_revoked'});
+            await expect(service.delete(roomId, second.credential)).rejects.toMatchObject({code: 'participant_revoked'});
         });
 
         test('demotion survives retries, service restart and reuse of an old admin invite', async () => {

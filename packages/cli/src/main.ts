@@ -6,7 +6,7 @@
 //! prints registry metadata only — credentials live in a separate store, so
 //! listing a room can never disclose one.
 
-import {mkdirSync, readFileSync, writeFileSync} from 'node:fs';
+import {closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync} from 'node:fs';
 import {join, relative} from 'node:path';
 import {spawn} from 'node:child_process';
 import {parseArgs} from 'node:util';
@@ -14,7 +14,7 @@ import {parseArgs} from 'node:util';
 import {LocalStore, PairLobbyClient, openRequests, owedByMe, unreceipted} from '@pairlobby/client';
 import type {JoinedRoom, RoomEntry, RoomPreset, Settings} from '@pairlobby/client';
 import {ParticipantName, ProtocolError, effectivePermissions, requestState, newId, normalizeInviteCode, MessageAction, parseVisibility, roomPermissions, safeFileName} from '@pairlobby/protocol';
-import type {AdapterCapabilities, MessageRequest, ParticipantView, RoomType} from '@pairlobby/protocol';
+import type {AdapterCapabilities, ExportMetadata, MessageRequest, ParticipantView, RoomType} from '@pairlobby/protocol';
 import type {RelayFlags} from '@pairlobby/local-server/settings';
 
 import {HANDOVER_TEMPLATE, parseHandoverFile} from './handover-file.js';
@@ -146,6 +146,7 @@ const OPTIONS = {
     'no-browser': {type: 'boolean'},
     'public-url': {type: 'string'},
     'trusted-proxy-header': {type: 'string'},
+    'proxy-is-access-gate': {type: 'boolean'},
     'request-log': {type: 'string'},
     backup: {type: 'string'},
     endpoint: {type: 'string'},
@@ -2600,9 +2601,37 @@ async function roomFiles(store: LocalStore, values: Values, words: string[]): Pr
  */
 async function exportRoom(store: LocalStore, values: Values): Promise<number> {
     const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
-    const exported = await client.export(room.roomId, credential);
-    const folder = newExportFolder(expandPath(str(values, 'out') ?? '.'), `${safeFileName(exported.room.name)}-${new Date(exported.exportedAt).toISOString().slice(0, 10)}`);
-    writeFileSync(join(folder, 'room.json'), JSON.stringify(exported, null, 2) + '\n');
+    let exported: ExportMetadata | undefined;
+    let folder = '';
+    let handle: number | undefined;
+    let count = 0;
+    try {
+        for await (const record of client.exportRecords(room.roomId, credential)) {
+            if (record.kind === 'metadata') {
+                exported = record.metadata;
+                folder = newExportFolder(expandPath(str(values, 'out') ?? '.'), `${safeFileName(exported.room.name)}-${new Date(exported.exportedAt).toISOString().slice(0, 10)}`);
+                handle = openSync(join(folder, 'room.json'), 'wx', 0o644);
+                writeFileSync(handle, JSON.stringify(exported).slice(0, -1) + ',"events":[\n');
+            } else if (record.kind === 'event') {
+                writeFileSync(handle!, (count ? ',\n' : '') + JSON.stringify(record.event));
+                count++;
+            } else {
+                writeFileSync(handle!, '\n]}\n');
+            }
+        }
+    } catch (error) {
+        if (handle !== undefined) {
+            unlinkSync(join(folder, 'room.json'));
+        }
+        throw error;
+    } finally {
+        if (handle !== undefined) {
+            closeSync(handle);
+        }
+    }
+    if (!exported) {
+        throw new ProtocolError('server_unavailable', 'the export did not contain room metadata');
+    }
     const saved: {fileId: string; name: string; path?: string; error?: string}[] = [];
     for (const file of exported.files ?? []) {
         try {
@@ -2617,10 +2646,10 @@ async function exportRoom(store: LocalStore, values: Values): Promise<number> {
     }
     const missing = saved.filter((file) => file.error);
     if (flag(values, 'json')) {
-        json({folder, events: exported.events.length, complete: exported.complete, files: saved});
+        json({folder, events: count, complete: exported.complete, files: saved});
         return missing.length ? 1 : 0;
     }
-    out(`Exported ${exported.room.name} to ${folder}: ${exported.events.length} events${saved.length ? `, ${saved.length - missing.length} of ${saved.length} files` : ''}.`);
+    out(`Exported ${exported.room.name} to ${folder}: ${count} events${saved.length ? `, ${saved.length - missing.length} of ${saved.length} files` : ''}.`);
     if (!exported.complete) {
         note('older events were already removed by the room\'s retention and are not in the export');
     }
@@ -2851,7 +2880,7 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     const dataDir = str(values, 'data-dir') ?? dataDirectory();
     // Flags win over PAIRLOBBY_* variables; the create token only ever comes from the environment, since a command line shows in every process listing.
     const flagNames: [keyof RelayFlags, 'host' | 'port' | 'public-url' | 'trusted-proxy-header' | 'request-log' | 'backup'][] = [['host', 'host'], ['port', 'port'], ['publicUrl', 'public-url'], ['trustedProxyHeader', 'trusted-proxy-header'], ['requestLog', 'request-log'], ['backup', 'backup']];
-    const flags: RelayFlags = {...Object.fromEntries(flagNames.flatMap(([key, name]) => (str(values, name) === undefined ? [] : [[key, str(values, name)]]))), ...(flag(values, 'no-restore') ? {noRestore: true} : {})};
+    const flags: RelayFlags = {...Object.fromEntries(flagNames.flatMap(([key, name]) => (str(values, name) === undefined ? [] : [[key, str(values, name)]]))), ...(flag(values, 'no-restore') ? {noRestore: true} : {}), ...(flag(values, 'proxy-is-access-gate') ? {proxyIsAccessGate: true} : {})};
     const settings = (() => {
         try {
             return relaySettings(flags, process.env);
@@ -2862,7 +2891,7 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     const network = relayNetwork(store, values, settings.host !== undefined);
     const host = settings.host ?? (network === 'off' ? '127.0.0.1' : '0.0.0.0');
     const port = settings.port ?? DEFAULT_RELAY_PORT;
-    const {publicUrl, trustedProxyHeader, createToken, membersFile, teamTokenLogin, allowedHosts, limits, roomLimits, requestLog, receiptMode, discovery} = settings;
+    const {publicUrl, trustedProxyHeader, proxyIsAccessGate, createToken, membersFile, teamTokenLogin, allowedHosts, limits, roomLimits, requestLog, receiptMode, discovery} = settings;
     const writeLine = (line: string) => process.stdout.write(`${line}\n`);
     const backup = settings.backup ? {target: backupTarget(settings.backup.location), intervalMs: settings.backup.intervalMs, keep: settings.backup.keep, restore: settings.backup.restore, log: writeLine} : undefined;
     // Tailnet devices may address this one by its MagicDNS names, which are not interface addresses.
@@ -2874,7 +2903,7 @@ async function serve(store: LocalStore, values: Values): Promise<number> {
     }
     let running;
     try {
-        running = await startServer({version: VERSION, host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), ...(trustedProxyHeader ? {trustedProxyHeader} : {}), ...(createToken ? {createToken} : {}), ...(membersFile ? {members: {file: membersFile, log: writeLine}} : {}), ...(teamTokenLogin === false ? {teamTokenLogin} : {}), allowedHosts, limits, roomLimits, discovery, ...(requestLog ? {requestLog: {mode: requestLog, write: writeLine}} : {}), ...(receiptMode ? {receiptMode} : {}), ...(backup ? {backup} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
+        running = await startServer({version: VERSION, host, port, dataFile: join(dataDir, 'rooms.sqlite'), ...(publicUrl ? {publicUrl} : {}), ...(trustedProxyHeader ? {trustedProxyHeader} : {}), ...(proxyIsAccessGate ? {proxyIsAccessGate} : {}), ...(createToken ? {createToken} : {}), ...(membersFile ? {members: {file: membersFile, log: writeLine}} : {}), ...(teamTokenLogin === false ? {teamTokenLogin} : {}), allowedHosts, limits, roomLimits, discovery, ...(requestLog ? {requestLog: {mode: requestLog, write: writeLine}} : {}), ...(receiptMode ? {receiptMode} : {}), ...(backup ? {backup} : {}), peers: network === 'tailscale' ? 'tailscale' : 'any', hostnames: tailscaleNames(tailnet), advertise: network === 'lan'});
     } catch (error) {
         // Say what is wrong and what to do, rather than surfacing a raw errno. The
         // occupant is never probed: something else owning the port is not ours to poke.

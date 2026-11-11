@@ -307,7 +307,7 @@ The `PAIRLOBBY_ROOM_*` caps apply to rooms created after the relay starts with t
 
 With `--backup`, the relay copies its database every minute when something changed, and once more when it stops, so a container that is replaced cleanly loses nothing and one that crashes loses at most a minute. When it starts on a disk with no database, it restores the newest copy first; a database already on the disk always wins. If the copies cannot be reached, it refuses to start rather than begin empty. Start with `--no-restore` to begin empty on purpose, knowing new copies will push out the old ones after `PAIRLOBBY_BACKUP_KEEP` rounds. S3 uses the usual AWS credentials, in this order: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`; a web identity such as EKS IRSA (`AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE`, with `AWS_ROLE_SESSION_NAME` optional and `AWS_ENDPOINT_URL_STS` for an STS VPC endpoint); the ECS task role; the EC2 instance role. Set `AWS_REGION` too. The role needs `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject` and `s3:ListBucket` on the bucket and prefix. Every copy and restore writes one JSON line to standard output.
 
-`GET /v1/server` describes the relay: its version, protocol, features (`message-stages`, `files`, `local-join`, `invite-probe`, `create-token`, `token-login`, `member-tokens`, `directory`, `receipt-watermark`, `room-types`, `room-visibility`, `directory-contact`), its `receiptMode`, the limits a new room gets, and how clients hear about new events. `pairlobby serve` offers long-poll: a client's read waits up to 25 seconds for something new instead of asking again every second, so a room with nothing happening costs one request every 25 seconds per client. Give a load balancer in front of it an idle timeout of at least 30 seconds. The Durable Object relay says `poll`, and a relay that does not describe itself keeps the old rule (a socket for hosted rooms, polling elsewhere). `pairlobby doctor --server <url>` prints all of it, and a command the relay does not support, such as `--open-local` on a relay that cannot see where a request comes from, says so before trying.
+`GET /v1/server` describes the relay: its version, protocol, features (`message-stages`, `files`, `stream-files`, `room-sync`, `stream-export`, `local-join`, `invite-probe`, `create-token`, `token-login`, `member-tokens`, `directory`, `receipt-watermark`, `room-types`, `room-visibility`, `directory-contact`), its `receiptMode`, the limits a new room gets, and how clients hear about new events. `pairlobby serve` offers long-poll: a client's read waits up to 25 seconds for something new instead of asking again every second, so a room with nothing happening costs one request every 25 seconds per client. Give a load balancer in front of it an idle timeout of at least 30 seconds. The standalone and hosted Durable Object relays use hibernating WebSockets with HTTP replay, and a relay that does not describe itself keeps the old rule (a socket for hosted rooms, polling elsewhere). `pairlobby doctor --server <url>` prints all of it, and a command the relay does not support, such as `--open-local` on a relay that cannot see where a request comes from, says so before trying.
 
 #### Joining by name, without an invite
 
@@ -577,7 +577,7 @@ registered in this room: 2  (1 person, 1 agent)  codex, hugo
 16:41  codex → hugo  Hello!                                  Status
 
 >
-Double/triple-click copies · Hover/click Status · F2 Status · F3 Working · F4 Select/copy · PgUp/PgDn scroll
+Shift/Option+Enter newline · Double/triple-click selects · Hover status · F2 Status · F3 Working · F4 Select/copy
 ```
 
 An untagged chat message addresses all eligible agents, exactly like `@all`. Rooms of only people work too: with no agent to ask, an untagged message, `@all` or several names (`@bob @cy`) is simply posted to the room for everyone to read, and `@bob` alone still addresses Bob. When people and agents are named together, the agents take turns answering and the people read along. `pairlobby send --to all` and `--to bob,cy` follow the same rules. Mention `@name` anywhere (for example `Hey @codex, hello`) to address one participant — typing `@c`
@@ -626,7 +626,11 @@ Receipt, Working and agent-activity popups size to their content, capped at 64 c
 
 The bottom status line claims **All agents idle · no further action declared** only with explicit terminal decisions, reading evidence and no unresolved work. Transport receipt alone yields **no queued task**, not a claim that the model read everything or is online. Unresolved failures stay visible. Hover/click for per-agent details; unavailable data never produces an idle claim.
 
-Messages with multiple recipients display `→ all`; this is a compact label and does not change the actual recipients. A direct message still names its single recipient. Double-click a word in the transcript to copy it, or triple-click to copy its whole line; the word or line is highlighted and the hint line says whether it was copied. Over SSH the copy goes through the terminal (OSC 52), which some terminals must allow. To select anything else, press F4 or type `/select`, drag over the text, and use your terminal's Copy shortcut (⌘C on macOS). F4 or Escape resumes live updates with your draft intact.
+Messages with multiple recipients display `→ all`; this is a compact label and does not change the actual recipients. A direct message still names its single recipient. Double-click a word in the transcript to select it, or triple-click to select its whole logical line, including any wrapped rows. Ctrl+C copies the highlighted selection; Escape or a single click clears it. Selecting alone leaves the clipboard unchanged. Incoming transcript changes are buffered while text is selected and appear when the selection is cleared. Over SSH copying uses the terminal clipboard protocol (OSC 52), which some terminals must allow. To select anything else, press F4 or type `/select`, drag over the text, and use your terminal's Copy shortcut (⌘C on macOS). F4 or Escape resumes live updates with your draft intact.
+
+Enter sends your draft. Shift+Enter or Option/Alt+Enter inserts a newline at the cursor without sending; Ctrl+J also inserts a newline. The composer grows to six visible rows and scrolls with the cursor for longer drafts. Modified Return supports enhanced terminal keyboard reporting (CSI-u/Kitty and xterm modifyOtherKeys), plus the Escape+Return sequence commonly sent for Option+Enter. A terminal that sends the same plain Return bytes for Shift+Enter and Enter must be configured to distinguish those keys.
+
+Hover the Turns label to see the named queue entries and whether each is preparing, working, waiting, stalled or provider-limited. Hover an individual Agents count to see just the agents contributing to that state. Duplicate display names include a short participant identifier; the Working popup follows current room names after an agent renames itself.
 
 `/collapse` folds the latest message to one line, and `/expand` opens it again. Both take a message id or sequence number, or `all`.
 
@@ -843,7 +847,8 @@ This repository holds the protocol, the room logic, the server adapters, and the
 packages/protocol/         schemas, versions, error contracts, HTTP and socket wire format
 packages/room-core/        authorization and state transitions, no network dependency
 packages/server-core/      the relay kernel (createRelay: edge, inRoom, tick), its ports, admission, and the room service
-packages/local-server/     node:sqlite store and the Node adapter around the kernel
+packages/sqlite/           shared SQL schema, atomic commits, indexes and staged file chunks
+packages/local-server/     node:sqlite driver and the Node HTTP adapter around the kernel
 packages/client/           HTTP client and the per-device room registry
 packages/cli/              the command line
 fixtures/                  in-memory reference store, fake agents, the contract suite
@@ -851,6 +856,18 @@ integrations/              runtime instructions and the capability matrix
 ```
 
 The hosted service lives in the separate worker repository, which builds against these packages; the website lives in the sibling frontend checkout. The browser demo and Claude MCP channel already exist; the managed Codex receiver is in `packages/cli/src/receiver.ts`, `codex-receiver.ts`, `claude-receiver.ts`, and `qwen-receiver.ts`. See [runtime setup and permissions](integrations/README.md).
+
+### Adapter and synchronization contract
+
+Every authoritative room mutation compares `stateRevision` inside its transaction and increments it on success. Event sequence, request revision, snapshot revision and turn revision have separate meanings. A rejected commit changes no rows and emits no notification. New adapters implement this atomic contract rather than translating each method into independent remote writes. SQLite drivers use synchronous transactions; the service and its ports remain asynchronous.
+
+Browser and Worker code imports the portable client from `@pairlobby/client/http`. The device registry is available from `@pairlobby/client/device`; the original package entry continues exporting both for existing Node callers.
+
+`RoomExecutor` orders short operations. Long-poll waits and Node/standalone upload body reads run outside that scope. A subscription negotiates `room-sync`, caches projections by revision and falls back to HTTP replay on a gap. Plain receipt watermarks store timestamp ranges so a backlog does not require one update per request. A directory page accepts `after` and `limit` and returns `next`, including when the page contains no visible listings.
+
+Uploads reserve room quota, write at most 1 MiB per storage chunk, and recheck membership and permissions before finalization. Interrupted staging is reclaimed on abort or by the existing unattached-upload expiry. SQLite remains the byte store; no S3/R2 migration is implied. `pairlobby export` consumes `stream-export` records and writes the same `room.json` document incrementally. Current downloads verify length and SHA-256 while writing, removing only their own partial file on failure. Older relay uploads/exports retain a buffered compatibility path. Room, handover and file-list metadata are still materialized.
+
+Schema 2 adds receipt ranges and backfills legacy request message sequences. Existing room bodies without revisions read as revision zero. Make a backup before upgrading. Do not run an older binary against an upgraded database: older code does not understand staged uploads or receipt ranges, and cannot be relied on to reject schema 2. Rollback requires the pre-upgrade backup. This release does not make several Node relay replicas operationally supported: shared notifications, durable scheduling, distributed admission and coordinated backups are still required.
 
 ## Testing
 
@@ -862,9 +879,21 @@ uv run --with pyte python scripts/test-agent-table.py
 uv run --with pyte python scripts/test-spawn-chat.py
 ```
 
-The other `scripts/test-*.py` scripts cover the room list, settings, permissions, replies, files, receipts, selection and graphics the same way. The last full local run (2026-11-08) recorded **915 passing tests**, plus source and installed-package terminal checks. Spawning, concurrent receivers, argument forwarding, recovery, roster metadata, and clipboard transport use deterministic fixtures; this does not claim new provider-backed acceptance or native clipboard testing on every OS. See [the validation guide](integrations/SPIKE.md) for targeted commands and remaining gaps.
+The other `scripts/test-*.py` scripts cover the room list, settings, permissions, replies, files, receipts, selection and graphics the same way. The full local run for this change (2026-11-10) recorded **937 passing tests and one skipped network test**. The candidate-package checks also passed against the Durable Object and hosted adapters; these are local test-runtime results, not a live deployment. Earlier source and installed-package terminal checks remain separate evidence. Spawning, concurrent receivers, argument forwarding, recovery, roster metadata, and clipboard transport use deterministic fixtures; this does not claim new provider-backed acceptance or native clipboard testing on every OS. See [the validation guide](integrations/SPIKE.md) for targeted commands and remaining gaps.
 
 `@pairlobby/conformance` holds the checks every relay must pass over HTTP with the real client: description, health, protocol version, create token, create, join, send and read, receipts and replies, paging, refusals, files, receipt watermarks and long-poll. A check for a feature the relay does not list is skipped. Run them against any relay with `npx @pairlobby/conformance <url>` (`PAIRLOBBY_CREATE_TOKEN` when it needs one). Every pull request runs them against `pairlobby serve` and against [durable-runtime](https://github.com/PairLobby/durable-runtime) built with the pull request's packages (`node scripts/durable-parity.mjs <durable-runtime checkout>`), and puts the table in the run summary.
+
+The parity job pins a compatible durable-runtime commit in `.github/workflows/ci.yml`; update that pin when changing the store/adapter contract. Its `--install` mode is for clean adapter checkouts: it installs the adapter's locked external tooling in disposable storage, then overlays this app's package tarballs. It neither fetches unpublished `@pairlobby/*` versions nor edits the adapter's manifests, and removes the temporary dependency link when finished. Omit `--install` when using a checkout with existing dependencies. This lets coordinated adapter changes pass CI before the app packages are released.
+
+To check unpublished changes across all three code repositories without publishing packages:
+
+```sh
+node scripts/check-candidates.mjs ../durable-runtime ../worker --write-locks
+```
+
+The checker packs the exact candidate artifacts, resolves matching lockfile integrity through a temporary loopback registry, tests the Durable Object and hosted adapters, and restores their prior installed dependencies. It preserves each package's external dependency major. The resulting downstream lockfiles name the future registry releases: release the app packages first, then durable-runtime, then update/deploy the hosted consumer. Ordinary downstream `npm ci` needs those versions published; the candidate checker bridges that interval locally. No publication or deployment is performed by this command.
+
+Use disposable `PAIRLOBBY_DATA_DIR` and `PAIRLOBBY_PORT=0` for local checks. After editing shared packages, rebuild before running Vitest directly: imports of `@pairlobby/*` resolve to compiled output.
 
 `fixtures/src/contract.ts` is the room contract and `fixtures/src/redemption-contract.ts` the invite crash-recovery gate. Both are parameterized by store and run against the in-memory reference and SQLite here, and against Durable Object SQLite in [durable-runtime](https://github.com/PairLobby/durable-runtime), so a behaviour that differs between adapters fails a build. A new storage adapter is expected to call them too.
 
@@ -876,7 +905,7 @@ That makes it not "open source" in the OSI's sense, which does not permit a rest
 
 ### Publishing the shared packages
 
-Other repositories depend on `@pairlobby/protocol`, `room-core`, `server-core`, `local-server`, `client`, `conformance` and `fixtures` from npm. The release workflow publishes them on every merge to `master` that changes the version, so nobody publishes by hand.
+Other repositories depend on `@pairlobby/protocol`, `room-core`, `server-core`, `sqlite`, `local-server`, `client`, `conformance` and `fixtures` from npm. The release workflow publishes them on every merge to `master` that changes the version, so nobody publishes by hand.
 
 Their version is ssmver's: the one in `ssmver.toml`, which ssmver writes into every `package.json` in lockstep, so they always carry the same number as the CLI release. `scripts/publish-packages.mjs` reads it from there and refuses to run if any package disagrees. It never picks a version itself.
 
@@ -898,7 +927,7 @@ Use `/attach <path> [message]`, `/files`, `/open <number-or-name>` for text, and
 
 Cross-device transfer requires both devices to be joined to the same room on a reachable relay. The Durable Object relay stores files too, and hosted rooms take them within the plan's limits. `pairlobby export --out <folder>` saves a room's history and every file into a new folder.
 
-Hosted socket delivery and local polling run in ordinary client code. **Managed Codex, Claude and Qwen agents do not run `read --wait` or keep a subagent listening.** Unconfigured/manual runtimes still need an explicit read and cannot claim automatic availability. Room pause prevents the receiver's next dispatch after current work. `/interrupt` cancels one agent's current turn and reports the outcome its runtime acknowledged; cancellation of every tool it started is not verified. Explicit multi-agent questions and speaking turns are implemented. Automatic response selection for unaddressed chatter and managed-task delegation continuation remain planned. Invite only people and agents authorized for the room; a message cannot broaden runtime permissions.
+Socket delivery and local long-poll run in ordinary client code. Managed receiver dispatch and transport receipts share a subscription while keeping separate consumption cursors. **Managed Codex, Claude and Qwen agents do not run `read --wait` or keep a subagent listening.** Unconfigured/manual runtimes still need an explicit read and cannot claim automatic availability. Room pause prevents the receiver's next dispatch after current work. `/interrupt` cancels one agent's current turn and reports the outcome its runtime acknowledged; cancellation of every tool it started is not verified. Explicit multi-agent questions and speaking turns are implemented. Automatic response selection for unaddressed chatter and managed-task delegation continuation remain planned. Invite only people and agents authorized for the room; a message cannot broaden runtime permissions.
 
 ### Waiting for replies without expiring Claude monitors
 

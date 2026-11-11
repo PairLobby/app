@@ -1,15 +1,17 @@
 //! The Node relay: an adapter between `node:http` and the shared kernel (`createRelay`).
-//! It supplies one write queue for its one store, a timer for auto-close, and what the
+//! It supplies short per-room queues for its one store, a timer for auto-close, and what the
 //! socket says about each caller; every protocol rule stays in the kernel.
 
 import {createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse} from 'node:http';
 import {mkdirSync} from 'node:fs';
 import {hostname, networkInterfaces} from 'node:os';
 import {dirname} from 'node:path';
+import {Readable} from 'node:stream';
+import {pipeline} from 'node:stream/promises';
 
 import {ChangeNotifier, NotifyingStore, RoomService, createAdmission, createRelay, memoryRateLimiter, queueExecutor, timerScheduler} from '@pairlobby/server-core';
 import type {AdmissionLimits, DiscoveryDocument, Relay, RelayAccount, RelayMember, RequestContext} from '@pairlobby/server-core';
-import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_ROOM_POLICY} from '@pairlobby/protocol';
+import {ABSOLUTE_MAX_FILE_BYTES, DEFAULT_ROOM_POLICY, ProtocolError} from '@pairlobby/protocol';
 import type {ReceiptMode, RoomPolicy} from '@pairlobby/protocol';
 
 import {advertiseRelay, isLocalNetworkAddress, isLoopbackAddress, isTailscaleAddress} from './network.js';
@@ -95,7 +97,12 @@ export interface RunningServer {
 /** Non-file endpoints retain the smaller bound; the file-upload route may use the explicit file ceiling. */
 const DEFAULT_MAX_REQUEST_BYTES = 32 * 1024 * 1024;
 
-class RequestBodyTooLarge extends Error {}
+class RequestBodyTooLarge extends ProtocolError {
+    constructor() {
+        super('payload_too_large', 'this request is larger than the relay accepts');
+    }
+}
+type StreamingRequestInit = RequestInit & {duplex?: 'half'};
 
 function requestBodyLimit(incoming: IncomingMessage): number {
     const path = (incoming.url ?? '').split('?', 1)[0];
@@ -186,7 +193,7 @@ function listen(options: ServeOptions, restore: RestoreResult | undefined): Prom
         const account = {email: null, name: options.discovery?.name ?? null, server: options.publicUrl ?? new URL(request.url).origin};
         return member ? {...account, userId: `member:${member.handle}`, handle: member.handle} : {...account, userId: 'team', handle: null};
     } : undefined;
-    // One store behind one process: one queue keeps two writes from choosing the same next event sequence.
+    // Short per-room queues preserve local order; atomic state revisions guard independent writers as well.
     const executor = queueExecutor();
     // One timer for the whole relay, aimed at the earliest auto-close deadline; every write plans it again.
     const scheduler = timerScheduler(() => void relay.tick('auto-close'));
@@ -314,6 +321,13 @@ async function respond(relay: Relay, incoming: IncomingMessage, outgoing: Server
     const started = Date.now();
     const requestId = requestIdFor(typeof incoming.headers[REQUEST_ID_HEADER] === 'string' ? incoming.headers[REQUEST_ID_HEADER] : null);
     const bodyLimit = requestBodyLimit(incoming);
+    const disconnected = new AbortController();
+    incoming.once('aborted', () => disconnected.abort());
+    outgoing.once('close', () => {
+        if (!outgoing.writableEnded) {
+            disconnected.abort();
+        }
+    });
     const finish = (status: number, headers: Record<string, string>, body?: Buffer | string) => {
         outgoing.writeHead(status, {...headers, [REQUEST_ID_HEADER]: requestId});
         outgoing.end(body);
@@ -328,11 +342,30 @@ async function respond(relay: Relay, incoming: IncomingMessage, outgoing: Server
             tooLarge();
             return;
         }
-        const request = await toRequest(incoming, origin, bodyLimit);
+        const request = await toRequest(incoming, origin, bodyLimit, disconnected.signal);
         // Read off the socket: no header can claim where the connection came from.
         const response = await relay.handle(request, {peerAddress: incoming.socket.remoteAddress ?? ''});
-        finish(response.status, Object.fromEntries(response.headers), response.body ? Buffer.from(await response.arrayBuffer()) : undefined);
+        if (disconnected.signal.aborted) {
+            return;
+        }
+        outgoing.writeHead(response.status, {...Object.fromEntries(response.headers), [REQUEST_ID_HEADER]: requestId});
+        if (response.body) {
+            await pipeline(Readable.fromWeb(response.body as import('node:stream/web').ReadableStream<Uint8Array>), outgoing, {signal: disconnected.signal});
+        } else {
+            outgoing.end();
+        }
+        const method = incoming.method ?? 'GET';
+        if (log && shouldLog(log.mode, method, response.status)) {
+            log.write(requestLogLine({requestId, method, path: (incoming.url ?? '/').split('?', 1)[0]!, status: response.status, ms: Date.now() - started, at: new Date(started)}));
+        }
     } catch (error) {
+        if (disconnected.signal.aborted) {
+            return;
+        }
+        if (outgoing.headersSent) {
+            outgoing.destroy(error instanceof Error ? error : undefined);
+            return;
+        }
         if (error instanceof RequestBodyTooLarge) {
             tooLarge();
             return;
@@ -341,7 +374,29 @@ async function respond(relay: Relay, incoming: IncomingMessage, outgoing: Server
     }
 }
 
-async function toRequest(incoming: IncomingMessage, origin: string, bodyLimit: number): Promise<Request> {
+async function toRequest(incoming: IncomingMessage, origin: string, bodyLimit: number, signal: AbortSignal): Promise<Request> {
+    const method = incoming.method ?? 'GET';
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(incoming.headers)) {
+        if (value !== undefined) {
+            headers.set(name, Array.isArray(value) ? value.join(', ') : value);
+        }
+    }
+    if (method === 'POST' && new URL(incoming.url ?? '/', origin).pathname.endsWith('/files')) {
+        let received = 0;
+        const source = Readable.toWeb(incoming) as ReadableStream<Uint8Array>;
+        const body = source.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+            transform(chunk, controller) {
+                received += chunk.byteLength;
+                if (received > bodyLimit) {
+                    throw new RequestBodyTooLarge();
+                }
+                controller.enqueue(chunk);
+            }
+        }));
+        const init: StreamingRequestInit = {method, headers, signal, body, duplex: 'half'};
+        return new Request(new URL(incoming.url ?? '/', origin), init);
+    }
     const chunks: Buffer[] = [];
     let received = 0;
     for await (const chunk of incoming) {
@@ -351,16 +406,8 @@ async function toRequest(incoming: IncomingMessage, origin: string, bodyLimit: n
         }
         chunks.push(chunk as Buffer);
     }
-    const method = incoming.method ?? 'GET';
-    const headers = new Headers();
-    for (const [name, value] of Object.entries(incoming.headers)) {
-        if (value === undefined) {
-            continue;
-        }
-        headers.set(name, Array.isArray(value) ? value.join(', ') : value);
-    }
     const hasBody = method !== 'GET' && method !== 'HEAD' && chunks.length > 0;
-    return new Request(new URL(incoming.url ?? '/', origin), {method, headers, ...(hasBody ? {body: Buffer.concat(chunks)} : {})});
+    return new Request(new URL(incoming.url ?? '/', origin), {method, headers, signal, ...(hasBody ? {body: Buffer.concat(chunks)} : {})});
 }
 
 /** Stops taking requests, takes the last backup, then closes the database. */

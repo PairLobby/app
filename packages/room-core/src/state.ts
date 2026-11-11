@@ -86,6 +86,11 @@ export function toParticipantView(view: RoomView, participant: ParticipantRecord
 export function toSnapshot(view: RoomView): RoomSnapshot {
     return {
         roomId: view.room.roomId,
+        stateRevision: view.room.stateRevision ?? 0,
+        requestRevision: view.room.requestRevision ?? 0,
+        snapshotRevision: view.room.snapshotRevision ?? 0,
+        turnRevision: view.room.turnRevision ?? 0,
+        syncSupported: true,
         messageReceiptScope: 'members',
         messageStagesSupported: true,
         requestRecoverySupported: true,

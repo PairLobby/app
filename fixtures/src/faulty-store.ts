@@ -20,6 +20,7 @@ export class FaultyStore implements TestableRoomStore {
         for (const key of [
             'createRoom',
             'loadRoom',
+            'roomHead',
             'readEvents',
             'eventBySeq',
             'eventById',
@@ -33,6 +34,7 @@ export class FaultyStore implements TestableRoomStore {
             'groupRequests',
             'updateTurns',
             'messageRequests',
+            'pendingRequestCount',
             'setLifecycle',
             'deleteRoom',
             'dueAutoCloses',

@@ -40,6 +40,18 @@ describe('rate limiter in memory', () => {
         await limiter.take('idle-2', 0, {perMinute: 2});
         expect((await limiter.take('busy', 1, {perMinute: 2})).ok).toBe(false);
     });
+
+    test('different rates and a full key table cannot reset an active bucket', async () => {
+        const clock: ClockState = {at: 0};
+        const limiter = memoryRateLimiter({now: () => clock.at, maxKeys: 2});
+        await limiter.take('slow', 1, {perMinute: 1});
+        await limiter.take('fast', 100, {perMinute: 100});
+        clock.at = 1000;
+        expect((await limiter.take('new', 1, {perMinute: 100})).ok).toBe(false);
+        expect((await limiter.take('slow', 1, {perMinute: 1})).ok).toBe(false);
+        clock.at = 60_000;
+        expect((await limiter.take('new', 1, {perMinute: 100})).ok).toBe(true);
+    });
 });
 
 describe('admission', () => {

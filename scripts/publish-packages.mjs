@@ -26,7 +26,7 @@ import {fileURLToPath} from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // Dependency order: each package only depends on those before it.
-const PACKAGES = ['packages/protocol', 'packages/room-core', 'packages/server-core', 'packages/local-server', 'packages/client', 'packages/conformance', 'fixtures'];
+const PACKAGES = ['packages/protocol', 'packages/room-core', 'packages/server-core', 'packages/sqlite', 'packages/local-server', 'packages/client', 'packages/conformance', 'fixtures'];
 const publish = process.argv.includes('--publish');
 const listMissing = process.argv.includes('--missing');
 const packTo = process.argv.includes('--pack') ? resolve(process.argv[process.argv.indexOf('--pack') + 1] ?? '') : null;
