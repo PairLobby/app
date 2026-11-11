@@ -15,12 +15,14 @@ import type {RoomPanelPage} from './room-panel.js';
 import {applyPopupLayout, fitPopup, visibleMessageRow} from './terminal-layout.js';
 import {copyToClipboard, pasteLine, readClipboard} from './clipboard.js';
 import {createTerminalProgram} from './terminal-program.js';
+import {ChatKeyboard} from './chat-keyboard.js';
+import {composerLayout, editMultilineDraft, insertDraft, insertsLineBreak} from './chat-composer.js';
 import {countClick, wordAt} from './text-selection.js';
 import type {Click} from './text-selection.js';
 import {statusTable} from './status-table.js';
 import type {StatusRow} from './status-table.js';
-import {agentActivities, activitySummary} from './agent-activity.js';
-import type {AgentActivity, AgentActivityContext} from './agent-activity.js';
+import {activityDetails, activityFocusAt, agentActivities, activitySummary} from './agent-activity.js';
+import type {ActivityFocus, AgentActivity, AgentActivityContext} from './agent-activity.js';
 
 type ChatTerminalOptions = {names: Map<string, string>; participantId: string; format: (event: RoomEvent, highlightNames?: boolean, collapsed?: boolean) => string; complete: (line: string) => [string[], string]};
 type TranscriptEntry = {text: string; event?: RoomEvent; alertId?: string};
@@ -43,14 +45,15 @@ class SilentOutput extends Writable {
 /** A diff-rendered terminal transcript: mouse hit targets stay attached to their message. */
 export class ChatTerminal {
     readonly input: Interface;
-    private screen = blessed.screen({program: createTerminalProgram(), smartCSR: true, fullUnicode: true, title: 'PairLobby', warnings: false});
+    private terminalInput = new ChatKeyboard();
+    private screen = blessed.screen({program: createTerminalProgram(this.terminalInput), smartCSR: true, fullUnicode: true, title: 'PairLobby', warnings: false});
     private body = blessed.box({parent: this.screen, top: 0, bottom: 3, left: 0, right: 0, scrollable: true, alwaysScroll: true, mouse: true, tags: false, scrollbar: {ch: '│', style: {fg: 'gray'}}});
     private composer = blessed.box({parent: this.screen, bottom: 1, left: 0, right: 0, height: 1, tags: false});
     private hint = blessed.box({parent: this.screen, bottom: 0, left: 0, right: 0, height: 1, tags: false, style: {fg: 'gray'}});
     private turns = blessed.box({parent: this.screen, bottom: 2, left: 0, right: 0, height: 1, tags: false, mouse: true, wrap: false, style: {fg: 'cyan'}});
     private quote = blessed.box({parent: this.screen, bottom: 2, left: 0, right: 0, height: 1, tags: false, wrap: false, hidden: true, style: {fg: 'gray'}});
     private popup = blessed.box({parent: this.screen, right: 1, top: 0, width: 1, height: 1, border: 'line', padding: {left: 1, right: 1}, tags: false, hidden: true, mouse: true, scrollable: true, alwaysScroll: true, wrap: false, style: {fg: 'white', bg: 'black', border: {fg: 'gray'}}});
-    private working = new WorkingStrip({screen: this.screen, render: () => this.renderInput(), rebuild: () => this.rebuild(), obscured: () => this.popup.visible, beforeOpen: (pinned) => {
+    private working = new WorkingStrip({screen: this.screen, render: () => this.renderInput(), rebuild: () => this.rebuild(), obscured: () => this.popup.visible, nameFor: (id, fallback) => this.options.names.get(id) ?? fallback, beforeOpen: (pinned) => {
         if (this.pinned && !pinned) {
             return false;
         }
@@ -76,6 +79,8 @@ export class ChatTerminal {
     private latestMessage: RoomEvent | undefined;
     private activityContext: AgentActivityContext | undefined;
     private activityOpen = false;
+    private activityFocus: ActivityFocus = 'all';
+    private turnQueue: TurnQueue | null = null;
     private turnText = '';
     private reply = new ReplyComposer();
     private submittedReply: ReplySubmission | undefined;
@@ -84,6 +89,9 @@ export class ChatTerminal {
     private selecting = false;
     private selectable: SelectableText[] = [];
     private selection: blessed.Widgets.BoxElement[] = [];
+    private selectedText = '';
+    private transcriptPending = false;
+    private composerRows = 1;
     private lastClick: Click | undefined;
     private flash = '';
     private flashTimer: NodeJS.Timeout | undefined;
@@ -111,6 +119,15 @@ export class ChatTerminal {
                 this.roomPanel.key(character, key);
                 return;
             }
+            if (this.selectedText && key.name === 'c' && (key.ctrl || key.meta)) {
+                void copyToClipboard(this.selectedText).then((result) => this.showFlash(result), () => this.showFlash('Copy failed'));
+                return;
+            }
+            if (this.selectedText && key.name === 'escape') {
+                this.clearTextSelection();
+                this.renderInput();
+                return;
+            }
             if (this.selecting) {
                 if (key.name === 'f4' || key.name === 'escape') {
                     this.toggleSelection();
@@ -123,6 +140,14 @@ export class ChatTerminal {
             }
             if (key.name === 'f4') {
                 this.toggleSelection();
+                return;
+            }
+            if (insertsLineBreak(key)) {
+                this.clearTextSelection();
+                Object.assign(this.input, insertDraft({line: this.input.line, cursor: this.input.cursor}, '\n'));
+                this.syncReply();
+                this.inputChanged?.();
+                this.renderInput();
                 return;
             }
             if (this.reply.active && key.name === 'escape') {
@@ -168,7 +193,15 @@ export class ChatTerminal {
                     this.input.emit('SIGINT');
                     return;
                 }
-                this.input.write(character ?? '', key);
+                if (this.input.line.includes('\n')) {
+                    const edit = editMultilineDraft({line: this.input.line, cursor: this.input.cursor}, character ?? '', key);
+                    Object.assign(this.input, {line: edit.line, cursor: edit.cursor});
+                    if (edit.submit !== undefined) {
+                        this.input.emit('line', edit.submit);
+                    }
+                } else {
+                    this.input.write(character ?? '', key);
+                }
                 this.syncReply();
                 this.inputChanged?.();
             }
@@ -184,9 +217,9 @@ export class ChatTerminal {
         this.body.on('wheeldown', () => { this.follow = this.body.getScrollPerc() >= 99; this.hideDetails(); });
         this.body.on('wheelup', () => { this.follow = false; this.hideDetails(); });
         this.body.on('scroll', () => this.positionMessageLabels());
-        this.turns.on('mouseover', () => { if (!this.pinned) { this.showActivity(); } });
+        this.turns.on('mouseover', (event?: blessed.Widgets.Events.IMouseEventArg) => { if (!this.pinned) { this.showActivity(false, this.footerFocus(event?.x ?? 0)); } });
         this.turns.on('mouseout', () => { if (!this.pinned) { this.hideDetails(); } });
-        this.turns.on('click', () => this.showActivity(true));
+        this.turns.on('click', (event?: blessed.Widgets.Events.IMouseEventArg) => this.showActivity(true, this.footerFocus(event?.x ?? 0)));
         this.screen.on('mouse', (event: blessed.Widgets.Events.IMouseEventArg) => {
             if (this.closed || this.suspended || this.selecting || this.agentTable.visible || this.roomPanel.visible) {
                 return;
@@ -210,8 +243,11 @@ export class ChatTerminal {
                 const target = [...this.labels].find(([, label]) => contains(label));
                 if (target && this.detailsId !== target[0]) {
                     this.showDetails(target[0]);
-                } else if (!target && contains(this.turns) && !this.activityOpen) {
-                    this.showActivity();
+                } else if (!target && contains(this.turns)) {
+                    const focus = this.footerFocus(event.x);
+                    if (!this.activityOpen || this.activityFocus !== focus) {
+                        this.showActivity(false, focus);
+                    }
                 } else if (!target && !contains(this.turns) && !contains(this.popup) && (this.detailsId || this.activityOpen)) {
                     this.hideDetails();
                 }
@@ -226,6 +262,7 @@ export class ChatTerminal {
         });
         this.screen.on('resize', () => this.drawFrame(() => {
             this.working.clearGraphics();
+            this.clearTextSelection();
             this.output.columns = Number(this.screen.width);
             if (this.selecting) {
                 this.selecting = false;
@@ -237,18 +274,36 @@ export class ChatTerminal {
             this.roomPanel.render();
         }));
         this.screen.program.enableMouse();
+        process.stdout.write('\x1b[>1u');
         this.renderInput();
     }
 
-    /** A double click copies the word under the pointer and a triple click its whole line, as in an editor. */
+    private clearTextSelection(): void {
+        for (const box of this.selection) {
+            box.destroy();
+        }
+        this.selection = [];
+        this.selectedText = '';
+        if (this.transcriptPending) {
+            this.transcriptPending = false;
+            this.rebuild();
+        }
+    }
+
+    /** A double click selects the word under the pointer and a triple click its whole line. */
     private selectAt(x: number, y: number): void {
         const cleared = this.selection.length > 0;
         for (const box of this.selection) {
             box.destroy();
         }
         this.selection = [];
+        this.selectedText = '';
         this.lastClick = countClick(this.lastClick, x, y, Date.now());
         if (this.lastClick.count === 1) {
+            if (this.transcriptPending) {
+                this.transcriptPending = false;
+                this.rebuild();
+            }
             if (cleared) {
                 this.renderInput();
             }
@@ -283,7 +338,7 @@ export class ChatTerminal {
             highlight(row, plain.slice(0, range.start), copied);
         } else {
             const source = lines.rtof[row]!;
-            copied = stripVTControlCharacters(lines.fake[source] ?? '').trim();
+            copied = stripVTControlCharacters(lines.fake[source] ?? '').trimEnd();
             if (!copied) {
                 return;
             }
@@ -293,8 +348,8 @@ export class ChatTerminal {
                 }
             });
         }
+        this.selectedText = copied;
         this.renderInput();
-        void copyToClipboard(copied).then((result) => this.showFlash(result), () => this.showFlash('Copy failed'));
     }
 
     private showFlash(text: string): void {
@@ -313,7 +368,7 @@ export class ChatTerminal {
         if (!text || this.closed || this.suspended || this.selecting || this.agentTable.visible || this.roomPanel.visible) {
             return;
         }
-        this.input.write(text);
+        Object.assign(this.input, insertDraft({line: this.input.line, cursor: this.input.cursor}, text));
         this.syncReply();
         this.inputChanged?.();
         this.renderInput();
@@ -405,9 +460,7 @@ export class ChatTerminal {
     }
 
     private replaceInput(text: string): void {
-        this.input.write(null, {ctrl: true, name: 'a'});
-        this.input.write(null, {ctrl: true, name: 'k'});
-        this.input.write(text);
+        Object.assign(this.input, {line: text, cursor: text.length});
     }
 
     private syncReply(): void {
@@ -420,6 +473,7 @@ export class ChatTerminal {
     }
 
     setWorking(queue: TurnQueue): void {
+        this.turnQueue = queue;
         this.working.update(queue);
         this.rebuild();
     }
@@ -567,6 +621,7 @@ export class ChatTerminal {
         this.working.suspend();
         this.suspended = true;
         this.screen.program.disableMouse();
+        process.stdout.write('\x1b[<u');
         this.screen.program.normalBuffer();
         this.screen.program.showCursor();
     }
@@ -575,6 +630,7 @@ export class ChatTerminal {
         this.working.resume();
         this.screen.program.alternateBuffer();
         this.screen.program.enableMouse();
+        process.stdout.write('\x1b[>1u');
         this.screen.realloc();
         process.stdin.setRawMode?.(true);
         this.suspended = false;
@@ -594,10 +650,17 @@ export class ChatTerminal {
         this.keyboard.destroy();
         this.output.destroy();
         this.screen.destroy();
+        this.terminalInput.destroy();
+        process.stdout.write('\x1b[<u');
     }
 
     private rebuild(): void {
         if (this.closed || this.suspended || this.selecting || this.agentTable.visible || this.roomPanel.visible) {
+            return;
+        }
+        if (this.selectedText) {
+            this.transcriptPending = true;
+            this.renderInput();
             return;
         }
         this.drawFrame(() => this.rebuildContents());
@@ -613,9 +676,10 @@ export class ChatTerminal {
         this.selectable = [];
         this.selection = [];
         this.reply.sync(this.input.line ?? '', this.replyTargets());
-        const workingHeight = this.working.rebuild(this.reply.active ? 3 : 2);
-        this.body.bottom = (this.reply.active ? 4 : 3) + workingHeight;
-        this.turns.bottom = (this.reply.active ? 3 : 2) + workingHeight;
+        const bottom = this.composerRows + 1 + (this.reply.active ? 1 : 0);
+        const workingHeight = this.working.rebuild(bottom);
+        this.body.bottom = bottom + 1 + workingHeight;
+        this.turns.bottom = bottom + workingHeight;
         const targets = new Map(this.replyTargets().map((target) => [target.eventId, target]));
         let top = 0;
         let selectedTop: number | undefined;
@@ -697,18 +761,23 @@ export class ChatTerminal {
         this.renderInput();
     }
 
-    private showActivity(pinned = false): void {
-        if (!this.activityContext) {
+    private footerFocus(column: number): ActivityFocus {
+        return activityFocusAt(this.currentActivities(), this.activityContext?.queue?.mode ?? this.turnQueue?.mode, column - Number(this.turns.aleft), (text) => Number(this.turns.strWidth(text)));
+    }
+
+    private showActivity(pinned = false, focus: ActivityFocus = 'all'): void {
+        if (!this.activityContext && !this.turnQueue) {
             return;
         }
         if (!this.working.dismissForDetails(pinned)) {
             return;
         }
-        if (!this.activityOpen) {
+        if (!this.activityOpen || this.activityFocus !== focus) {
             this.popup.setScroll(0);
         }
         this.detailsId = undefined;
         this.activityOpen = true;
+        this.activityFocus = focus;
         this.pinned = pinned;
         this.renderInput();
     }
@@ -744,8 +813,7 @@ export class ChatTerminal {
 
     private paintDetails(): void {
         if (this.activityOpen) {
-            const descriptions = {idle: 'Idle · explicitly no further action', clear: 'No queued room task · reading not implied', failed: 'Failed task needs attention', unread: 'Latest transport receipt unconfirmed', working: 'Working', preparing: 'Preparing an answer', provider_wait: 'Provider usage limited · waiting to retry', waiting: 'Waiting · pending request', stalled: 'Stalled request', paused: 'Paused', muted: 'Muted', offline: 'Offline · its receiver on this device is not running; sending a message starts it', unknown: 'Status unavailable'};
-            fitPopup(this.popup, ['Agent activity', ...this.currentActivities().map((agent) => `${agent.name} — ${descriptions[agent.state]}`)], this.screen);
+            fitPopup(this.popup, activityDetails(this.currentActivities(), this.activityFocus, this.activityContext?.queue ?? this.turnQueue, this.options.names), this.screen);
             this.popup.top = Math.max(0, Number(this.turns.atop) - Number(this.popup.height));
             this.popup.show();
             this.popup.setFront();
@@ -837,18 +905,24 @@ export class ChatTerminal {
     private renderInputContents(): void {
         const line = this.input.line ?? '';
         const cursor = this.input.cursor ?? line.length;
-        const width = Math.max(1, Number(this.screen.width) - this.promptText.length - 2);
-        const start = Math.max(0, cursor - width);
+        const layout = composerLayout({line, cursor, prompt: this.promptText, columns: Number(this.screen.width), maxRows: Math.max(1, Math.min(6, Number(this.screen.height) - 8)), measure: (text) => Number(this.composer.strWidth(text))});
+        if (layout.height !== this.composerRows) {
+            this.composerRows = layout.height;
+            this.composer.height = layout.height;
+            this.rebuildContents();
+            return;
+        }
+        this.quote.bottom = this.composerRows + 1;
         if (this.reply.active) {
             this.quote.setContent(this.reply.target ? quotePreview(this.reply.target, this.options.names) : 'No message selected');
             this.quote.show();
         } else {
             this.quote.hide();
         }
-        this.hint.setContent(this.selecting ? 'Select text: drag · use terminal Copy (⌘C on macOS) · F4/Esc resume' : this.reply.active
+        this.hint.setContent(this.selecting ? 'Select text: drag · use terminal Copy (⌘C on macOS) · F4/Esc resume' : this.selectedText ? this.flash || 'Text selected · Ctrl+C copies · Esc clears' : this.reply.active
             ? this.reply.picking ? '↑/↓ choose a message · Enter/Tab select · Esc cancel' : 'Enter sends your reply · Delete /reply or Esc to cancel'
-            : this.flash || this.hintText || 'Double/triple-click copies · Hover/click Status · F2 Status · F3 Working · F4 Select/copy · PgUp/PgDn scroll');
-        this.composer.setContent(this.promptText + line.slice(start, start + width));
+            : this.flash || this.hintText || 'Shift/Option+Enter newline · Double/triple-click selects · Hover status · F2 Status · F3 Working · F4 Select/copy');
+        this.composer.setContent(layout.content);
         const summary = this.activityContext ? activitySummary(this.currentActivities()) : '';
         const mode = this.activityContext?.queue?.mode;
         this.turns.setContent(summary ? `${mode ? `Turns: ${mode} | ` : ''}${summary}` : this.turnText);
@@ -862,8 +936,7 @@ export class ChatTerminal {
             this.screen.program.hideCursor();
             return;
         }
-        const column = Number(this.composer.strWidth(this.promptText + line.slice(start, cursor)));
-        this.screen.program.cup(Number(this.screen.height) - 2, Math.min(Number(this.screen.width) - 1, column));
+        this.screen.program.cup(Number(this.screen.height) - 1 - this.composerRows + layout.cursorRow, layout.cursorColumn);
         this.screen.program.showCursor();
     }
 }

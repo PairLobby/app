@@ -5,5 +5,5 @@
     "outDir": "./dist"
   },
   "include": ["src/**/*"],
-  "references": [{"path": "../protocol"}, {"path": "../room-core"}, {"path": "../server-core"}, {"path": "../../fixtures"}]
+  "references": [{"path": "../protocol"}, {"path": "../room-core"}, {"path": "../server-core"}, {"path": "../sqlite"}, {"path": "../../fixtures"}]
 }

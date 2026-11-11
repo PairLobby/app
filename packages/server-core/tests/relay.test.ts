@@ -137,7 +137,7 @@ describe('relay kernel tick', () => {
     test('test_a_tick_closes_due_rooms_and_plans_the_next_wake_up', async () => {
         const state = stub();
         const planned: Array<number | null> = [];
-        const relay = relayWith(state, {scheduler: {plan: (at) => planned.push(at)}});
+        const relay = relayWith(state, {scheduler: {plan: (at) => { planned.push(at); }}});
         state.sweep = {closed: 1, more: false, nextAt: 5_000};
         await relay.tick('auto-close');
         state.sweep = {closed: 0, more: false, nextAt: null};

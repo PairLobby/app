@@ -2,7 +2,8 @@
 //! arrived, and showing them. A received file is only ever written as plain data
 //! under a new name; nothing here opens, runs or overwrites one.
 
-import {closeSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync, writeSync} from 'node:fs';
+import {closeSync, createReadStream, fstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync, writeSync} from 'node:fs';
+import {Readable} from 'node:stream';
 import {homedir} from 'node:os';
 import {basename, extname, join, resolve} from 'node:path';
 
@@ -12,6 +13,8 @@ import type {PairLobbyClient} from '@pairlobby/client';
 
 export type FileContext = {client: PairLobbyClient; roomId: string; credential: string};
 export type OutgoingFile = {name: string; bytes: Uint8Array; mediaType: string};
+export type OutgoingFileInfo = {name: string; path: string; size: number; mediaType: string};
+type ReceivedFileHandle = {path: string; handle: number};
 export type SavedFile = {file: Attachment; path: string};
 
 /** The most text `/open` draws in the transcript; a longer file is cut and says so. */
@@ -38,6 +41,11 @@ export function expandPath(path: string, cwd = process.cwd()): string {
 }
 
 export function readOutgoingFile(path: string, cwd = process.cwd()): OutgoingFile {
+    const file = outgoingFileInfo(path, cwd);
+    return {name: file.name, bytes: new Uint8Array(readFileSync(file.path)), mediaType: file.mediaType};
+}
+
+export function outgoingFileInfo(path: string, cwd = process.cwd()): OutgoingFileInfo {
     const location = expandPath(path, cwd);
     let size: number;
     try {
@@ -55,10 +63,27 @@ export function readOutgoingFile(path: string, cwd = process.cwd()): OutgoingFil
     if (size > LOCAL_READ_LIMIT) {
         throw new Error(`${path} is ${formatFileSize(size)}, far more than a room accepts`);
     }
-    return {name: basename(location), bytes: new Uint8Array(readFileSync(location)), mediaType: mediaTypeFor(location)};
+    const handle = openSync(location, 'r');
+    closeSync(handle);
+    return {path: location, name: basename(location), size, mediaType: mediaTypeFor(location)};
 }
 
-/** Reads every file before uploading any, so a mistyped path does not leave the others stored and unsent. */
+export async function uploadOutgoingFile(context: FileContext, file: OutgoingFileInfo): Promise<Attachment> {
+    const fd = openSync(file.path, 'r');
+    const stats = fstatSync(fd);
+    if (!stats.isFile() || stats.size !== file.size) {
+        closeSync(fd);
+        throw new Error(`${file.name} changed before it could be uploaded; try again`);
+    }
+    const stream = createReadStream(file.path, {fd, highWaterMark: 64 * 1024, autoClose: true});
+    try {
+        return await context.client.uploadFileStream(context.roomId, context.credential, {name: file.name, size: file.size, mediaType: file.mediaType, body: Readable.toWeb(stream) as ReadableStream<Uint8Array>});
+    } finally {
+        stream.destroy();
+    }
+}
+
+/** Checks every path before uploading any, then reads one file at a time with bounded memory. */
 export async function uploadFiles(context: FileContext, paths: string[], snapshot: RoomSnapshot, cwd = process.cwd()): Promise<Attachment[]> {
     if (!snapshot.filesSupported) {
         throw new ProtocolError('unsupported_capability', 'This relay does not store files. Update it, or send the text instead.');
@@ -66,10 +91,10 @@ export async function uploadFiles(context: FileContext, paths: string[], snapsho
     if (paths.length > MAX_ATTACHMENTS_PER_MESSAGE) {
         throw new Error(`A message carries at most ${MAX_ATTACHMENTS_PER_MESSAGE} files.`);
     }
-    const outgoing = paths.map((path) => readOutgoingFile(path, cwd));
+    const outgoing = paths.map((path) => outgoingFileInfo(path, cwd));
     const attachments: Attachment[] = [];
     for (const file of outgoing) {
-        attachments.push(await context.client.uploadFile(context.roomId, context.credential, file.name, file.bytes, file.mediaType));
+        attachments.push(await uploadOutgoingFile(context, file));
     }
     return attachments;
 }
@@ -117,6 +142,29 @@ export function filesReport(files: RoomFile[], names: Map<string, string>, usage
  * replaced, and without the executable bit whatever the file is.
  */
 export function writeReceivedFile(directory: string, name: string, bytes: Uint8Array): string {
+    const {path, handle} = openReceivedFile(directory, name);
+    try {
+        writeAll(handle, bytes);
+    } catch (error) {
+        unlinkSync(path);
+        throw error;
+    } finally {
+        closeSync(handle);
+    }
+    return path;
+}
+
+function writeAll(handle: number, bytes: Uint8Array): void {
+    for (let offset = 0; offset < bytes.byteLength;) {
+        const written = writeSync(handle, bytes, offset, bytes.byteLength - offset);
+        if (written === 0) {
+            throw new Error('the file could not be written');
+        }
+        offset += written;
+    }
+}
+
+function openReceivedFile(directory: string, name: string): ReceivedFileHandle {
     mkdirSync(directory, {recursive: true});
     const safe = safeFileName(name);
     const extension = extname(safe);
@@ -132,18 +180,58 @@ export function writeReceivedFile(directory: string, name: string, bytes: Uint8A
             }
             throw error;
         }
-        try {
-            writeSync(handle, bytes);
-        } finally {
-            closeSync(handle);
-        }
-        return path;
+        return {path, handle};
     }
     throw new Error(`Too many files named ${safe} in ${directory}.`);
 }
 
 export async function saveFile(context: FileContext, file: Attachment, directory: string): Promise<string> {
-    return writeReceivedFile(directory, file.name, await context.client.downloadFile(context.roomId, context.credential, file.fileId));
+    const stream = await context.client.downloadFileStream(context.roomId, context.credential, file.fileId);
+    const reader = stream.getReader();
+    let output: ReceivedFileHandle | undefined;
+    try {
+        output = openReceivedFile(directory, file.name);
+        for (;;) {
+            const {done, value} = await reader.read();
+            if (done) {
+                break;
+            }
+            writeAll(output.handle, value);
+        }
+        return output.path;
+    } catch (error) {
+        await reader.cancel(error).catch(() => {});
+        if (output) {
+            unlinkSync(output.path);
+        }
+        throw error;
+    } finally {
+        reader.releaseLock();
+        if (output) {
+            closeSync(output.handle);
+        }
+    }
+}
+
+/** Drain and verify the whole download, retaining just enough text for its preview. */
+export async function downloadPreview(context: FileContext, file: Attachment): Promise<string> {
+    const reader = (await context.client.downloadFileStream(context.roomId, context.credential, file.fileId)).getReader();
+    const preview = new Uint8Array(Math.min(PREVIEW_BYTES, file.size));
+    let used = 0;
+    try {
+        for (;;) {
+            const {done, value} = await reader.read();
+            if (done) {
+                break;
+            }
+            const length = Math.min(value.byteLength, preview.byteLength - used);
+            preview.set(value.subarray(0, length), used);
+            used += length;
+        }
+        return previewFile(file, preview.subarray(0, used), file.size);
+    } finally {
+        reader.releaseLock();
+    }
 }
 
 /**
@@ -180,10 +268,10 @@ export function decodeText(bytes: Uint8Array): string | null {
 }
 
 /** A file as Markdown for the transcript: a fenced block, labelled `json` when it is, cut at 64 KB. */
-export function previewFile(file: Attachment, bytes: Uint8Array): string {
+export function previewFile(file: Attachment, bytes: Uint8Array, totalBytes = bytes.byteLength): string {
     const shown = bytes.byteLength > PREVIEW_BYTES ? bytes.subarray(0, PREVIEW_BYTES) : bytes;
     // A cut may land inside a character; only then, drop up to three trailing bytes to find a clean end.
-    const cutShort = shown.byteLength < bytes.byteLength;
+    const cutShort = shown.byteLength < totalBytes;
     let text: string | null = null;
     for (let trim = 0; trim < (cutShort ? 4 : 1) && text === null; trim++) {
         text = decodeText(shown.subarray(0, shown.byteLength - trim));
@@ -193,7 +281,7 @@ export function previewFile(file: Attachment, bytes: Uint8Array): string {
     }
     const language = extname(file.name).toLowerCase() === '.json' ? 'json' : '';
     const fence = text.includes('```') ? '````' : '```';
-    const cut = cutShort ? `\nShowing the first ${formatFileSize(PREVIEW_BYTES)} of ${formatFileSize(bytes.byteLength)}. /save ${file.name} keeps all of it.` : '';
+    const cut = cutShort ? `\nShowing the first ${formatFileSize(PREVIEW_BYTES)} of ${formatFileSize(totalBytes)}. /save ${file.name} keeps all of it.` : '';
     return `**${file.name}** · ${formatFileSize(file.size)}\n${fence}${language}\n${text.replace(/\n$/, '')}\n${fence}${cut}`;
 }
 

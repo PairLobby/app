@@ -207,6 +207,7 @@ export function runAutoCloseContract(label: string, makeStore: StoreFactory): vo
             clock.advance(10 * MINUTE);
             expect((await service.closeDueRooms()).closed).toBe(0);
             await expectCode('room_expired', () => say(human));
+            expect(await service.closeDueRooms()).toMatchObject({closed: 0, more: false, nextAt: null});
         });
 
         test('test_the_sweep_reports_the_next_deadline_and_closing_keeps_history', async () => {

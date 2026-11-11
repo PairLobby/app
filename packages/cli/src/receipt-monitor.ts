@@ -1,16 +1,16 @@
 import {existsSync, readFileSync, renameSync, writeFileSync} from 'node:fs';
 import {setTimeout as sleep} from 'node:timers/promises';
-import {PairLobbyClient, ReceiptCoalescer, unreceipted} from '@pairlobby/client';
+import {PairLobbyClient, ReceiptCoalescer, RoomSubscription, unreceipted} from '@pairlobby/client';
 import {ProtocolError} from '@pairlobby/protocol';
 
-type ReceiptMonitorOptions = {serverUrl: string; roomId: string; participantId: string; credential: string; cursorPath: string; onError: (message: string) => void};
+type ReceiptMonitorOptions = {serverUrl: string; roomId: string; participantId: string; credential: string; cursorPath: string; onError: (message: string) => void; subscription?: RoomSubscription};
 export type ReceiptMonitor = {stop: () => Promise<void>};
 
 /** Transport receipts never schedule model work, claim a turn, or create a reply. */
 export function startReceiptMonitor(options: ReceiptMonitorOptions): ReceiptMonitor {
-    // Separate socket/cursor from the request dispatcher: receiving continues
-    // while a model is busy, waiting for its turn, paused, or muted.
-    const client = new PairLobbyClient(options.serverUrl);
+    // Consumption remains independent while the transport is shared with dispatch.
+    const client = options.subscription?.client ?? new PairLobbyClient(options.serverUrl);
+    const live = options.subscription ?? new RoomSubscription(client, options.roomId, options.credential);
     const abort = new AbortController();
     let cursor = 0;
     let stopped = false;
@@ -38,14 +38,17 @@ export function startReceiptMonitor(options: ReceiptMonitorOptions): ReceiptMoni
         let failures = 0;
         while (!stopped) {
             try {
-                const snapshot = await client.snapshot(options.roomId, options.credential);
+                const version = live.version;
+                const snapshot = await live.snapshot();
                 const member = snapshot.participants.find((person) => person.participantId === options.participantId);
                 if (!member || member.left || member.revoked || member.role === 'guest' || snapshot.lifecycle !== 'open') {
                     return;
                 }
                 const after = Math.max(cursor, snapshot.earliestSeq - 1, 0);
-                const page = await client.readEvents(options.roomId, options.credential, after, 200);
+                const page = await live.read(after, 200);
                 if (snapshot.receiptMode === 'watermark') {
+                    // A saved cursor proves delivery even if the process stopped before its coalesced post succeeded.
+                    watermark.advance(cursor);
                     watermark.advance(page.events.at(-1)?.seq ?? 0);
                 } else {
                     for (const event of unreceipted(page.events, options.participantId, snapshot.messageReceiptScope === 'members')) {
@@ -70,7 +73,7 @@ export function startReceiptMonitor(options: ReceiptMonitorOptions): ReceiptMoni
                 failures = 0;
                 report('');
                 if (!page.hasMore) {
-                    await client.waitForChange(options.roomId, options.credential, cursor, 300_000, 1000);
+                    await live.wait(version, 300_000, abort.signal);
                 }
             } catch (error) {
                 if (stopped) {
@@ -80,7 +83,9 @@ export function startReceiptMonitor(options: ReceiptMonitorOptions): ReceiptMoni
                 if (error instanceof ProtocolError && ['room_expired', 'room_closed', 'room_not_found', 'participant_revoked', 'unauthorized'].includes(error.code)) {
                     return;
                 }
-                client.closeLive();
+                if (!options.subscription) {
+                    client.closeLive();
+                }
                 await sleep(Math.min(5000, 250 * 2 ** Math.min(failures++, 5)), undefined, {signal: abort.signal}).catch(() => {});
             }
         }
@@ -90,7 +95,9 @@ export function startReceiptMonitor(options: ReceiptMonitorOptions): ReceiptMoni
     const done = run().finally(async () => {
         await watermark.flush().catch(() => {});
         watermark.stop();
-        client.closeLive();
+        if (!options.subscription) {
+            await live.stop();
+        }
     });
     let stopping: Promise<void> | undefined;
     return {
@@ -100,12 +107,10 @@ export function startReceiptMonitor(options: ReceiptMonitorOptions): ReceiptMoni
             }
             stopped = true;
             abort.abort();
-            client.closeLive();
-            // A connect-ticket request may still be in flight. Close a socket
-            // created after stop too, rather than waiting out its idle timeout.
-            const closing = setInterval(() => client.closeLive(), 100);
-            closing.unref();
-            stopping = done.finally(() => clearInterval(closing));
+            if (!options.subscription) {
+                void live.stop();
+            }
+            stopping = done;
             return stopping;
         }
     };

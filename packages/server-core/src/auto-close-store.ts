@@ -8,7 +8,7 @@ import type {HandoverRecord, InviteRecord, MessageRequest, ParticipantRecord, Re
 import {autoCloseDue, autoCloseRoom, refreshAutoClose} from '@pairlobby/room-core';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 
-import type {EventPage, FileStore, IdempotencyRecord, RoomStore} from './store.js';
+import type {EventPage, FileStore, IdempotencyRecord, RoomHead, RoomLoadOptions, RoomStore} from './store.js';
 
 type Clock = () => number;
 
@@ -38,8 +38,17 @@ export class AutoCloseStore implements RoomStore {
         await this.store.createRoom(refreshAutoClose(room, [participant], event, this.now()), participant, event);
     }
 
-    async loadRoom(roomId: string): Promise<RoomView | null> {
-        let view = await this.store.loadRoom(roomId);
+    async roomHead(roomId: string): Promise<RoomHead | null> {
+        const head = await this.store.roomHead(roomId);
+        if (head && autoCloseDue({...head, participants: [], handovers: [], controls: []}, this.now())) {
+            const closed = await this.loadRoom(roomId, {handovers: false});
+            return closed ? {room: closed.room, earliestSeq: closed.earliestSeq} : null;
+        }
+        return head;
+    }
+
+    async loadRoom(roomId: string, options?: RoomLoadOptions): Promise<RoomView | null> {
+        let view = await this.store.loadRoom(roomId, options);
         for (let attempt = 0; view && attempt < CLOSE_ATTEMPTS; attempt++) {
             const reason = autoCloseDue(view, this.now());
             if (!reason) {
@@ -49,30 +58,32 @@ export class AutoCloseStore implements RoomStore {
                 await this.store.apply(autoCloseRoom(view, reason, {now: this.now(), newEventId: () => newId('event')}), null);
             } catch (error) {
                 // Another write won the race; reload and decide again from what it left.
-                if (!(error instanceof ProtocolError)) {
+                if (!(error instanceof ProtocolError) || !['turn_conflict', 'server_unavailable'].includes(error.code)) {
                     throw error;
                 }
             }
-            view = await this.store.loadRoom(roomId);
+            view = await this.store.loadRoom(roomId, options);
+        }
+        if (view && autoCloseDue(view, this.now())) {
+            throw new ProtocolError('server_unavailable', 'the room deadline could not be enforced; retry');
         }
         return view;
     }
 
     async apply(mutation: Mutation, idempotency: IdempotencyKey): Promise<void> {
-        const current = await this.store.loadRoom(mutation.room.roomId);
-        const members = membersAfter(current?.participants ?? [], mutation.upsertParticipants);
+        const needsMembers = mutation.upsertParticipants.length > 0 || mutation.room.activeAgentsAndGuests === undefined;
+        const current = needsMembers ? await this.store.loadRoom(mutation.room.roomId, {handovers: false}) : null;
+        const members = needsMembers ? membersAfter(current?.participants ?? [], mutation.upsertParticipants) : undefined;
         await this.store.apply({...mutation, room: refreshAutoClose(mutation.room, members, mutation.appendEvent, this.now())}, idempotency);
     }
 
     async updateTurns(room: RoomRecord, requests: MessageRequest[], expectedRevision: number): Promise<void> {
-        // A lease renewal writes the room without an event; keep the deadline the latest write computed.
-        const current = (await this.store.loadRoom(room.roomId))?.room;
-        const kept = current ? {lastMessageAt: current.lastMessageAt ?? null, autoCloseArmed: current.autoCloseArmed ?? false, autoCloseAt: current.autoCloseAt ?? null} : {};
-        await this.store.updateTurns({...room, ...kept}, requests, expectedRevision);
+        // The complete state revision fences stale deadlines as well as stale turns.
+        await this.store.updateTurns(room, requests, expectedRevision);
     }
 
-    readEvents(roomId: string, after: number, limit: number): Promise<EventPage> {
-        return this.store.readEvents(roomId, after, limit);
+    readEvents(roomId: string, after: number, limit: number, through?: number): Promise<EventPage> {
+        return this.store.readEvents(roomId, after, limit, through);
     }
 
     eventBySeq(roomId: string, seq: number): Promise<RoomEvent | null> {
@@ -87,20 +98,20 @@ export class AutoCloseStore implements RoomStore {
         return this.store.idempotencyRecord(roomId, key);
     }
 
-    putInvite(invite: InviteRecord): Promise<void> {
-        return this.store.putInvite(invite);
+    putInvite(invite: InviteRecord, expectedStateRevision?: number): Promise<void> {
+        return this.store.putInvite(invite, expectedStateRevision);
     }
 
     inviteByDigest(digest: string): Promise<InviteRecord | null> {
         return this.store.inviteByDigest(digest);
     }
 
-    reserveInvite(digest: string, attemptId: string, credentialHash: string, expectedOccupantId: string | null): Promise<InviteRecord | null> {
-        return this.store.reserveInvite(digest, attemptId, credentialHash, expectedOccupantId);
+    reserveInvite(digest: string, attemptId: string, credentialHash: string, expectedOccupantId: string | null, expectedStateRevision?: number): Promise<InviteRecord | null> {
+        return this.store.reserveInvite(digest, attemptId, credentialHash, expectedOccupantId, expectedStateRevision);
     }
 
-    completeInvite(digest: string, participantId: string): Promise<void> {
-        return this.store.completeInvite(digest, participantId);
+    completeInvite(digest: string, participantId: string, attemptId?: string): Promise<void> {
+        return this.store.completeInvite(digest, participantId, attemptId);
     }
 
     participantByCredential(roomId: string, credentialHash: string): Promise<ParticipantRecord | null> {
@@ -123,8 +134,12 @@ export class AutoCloseStore implements RoomStore {
         return this.store.messageRequests(roomId, after, limit, recipientId);
     }
 
-    setLifecycle(roomId: string, lifecycle: RoomRecord['lifecycle']): Promise<void> {
-        return this.store.setLifecycle(roomId, lifecycle);
+    pendingRequestCount(roomId: string): Promise<number> {
+        return this.store.pendingRequestCount(roomId);
+    }
+
+    setLifecycle(roomId: string, lifecycle: RoomRecord['lifecycle'], expectedStateRevision?: number): Promise<void> {
+        return this.store.setLifecycle(roomId, lifecycle, expectedStateRevision);
     }
 
     deleteRoom(roomId: string): Promise<void> {
@@ -135,7 +150,7 @@ export class AutoCloseStore implements RoomStore {
         return this.store.dueAutoCloses(now, limit);
     }
 
-    nextAutoCloseAt(): Promise<number | null> {
-        return this.store.nextAutoCloseAt();
+    nextAutoCloseAt(now?: number): Promise<number | null> {
+        return this.store.nextAutoCloseAt(now);
     }
 }

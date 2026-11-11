@@ -8,11 +8,11 @@ import {ChatTerminal} from './chat-terminal.js';
 
 import {ProtocolError, ROOM_TYPE_SUMMARY, requestState, newId, messageActionLabel, failureLabel} from '@pairlobby/protocol';
 import type {Attachment, MessageRequest, RoomEvent, RoomSnapshot, TurnQueue} from '@pairlobby/protocol';
-import {LocalStore, PairLobbyClient, ReceiptCoalescer} from '@pairlobby/client';
+import {LocalStore, PairLobbyClient, ReceiptCoalescer, RoomSubscription} from '@pairlobby/client';
 
 import {pickExpiry} from './picker.js';
 import {isRoomCommand, runRoomCommand} from './chat-commands.js';
-import {attachmentLabel, attachmentText, expandPath, filesReport, findRoomFile, previewFile, saveFile, splitAttachCommand, uploadFiles} from './files.js';
+import {attachmentLabel, attachmentText, downloadPreview, expandPath, filesReport, findRoomFile, saveFile, splitAttachCommand, uploadFiles} from './files.js';
 import {isPresetCommand, runPresetCommand} from './presets.js';
 import {authorityFor, describeParticipantPermissionChange, describeRoomPermissionChange, notPermitted} from './permissions.js';
 import {applyMention, commonPrefix, currentMention, hasAgentsToAsk, matchNames, renderSuggestions, routeChatMessage, routeForRoom} from './mentions.js';
@@ -123,6 +123,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
 
     const showIds = options.showIds === true;
     let snapshot = await client.snapshot(roomId, credential);
+    const live = new RoomSubscription(client, roomId, credential, {snapshot, pollIntervalMs: intervalMs});
     let member = snapshot.participants.find((participant) => participant.participantId === participantId);
     if (!member || (options.requireHuman && member.kind !== 'human')) {
         throw new ProtocolError('unauthorized', 'The saved session is not your human membership. Choose a human session explicitly.');
@@ -269,7 +270,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 }
                 const file = findRoomFile(files, reference);
                 if (command === '/open') {
-                    emit(formatMessageText(previewFile(file, await client.downloadFile(roomId, credential, file.fileId))));
+                    emit(formatMessageText(await downloadPreview({client, roomId, credential}, file)));
                     return;
                 }
                 const path = await saveFile({client, roomId, credential}, file, expandPath(rest.join(' ') || '.'));
@@ -624,9 +625,11 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         const watermark = new ReceiptCoalescer((throughSeq) => client.postReceipt(roomId, credential, throughSeq), {onError: () => {}});
 
         while (!closed) {
+            const version = live.version;
             try {
+                snapshot = await live.snapshot();
                 const watermarkOnly = snapshot.receiptMode === 'watermark';
-                const page = await client.readEvents(roomId, credential, cursor, 200, watermarkOnly ? {receiptsAfter: receiptRevision} : {});
+                const page = await live.read(cursor, 200, watermarkOnly ? receiptRevision : 0);
                 if (page.receipts) {
                     view.addReceipts(page.receipts);
                     receiptRevision = page.receiptRevision ?? receiptRevision;
@@ -634,7 +637,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 if (page.events.length > 0) {
                     const nextCursor = page.events.at(-1)!.seq;
                     if (page.events.some((event) => event.type === 'participant.joined' || event.type === 'participant.renamed' || event.type === 'participant.left' || event.type === 'participant.revoked' || event.type === 'participant.mute_changed' || event.type === 'participant.role_changed' || event.type === 'participant.permissions_changed' || event.type === 'room.permissions_changed' || event.type === 'room.renamed' || event.type === 'room.expiry_changed' || event.type === 'room.access_changed' || event.type === 'room.auto_close_changed' || event.type === 'room.closed' || event.type === 'room.lock_changed' || event.type === 'control.pause' || event.type === 'control.resume' || event.type === 'control.ack')) {
-                        snapshot = await client.snapshot(roomId, credential);
+                        snapshot = await live.snapshot();
                         absorbNames(snapshot, names);
                         for (const saved of store.room(roomId)?.sessions ?? []) {
                             const current = snapshot.participants.find((participant) => participant.participantId === saved.participantId);
@@ -665,12 +668,12 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                     store.updateCursor(roomId, sessionId, cursor);
                 }
                 if (!loadedRequests || page.events.length || snapshot.groupTurnsSupported) {
-                    pendingRequests = await client.pendingRequests(roomId, credential);
+                    pendingRequests = await live.requests();
                     loadedRequests = true;
                 }
                 let queue: TurnQueue | null = null;
                 if (snapshot.groupTurnsSupported) {
-                    queue = await client.turnQueue(roomId, credential);
+                    queue = await live.turns();
                     view.setWorking(queue);
                     view.setTurnStatus(formatTurnQueue(queue));
                 }
@@ -708,14 +711,15 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 }
             }
             await Promise.race([
-                outageSince === null ? client.waitForChange(roomId, credential, cursor, 5000, intervalMs).catch(() => sleep(Math.max(1000, backoffMs))) : sleep(backoffMs),
+                // Recompute time-based status locally. The subscription performs no extra HTTP reads for this tick.
+                outageSince === null ? live.wait(version, 1000) : sleep(backoffMs),
                 finished
             ]);
         }
 
         await watermark.flush().catch(() => {});
         watermark.stop();
-        client.closeLive();
+        await live.stop();
         clearHint();
 
         terminal.close();
@@ -744,6 +748,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         await new Promise<void>((resolve) => process.stdout.write(`\nTo rejoin this room:\n  pairlobby chat --room ${roomId}${sessionFlag}\n\n`, () => resolve()));
         process.exit(0);
     } finally {
+        await live.stop();
         view.close();
     }
 }

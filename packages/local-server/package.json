@@ -1,6 +1,6 @@
 {
   "name": "@pairlobby/local-server",
-  "version": "0.32.0",
+  "version": "0.33.0",
   "license": "Elastic-2.0",
   "private": true,
   "type": "module",
@@ -23,7 +23,8 @@
     "@pairlobby/protocol": "*",
     "@pairlobby/room-core": "*",
     "@pairlobby/server-core": "*",
-    "multicast-dns": "7.2.5"
+    "multicast-dns": "7.2.5",
+    "@pairlobby/sqlite": "*"
   },
   "devDependencies": {
     "@pairlobby/fixtures": "*",

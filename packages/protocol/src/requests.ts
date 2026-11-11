@@ -65,7 +65,7 @@ export interface ProviderWait {
     source?: 'result' | 'result_errors' | 'stderr';
 }
 export type TurnMode = 'sequential' | 'parallel';
-export type TurnEntry = {requestId: string; conversationId: string; participantId: string; name: string; state: 'waiting' | 'provider_wait' | 'answering' | 'stalled' | 'paused' | 'unavailable' | 'failed'; expiresAt: number | null; workingAt?: number; runtime?: string};
+export type TurnEntry = {requestId: string; conversationId: string; participantId: string; name: string; state: 'waiting' | 'provider_wait' | 'answering' | 'stalled' | 'paused' | 'unavailable' | 'failed'; expiresAt: number | null; stallAt?: number; workingAt?: number; runtime?: string};
 export type TurnQueue = {mode: TurnMode; entries: TurnEntry[]};
 export type TurnGrant = {state: 'granted' | 'waiting' | 'finished' | 'stalled'; token?: string; expiresAt?: number; request?: MessageRequest};
 export type TurnAction = {action: 'skip' | 'cancel'; requestId?: string | undefined; participantId?: string | undefined};

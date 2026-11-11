@@ -9,7 +9,7 @@ import type {DatabaseSync} from 'node:sqlite';
 import {ABSOLUTE_MAX_FILE_BYTES, MAX_ATTACHMENTS_PER_MESSAGE, formatFileSize} from '@pairlobby/protocol';
 import type {Attachment} from '@pairlobby/protocol';
 
-import {readOutgoingFile} from './files.js';
+import {outgoingFileInfo, uploadOutgoingFile} from './files.js';
 import type {FileContext} from './files.js';
 
 export type AnswerFiles = {attachments: Attachment[]; problems: string[]};
@@ -99,8 +99,8 @@ export async function uploadAnswerFiles(context: FileContext, paths: string[], w
     const problems: string[] = [];
     for (const path of paths) {
         try {
-            const file = readOutgoingFile(answerFilePath(path, workdir));
-            attachments.push(await context.client.uploadFile(context.roomId, context.credential, file.name, file.bytes, file.mediaType));
+            const file = outgoingFileInfo(answerFilePath(path, workdir));
+            attachments.push(await uploadOutgoingFile(context, file));
         } catch (error) {
             problems.push(`Could not attach ${basename(path)}: ${error instanceof Error ? error.message : String(error)}`);
         }

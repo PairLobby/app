@@ -1,421 +1,63 @@
-//! A `RoomStore` on `node:sqlite`. Every mutation lands inside one immediate
-//! transaction: the JavaScript event loop is not a substitute for SQL isolation
-//! once two requests interleave around an await.
-
-import {ProtocolError, mergeMessageRequest} from '@pairlobby/protocol';
 import * as sqlite from 'node:sqlite';
 import {DatabaseSync} from 'node:sqlite';
+import {SqliteStore} from '@pairlobby/sqlite';
+import type {SqlDatabase, SqlValue, SqliteStoreOptions} from '@pairlobby/sqlite';
 
-import type {DefaultVisibility, FileRecord, HandoverRecord, InviteRecord, ListingRecord, LocalRoom, MessageRequest, ParticipantRecord, RequestPage, RoomEvent, RoomRecord} from '@pairlobby/protocol';
-import type {Mutation, RoomView} from '@pairlobby/room-core';
-import {REQUEST_BACKFILL_SQL} from '@pairlobby/server-core';
-import type {DirectoryStore, EventPage, FileStore, IdempotencyRecord, RoomStore} from '@pairlobby/server-core';
-
-import {SCHEMA, SCHEMA_VERSION} from './schema.js';
-
-type IdempotencyKey = {key: string; requestDigest: string} | null;
-
-interface BodyRow {
-    body: string;
+function bind(value: SqlValue): sqlite.SQLInputValue {
+    return value instanceof ArrayBuffer ? new Uint8Array(value) : value;
 }
 
-/** Small enough for any SQLite-backed store, including ones that cap a single value. */
-const FILE_CHUNK_BYTES = 1024 * 1024;
-
-export class SqliteRoomStore implements RoomStore {
-    private readonly db: DatabaseSync;
-    readonly files: FileStore = {
-        putFile: async (file, bytes, limitBytes) => this.transaction(() => {
-            const held = this.db.prepare('SELECT coalesce(sum(size), 0) AS total FROM files WHERE room_id = ?').get(file.roomId) as {total: number};
-            if (Number(held.total) + file.size > limitBytes) {
-                return false;
-            }
-            this.db.prepare('INSERT INTO files (file_id, room_id, size, created_at, event_id, body) VALUES (?, ?, ?, ?, ?, ?)').run(file.fileId, file.roomId, file.size, file.createdAt, file.eventId, JSON.stringify(file));
-            const insert = this.db.prepare('INSERT INTO file_chunks (file_id, idx, bytes) VALUES (?, ?, ?)');
-            for (let offset = 0, index = 0; offset < bytes.byteLength; offset += FILE_CHUNK_BYTES, index++) {
-                insert.run(file.fileId, index, bytes.subarray(offset, offset + FILE_CHUNK_BYTES));
-            }
-            return true;
-        }),
-        file: async (roomId, fileId) => {
-            const row = this.db.prepare('SELECT body FROM files WHERE room_id = ? AND file_id = ?').get(roomId, fileId) as BodyRow | undefined;
-            return row ? (JSON.parse(row.body) as FileRecord) : null;
-        },
-        fileBytes: async (roomId, fileId) => {
-            const file = this.db.prepare('SELECT size FROM files WHERE room_id = ? AND file_id = ?').get(roomId, fileId) as {size: number} | undefined;
-            if (!file) {
-                return null;
-            }
-            const bytes = new Uint8Array(Number(file.size));
-            let offset = 0;
-            for (const chunk of this.db.prepare('SELECT bytes FROM file_chunks WHERE file_id = ? ORDER BY idx').all(fileId) as {bytes: Uint8Array}[]) {
-                bytes.set(chunk.bytes, offset);
-                offset += chunk.bytes.byteLength;
-            }
-            return offset === bytes.byteLength ? bytes : null;
-        },
-        attachedFiles: async (roomId) => (this.db.prepare('SELECT body FROM files WHERE room_id = ? AND event_id IS NOT NULL ORDER BY created_at, file_id').all(roomId) as unknown as BodyRow[]).map((row) => JSON.parse(row.body) as FileRecord),
-        usedBytes: async (roomId) => Number((this.db.prepare('SELECT coalesce(sum(size), 0) AS total FROM files WHERE room_id = ?').get(roomId) as {total: number}).total),
-        deleteUnattachedFiles: async (roomId, before) => this.transaction(() => {
-            this.db.prepare('DELETE FROM file_chunks WHERE file_id IN (SELECT file_id FROM files WHERE room_id = ? AND event_id IS NULL AND created_at < ?)').run(roomId, before);
-            this.db.prepare('DELETE FROM files WHERE room_id = ? AND event_id IS NULL AND created_at < ?').run(roomId, before);
-        }),
-    };
-
-    /** The agent directory, in the same database as the rooms its listings point into. */
-    readonly directory: DirectoryStore = {
-        putListing: async (listing) => {
-            this.db.prepare('INSERT INTO listings (listing_id, room_id, participant_id, owner, body) VALUES (?, ?, ?, ?, ?) ON CONFLICT (listing_id) DO UPDATE SET owner = excluded.owner, body = excluded.body').run(listing.listingId, listing.roomId, listing.participantId, listing.owner, JSON.stringify(listing));
-        },
-        listing: async (listingId) => {
-            const row = this.db.prepare('SELECT body FROM listings WHERE listing_id = ?').get(listingId) as BodyRow | undefined;
-            return row ? (JSON.parse(row.body) as ListingRecord) : null;
-        },
-        listingFor: async (roomId, participantId) => {
-            const row = this.db.prepare('SELECT body FROM listings WHERE room_id = ? AND participant_id = ?').get(roomId, participantId) as BodyRow | undefined;
-            return row ? (JSON.parse(row.body) as ListingRecord) : null;
-        },
-        deleteListing: async (listingId) => {
-            this.db.prepare('DELETE FROM listings WHERE listing_id = ?').run(listingId);
-        },
-        ownerListings: async (owner) => (this.db.prepare('SELECT body FROM listings WHERE owner = ? ORDER BY listing_id').all(owner) as unknown as BodyRow[]).map((row) => JSON.parse(row.body) as ListingRecord),
-        listings: async (after, limit) => (this.db.prepare('SELECT body FROM listings WHERE listing_id > ? ORDER BY listing_id LIMIT ?').all(after, limit) as unknown as BodyRow[]).map((row) => JSON.parse(row.body) as ListingRecord),
-        lastMessageAt: async (roomId, participantId) => {
-            const row = this.db.prepare("SELECT json_extract(body, '$.at') AS at FROM events WHERE room_id = ? AND json_extract(body, '$.senderId') = ? AND json_extract(body, '$.type') = 'message' ORDER BY seq DESC LIMIT 1").get(roomId, participantId) as {at: number} | undefined;
-            return row ? Number(row.at) : null;
-        },
-        memberDefault: async (handle) => {
-            const row = this.db.prepare('SELECT body FROM member_defaults WHERE handle = ?').get(handle) as BodyRow | undefined;
-            return row ? (JSON.parse(row.body) as DefaultVisibility) : null;
-        },
-        setMemberDefault: async (handle, visibility) => {
-            this.db.prepare('INSERT INTO member_defaults (handle, body) VALUES (?, ?) ON CONFLICT (handle) DO UPDATE SET body = excluded.body').run(handle, JSON.stringify(visibility));
-        },
-    };
-
-    constructor(location: string) {
-        this.db = new DatabaseSync(location);
-        this.db.exec('PRAGMA journal_mode = WAL');
-        this.db.exec('PRAGMA foreign_keys = ON');
-        this.db.exec('PRAGMA busy_timeout = 5000');
-        this.db.exec(SCHEMA);
-        if (!this.db.prepare("SELECT value FROM meta WHERE key='message_requests_v1'").get()) {
-            this.transaction(() => this.db.exec(REQUEST_BACKFILL_SQL));
+function driver(database: DatabaseSync): SqlDatabase {
+    return {
+        exec: (query) => database.exec(query),
+        prepare(query) {
+            const statement = database.prepare(query);
+            return {
+                run: (...values) => statement.run(...values.map(bind)),
+                get: (...values) => statement.get(...values.map(bind)),
+                all: (...values) => statement.all(...values.map(bind)),
+                iterate: (...values) => statement.iterate(...values.map(bind))
+            };
         }
-        this.db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING').run('schema_version', String(SCHEMA_VERSION));
+    };
+}
+
+/** The Node adapter owns its connection, transaction lifetime and online backup. SQL behavior is shared with Durable Objects. */
+export class SqliteRoomStore extends SqliteStore {
+    private readonly database: DatabaseSync;
+
+    constructor(location: string, options: SqliteStoreOptions = {}) {
+        const database = new DatabaseSync(location);
+        database.exec('PRAGMA journal_mode = WAL');
+        database.exec('PRAGMA foreign_keys = ON');
+        database.exec('PRAGMA busy_timeout = 5000');
+        super(driver(database), (action) => {
+            database.exec('BEGIN IMMEDIATE');
+            try {
+                const result = action();
+                database.exec('COMMIT');
+                return result;
+            } catch (error) {
+                database.exec('ROLLBACK');
+                throw error;
+            }
+        }, options);
+        this.database = database;
     }
 
     close(): void {
-        this.db.close();
+        this.database.close();
     }
 
-    /** Rows this store has changed since it opened, so a backup can tell nothing happened. */
     changeCount(): number {
-        return Number((this.db.prepare('SELECT total_changes() AS changes').get() as {changes: number}).changes);
+        return Number(this.database.prepare('SELECT total_changes() AS changes').get()!['changes']);
     }
 
-    /** A consistent copy at `destination`, taken a few pages at a time so requests keep being served. */
     async snapshot(destination: string): Promise<void> {
-        // `backup` arrived in Node 22.16; older 22s block for the whole copy instead.
         if (typeof sqlite.backup === 'function') {
-            await sqlite.backup(this.db, destination, {rate: 100});
+            await sqlite.backup(this.database, destination, {rate: 100});
             return;
         }
-        this.db.prepare('VACUUM INTO ?').run(destination);
-    }
-
-    private transaction<T>(run: () => T): T {
-        this.db.exec('BEGIN IMMEDIATE');
-        try {
-            const result = run();
-            this.db.exec('COMMIT');
-            return result;
-        } catch (error) {
-            this.db.exec('ROLLBACK');
-            throw error;
-        }
-    }
-
-    async createRoom(room: RoomRecord, participant: ParticipantRecord, event: RoomEvent): Promise<void> {
-        this.transaction(() => {
-            this.db.prepare('INSERT INTO rooms (room_id, earliest_seq, body) VALUES (?, 1, ?)').run(room.roomId, JSON.stringify(room));
-            this.writeParticipant(participant);
-            this.writeEvent(event);
-        });
-    }
-
-    async loadRoom(roomId: string): Promise<RoomView | null> {
-        const row = this.db.prepare('SELECT earliest_seq, body FROM rooms WHERE room_id = ?').get(roomId) as {earliest_seq: number; body: string} | undefined;
-        if (!row) {
-            return null;
-        }
-        return {
-            room: JSON.parse(row.body) as RoomRecord,
-            participants: this.rows('SELECT body FROM participants WHERE room_id = ? ORDER BY participant_id', roomId),
-            handovers: this.rows('SELECT body FROM handovers WHERE room_id = ? ORDER BY handover_id', roomId),
-            controls: this.rows('SELECT body FROM controls WHERE room_id = ? ORDER BY target_participant_id', roomId),
-            earliestSeq: row.earliest_seq
-        };
-    }
-
-    async apply(mutation: Mutation, idempotency: IdempotencyKey): Promise<void> {
-        this.transaction(() => {
-            if (mutation.expectedTurnRevision !== undefined) {
-                this.checkTurnRevision(mutation.room, mutation.expectedTurnRevision);
-            }
-            const current = this.db.prepare('SELECT body FROM rooms WHERE room_id=?').get(mutation.room.roomId) as BodyRow | undefined;
-            if (!current || JSON.parse(current.body).nextSeq !== mutation.appendEvent.seq) {
-                throw new ProtocolError(mutation.expectedTurnRevision === undefined ? 'server_unavailable' : 'turn_conflict', 'concurrent room mutation; retry with the same idempotency key');
-            }
-            this.db.prepare('UPDATE rooms SET body = ? WHERE room_id = ?').run(JSON.stringify(mutation.room), mutation.room.roomId);
-            for (const participant of mutation.upsertParticipants) this.writeParticipant(participant);
-            for (const handover of mutation.upsertHandovers) {
-                this.db
-                    .prepare('INSERT INTO handovers (handover_id, room_id, body) VALUES (?, ?, ?) ON CONFLICT (handover_id) DO UPDATE SET body = excluded.body')
-                    .run(handover.handoverId, handover.roomId, JSON.stringify(handover));
-            }
-            for (const control of mutation.upsertControls) {
-                this.db
-                    .prepare(
-                        'INSERT INTO controls (room_id, target_participant_id, body) VALUES (?, ?, ?) ON CONFLICT (room_id, target_participant_id) DO UPDATE SET body = excluded.body'
-                    )
-                    .run(control.roomId, control.targetParticipantId, JSON.stringify(control));
-            }
-            for (const request of mutation.upsertRequests ?? []) this.writeRequest(request);
-            for (const fileId of mutation.attachFiles ?? []) {
-                const row = this.db.prepare('SELECT body FROM files WHERE room_id = ? AND file_id = ? AND event_id IS NULL').get(mutation.room.roomId, fileId) as BodyRow | undefined;
-                if (!row) {
-                    throw new ProtocolError('invalid_request', 'an attached file is no longer available; upload it again');
-                }
-                const file: FileRecord = {...(JSON.parse(row.body) as FileRecord), eventId: mutation.appendEvent.eventId};
-                this.db.prepare('UPDATE files SET event_id = ?, body = ? WHERE file_id = ?').run(file.eventId, JSON.stringify(file), fileId);
-            }
-            this.writeEvent(mutation.appendEvent);
-            if (idempotency) {
-                this.db
-                    .prepare('INSERT INTO idempotency (room_id, key, request_digest, seq) VALUES (?, ?, ?, ?)')
-                    .run(mutation.room.roomId, idempotency.key, idempotency.requestDigest, mutation.appendEvent.seq);
-            }
-        });
-    }
-
-    async readEvents(roomId: string, after: number, limit: number): Promise<EventPage> {
-        const rows = this.db.prepare('SELECT body FROM events WHERE room_id = ? AND seq > ? ORDER BY seq LIMIT ?').all(roomId, after, limit + 1) as unknown as BodyRow[];
-        const events = rows.slice(0, limit).map((row) => JSON.parse(row.body) as RoomEvent);
-        return {events, hasMore: rows.length > limit};
-    }
-
-    async eventBySeq(roomId: string, seq: number): Promise<RoomEvent | null> {
-        const row = this.db.prepare('SELECT body FROM events WHERE room_id = ? AND seq = ?').get(roomId, seq) as BodyRow | undefined;
-        return row ? (JSON.parse(row.body) as RoomEvent) : null;
-    }
-
-    async eventById(roomId: string, eventId: string): Promise<RoomEvent | null> {
-        const row = this.db.prepare("SELECT body FROM events WHERE room_id = ? AND json_extract(body, '$.eventId') = ?").get(roomId, eventId) as BodyRow | undefined;
-        return row ? (JSON.parse(row.body) as RoomEvent) : null;
-    }
-
-    async idempotencyRecord(roomId: string, key: string): Promise<IdempotencyRecord | null> {
-        const row = this.db.prepare('SELECT request_digest, seq FROM idempotency WHERE room_id = ? AND key = ?').get(roomId, key) as
-            | {request_digest: string; seq: number}
-            | undefined;
-        return row ? {requestDigest: row.request_digest, seq: row.seq} : null;
-    }
-
-    async putInvite(invite: InviteRecord): Promise<void> {
-        this.db
-            .prepare('INSERT INTO invites (digest, room_id, state, bound_attempt_id, body) VALUES (?, ?, ?, ?, ?)')
-            .run(invite.digest, invite.roomId, invite.state, invite.boundAttemptId, JSON.stringify(invite));
-    }
-
-    async inviteByDigest(digest: string): Promise<InviteRecord | null> {
-        const row = this.db.prepare('SELECT body FROM invites WHERE digest = ?').get(digest) as BodyRow | undefined;
-        return row ? (JSON.parse(row.body) as InviteRecord) : null;
-    }
-
-    /** Open, unexpired rooms that can be joined by name, public or protected: those named `name`, ignoring case, or without a name the newest 50. */
-    localJoinRooms(name?: string, now = Date.now()): LocalRoom[] {
-        const open = "SELECT room_id, body FROM rooms WHERE (json_extract(body, '$.policy.localJoin') = 1 OR json_extract(body, '$.policy.type') = 'protected') AND json_extract(body, '$.lifecycle') = 'open'";
-        const rows = (name === undefined
-            ? this.db.prepare(`${open} ORDER BY json_extract(body, '$.createdAt') DESC LIMIT 50`).all()
-            : this.db.prepare(`${open} AND lower(json_extract(body, '$.name')) = lower(?)`).all(name)) as {room_id: string; body: string}[];
-        const count = this.db.prepare("SELECT count(*) AS active FROM participants WHERE room_id = ? AND json_extract(body, '$.revokedAt') IS NULL AND json_extract(body, '$.leftAt') IS NULL");
-        return rows.map((row) => JSON.parse(row.body) as RoomRecord).filter((room) => room.expiresAt === null || room.expiresAt > now).map((room) => ({roomId: room.roomId, name: room.name, createdAt: room.createdAt, participantCount: Number((count.get(room.roomId) as {active: number}).active), type: room.policy.localJoin ? 'public' as const : 'protected' as const}));
-    }
-
-    /** Whether any invite digest starts with this lowercase hex prefix; a range over the primary key, not a scan. */
-    hasInviteDigestPrefix(prefix: string): boolean {
-        return this.db.prepare('SELECT 1 FROM invites WHERE digest >= ? AND digest < ? LIMIT 1').get(prefix, `${prefix}g`) !== undefined;
-    }
-
-    /**
-     * The conditional UPDATE is the whole point: a second attempt matches no row
-     * and gets null, rather than racing the first into membership creation.
-     */
-    async reserveInvite(digest: string, attemptId: string, credentialHash: string, expectedOccupantId: string | null): Promise<InviteRecord | null> {
-        return this.transaction(() => {
-            const row = this.db.prepare('SELECT body FROM invites WHERE digest = ?').get(digest) as BodyRow | undefined;
-            if (!row) {
-                return null;
-            }
-            const invite = JSON.parse(row.body) as InviteRecord;
-            if (invite.boundAttemptId === attemptId) {
-                return invite;
-            }
-            if (invite.state === 'reserved') {
-                return null;
-            }
-            if (invite.state === 'redeemed') {
-                if (!invite.reusable) {
-                    return null;
-                }
-                if (invite.redeemedParticipantId !== expectedOccupantId) {
-                    return null;
-                }
-            } else if (expectedOccupantId !== null) {
-                return null;
-            }
-            const reserved: InviteRecord = {...invite, state: 'reserved', boundAttemptId: attemptId, boundCredentialHash: credentialHash};
-            // The WHERE clause repeats the precondition so a concurrent writer that
-            // slipped in between the read and this update loses rather than overwrites.
-            const previous = invite.state === 'redeemed' ? invite.redeemedParticipantId : null;
-            const result =
-                previous === null ? this.db .prepare("UPDATE invites SET state = 'reserved', bound_attempt_id = ?, body = ? WHERE digest = ? AND state = 'unused'") .run(attemptId, JSON.stringify(reserved), digest) : this.db .prepare( "UPDATE invites SET state = 'reserved', bound_attempt_id = ?, body = ? WHERE digest = ? AND state = 'redeemed' AND json_extract(body, '$.redeemedParticipantId') = ?" ) .run(attemptId, JSON.stringify(reserved), digest, previous);
-            return result.changes === 1 ? reserved : null;
-        });
-    }
-
-    async completeInvite(digest: string, participantId: string): Promise<void> {
-        this.transaction(() => {
-            const row = this.db.prepare('SELECT body FROM invites WHERE digest = ?').get(digest) as BodyRow | undefined;
-            if (!row) {
-                return;
-            }
-            const invite = {...(JSON.parse(row.body) as InviteRecord), state: 'redeemed' as const, redeemedParticipantId: participantId};
-            this.db.prepare("UPDATE invites SET state = 'redeemed', body = ? WHERE digest = ?").run(JSON.stringify(invite), digest);
-        });
-    }
-
-    async participantByCredential(roomId: string, credentialHash: string): Promise<ParticipantRecord | null> {
-        const row = this.db.prepare('SELECT body FROM participants WHERE room_id = ? AND credential_hash = ?').get(roomId, credentialHash) as BodyRow | undefined;
-        return row ? (JSON.parse(row.body) as ParticipantRecord) : null;
-    }
-
-    async handovers(roomId: string): Promise<HandoverRecord[]> {
-        return this.rows('SELECT body FROM handovers WHERE room_id = ? ORDER BY handover_id', roomId);
-    }
-
-    async messageRequest(roomId: string, eventId: string): Promise<MessageRequest | null> {
-        const row = this.db.prepare('SELECT body FROM message_requests WHERE room_id=? AND event_id=?').get(roomId, eventId) as BodyRow | undefined;
-        return row ? (JSON.parse(row.body) as MessageRequest) : null;
-    }
-    async groupRequests(roomId: string, conversationId: string): Promise<MessageRequest[]> {
-        const rows = this.db.prepare("SELECT body FROM message_requests WHERE room_id=? AND json_extract(body,'$.conversationId')=? ORDER BY seq").all(roomId, conversationId) as unknown as BodyRow[];
-        return rows.map((row) => JSON.parse(row.body) as MessageRequest);
-    }
-
-    private checkTurnRevision(room: RoomRecord, expected: number): void {
-        const row = this.db.prepare('SELECT body FROM rooms WHERE room_id=?').get(room.roomId) as BodyRow | undefined;
-        if (!row || (JSON.parse(row.body).turnRevision ?? 0) !== expected) {
-            throw new ProtocolError('turn_conflict', 'the room turn changed; retry');
-        }
-    }
-
-    async updateTurns(room: RoomRecord, requests: MessageRequest[], expectedRevision: number): Promise<void> {
-        this.transaction(() => {
-            this.checkTurnRevision(room, expectedRevision);
-            const current = this.db.prepare('SELECT body FROM rooms WHERE room_id=?').get(room.roomId) as BodyRow | undefined;
-            if (!current || JSON.parse(current.body).nextSeq !== room.nextSeq) {
-                throw new ProtocolError('turn_conflict', 'the room changed while renewing the turn');
-            }
-            this.db.prepare('UPDATE rooms SET body=? WHERE room_id=?').run(JSON.stringify(room), room.roomId);
-            for (const request of requests) {
-                this.writeRequest(request);
-            }
-        });
-    }
-
-    async messageRequests(roomId: string, after: number, limit: number, recipientId?: string): Promise<RequestPage> {
-        const rows = this.db
-            .prepare(
-                "SELECT body FROM message_requests WHERE room_id=? AND seq>? AND requires_reply=1 AND response_event_id IS NULL AND (? IS NULL OR json_extract(body,'$.to')=?) ORDER BY seq LIMIT ?"
-            )
-            .all(roomId, after, recipientId ?? null, recipientId ?? null, limit + 1) as unknown as BodyRow[];
-        return {requests: rows.slice(0, limit).map((row) => JSON.parse(row.body) as MessageRequest), hasMore: rows.length > limit};
-    }
-    async unreceivedRequests(roomId: string, recipientId: string, after: number, limit: number): Promise<RequestPage> {
-        const rows = this.db
-            .prepare("SELECT body FROM message_requests WHERE room_id=? AND seq>? AND received_at IS NULL AND json_extract(body,'$.to')=? ORDER BY seq LIMIT ?")
-            .all(roomId, after, recipientId, limit + 1) as unknown as BodyRow[];
-        return {requests: rows.slice(0, limit).map((row) => JSON.parse(row.body) as MessageRequest), hasMore: rows.length > limit};
-    }
-
-    private writeRequest(request: MessageRequest): void {
-        // Keep concurrent receipt/progress writes from erasing an accepted reply.
-        const old = this.db.prepare('SELECT body FROM message_requests WHERE event_id=?').get(request.eventId) as BodyRow | undefined;
-        const previous = old ? (JSON.parse(old.body) as MessageRequest) : null;
-        const merged = mergeMessageRequest(previous, request);
-        this.db
-            .prepare(
-                'INSERT INTO message_requests(event_id,room_id,seq,received_at,response_event_id,requires_reply,body) VALUES(?,?,?,?,?,?,?) ON CONFLICT(event_id) DO UPDATE SET received_at=excluded.received_at,response_event_id=excluded.response_event_id,requires_reply=excluded.requires_reply,body=excluded.body'
-            )
-            .run(merged.eventId, merged.roomId, merged.seq, merged.receivedAt, merged.responseEventId, merged.requiresReply ? 1 : 0, JSON.stringify(merged));
-    }
-
-    async setLifecycle(roomId: string, lifecycle: RoomRecord['lifecycle']): Promise<void> {
-        this.transaction(() => {
-            const row = this.db.prepare('SELECT body FROM rooms WHERE room_id = ?').get(roomId) as BodyRow | undefined;
-            if (!row) {
-                return;
-            }
-            const room = {...(JSON.parse(row.body) as RoomRecord), lifecycle};
-            this.db.prepare('UPDATE rooms SET body = ? WHERE room_id = ?').run(JSON.stringify(room), roomId);
-        });
-    }
-
-    /** Physical cleanup. Access was already denied by the lifecycle change. */
-    async deleteRoom(roomId: string): Promise<void> {
-        this.transaction(() => {
-            this.db.prepare('DELETE FROM file_chunks WHERE file_id IN (SELECT file_id FROM files WHERE room_id = ?)').run(roomId);
-            for (const table of ['files', 'message_requests', 'events', 'idempotency', 'handovers', 'controls', 'invites', 'participants', 'listings']) {
-                this.db.prepare(`DELETE FROM ${table} WHERE room_id = ?`).run(roomId);
-            }
-        });
-    }
-
-    async dueAutoCloses(now: number, limit: number): Promise<string[]> {
-        const rows = this.db
-            .prepare("SELECT room_id FROM rooms WHERE json_extract(body, '$.lifecycle') = 'open' AND json_extract(body, '$.autoCloseAt') IS NOT NULL AND json_extract(body, '$.autoCloseAt') <= ? ORDER BY json_extract(body, '$.autoCloseAt') LIMIT ?")
-            .all(now, limit) as {room_id: string}[];
-        return rows.map((row) => row.room_id);
-    }
-
-    async nextAutoCloseAt(): Promise<number | null> {
-        const row = this.db.prepare("SELECT min(json_extract(body, '$.autoCloseAt')) AS at FROM rooms WHERE json_extract(body, '$.lifecycle') = 'open' AND json_extract(body, '$.autoCloseAt') IS NOT NULL").get() as {at: number | null};
-        return row.at;
-    }
-
-    /** Simulates retention dropping the front of the log without touching room state. */
-    dropHistoryBefore(roomId: string, seq: number): void {
-        this.transaction(() => {
-            this.db.prepare('DELETE FROM events WHERE room_id = ? AND seq < ?').run(roomId, seq);
-            this.db.prepare('UPDATE rooms SET earliest_seq = ? WHERE room_id = ?').run(seq, roomId);
-        });
-    }
-
-    private writeParticipant(participant: ParticipantRecord): void {
-        this.db
-            .prepare(
-                'INSERT INTO participants (participant_id, room_id, credential_hash, body) VALUES (?, ?, ?, ?) ON CONFLICT (participant_id) DO UPDATE SET body = excluded.body'
-            )
-            .run(participant.participantId, participant.roomId, participant.credentialHash, JSON.stringify(participant));
-    }
-
-    private writeEvent(event: RoomEvent): void {
-        this.db.prepare('INSERT INTO events (room_id, seq, body) VALUES (?, ?, ?)').run(event.roomId, event.seq, JSON.stringify(event));
-    }
-
-    private rows<T>(sql: string, roomId: string): T[] {
-        return (this.db.prepare(sql).all(roomId) as unknown as BodyRow[]).map((row) => JSON.parse(row.body) as T);
+        this.database.prepare('VACUUM INTO ?').run(destination);
     }
 }

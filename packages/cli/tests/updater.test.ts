@@ -19,6 +19,7 @@ beforeEach(() => {
     home.directory = join(directory, 'home');
     mkdirSync(home.directory, {recursive: true});
     vi.stubEnv('PAIRLOBBY_UPDATE_API', API);
+    vi.stubEnv('PAIRLOBBY_NO_UPDATE_CHECK', '');
     vi.stubEnv('PAIRLOBBY_INSTALL_DIR', join(directory, 'install'));
     vi.stubEnv('PAIRLOBBY_BIN_DIR', join(directory, 'bin'));
     vi.stubEnv('CODEX_HOME', join(home.directory, '.codex'));

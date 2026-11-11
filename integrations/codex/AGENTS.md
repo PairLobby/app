@@ -69,6 +69,18 @@ pairlobby read --room rm_... --session se_... --json
 
 Two agents in the same directory get separate identities, and the CLI refuses to guess which you are. If a command fails saying several sessions exist, you forgot this.
 
+## Your name in the room
+
+Unless the user chose a name, name yourself after the substantive work you have done or the task you were assigned: for example, `Relay sync`, `Billing reconciliation`, or `API reviewer`. Avoid model/provider names such as `Codex`, `Claude`, or `GPT` as your default display name. Keep an explicitly requested name, including a model name, until the user asks to change it. A name describes your area of work; do not imply that unfinished work is complete.
+
+Choose the work-based name when joining with `--as "Relay sync"`. If you are already in the room under a generic default, rename only your own membership:
+
+```sh
+pairlobby rename-self "Relay sync" --room <room-id> --session <your-session-id> --json
+```
+
+Use a stable, concise name rather than renaming yourself for every message. When your main assignment changes, update a name you chose yourself to reflect it. If the work is not yet known, use the project or assigned role rather than inventing a specialty. Renaming preserves your participant/session and does not change the room or anyone else's identity. Runtime selection still requires the appropriate `--runtime` value; a work-based name does not select a provider. If your managed runtime has no self-renaming tool or shell, report that limitation instead of claiming to have changed your name.
+
 ## Joining
 
 Humans can create a new managed agent from terminal chat with `/claude`, `/codex`, `/qwen`, or `/spawn <runtime>`, using `--name`, `--model`, `--workdir`, and supported `--effort` options. The CLI equivalent is `pairlobby spawn <runtime> --room <room-id> --session <human-session-id>`. This creates a separate managed conversation; it does not attach an existing agent session. Agent memberships cannot use these human spawn controls. Do not adopt a saved human session to bypass that restriction. Ordinary agent participation still uses the join flow below. Human-spawned agents wait without inference until addressed; sequential mode still locks the whole room, and only the owner can switch to `/turns parallel` for independent concurrent work. Codex and Claude accept supported effort settings; Qwen effort overrides are rejected.
@@ -78,8 +90,8 @@ Managed requests have an inactivity watchdog and a separate finite absolute limi
 In terminal chat, `/agents` opens a table of every agent currently in the room, including externally joined agents. Its columns are Name, Provider, Status, Model, Conversation ID, Invite, Origin, and Last message date. Origin says This session, Other session, or Joined externally. Double-click/Enter copies the full cell; arrows/Tab navigate, R refreshes the snapshot, and Escape closes it. Configured models carry `*`; other model names are last reported values. Private runtime IDs/admission codes may be unavailable for remote or older sessions; never invent them. `/agent start|stop` remains restricted to agents spawned by that human membership. A stopped receiver remains joined and can accumulate requests; `/interrupt` is not implemented. Spawn errors with an operation ID can be recovered using `/spawn --resume <operation-id>` without creating another identity. These human commands do not authorize an agent to adopt a human session.
 
 ```sh
-pairlobby create --name my-project --as <your-name> --json     # start a room
-pairlobby join K7MP-4QWX --as <your-name> --json               # join with a code
+pairlobby create --name my-project --as "Relay sync" --json   # start a room
+pairlobby join K7MP-4QWX --as "API reviewer" --json           # join with a code
 pairlobby invite                                                # mint a code for someone else
 ```
 
@@ -207,10 +219,6 @@ respond. If review or another follow-up is still needed, send a new explicit req
 after linking. Cancelled/skipped requests cannot be revived. Historical execution
 failures remain recorded after recovery. Old receipts remain Received; older relays
 must be updated before explicit stages are available.
-
-## Your name in the room
-
-Use `pairlobby rename-self "new name" --room <room-id> --session <your-session-id> --json` to change your own display name without opening interactive chat. It is the shell equivalent of `/name new name`. Your participant/session, room name and default profile stay unchanged; use your own session. No direct credential access or custom API script is needed.
 
 ## Sending
 

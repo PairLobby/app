@@ -7,7 +7,7 @@ import {LOGO_FRAME_MS, clearWorkingGraphics, drawWorkingGraphics, graphicsMode, 
 import type {LogoPlacement} from './working-graphics.js';
 import {fitPopup} from './terminal-layout.js';
 
-type WorkingStripOptions = {screen: blessed.Widgets.Screen; render: () => void; rebuild: () => void; obscured: () => boolean; beforeOpen: (pinned: boolean) => boolean};
+type WorkingStripOptions = {screen: blessed.Widgets.Screen; render: () => void; rebuild: () => void; obscured: () => boolean; beforeOpen: (pinned: boolean) => boolean; nameFor?: (participantId: string, fallback: string) => string};
 type Badge = {group: WorkingGroup; box: blessed.Widgets.BoxElement; icon: blessed.Widgets.BoxElement; label: blessed.Widgets.BoxElement; compact: boolean};
 type CursorProgram = blessed.BlessedProgram & {cursorHidden?: boolean};
 
@@ -217,8 +217,8 @@ export class WorkingStrip {
                 people.set(entry.participantId, [...(people.get(entry.participantId) ?? []), entry]);
             }
             const lines = [...people].map(([id, requests]) => {
-                const name = requests[0]!.name;
-                const duplicate = entries.some((entry) => entry.participantId !== id && entry.name === name);
+                const name = this.options.nameFor?.(id, requests[0]!.name) ?? requests[0]!.name;
+                const duplicate = entries.some((entry) => entry.participantId !== id && (this.options.nameFor?.(entry.participantId, entry.name) ?? entry.name) === name);
                 const deferred = requests.every((entry) => entry.state === 'provider_wait');
                 const seconds = deferred ? null : Math.max(0, Math.floor((Date.now() - Math.min(...requests.flatMap((entry) => entry.workingAt === undefined ? [] : [entry.workingAt]))) / 1000));
                 return `${stripVTControlCharacters(name)}${duplicate ? ` (${id.slice(-6)})` : ''} — ${deferred ? 'Deferred · provider usage limit' : `${seconds}s`}${requests.length > 1 ? ` · ${requests.length} requests` : ''}`;

@@ -17,6 +17,9 @@ export interface EventPage {
     hasMore: boolean;
 }
 
+export type RoomHead = {room: RoomRecord; earliestSeq: number};
+export type RoomLoadOptions = {handovers?: boolean};
+
 /**
  * Where a relay keeps attached files. Optional: a store without one makes a relay
  * that refuses attachments and says so in its snapshot.
@@ -26,7 +29,13 @@ export interface FileStore {
      * Stores a new upload, record and bytes together. Returns false, storing nothing,
      * when the room would then hold more than `limitBytes` across all its files.
      */
-    putFile(file: FileRecord, bytes: Uint8Array, limitBytes: number): Promise<boolean>;
+    putFile(file: FileRecord, bytes: Uint8Array, limitBytes: number, expectedStateRevision?: number): Promise<boolean>;
+    /** Reserve quota before streaming. Staged bytes are invisible until completeUpload commits their verified metadata. */
+    createUpload?(file: FileRecord, limitBytes: number, expectedStateRevision: number): Promise<boolean>;
+    writeChunk?(roomId: string, fileId: string, index: number, bytes: Uint8Array): Promise<void>;
+    completeUpload?(file: FileRecord, expectedStateRevision: number): Promise<void>;
+    cancelUpload?(roomId: string, fileId: string): Promise<void>;
+    fileStream?(roomId: string, fileId: string): Promise<ReadableStream<Uint8Array> | null>;
     file(roomId: string, fileId: string): Promise<FileRecord | null>;
     fileBytes(roomId: string, fileId: string): Promise<Uint8Array | null>;
     /** Files a message carries, oldest first. Uploads nobody sent are not listed. */
@@ -44,20 +53,24 @@ export interface RoomStore {
     /** Creates the room, its first participant, and the joined event in one transaction. */
     createRoom(room: RoomRecord, participant: ParticipantRecord, event: RoomEvent): Promise<void>;
 
-    loadRoom(roomId: string): Promise<RoomView | null>;
+    /** A consistent state view; omit handover documents when the operation only needs authorization and membership. */
+    loadRoom(roomId: string, options?: RoomLoadOptions): Promise<RoomView | null>;
+    roomHead(roomId: string): Promise<RoomHead | null>;
 
     /**
-     * Applies every part of a mutation together with its idempotency record.
-     * A partial application is a correctness bug, not a degraded mode.
+     * Applies every part of a mutation together with its idempotency record. The proposed room's
+     * stateRevision is the revision read by the decision: compare it atomically, then increment it.
+     * Conflict means nothing committed. A partial application is a correctness bug, not a degraded mode.
      */
     apply(mutation: Mutation, idempotency: IdempotencyKey): Promise<void>;
 
-    readEvents(roomId: string, after: number, limit: number): Promise<EventPage>;
+    /** Both count and encoded-byte bounded; through binds replay to a captured transcript head. */
+    readEvents(roomId: string, after: number, limit: number, through?: number): Promise<EventPage>;
     eventBySeq(roomId: string, seq: number): Promise<RoomEvent | null>;
     eventById(roomId: string, eventId: string): Promise<RoomEvent | null>;
     idempotencyRecord(roomId: string, key: string): Promise<IdempotencyRecord | null>;
 
-    putInvite(invite: InviteRecord): Promise<void>;
+    putInvite(invite: InviteRecord, expectedStateRevision?: number): Promise<void>;
     inviteByDigest(digest: string): Promise<InviteRecord | null>;
 
     /**
@@ -71,34 +84,36 @@ export interface RoomStore {
      *
      * Returns the bound invite, or null when another attempt already holds it.
      */
-    reserveInvite(digest: string, attemptId: string, credentialHash: string, expectedOccupantId: string | null): Promise<InviteRecord | null>;
+    reserveInvite(digest: string, attemptId: string, credentialHash: string, expectedOccupantId: string | null, expectedStateRevision?: number): Promise<InviteRecord | null>;
 
     /** Marks a reserved invite consumed and records which participant it produced. */
-    completeInvite(digest: string, participantId: string): Promise<void>;
+    completeInvite(digest: string, participantId: string, attemptId?: string): Promise<void>;
 
     participantByCredential(roomId: string, credentialHash: string): Promise<ParticipantRecord | null>;
     handovers(roomId: string): Promise<HandoverRecord[]>;
     messageRequest(roomId: string, eventId: string): Promise<MessageRequest | null>;
     groupRequests(roomId: string, conversationId: string): Promise<MessageRequest[]>;
     /**
-     * Writes the room and requests without appending a transcript event, comparing the turn revision
-     * atomically: renewing a lease, or moving a receipt watermark.
+     * Writes the room and requests without appending a transcript event, comparing both state and turn
+     * revisions atomically. Watermark advances also persist their first-received timestamp ranges;
+     * every request read must project Received from those ranges, even for completed replies.
      */
     updateTurns(room: RoomRecord, requests: MessageRequest[], expectedRevision: number): Promise<void>;
     messageRequests(roomId: string, after: number, limit: number, recipientId?: string): Promise<RequestPage>;
+    pendingRequestCount(roomId: string): Promise<number>;
     /**
      * Requests addressed to `recipientId` that nobody has marked received yet, answered or not, in
      * `seq` order after `after`. Optional: without it a watermark marks only the requests still awaiting a reply.
      */
     readonly unreceivedRequests?: ((roomId: string, recipientId: string, after: number, limit: number) => Promise<RequestPage>) | undefined;
 
-    setLifecycle(roomId: string, lifecycle: RoomRecord['lifecycle']): Promise<void>;
+    setLifecycle(roomId: string, lifecycle: RoomRecord['lifecycle'], expectedStateRevision?: number): Promise<void>;
     deleteRoom(roomId: string): Promise<void>;
 
     /** Open rooms whose stored auto-close deadline is at or before `now`, earliest first; an index, not a transcript scan. */
     dueAutoCloses(now: number, limit: number): Promise<string[]>;
     /** The earliest stored auto-close deadline among open rooms, or null. */
-    nextAutoCloseAt(): Promise<number | null>;
+    nextAutoCloseAt(now?: number): Promise<number | null>;
 }
 
 /**
@@ -114,7 +129,7 @@ export interface DirectoryStore {
     /** Listings in `listingId` order after `after`, for the sweep. */
     listings(after: string, limit: number): Promise<ListingRecord[]>;
     /** One member's listings, for the directory read that names them. */
-    ownerListings(owner: string): Promise<ListingRecord[]>;
+    ownerListings(owner: string, after?: string, limit?: number): Promise<ListingRecord[]>;
     /** When this participant last sent a message in the room, or null; an index, not a transcript scan. */
     lastMessageAt(roomId: string, participantId: string): Promise<number | null>;
     /** A member's default visibility for their rooms, or null before they set one, which means everyone. */

@@ -18,6 +18,8 @@ export const MAX_ATTACHMENTS_PER_MESSAGE = 8;
 /** An upload that no message carried is removed after this long. */
 export const UNATTACHED_FILE_LIFETIME_MS = 60 * 60_000;
 export const MAX_FILE_NAME_LENGTH = 255;
+export const FILE_SIZE_HEADER = 'pairlobby-file-size';
+export const FILE_CHUNK_BYTES = 1024 * 1024;
 
 /** What a message says about a file. The relay fills every field from its own record; a client's claims are ignored. */
 export const Attachment = z.object({

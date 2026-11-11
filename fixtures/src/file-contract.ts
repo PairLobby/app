@@ -66,6 +66,42 @@ export function runFileContract(label: string, makeStore: StoreFactory) {
             expect(fetched.file.sha256).toBe(file.sha256);
         });
 
+        test('staged streams reserve quota, stay invisible, and finalize only after fresh authorization', async () => {
+            let release: () => void = () => {};
+            let started: () => void = () => {};
+            const waiting = new Promise<void>((resolve) => { started = resolve; });
+            const finish = new Promise<void>((resolve) => { release = resolve; });
+            const body = new ReadableStream<Uint8Array>({
+                async pull(sink) {
+                    started();
+                    await finish;
+                    sink.enqueue(new Uint8Array([1, 2, 3]));
+                    sink.close();
+                }
+            }, {highWaterMark: 0});
+            const outcome = service.uploadFileStream(roomId, bob, {name: 'partial.bin', mediaType: '', size: 3, body}).then(() => null, (error: unknown) => error);
+            await waiting;
+            expect(await store.files!.usedBytes(roomId)).toBe(3);
+            expect((await service.listFiles(roomId, alice)).files).toEqual([]);
+            const participant = (await service.snapshot(roomId, bob)).participants.find((entry) => entry.displayName === 'bob')!;
+            await service.setMuted(roomId, controller, participant.participantId, true);
+            release();
+            expect(await outcome).toMatchObject({code: 'participant_muted'});
+            expect(await store.files!.usedBytes(roomId)).toBe(0);
+        });
+
+        test('short and oversized streams release their reservations and store no completed file', async () => {
+            for (const length of [2, 4]) {
+                const body = new ReadableStream<Uint8Array>({start(sink) { sink.enqueue(new Uint8Array(length)); sink.close(); }});
+                await expect(service.uploadFileStream(roomId, alice, {name: 'wrong.bin', mediaType: '', size: 3, body})).rejects.toThrow('declared byte length');
+                expect(await store.files!.usedBytes(roomId)).toBe(0);
+            }
+            const bytes = binary(2 * 1024 * 1024 + 7);
+            const file = await service.uploadFileStream(roomId, alice, {name: 'complete.bin', mediaType: '', size: bytes.byteLength, body: new Response(bytes as Uint8Array<ArrayBuffer>).body!});
+            const result = await service.downloadFile(roomId, alice, file.fileId);
+            expect(result.bytes.findIndex((byte, index) => byte !== bytes[index])).toBe(-1);
+        });
+
         test('usage counts sent and pending files against the room limit, and a refused upload stores nothing', async () => {
             await create({...DEFAULT_ROOM_POLICY, maxRetainedFileBytes: 10});
             await sendWith([await upload('a.bin', binary(6))]);

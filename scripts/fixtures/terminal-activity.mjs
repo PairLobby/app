@@ -47,6 +47,11 @@ view.input.on('line', (line) => {
         readAll();
     } else if (line === '/busy' || line === '/waiting') {
         queue = {mode: 'sequential', entries: [{requestId: 'request', conversationId: latest.eventId, participantId: 'codex', name: 'codex', runtime: 'codex', state: line === '/busy' ? 'answering' : 'waiting', expiresAt: Date.now() + 90000, ...(line === '/busy' ? {workingAt: Date.now()} : {})}]};
+    } else if (line === '/mixed') {
+        names.set('codex', 'Relay sync');
+        names.set('claude', 'API reviewer');
+        participants = ['codex', 'claude'].map(person);
+        queue = {mode: 'sequential', entries: [{requestId: 'request', conversationId: latest.eventId, participantId: 'codex', name: 'old codex name', runtime: 'codex', state: 'answering', expiresAt: Date.now() + 90000, workingAt: Date.now()}, {requestId: 'preparing', conversationId: latest.eventId, participantId: 'claude', name: 'old claude name', runtime: 'claude', state: 'answering', expiresAt: Date.now() + 90000}]};
     } else if (line === '/done') {
         queue = {mode: 'sequential', entries: []};
     } else if (line === '/many') {
@@ -57,6 +62,8 @@ view.input.on('line', (line) => {
         }
         post('MANY readers');
         readAll();
+    } else if (!line.startsWith('/')) {
+        view.log(`SUBMITTED ${JSON.stringify(line)}`);
     }
     sync(line !== '/unknown');
 });

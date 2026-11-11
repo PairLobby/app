@@ -1,8 +1,9 @@
 //! The blessed program shared by every full-screen view, with the terminal it should assume.
 
 import blessed from 'blessed';
+import type {Duplex} from 'node:stream';
 
-type TerminalProgramOptions = {extended: boolean; debug: boolean; terminal?: string};
+type TerminalProgramOptions = {extended: boolean; debug: boolean; terminal?: string; input?: Duplex};
 export type WideCharacters = {[Symbol.replace]: (text: string, replacement: string) => string};
 export type BlessedUnicode = {charWidth: (text: string | number, index?: number) => number; chars: {all: RegExp | WideCharacters}; emojiAware?: true};
 
@@ -40,11 +41,14 @@ export function terminalName(platform: string, term: string | undefined): string
     return platform === 'win32' && !term ? 'xterm-256color' : undefined;
 }
 
-export function createTerminalProgram(): blessed.BlessedProgram {
+export function createTerminalProgram(input?: Duplex): blessed.BlessedProgram {
     teachEmojiWidth();
     // Blessed's legacy compiler cannot parse some modern extended capabilities
     // (e.g. Setulc). Standard terminfo supplies all capabilities used by this UI.
     const options: TerminalProgramOptions = {extended: false, debug: false};
+    if (input) {
+        options.input = input;
+    }
     const terminal = terminalName(process.platform, process.env.TERM);
     if (terminal) {
         options.terminal = terminal;

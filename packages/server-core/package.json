@@ -1,6 +1,6 @@
 {
   "name": "@pairlobby/server-core",
-  "version": "0.32.0",
+  "version": "0.33.0",
   "license": "Elastic-2.0",
   "private": true,
   "type": "module",
@@ -13,6 +13,7 @@
     }
   },
   "dependencies": {
+    "@noble/hashes": "2.4.0",
     "@pairlobby/protocol": "*",
     "@pairlobby/room-core": "*"
   }

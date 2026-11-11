@@ -103,7 +103,7 @@ export type ListingResponse = z.infer<typeof ListingResponse>;
  * `GET /v1/directory[?owner=]`: the listings the caller may see. With `owner`, `knownHandle`
  * says whether anyone on the relay has that handle, so "no such person" differs from "nothing shared".
  */
-export const DirectoryResponse = z.object({listings: z.array(ListingView), knownHandle: z.boolean().optional()});
+export const DirectoryResponse = z.object({listings: z.array(ListingView), knownHandle: z.boolean().optional(), next: ListingId.nullable().optional()});
 export type DirectoryResponse = z.infer<typeof DirectoryResponse>;
 
 /** How long the code a contact gets stays usable. */

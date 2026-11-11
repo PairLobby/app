@@ -1,6 +1,6 @@
 import {expect, test} from 'vitest';
 import type {RoomEvent, MessageRequest} from '@pairlobby/protocol';
-import {agentActivities, activitySummary} from '../src/agent-activity.js';
+import {activityDetails, activityFocusAt, agentActivities, activitySummary} from '../src/agent-activity.js';
 import type {AgentActivityContext} from '../src/agent-activity.js';
 
 const participant = {participantId: 'agent', displayName: 'Claude', kind: 'agent' as const, role: 'member' as const, capabilities: null, joinedAt: 1, revoked: false, left: false, paused: false, controlRevision: 0, acknowledgedOutcome: null};
@@ -42,4 +42,23 @@ test('an agent whose receiver on this device is not running counts as offline, e
     expect(agentActivities(offline, caughtUp)[0]!.state).toBe('offline');
     expect(activitySummary(agentActivities(offline, caughtUp))).toBe('Agents: 1 offline');
     expect(agentActivities({...context, requests: [request], offline: new Set(['someone else'])}, caughtUp)[0]!.state).toBe('waiting');
+});
+
+test('hovering each activity count lists only its agents and disambiguates duplicate display names', () => {
+    const agents = [{participantId: 'participant-one111', name: 'API reviewer', state: 'preparing' as const}, {participantId: 'participant-two222', name: 'API reviewer', state: 'working' as const}, {participantId: 'participant-three', name: 'Billing reconciliation', state: 'waiting' as const}];
+    const summary = `Turns: parallel | ${activitySummary(agents)}`;
+    expect(activityFocusAt(agents, 'parallel', 2, (text) => text.length)).toBe('turns');
+    expect(activityFocusAt(agents, 'parallel', summary.indexOf('preparing'), (text) => text.length)).toBe('preparing');
+    expect(activityFocusAt(agents, 'parallel', summary.indexOf('working'), (text) => text.length)).toBe('working');
+    expect(activityDetails(agents, 'preparing', null, new Map())).toEqual(['Agents · Preparing an answer', 'API reviewer (one111) — Preparing an answer']);
+    expect(activityDetails(agents, 'working', null, new Map())).toEqual(['Agents · Working', 'API reviewer (two222) — Working']);
+});
+
+test('turn hover includes current names and distinguishes preparation, work, queued and expired turns', () => {
+    const turn = {requestId: 'request', conversationId: 'root', participantId: 'agent', name: 'old name', state: 'answering' as const, expiresAt: 2000};
+    const names = new Map([['agent', 'Relay sync']]);
+    expect(activityDetails([], 'turns', {mode: 'sequential', entries: [turn]}, names, 1000)).toContain('Relay sync — Preparing an answer');
+    expect(activityDetails([], 'turns', {mode: 'parallel', entries: [{...turn, workingAt: 100}]}, names, 1000)).toContain('Relay sync — Working');
+    expect(activityDetails([], 'turns', {mode: 'parallel', entries: [turn]}, names, 3000)).toContain('Relay sync — Stalled request');
+    expect(activityDetails([], 'turns', {mode: 'parallel', entries: [{...turn, state: 'waiting'}]}, names, 1000)).toContain('Relay sync — Waiting · pending request');
 });

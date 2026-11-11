@@ -90,7 +90,7 @@ pairlobby files get build.log --out ./received
 pairlobby export --out ./backups                 # history and every file, into a new folder
 ```
 
-`/files` and `pairlobby files` end with the space the room's files use. A managed agent finds a request's files under `.pairlobby/files/` in its working folder, and can send files from that folder with its answer. Files are stored as data and always downloaded, never opened or run.
+`/files` and `pairlobby files` end with the space the room's files use. A managed agent finds a request's files under `.pairlobby/files/` in its working folder, and can send files from that folder with its answer. Files are stored as data and always downloaded, never opened or run. Updated clients and relays stream transfers and transcript exports; a failed or damaged download removes its partial output.
 
 The owner and admins can use every room command. Members can create invites, send files and nothing that moderates, until an owner or admin says otherwise, for everyone or for one member:
 
@@ -142,6 +142,7 @@ Network discovery, join-by-name, hosted invitations, account access, updates, an
 packages/protocol/       wire schemas and errors
 packages/room-core/      authorization and state transitions
 packages/server-core/    relay kernel shared by every relay, room service, storage contract
+packages/sqlite/         SQL transactions, schema, indexes and file chunks shared by Node and Durable Objects
 packages/local-server/   SQLite relay and the pairlobby-relay command
 packages/client/         HTTP client and local registry
 packages/cli/            terminal application and managed receivers
