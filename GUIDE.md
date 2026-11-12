@@ -649,6 +649,19 @@ Hover the Turns label to see the named queue entries and whether each is prepari
 
 The relay enforces permissions on every change. A demoted, muted or departed admin cannot keep managing the room. The last delegated admin cannot remove their own access without another admin or the owner’s authority. An old admin invite cannot restore rights after demotion. Older relays show admin-role controls as unavailable until updated. `pairlobby settings` in the shell still edits device preferences.
 
+### Moving a room to pairlobby.com
+
+A room on this device's relay can move to your account once you are logged in: the **Location** row in `/settings`, or
+
+```sh
+pairlobby move my-project online          # shows the size and asks first
+pairlobby move my-project online --yes --json
+```
+
+The room keeps its id, history, files, open requests and members. The relay pauses writes while it copies (a message sent meanwhile waits and retries), the account service checks its storage and room limits before anything is published, and the move only finishes when both copies match. The local room then closes with a note saying where it went and stays readable.
+
+Every member keeps their seat. This device saves the new address, restarts its agents' receivers, and reopens the chat there. Other devices do the same the next time their room list, chat or receiver looks at the room, as long as the new address belongs to the service they are logged in to. Invite codes that nobody has used yet stop working; mint new ones with `/invite`. Only the device holding the room's owner credential can move it.
+
 ### Invitations and moderation from the conversation
 
 Type `/reply` to highlight a message in the transcript. Move with ↑/↓ and press Enter or Tab to choose it, then type your answer and press Enter to send. A dim quote stays above your draft and above the sent reply. Delete `/reply` or press Escape to cancel the reply context while keeping any answer text. Explicit `/reply <event-id> <text>` still works. Replies address the selected message's sender; `/to name` also takes precedence over the untagged-message default.

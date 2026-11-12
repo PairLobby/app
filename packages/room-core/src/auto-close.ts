@@ -5,7 +5,7 @@
 //! a room whose policy or activity has since moved its deadline.
 
 import {ProtocolError} from '@pairlobby/protocol';
-import type {AutoClosePolicy, CloseReason, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
+import type {AutoClosePolicy, CloseReason, MovedTo, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
 
 import {appendEvent} from './append.js';
 import {assertController, assertRoomWritable, authenticate} from './authorize.js';
@@ -64,11 +64,11 @@ export function autoCloseDue(view: RoomView, now: number): CloseReason | null {
     return policy.mode === 'off' ? null : policy.mode;
 }
 
-function close(view: RoomView, senderId: string | null, reason: CloseReason, ctx: CoreContext): Mutation {
-    const closed: RoomRecord = {...view.room, lifecycle: 'closed', closedAt: ctx.now, closeReason: reason, autoCloseAt: null};
+function close(view: RoomView, senderId: string | null, reason: CloseReason, ctx: CoreContext, movedTo?: MovedTo): Mutation {
+    const closed: RoomRecord = {...view.room, lifecycle: 'closed', closedAt: ctx.now, closeReason: reason, autoCloseAt: null, ...(movedTo ? {movedTo} : {})};
     const {room, event} = appendEvent(
         closed,
-        {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'room.closed', payload: {exportWindowEndsAt: ctx.now + view.room.policy.exportWindowMs, reason}}},
+        {senderId, idempotencyKey: null, recipientId: null, replyTo: null, body: {type: 'room.closed', payload: {exportWindowEndsAt: ctx.now + view.room.policy.exportWindowMs, reason, ...(movedTo ? {movedTo} : {})}}},
         ctx
     );
     return emptyMutation(room, event);
@@ -88,6 +88,14 @@ export function closeRoom(view: RoomView, credentialHash: string, ctx: CoreConte
 
 function samePolicy(left: AutoClosePolicy, right: AutoClosePolicy): boolean {
     return left.mode === right.mode && ('afterMs' in left ? left.afterMs : null) === ('afterMs' in right ? right.afterMs : null);
+}
+
+/** Owner or admin only: the room now lives on another relay, so it closes here and says where it went. */
+export function closeMovedRoom(view: RoomView, credentialHash: string, movedTo: MovedTo, ctx: CoreContext): Mutation {
+    const actor = authenticate(view, credentialHash, ctx.now);
+    assertController(actor);
+    assertRoomWritable(view, ctx.now);
+    return close(view, actor.kind === 'participant' ? actor.participant.participantId : null, 'moved', ctx, movedTo);
 }
 
 /** Owner or admin only. A policy that is already overdue closes the room on its next load. */

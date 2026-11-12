@@ -6,7 +6,7 @@ import {NameSource, ParticipantName} from './names.js';
 
 import {EventId, HandoverId, ParticipantId, RoomId} from './ids.js';
 import {HandoverDocument} from './handover.js';
-import {AutoClosePolicySchema, CloseReasonSchema} from './auto-close.js';
+import {AutoClosePolicySchema, CloseReasonSchema, MovedToSchema} from './auto-close.js';
 import {Attachment, MAX_ATTACHMENTS_PER_MESSAGE} from './files.js';
 import {PermissionSet} from './permissions.js';
 import {RoomType} from './room-types.js';
@@ -86,7 +86,7 @@ const controlResumePayload = z.object({targetParticipantId: ParticipantId, revis
 const controlAckPayload = z.object({targetParticipantId: ParticipantId, revision: z.number().int().min(1), outcome: ControlOutcome, detail: z.string().max(512).optional()});
 
 /** `reason` is absent on closures recorded before auto-close existed, which were manual. */
-const roomClosedPayload = z.object({exportWindowEndsAt: z.number().int().nonnegative(), reason: CloseReasonSchema.optional()});
+const roomClosedPayload = z.object({exportWindowEndsAt: z.number().int().nonnegative(), reason: CloseReasonSchema.optional(), movedTo: MovedToSchema.optional()});
 const roomAutoCloseChangedPayload = z.object({autoClose: AutoClosePolicySchema, previous: AutoClosePolicySchema});
 const roomRenamedPayload = z.object({name: z.string().min(1).max(64), previousName: z.string().min(1).max(64)});
 const roomExpiryChangedPayload = z.object({expiresAt: z.number().int().nonnegative().nullable(), previousExpiresAt: z.number().int().nonnegative().nullable()});

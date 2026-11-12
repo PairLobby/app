@@ -119,6 +119,7 @@ export function toSnapshot(view: RoomView): RoomSnapshot {
         autoCloseArmed: view.room.autoCloseArmed ?? false,
         autoCloseAt: view.room.autoCloseAt ?? null,
         ...(view.room.closeReason ? {closeReason: view.room.closeReason} : {}),
+        ...(view.room.movedTo ? {movedTo: view.room.movedTo} : {}),
         controlRevision: view.room.controlRevision,
         latestSeq: view.room.nextSeq - 1,
         earliestSeq: view.earliestSeq,

@@ -2,7 +2,7 @@
 //! imitating a database API, so a Durable Object's SQL transaction and a Node
 //! server's SQLite transaction implement the same small surface.
 
-import type {DefaultVisibility, FileRecord, HandoverRecord, ListingRecord, MessageRequest, RequestPage, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord} from '@pairlobby/protocol';
+import type {DefaultVisibility, FileRecord, HandoverRecord, ListingRecord, MessageRequest, RequestPage, InviteRecord, ParticipantRecord, RoomEvent, RoomRecord, RoomTransferRecord} from '@pairlobby/protocol';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 
 type IdempotencyKey = {key: string; requestDigest: string} | null;
@@ -63,6 +63,12 @@ export interface RoomStore {
      * Conflict means nothing committed. A partial application is a correctness bug, not a degraded mode.
      */
     apply(mutation: Mutation, idempotency: IdempotencyKey): Promise<void>;
+
+    /** Present on stores that can hand a room to another relay: every row the room owns, for `transferIn` there. */
+    transferOut?: ((roomId: string) => AsyncGenerator<RoomTransferRecord>) | undefined;
+    /** Until when writes to the room are refused while it moves; null when it is not moving. */
+    moveLease?: ((roomId: string, now?: number) => number | null) | undefined;
+    setMoveLease?: ((roomId: string, until: number | null) => void) | undefined;
 
     /** Both count and encoded-byte bounded; through binds replay to a captured transcript head. */
     readEvents(roomId: string, after: number, limit: number, through?: number): Promise<EventPage>;

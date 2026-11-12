@@ -177,6 +177,44 @@ export async function onlineRooms(store: LocalStore): Promise<OnlineRooms> {
     return {server, rooms: [...result.rooms.map((room) => ({...room, server})), ...shared]};
 }
 
+/** What the account has room for before a room is moved onto it. */
+export type ImportPreflight = {server: string; usedBytes: number; limitBytes: number; rooms: number; roomLimit: number; participantLimit: number};
+/** What the service holds once a moved room is published, for checking against what was sent. */
+export type ImportedRoom = {server: string; roomId: string; events: number; files: number; digest: string};
+export type ImportCheck = {roomId: string; name: string; bytes: number; participants: number};
+
+/** Asks whether a room of this size fits the account; refused with the numbers when it does not. */
+export async function importPreflight(store: LocalStore, check: ImportCheck): Promise<ImportPreflight> {
+    const endpoint = activeEndpoint(store);
+    const result = await request<ImportPreflight>(endpoint, '/api/online/rooms/import/preflight', requireToken(store, 'move a room online'), {method: 'POST', body: check}, store);
+    return {...result, server: validateRelay(endpoint, result.server)};
+}
+
+export async function importBegin(store: LocalStore, check: ImportCheck): Promise<string> {
+    return (await request<{importId: string}>(activeEndpoint(store), '/api/online/rooms/import/begin', requireToken(store, 'move a room online'), {method: 'POST', body: check})).importId;
+}
+
+/** Stages one page of NDJSON transfer records; nothing is visible until the import is committed. */
+export async function importRecords(store: LocalStore, importId: string, ndjson: string): Promise<void> {
+    const endpoint = activeEndpoint(store);
+    const response = await fetch(`${endpoint.origin}/api/online/rooms/import/${encodeURIComponent(importId)}/records`, {method: 'POST', body: ndjson, headers: {'x-pairlobby-account-token': requireToken(store, 'move a room online'), 'content-type': 'application/x-ndjson'}, redirect: 'error', signal: AbortSignal.timeout(120_000)});
+    if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as {error?: {message?: string}};
+        throw new UsageError(data.error?.message ?? 'Online service unavailable');
+    }
+}
+
+/** Publishes the staged room. `own` names the participants whose sessions live on this device, so the account is linked to them. */
+export async function importCommit(store: LocalStore, importId: string, own: string[]): Promise<ImportedRoom> {
+    const endpoint = activeEndpoint(store);
+    const result = await request<ImportedRoom>(endpoint, `/api/online/rooms/import/${encodeURIComponent(importId)}/commit`, requireToken(store, 'move a room online'), {method: 'POST', body: {own}});
+    return {...result, server: validateRelay(endpoint, result.server)};
+}
+
+export async function importAbort(store: LocalStore, importId: string): Promise<void> {
+    await request(activeEndpoint(store), `/api/online/rooms/import/${encodeURIComponent(importId)}/abort`, requireToken(store, 'move a room online'), {method: 'POST', body: {}});
+}
+
 /** An online key is dash-grouped, like ABCD-EFGH-JKMN; anything else names a room. */
 export function isOnlineKey(value: string): boolean {
     return /^[0-9A-Za-z]{4}(-[0-9A-Za-z]{4}){1,2}$/.test(value) && normalizeInviteCode(value) !== null;

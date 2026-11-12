@@ -36,6 +36,7 @@ import {
     SetInviteRoleRequest,
     SetAutoCloseRequest,
     SetLockedRequest,
+    MoveCommitRequest,
     SetMutedRequest,
     SetPermissionsRequest,
     SetRoleRequest,
@@ -892,6 +893,25 @@ async function roomRoute(request: Request, roomId: string, context: RequestConte
         }
         case 'POST close':
             return json({event: await service.close(roomId, credential)});
+        case 'POST move': {
+            if (segments[4] === 'prepare') {
+                return json(await service.prepareMove(roomId, credential));
+            }
+            if (segments[4] === 'abort') {
+                await service.abortMove(roomId, credential);
+                return json({aborted: true});
+            }
+            if (segments[4] === 'commit') {
+                const {movedTo} = MoveCommitRequest.parse(await request.json());
+                return json({event: await service.commitMove(roomId, credential, movedTo)});
+            }
+            return errorResponse('invalid_request', 'unknown move operation', 404);
+        }
+        case 'GET move':
+            if (segments[4] !== 'transfer') {
+                return errorResponse('invalid_request', 'unknown move operation', 404);
+            }
+            return service.moveTransfer(roomId, credential);
         case 'POST leave':
             return json({event: await service.leave(roomId, credential)});
         case 'GET export':
