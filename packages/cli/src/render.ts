@@ -6,6 +6,7 @@ import {ROOM_TYPE_SUMMARY, describeVisibility, failureLabel, formatFileSize, roo
 import {describeAutoClose, describeCloseReason} from './auto-close.js';
 import {describeParticipantPermissionChange, describeRoomPermissionChange} from './permissions.js';
 import type {OpenRequest, RoomEntry} from '@pairlobby/client';
+import type {OnlineRoom} from './online.js';
 
 type ParticipantLabel = {displayName: string; kind: string};
 
@@ -115,7 +116,12 @@ export interface RoomListEntry {
 }
 
 /** `pairlobby list`: how many rooms, who is in each, and how each can be joined. */
-export function renderRoomList(entries: RoomListEntry[], now = Date.now()): void {
+export function renderRoomList(entries: RoomListEntry[], now = Date.now(), onAccount = false): void {
+    if (entries.length === 0 && onAccount) {
+        out('No rooms joined on this device.');
+        out('');
+        return;
+    }
     if (entries.length === 0) {
         out('No rooms on this device.');
         out('');
@@ -141,6 +147,21 @@ export function renderRoomList(entries: RoomListEntry[], now = Date.now()): void
             out(`    ${dim(`unreachable (${entry.why ?? 'no credential on this device'}) — showing local record only`)}`);
             out(`    ${room.sessions.length} local ${room.sessions.length === 1 ? 'session' : 'sessions'}  ·  ${room.serverUrl}`);
         }
+        out('');
+    }
+}
+
+/** Rooms the logged-in account may enter that this device has not joined yet, such as ones created on another computer. */
+export function renderAccountRooms(rooms: OnlineRoom[], now = Date.now()): void {
+    out(`${rooms.length} more on your account, not joined from this device`);
+    out('');
+    for (const room of rooms) {
+        const agents = room.participants.filter((participant) => participant.kind === 'agent').length;
+        const people = room.participants.length - agents;
+        out(`  ${room.name}  ${dim(room.roomId)}`);
+        out(`    ${room.participants.length} in the room: ${people} ${people === 1 ? 'person' : 'people'}, ${agents} ${agents === 1 ? 'agent' : 'agents'}  ${dim(room.participants.map((participant) => participant.displayName).join(', '))}`);
+        out(`    ${room.lifecycle}  ·  ${expiryLine(room.expiresAt, now)}${room.private ? '  ·  private' : ''}${room.shared ? '  ·  shared with you' : room.owner ? '  ·  yours' : ''}`);
+        out(`    ${dim(`pairlobby join online ${room.roomId}`)}`);
         out('');
     }
 }

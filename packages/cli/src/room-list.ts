@@ -5,6 +5,7 @@ import type {LocalStore, RoomEntry, SessionEntry} from '@pairlobby/client';
 import {ProtocolError, roomType} from '@pairlobby/protocol';
 import type {ParticipantView, RoomSnapshot} from '@pairlobby/protocol';
 import {lastMessage} from './find.js';
+import type {OnlineRoom} from './online.js';
 import type {RoomListEntry} from './render.js';
 import {receiverConfiguration, receiverStatus, stopReceiver} from './receiver.js';
 import {modelId, savedSessionModel} from './model-metadata.js';
@@ -170,6 +171,18 @@ export function networkRows(found: NetworkRoom[], icons: IconSet = 'symbols'): L
         const location = roomLocation(url, true);
         const values = {where: LOCATION_ICONS[icons][location], name: room.name, type: room.type ?? 'public', state: NETWORK_STATE, agents: 'Unknown', people: `${room.participantCount} in room`, latest: 'Unknown', created: listDate(room.createdAt), expires: 'Unknown', id: room.roomId, relay: label === url || label === 'local network' ? relayLabel(url) : `${relayLabel(url)} (${label})`};
         return {id: room.roomId, roomId: room.roomId, values, sortValues: {...values, where: location, agents: null, people: room.participantCount, latest: null, created: room.createdAt, expires: null}};
+    });
+}
+
+export const ACCOUNT_STATE = 'on your account';
+
+/** Rows for rooms the logged-in account may enter but this device has not joined, such as one created on another computer. */
+export function accountRows(rooms: OnlineRoom[], icons: IconSet = 'symbols'): ListRow[] {
+    return rooms.map((room) => {
+        const agents = room.participants.filter((participant) => participant.kind === 'agent').length;
+        const people = room.participants.length - agents;
+        const values = {where: LOCATION_ICONS[icons].online, name: room.name, type: room.private ? 'private' : 'Unknown', state: room.lifecycle === 'open' ? ACCOUNT_STATE : `${room.lifecycle}, ${ACCOUNT_STATE}`, agents: String(agents), people: String(people), latest: 'Unknown', created: listDate(room.createdAt), expires: room.expiresAt === null ? 'Never' : listDate(room.expiresAt), id: room.roomId, relay: room.shared ? `${relayLabel(room.server)} (shared with you)` : relayLabel(room.server)};
+        return {id: room.roomId, roomId: room.roomId, values, sortValues: {...values, where: 'online', agents, people, latest: null, created: room.createdAt, expires: room.expiresAt ?? Number.POSITIVE_INFINITY}};
     });
 }
 

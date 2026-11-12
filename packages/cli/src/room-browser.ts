@@ -3,8 +3,9 @@ import type {Key} from 'node:readline';
 import {PairLobbyClient} from '@pairlobby/client';
 import type {LocalStore} from '@pairlobby/client';
 import type {RoomListEntry} from './render.js';
-import {INVITED_STATE, LOCATION_LABELS, MEMBER_ICONS, NETWORK_STATE, ROOM_COLUMNS, SESSION_COLUMNS, closeListedRoom, deleteListedRoom, forgetListedRoom, invitationRows, administersListedRoom, leaveListedSession, loadRoomList, namesOf, networkRows, othersInRoom, relayAdvice, relayLabel, roomRows, sessionRows, sortListRows} from './room-list.js';
+import {INVITED_STATE, LOCATION_LABELS, accountRows, MEMBER_ICONS, NETWORK_STATE, ROOM_COLUMNS, SESSION_COLUMNS, closeListedRoom, deleteListedRoom, forgetListedRoom, invitationRows, administersListedRoom, leaveListedSession, loadRoomList, namesOf, networkRows, othersInRoom, relayAdvice, relayLabel, roomRows, sessionRows, sortListRows} from './room-list.js';
 import type {ListColumn, ListRow, ListSort, NetworkRoom, RoomInvite, RoomLocation} from './room-list.js';
+import type {OnlineRoom} from './online.js';
 import {RoomPanel} from './room-panel.js';
 import type {RoomPanelPage} from './room-panel.js';
 import {plainCell} from './agent-roster.js';
@@ -20,12 +21,12 @@ const ROOM_HOME_COLUMN = ROOM_COLUMNS.findIndex((column) => column.key === 'name
 /** Replaces a room's icon while a request about it is still running. */
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
 
-/** A saved room or session to chat in, a network room to join, or an invitation to accept and join. */
-export type RoomBrowserSelection = {roomId: string; openChat: true} | {roomId: string; sessionId: string} | {roomId: string; joinAt: string} | {roomId: string; invitationId: string};
+/** A saved room or session to chat in, a network or account room to join, or an invitation to accept and join. */
+export type RoomBrowserSelection = {roomId: string; openChat: true} | {roomId: string; sessionId: string} | {roomId: string; joinAt: string} | {roomId: string; joinOnline: true} | {roomId: string; invitationId: string};
 /** What the list can do about invitations: fetch the unanswered ones, and decline one. Accepting is left to the caller, which then joins. */
 export type RoomBrowserInvitations = {list: (signal: AbortSignal) => Promise<RoomInvite[]>; decline: (id: string) => Promise<void>};
 /** `discover` finds rooms open on the network; it must stop when its signal aborts. Absent, the list shows saved rooms only. */
-export type RoomBrowserOptions = {sort: ListSort; roomId?: string | undefined; sessionId?: string | undefined; selectedRoomId?: string | undefined; notice?: string | undefined; discover?: ((known: ReadonlySet<string>, signal: AbortSignal) => Promise<NetworkRoom[]>) | undefined; invitations?: RoomBrowserInvitations | undefined};
+export type RoomBrowserOptions = {sort: ListSort; roomId?: string | undefined; sessionId?: string | undefined; selectedRoomId?: string | undefined; notice?: string | undefined; discover?: ((known: ReadonlySet<string>, signal: AbortSignal) => Promise<NetworkRoom[]>) | undefined; account?: ((signal: AbortSignal) => Promise<OnlineRoom[]>) | undefined; invitations?: RoomBrowserInvitations | undefined};
 type BrowserKey = Key & {sequence?: string};
 type BrowserMouse = blessed.Widgets.Events.IMouseEventArg & {button?: string};
 
@@ -37,6 +38,7 @@ export class RoomBrowser {
     private cells: blessed.Widgets.BoxElement[] = [];
     private entries: RoomListEntry[] = [];
     private network: NetworkRoom[] = [];
+    private account: OnlineRoom[] = [];
     private invited: RoomInvite[] = [];
     private join: RoomBrowserSelection | undefined;
     private rows: ListRow[] = [];
@@ -211,12 +213,16 @@ export class RoomBrowser {
             const entries = loaded.filter((entry) => saved.has(entry.room.roomId));
             this.entries = entries;
             this.network = this.network.filter((found) => !entries.some((entry) => entry.room.roomId === found.room.roomId));
+            this.account = this.account.filter((room) => !entries.some((entry) => entry.room.roomId === room.roomId));
             this.note = notice || relayAdvice(entries) || 'Snapshot updated. Listing does not join rooms or start agents.';
             this.loading = false;
             this.rebuildRows(selected);
             this.invited = this.invited.filter((invitation) => !entries.some((entry) => entry.room.roomId === invitation.roomId));
             if (this.options.discover) {
                 void this.discover(request);
+            }
+            if (this.options.account) {
+                void this.loadAccountRooms(request);
             }
             if (this.options.invitations) {
                 void this.loadInvitations(request);
@@ -247,6 +253,28 @@ export class RoomBrowser {
         }
     }
 
+    /** Rooms the account may enter that this device has not joined, such as one created on another computer. */
+    private async loadAccountRooms(request: AbortController): Promise<void> {
+        let rooms: OnlineRoom[];
+        try {
+            rooms = await this.options.account!(request.signal);
+        } catch {
+            return;
+        }
+        if (this.closed || this.request !== request) {
+            return;
+        }
+        this.account = rooms.filter((room) => !this.entries.some((entry) => entry.room.roomId === room.roomId));
+        if (!this.roomId && !this.details.visible) {
+            this.rebuildRows(this.rows[this.selected]?.id);
+        }
+    }
+
+    /** True for a row this device has not joined: a room found on the network or on the account. */
+    private unjoined(row: ListRow): boolean {
+        return !this.roomId && (row.values['state'] === NETWORK_STATE || this.account.some((room) => room.roomId === row.roomId));
+    }
+
     /** Asks the account service after the saved rooms are shown; a device that is not logged in simply has none. */
     private async loadInvitations(request: AbortController): Promise<void> {
         let invited: RoomInvite[];
@@ -273,7 +301,7 @@ export class RoomBrowser {
         }
         const icons = this.iconSet();
         // Invitations wait for an answer, so they stay on top whatever the sort.
-        this.rows = room && this.roomId ? sortListRows(sessionRows(this.store, room), this.sort()) : [...sortListRows(invitationRows(this.invited, icons), this.sort()), ...sortListRows([...roomRows(this.entries, icons), ...networkRows(this.network, icons)], this.sort())];
+        this.rows = room && this.roomId ? sortListRows(sessionRows(this.store, room), this.sort()) : [...sortListRows(invitationRows(this.invited, icons), this.sort()), ...sortListRows([...roomRows(this.entries, icons), ...accountRows(this.account.filter((room) => !this.invited.some((invitation) => invitation.roomId === room.roomId)), icons), ...networkRows(this.network.filter((found) => !this.account.some((room) => room.roomId === found.room.roomId)), icons)], this.sort())];
         this.selected = selectedId ? Math.max(0, this.rows.findIndex((row) => row.id === selectedId)) : Math.max(0, Math.min(this.selected, this.rows.length - 1));
         this.render();
     }
@@ -295,9 +323,12 @@ export class RoomBrowser {
             return;
         }
         const found = this.roomId ? undefined : this.network.find((candidate) => candidate.room.roomId === row.roomId);
+        const online = this.roomId ? undefined : this.account.find((candidate) => candidate.roomId === row.roomId);
         const invitation = this.roomId || row.values['state'] !== INVITED_STATE ? undefined : this.invited.find((candidate) => candidate.roomId === row.roomId);
         if (invitation) {
             this.confirmAccept(invitation);
+        } else if (online) {
+            this.confirmJoinOnline(online);
         } else if (found) {
             this.confirmJoin(found);
         } else if (!this.roomId) {
@@ -323,7 +354,7 @@ export class RoomBrowser {
             this.render();
             return;
         }
-        if (row.values['state'] === NETWORK_STATE) {
+        if (this.unjoined(row)) {
             this.note = 'Join this room before inspecting local sessions.';
             this.render();
             return;
@@ -344,6 +375,14 @@ export class RoomBrowser {
         const {room, url} = found;
         const page: RoomPanelPage = {id: 'join-network-room', closeOnCancel: true, title: 'Join room on the network', note: `${room.name} (${room.roomId}) at ${url}`, reload: async () => page, rows: [{id: 'confirm', label: 'Join room', value: room.name, section: 'Confirmation', action: {kind: 'command', closeAfterSave: true, confirm: `Join ${room.name} at ${url} as ${room.type === 'protected' ? 'a read-only visitor' : 'a member'}? Everyone in the room will see you join, and it stays in this list afterwards.`, run: async () => {
             this.join = {roomId: room.roomId, joinAt: url};
+        }}}]};
+        this.details.show(page);
+        this.details.key(undefined, {name: 'enter'});
+    }
+
+    private confirmJoinOnline(room: OnlineRoom): void {
+        const page: RoomPanelPage = {id: 'join-account-room', closeOnCancel: true, title: 'Join room from your account', note: `${room.name} (${room.roomId}) at ${relayLabel(room.server)}`, reload: async () => page, rows: [{id: 'confirm', label: 'Join room', value: room.name, section: 'Confirmation', action: {kind: 'command', closeAfterSave: true, confirm: `Join ${room.name} from this device? Everyone in the room will see you join, and it stays in this list afterwards.`, run: async () => {
+            this.join = {roomId: room.roomId, joinOnline: true};
         }}}]};
         this.details.show(page);
         this.details.key(undefined, {name: 'enter'});
@@ -379,7 +418,7 @@ export class RoomBrowser {
             this.confirmDecline(invitation);
             return;
         }
-        if (row.values['state'] === NETWORK_STATE) {
+        if (this.unjoined(row)) {
             this.note = 'This room is not joined yet. Enter joins it.';
             this.render();
             return;
@@ -415,7 +454,7 @@ export class RoomBrowser {
             this.confirmDecline(invitation);
             return;
         }
-        if (row.values['state'] === NETWORK_STATE) {
+        if (this.unjoined(row)) {
             this.note = 'This room is not joined yet, so there is nothing to delete. Enter joins it.';
             this.render();
             return;
