@@ -51,6 +51,7 @@ import {VERSION} from './version.js';
 import {formatServiceStatus, installService, refreshService, requireServicePlatform, restartService, serviceLog, serviceProgram, serviceStatus, uninstallService} from './relay-service.js';
 import type {ServiceStatus} from './relay-service.js';
 import {NETWORK_SHARING_RESTART, SETTING_KEYS, describeSettingValue, parseLifetime, parseManagedDuration, parseSettingValue, validateManagedSettings} from './device-settings.js';
+import {assertManualReceiveAllowed, assertManualReceiveSettingChange, manualReceiveCaller} from './manual-receive.js';
 import {applyAutoCloseToRooms, parseAutoClose, summarizeBulk} from './auto-close.js';
 import {runSettingsMenu} from './settings-menu.js';
 import {checkForInteractiveUpdate, checkForUpdate, installRelease, managedInstall, parseUpdateChoice, runBackgroundUpdate, scheduleBackgroundCheck, shouldOfferUpdate, updateNotice, writeUpdateState} from './updater.js';
@@ -324,6 +325,11 @@ async function main(argv: string[]): Promise<number> {
         note(`certificates: ${trust.problem}`);
     }
     const {values, positionals, tokens} = parseArgs({args: argv, options: OPTIONS, allowPositionals: true, strict: true, tokens: true});
+    const manualStore = flag(values, 'manual-receive') ? new LocalStore() : undefined;
+    if (manualStore) {
+        // Refuse before discovery, account lookup, room creation, invite redemption or local membership writes.
+        assertManualReceiveAllowed(manualStore.settings());
+    }
     if (positionals[0] === 'spawn') {
         const commandIndex = tokens.find((token) => token.kind === 'positional')!.index;
         const options = parseSpawnOptions(argv.filter((_, index) => index !== commandIndex), true);
@@ -347,7 +353,7 @@ async function main(argv: string[]): Promise<number> {
         out(HELP);
         return 0;
     }
-    const store = new LocalStore();
+    const store = manualStore ?? new LocalStore();
     const checksInteractively = ['rooms', 'list', 'chat'].includes(command) && !flag(values, 'json') && !flag(values, 'no-follow') && process.stdin.isTTY === true && process.stdout.isTTY === true;
     if (!checksInteractively) {
         scheduleBackgroundCheck(store, command);
@@ -1138,6 +1144,7 @@ function identityFrom(store: LocalStore, values: Values, fallbackName: string): 
 
 
 async function settingsCommand(store: LocalStore, values: Values, key?: string, value?: string): Promise<number> {
+    const caller = {agent: flag(values, 'agent'), runtime: str(values, 'runtime'), sessionId: str(values, 'session')};
     if (flag(values, 'reset')) {
         store.resetSettings();
         note('settings reset to defaults');
@@ -1150,6 +1157,9 @@ async function settingsCommand(store: LocalStore, values: Values, key?: string, 
         }
         if (value === undefined) {
             throw new UsageError(`pairlobby settings ${key} <value>`);
+        }
+        if (definition.field === 'allowManualReceive') {
+            assertManualReceiveSettingChange(manualReceiveCaller(store, caller));
         }
         const parsed = parseSettingValue(key, definition, value);
         validateManagedSettings({...store.settings(), [definition.field]: parsed});
@@ -1175,7 +1185,7 @@ async function settingsCommand(store: LocalStore, values: Values, key?: string, 
         return 0;
     }
     if (!flag(values, 'json') && process.stdin.isTTY && process.stdout.isTTY) {
-        await runSettingsMenu(store);
+        await runSettingsMenu(store, caller);
         return 0;
     }
     const settings = store.settings();
@@ -1366,7 +1376,15 @@ function localDetail(values: Values): LocalRuntimeDetail {
 
 async function enableReceiver(store: LocalStore, values: Values, roomId: string, sessionId: string): Promise<EnabledReceiver> {
     const {session, client, credential} = select(store, roomId, sessionId);
-    if (flag(values, 'manual-receive') || session.kind !== 'agent' || session.role === 'guest' || !receiverRuntimeName(session.runtime)) {
+    if (session.kind !== 'agent' || session.role === 'guest') {
+        return {receiver: null, warning: null};
+    }
+    if (flag(values, 'manual-receive')) {
+        const manualReceiveWarning = 'Automatic receiver startup was skipped (--manual-receive). Without a running receiver or channel, this agent needs explicit reads and cannot wake on room messages.';
+        note(manualReceiveWarning);
+        return {receiver: null, warning: null, manualReceiveWarning};
+    }
+    if (!receiverRuntimeName(session.runtime)) {
         return {receiver: null, warning: null};
     }
     const warning = publicRoomNotice(await client.snapshot(roomId, credential));
@@ -1382,7 +1400,7 @@ async function enableReceiver(store: LocalStore, values: Values, roomId: string,
 }
 
 /** The receiver a join or create started, and what listening in a public room means. */
-type EnabledReceiver = {receiver: ReceiverStatus | null; warning: string | null};
+type EnabledReceiver = {receiver: ReceiverStatus | null; warning: string | null; manualReceiveWarning?: string};
 
 function receiverStartOptions(values: Values): ReceiverStartOptions {
     const model = str(values, 'model');
@@ -1531,10 +1549,10 @@ async function createRoom(store: LocalStore, values: Values, online = false): Pr
             note(`Room created, but it could not be opened to the local network: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
-    const {receiver, warning} = await enableReceiver(store, values, created.roomId, identity.sessionId);
+    const {receiver, warning, manualReceiveWarning} = await enableReceiver(store, values, created.roomId, identity.sessionId);
     const share = await joinCommand(serverUrl, created.invite.code);
     if (flag(values, 'json')) {
-        json({roomId: created.roomId, name, serverUrl, shareServerUrl: share.target.localOnly ? null : share.target.serverUrl, joinCommand: share.command, participantId: created.participantId, sessionId: identity.sessionId, invite: created.invite, ...(flag(values, 'open-local') ? {localJoin: openLocal} : {}), ...localDetail(values), receiver, ...(warning ? {publicRoomWarning: warning} : {})});
+        json({roomId: created.roomId, name, serverUrl, shareServerUrl: share.target.localOnly ? null : share.target.serverUrl, joinCommand: share.command, participantId: created.participantId, sessionId: identity.sessionId, invite: created.invite, ...(flag(values, 'open-local') ? {localJoin: openLocal} : {}), ...localDetail(values), receiver, ...(warning ? {publicRoomWarning: warning} : {}), ...(manualReceiveWarning ? {manualReceiveWarning} : {})});
         return 0;
     }
     const detail = localDetail(values);
@@ -1737,7 +1755,7 @@ function saveJoinedMembership(store: LocalStore, values: Values, joined: JoinedR
 async function finishJoin(store: LocalStore, values: Values, joined: JoinedRoom, serverUrl: string, identity: LocalIdentity, code?: string): Promise<number> {
     saveJoinedMembership(store, values, joined, serverUrl, identity, code);
 
-    const {receiver, warning} = await enableReceiver(store, values, joined.roomId, identity.sessionId);
+    const {receiver, warning, manualReceiveWarning} = await enableReceiver(store, values, joined.roomId, identity.sessionId);
     if (flag(values, 'json')) {
         json({
             roomId: joined.roomId,
@@ -1748,6 +1766,7 @@ async function finishJoin(store: LocalStore, values: Values, joined: JoinedRoom,
             role: joined.role,
             receiver,
             ...(warning ? {publicRoomWarning: warning} : {}),
+            ...(manualReceiveWarning ? {manualReceiveWarning} : {}),
             ...localDetail(values),
             participants: joined.room.participants.map((participant) => ({participantId: participant.participantId, displayName: participant.displayName}))
         });

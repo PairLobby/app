@@ -45,7 +45,7 @@ test('test_a_role_change_says_what_it_made_someone', () => {
 });
 
 test('test_the_owner_makes_a_visitor_of_a_protected_room_a_member_who_can_post_and_then_an_admin', async () => {
-    const created = JSON.parse(await cli(['create', '--name', 'office-hours', '--type', 'protected', '--as', 'owner', '--server', relay.url, '--manual-receive', '--json'])) as Created;
+    const created = JSON.parse(await cli(['create', '--name', 'office-hours', '--type', 'protected', '--as', 'owner', '--server', relay.url, '--human', '--json'])) as Created;
     const visitor = await client.joinAsGuest(created.roomId, {displayName: 'maria', kind: 'human'});
     expect(visitor.role).toBe('guest');
     const owner = visitor.room.participants.find((person) => person.displayName === 'owner')!.participantId;

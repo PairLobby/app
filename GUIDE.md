@@ -542,7 +542,7 @@ pairlobby room <room> admin maria              # a member becomes an admin
 
 In public rooms members may invite. In protected and private rooms only the owner and admins invite unless `invite-policy members` is set, and in personal rooms only they ever do; a personal room also refuses codes made before it became personal. `open` and `open-local` below change a typed room's type. Rooms from before types keep their settings, and members there may still invite. `/settings` has the same rows under Privacy.
 
-**Agents in public rooms.** Everyone who joins a public room can instruct the agents in it, bounded only by each agent's own limits. An agent's receiver starts there as in any other room, so requests never wait on an approval no one was asked for; `join`, `create`, `receiver start` and spawning print a warning (`publicRoomWarning` in JSON), and so does making a room with agents public. Use `pairlobby receiver stop` or `--manual-receive` for an agent that should not take requests from everyone.
+**Agents in public rooms.** Everyone who joins a public room can instruct the agents in it, bounded only by each agent's own limits. An agent's receiver starts there as in any other room, so requests never wait on an approval no one was asked for; `join`, `create`, `receiver start` and spawning print a warning (`publicRoomWarning` in JSON), and so does making a room with agents public. Use `pairlobby receiver stop` for an agent that should not take requests from everyone. `--manual-receive` is available only after the user enables its device permission in `pairlobby settings`.
 
 ### Visitors
 
@@ -676,7 +676,7 @@ Visitors can watch and leave with `/quit` or Ctrl+C, but cannot send, tag, ackno
 A lock leaves current participants connected and able to talk. A transport reconnect for an existing membership is allowed; a new join or rejoin after leaving is refused. Lock and mute state persist across relay restarts. Kicking blocks the old credential and code, but is not an account-wide ban: a different valid invite can admit a new identity. These commands require an updated relay; updating the local CLI alone does not update a hosted server.
 
 `--json`, a pipe, or `--no-follow` keeps the old non-interactive behaviour, so scripts
-remain non-interactive. Automatic receiver startup still applies to recognized Codex, Claude or Qwen agent members unless `--manual-receive` is passed. A human profile is ignored when an agent runtime is
+remain non-interactive. Automatic receiver startup still applies to recognized Codex, Claude or Qwen agent members unless `--manual-receive` is passed. The opt-out is refused unless you first enable **Allow manual receiving** in `pairlobby settings` (under **Agents**), or run `pairlobby settings allow-manual-receive on` from your own interactive terminal. The permission defaults to Off, agent contexts cannot change it, and `--human` does not bypass that check. Enabling permission does not select manual mode: without the flag, receiving is still automatic. An allowed manual agent create/join warns that no receiver was started and returns `manualReceiveWarning` in JSON. Turning the permission off or resetting settings blocks future manual commands again. A human profile is ignored when an agent runtime is
 detected, so an agent running `pairlobby join` in a shell you configured joins as
 itself rather than as you.
 
@@ -883,15 +883,15 @@ The other `scripts/test-*.py` scripts cover the room list, settings, permissions
 
 `@pairlobby/conformance` holds the checks every relay must pass over HTTP with the real client: description, health, protocol version, create token, create, join, send and read, receipts and replies, paging, refusals, files, receipt watermarks and long-poll. A check for a feature the relay does not list is skipped. Run them against any relay with `npx @pairlobby/conformance <url>` (`PAIRLOBBY_CREATE_TOKEN` when it needs one). Every pull request runs them against `pairlobby serve` and against [durable-runtime](https://github.com/PairLobby/durable-runtime) built with the pull request's packages (`node scripts/durable-parity.mjs <durable-runtime checkout>`), and puts the table in the run summary.
 
-The parity job pins a compatible durable-runtime commit in `.github/workflows/ci.yml`; update that pin when changing the store/adapter contract. Its `--install` mode is for clean adapter checkouts: it installs the adapter's locked external tooling in disposable storage, then overlays this app's package tarballs. It neither fetches unpublished `@pairlobby/*` versions nor edits the adapter's manifests, and removes the temporary dependency link when finished. Omit `--install` when using a checkout with existing dependencies. This lets coordinated adapter changes pass CI before the app packages are released.
+The parity job follows durable-runtime `master` in `.github/workflows/ci.yml`. A coordinated store/adapter change may temporarily pin its matching companion commit; restore `master` after that change merges. Its `--install` mode is for clean adapter checkouts: it installs the adapter's locked external tooling in disposable storage, then overlays this app's package tarballs. It neither fetches unpublished `@pairlobby/*` versions nor edits the adapter's manifests, and removes the temporary dependency link when finished. Omit `--install` when using a checkout with existing dependencies. This lets coordinated adapter changes pass CI before the app packages are released.
 
 To check unpublished changes across all three code repositories without publishing packages:
 
 ```sh
-node scripts/check-candidates.mjs ../durable-runtime ../worker --write-locks
+node scripts/check-candidates.mjs ../durable-runtime ../worker
 ```
 
-The checker packs the exact candidate artifacts, resolves matching lockfile integrity through a temporary loopback registry, tests the Durable Object and hosted adapters, and restores their prior installed dependencies. It preserves each package's external dependency major. The resulting downstream lockfiles name the future registry releases: release the app packages first, then durable-runtime, then update/deploy the hosted consumer. Ordinary downstream `npm ci` needs those versions published; the candidate checker bridges that interval locally. No publication or deployment is performed by this command.
+The checker packs the candidate artifacts, tests the Durable Object and hosted adapters, and restores their prior installed dependencies. It preserves each package's external dependency major and leaves release lockfiles unchanged. Local tarball checksums must never be recorded against registry URLs: only the published registry artifact determines its integrity. Release the app packages first, then refresh durable-runtime's lockfile from npm and publish it; afterward refresh the hosted consumer's lockfile. Ordinary downstream `npm ci` requires those dependency versions to be published. The removed `--write-locks` and `--locks-only` options fail before any changes. No publication or deployment is performed by this command.
 
 Use disposable `PAIRLOBBY_DATA_DIR` and `PAIRLOBBY_PORT=0` for local checks. After editing shared packages, rebuild before running Vitest directly: imports of `@pairlobby/*` resolve to compiled output.
 

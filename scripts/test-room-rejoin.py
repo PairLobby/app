@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-rejoin-') as directory:
         def command(*arguments):
             return json.loads(subprocess.check_output(cli + list(arguments) + ['--json'], env=environment, text=True, timeout=15))
 
-        created = command('create', '--name', 'Rejoin check', '--as', 'returning-user', '--human', '--manual-receive', '--server', url)
+        created = command('create', '--name', 'Rejoin check', '--as', 'returning-user', '--human', '--server', url)
         room_id = created['roomId']
         session_id = created['sessionId']
         arguments = ['chat', '--room', room_id, '--session', session_id]

@@ -94,12 +94,12 @@ test('test_a_default_preset_starts_new_rooms_and_never_changes_existing_ones', a
     expect((await client.snapshot(existing.roomId, existing.participantCredential)).policy.permissions).toBeUndefined();
 
     const cli = async (...args: string[]) => (await execute(process.execPath, [process.env['PAIRLOBBY_TEST_CLI'] ?? resolve('packages/cli/dist/main.js'), ...args], {env: {...process.env, PAIRLOBBY_DATA_DIR: join(directory, 'device'), PAIRLOBBY_NO_UPDATE_CHECK: '1'}})).stdout;
-    const created = JSON.parse(await cli('create', '--name', 'from-default', '--as', 'owner', '--human', '--server', server.url, '--manual-receive', '--json'));
+    const created = JSON.parse(await cli('create', '--name', 'from-default', '--as', 'owner', '--human', '--server', server.url, '--json'));
     const started = await client.snapshot(created.roomId, store.credential(created.roomId, 'controller')!);
     expect(started.policy).toMatchObject({permissions: {invite: false, mute: true}, inviteRole: 'guest'});
     expect(started.turnMode).toBe('parallel');
 
-    const plain = JSON.parse(await cli('create', '--name', 'plain', '--as', 'owner', '--human', '--server', server.url, '--manual-receive', '--preset', 'none', '--json'));
+    const plain = JSON.parse(await cli('create', '--name', 'plain', '--as', 'owner', '--human', '--server', server.url, '--preset', 'none', '--json'));
     const untouched = await client.snapshot(plain.roomId, store.credential(plain.roomId, 'controller')!);
     expect(untouched.policy.permissions).toBeUndefined();
     expect(untouched.turnMode).toBe('sequential');

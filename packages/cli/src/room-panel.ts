@@ -158,6 +158,8 @@ export class RoomPanel {
             editor.value = chars.join('');
         } else if (key.name === 'up' || key.name === 'down' || key.name === 'tab') {
             this.move(key.name === 'up' || key.shift ? -1 : 1);
+        } else if (key.name === 'left' || key.name === 'right') {
+            void this.step(key.name === 'left' ? -1 : 1);
         } else if (key.name === 'pageup' || key.name === 'pagedown') {
             this.move((key.name === 'pageup' ? -1 : 1) * this.pageSize());
         } else if (key.name === 'home' || key.name === 'end') {
@@ -216,6 +218,24 @@ export class RoomPanel {
             this.note = '';
         }
         this.render();
+    }
+
+    /** Saves the previous or next choice of the selected row without opening its list; a row that asks for confirmation still asks. */
+    private async step(delta: number): Promise<void> {
+        const row = this.page?.rows[this.selected];
+        const action = row?.action;
+        if (this.busy || !row || action?.kind !== 'edit' || !action.choices) {
+            return;
+        }
+        const choices = action.choices.map((choice, index) => ({choice, index})).filter(({choice}) => !choice.custom);
+        if (!choices.length) {
+            return;
+        }
+        const current = choices.findIndex(({choice}) => choice.value === action.initial);
+        const next = choices[current < 0 ? (delta > 0 ? 0 : choices.length - 1) : (current + delta + choices.length) % choices.length]!;
+        this.editor = {row, value: next.choice.value, cursor: 0, choice: next.index, typing: false, apply: false};
+        this.note = '';
+        await this.submit();
     }
 
     private async submit(): Promise<void> {
@@ -334,7 +354,7 @@ export class RoomPanel {
             this.options.screen.render();
             return;
         }
-        this.line(1, this.busy ? 'Request in flight · Esc closes this view' : this.editor ? '↑/↓ select · Enter apply · Esc cancel' : '↑/↓/Tab select · Enter edit/copy · R refresh · Esc back/close');
+        this.line(1, this.busy ? 'Request in flight · Esc closes this view' : this.editor ? '↑/↓ select · Enter apply · Esc cancel' : '↑/↓/Tab select · ←/→ change · Enter edit/copy · R refresh · Esc back/close');
         if (this.editor) {
             const editor = this.editor;
             this.line(3, editor.row.label);

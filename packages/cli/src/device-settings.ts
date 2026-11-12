@@ -11,6 +11,8 @@ import {validateManagedDeadline} from './managed-deadline.js';
 import {BUILT_IN_LABEL, activeEndpoint, builtInEndpoint, endpointByLabel, removeEndpoint, savedEndpoints, useEndpoint} from './endpoints.js';
 import {detectRuntime} from './runtime-detect.js';
 import {AGENT_REFUSAL} from './setup.js';
+import {assertManualReceiveSettingChange, manualReceiveCaller} from './manual-receive.js';
+import type {ManualReceiveCallerHints} from './manual-receive.js';
 
 type SettingKind = 'boolean' | 'number' | 'duration' | 'managed-duration' | 'choice' | 'auto-close';
 
@@ -43,6 +45,7 @@ export const SETTING_KEYS: Record<string, SettingDefinition> = {
     'auto-update': {field: 'autoUpdate', kind: 'boolean', label: 'Install updates automatically', section: 'Updates', help: 'install new releases without asking at interactive startup or in the background (needs update-check)'},
     'managed-task-idle-timeout': {field: 'managedTaskIdleMs', kind: 'managed-duration', label: 'Managed task inactivity limit', section: 'Agents', help: 'stop a managed agent request after no runtime output for this duration (1s–24h)'},
     'managed-task-timeout': {field: 'managedTaskTimeoutMs', kind: 'managed-duration', label: 'Managed task absolute limit', section: 'Agents', help: 'stop a managed agent request after this total elapsed time even while active (1s–24h; at least the inactivity limit)'},
+    'allow-manual-receive': {field: 'allowManualReceive', kind: 'boolean', label: 'Allow manual receiving', section: 'Agents', help: 'user permission to use --manual-receive on this device; off by default. Automatic receiving stays the default even when allowed'},
     'network-sharing': {field: 'relayNetwork', kind: 'choice', label: 'Share this device\'s relay', section: 'Network', help: 'which other devices may join rooms on this device\'s relay: off, tailscale or lan; restart the relay to apply', choices: [{label: 'Off — only this device', value: 'off'}, {label: 'Tailscale — your devices on your tailnet, encrypted', value: 'tailscale'}, {label: 'Local network — any device on this Wi-Fi or LAN, unencrypted', value: 'lan'}]},
     'network-rooms': {field: 'networkRooms', kind: 'boolean', label: 'Show rooms on my network', section: 'Network', help: 'list rooms open to the local network or tailnet beside your own; searches the network when the room list refreshes'},
 };
@@ -151,7 +154,7 @@ export function describeSettingValue(definition: SettingDefinition, value: Setti
 type MenuState = {note: string};
 
 /** The interactive menu: every setting grouped by section, each saved as soon as it is applied. */
-export function deviceSettingsPage(store: LocalStore, state: MenuState = {note: ''}): RoomPanelPage {
+export function deviceSettingsPage(store: LocalStore, state: MenuState = {note: ''}, callerHints: ManualReceiveCallerHints = {}): RoomPanelPage {
     const settings = store.settings();
     const profile = store.profile();
     const rows: RoomPanelRow[] = [
@@ -166,9 +169,19 @@ export function deviceSettingsPage(store: LocalStore, state: MenuState = {note: 
     ];
     for (const [key, definition] of Object.entries(SETTING_KEYS)) {
         const current = settings[definition.field];
+        if (definition.field === 'allowManualReceive') {
+            const caller = manualReceiveCaller(store, callerHints);
+            if (caller.agent || !caller.interactive) {
+                rows.push({id: key, label: definition.label, value: `${describeSettingValue(definition, current)} · user-only setting`, section: definition.section});
+                continue;
+            }
+        }
         const choices = definition.kind === 'boolean' ? ON_OFF : definition.choices;
         const initial = definition.kind === 'duration' ? describeLifetime(current as number | null) : definition.kind === 'managed-duration' ? formatDuration(current as number) : String(current);
         rows.push({id: key, label: definition.label, value: describeSettingValue(definition, current), section: definition.section, action: {kind: 'edit', initial, ...(choices ? {choices} : {}), hint: `${definition.help} · shell: pairlobby settings ${key} <value>`, save: async (value) => {
+            if (definition.field === 'allowManualReceive') {
+                assertManualReceiveSettingChange(manualReceiveCaller(store, callerHints));
+            }
             const parsed = parseSettingValue(key, definition, value);
             const next = {...store.settings(), [definition.field]: parsed};
             validateManagedSettings(next);
@@ -183,7 +196,7 @@ export function deviceSettingsPage(store: LocalStore, state: MenuState = {note: 
     rows.push({id: 'reset', label: 'Reset all settings', value: 'Back to the built-in defaults', section: 'Reset', action: {kind: 'command', confirm: 'Reset every device setting to its default? Your profile name and saved service endpoints are kept.', run: async () => {
         store.resetSettings();
     }}});
-    return {id: 'device-settings', title: 'PairLobby settings — this device', rows, note: 'Enter edits a setting and saves it immediately. Room-specific settings live in /settings inside a room.', reload: async () => deviceSettingsPage(store, state)};
+    return {id: 'device-settings', title: 'PairLobby settings — this device', rows, note: 'Enter edits a setting and saves it immediately. Room-specific settings live in /settings inside a room.', reload: async () => deviceSettingsPage(store, state, callerHints)};
 }
 
 /** Read-only here: switching or forgetting an endpoint opens a page, and adding one needs `pairlobby setup <url>`, which checks the address first. */

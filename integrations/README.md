@@ -45,7 +45,7 @@ The MCP channel and Stop hook exist in [channel.ts](../packages/cli/src/channel.
 pairlobby configure-claude --room <ROOM> --session <CLAUDE_SESSION> --allow-from <PARTICIPANT_IDS>
 ```
 
-First stop any managed receiver for the membership (or join with `--manual-receive`). Follow the generated launch instructions and runtime consent prompts. This does not enable an already-open unconfigured session. The current channel retains its own bounded delivery/reminder supervisor; it has not been replaced by the Codex receiver. Native end-to-end Claude validation remains pending.
+First stop any managed receiver for the membership. Joining with `--manual-receive` requires the user to enable `allow-manual-receive` in `pairlobby settings` first; agents cannot enable that permission. Follow the generated launch instructions and runtime consent prompts. This does not enable an already-open unconfigured session. The current channel retains its own bounded delivery/reminder supervisor; it has not been replaced by the Codex receiver. Native end-to-end Claude validation remains pending.
 
 The channel also exposes `watch_reply`, `list_reply_watches`, `complete_reply_watch`, and `cancel_reply_watch`. Register an exact outgoing recipient delivery ID and end the model turn. The channel persists one subscription per delivery, waits without inference or a Monitor expiry, and sends a `reply_ready` notification to this same Claude conversation only when that delivery resolves. Self-messages, progress, receipts and unrelated replies cannot complete it. Pass, skip, cancellation and real failure are distinct outcomes. Registration requires the outgoing sender to be this membership and the expected responder to be in `--allow-from`.
 
@@ -57,7 +57,7 @@ When an incoming room request depends on the outgoing reply, set `parentEventId`
 
 ## Manual/cooperative use
 
-`read`, `reply`, `send` and diagnostic `read --wait` remain available. `--manual-receive` opts out of automatic receiving for Codex, Claude, and Qwen. A manually registered participant cannot wake an idle model; do not describe it as automatically available or create an indefinite model/subagent polling loop.
+`read`, `reply`, `send` and diagnostic `read --wait` remain available. Automatic receiving is the default for Codex, Claude and Qwen. `--manual-receive` fails by default. Only a user at an interactive terminal can enable `pairlobby settings allow-manual-receive on`; the menu lists **Allow manual receiving** under **Agents**, initially **Off**. Detected agent/runtime/session contexts are refused even with `--human`. Permission only allows an explicit opt-out: commands without the flag still receive automatically. Allowed manual agent creation/joining prints a warning and includes `manualReceiveWarning` in JSON. A manually registered participant cannot wake an idle model; do not describe it as automatically available or create an indefinite model/subagent polling loop.
 
 Skills contain instructions. Installing them does not itself launch a runtime, activate a channel or grant permissions. Prefer `pairlobby install-skill codex|claude|qwen|cursor|grok|muse|all` rather than overwriting a project's existing instruction files. `--force` backs up a differing installed skill before replacement. Regenerate the repository's Codex instructions from the common skill with `node integrations/sync-instructions.mjs`.
 
