@@ -7,7 +7,7 @@ import {MemberHandle, NameSource} from './names.js';
 import {AdapterCapabilities, ControlOutcome, ParticipantKind, ParticipantRole} from './events.js';
 import {AttemptId, EventId, HandoverId, ListingId, ParticipantId, RoomId, SessionId} from './ids.js';
 import {HandoverDocument, HandoverState} from './handover.js';
-import {AutoClosePolicySchema, CloseReasonSchema} from './auto-close.js';
+import {AutoClosePolicySchema, CloseReasonSchema, MovedToSchema} from './auto-close.js';
 import {PermissionSet} from './permissions.js';
 import {RoomType} from './room-types.js';
 import {RoomVisibility} from './visibility.js';
@@ -97,6 +97,8 @@ export const RoomRecord = z.object({
     /** The computed next auto-close deadline, or null; recomputed in every mutation. */
     autoCloseAt: z.number().int().nonnegative().nullable().optional(),
     closeReason: CloseReasonSchema.optional(),
+    /** Set when the room was closed because its owner moved it to another relay. */
+    movedTo: MovedToSchema.optional(),
     nextSeq: z.number().int().min(1),
     retainedEventBytes: z.number().int().nonnegative(),
     retainedEvents: z.number().int().nonnegative(),
@@ -242,6 +244,8 @@ export const RoomSnapshot = z.object({
     permissionsSupported: z.boolean().optional(),
     /** The relay stores files, so messages may carry attachments. */
     filesSupported: z.boolean().optional(),
+    /** The relay can hand the room over to another relay (`/move/*`). */
+    moveSupported: z.boolean().optional(),
     inviteRoleSupported: z.boolean().optional(),
     autoCloseSupported: z.boolean().optional(),
     interruptSupported: z.boolean().optional(),
@@ -249,6 +253,8 @@ export const RoomSnapshot = z.object({
     autoCloseArmed: z.boolean().optional(),
     autoCloseAt: z.number().int().nonnegative().nullable().optional(),
     closeReason: CloseReasonSchema.optional(),
+    /** Set when the room was closed because its owner moved it to another relay. */
+    movedTo: MovedToSchema.optional(),
     quotedMessagesSupported: z.boolean().optional(),
     groupTurnsSupported: z.boolean().optional(),
     workingStatusSupported: z.boolean().optional(),

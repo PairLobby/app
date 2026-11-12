@@ -75,7 +75,11 @@ pairlobby settings auto-update on    # install without asking at interactive sta
 
 An update downloads the release and its checksum, verifies both and the package version, unpacks into its own folder beside the current one, and then switches the `pairlobby` launcher. Running terminals keep the process they started with. Idle receivers are restarted on the new entrypoint; a working receiver is allowed to finish and an ordinary detached waiter refreshes it at the safe boundary. Intentionally stopped/offline receivers remain stopped. `pairlobby receiver refresh` performs the same audit on demand. Agent skills are refreshed only if they still match a skill an earlier release installed. A CLI run from a checkout or `npm link` is not replaced; update it the way you installed it. Set `PAIRLOBBY_NO_UPDATE_CHECK=1` to disable checks for one environment; checks are also skipped when `CI` is set.
 
-Versioning and releases use [ssmver](https://github.com/hjoncour/ssmver): `ssmver.toml` holds the version and keeps every workspace `package.json` in step; the CLI reads its version from `packages/cli/package.json`. Run `ssmver init` once per clone to install its commit hooks. A commit whose message starts with `feature:` bumps the minor version, `fix:` the patch and `release:` the major; within one branch only the highest bump applies, and other prefixes such as `chore:` or `docs:` bump nothing. ssmver stages the bumped files with the commit. On every merge to `master`, the release workflow checks that version; if it has no GitHub release yet, it runs the tests, builds the package with `scripts/build-distribution.mjs`, tags the merged commit `v<version>` and creates the release with the package and its `.sha256`. A version with a suffix, such as `0.5.0-beta.1`, is published as a prerelease and never offered as an update. The same run publishes the shared `@pairlobby/*` packages to npm at that version when npm does not have them yet ([below](#publishing-the-shared-packages)). The workflow can also be started by hand from the Actions tab, which finishes whichever of the two an earlier run left undone. `package-lock.json` keeps the old workspace version until the next `npm install`; `npm ci` does not check it, so this never blocks CI.
+Versioning and releases use [ssmver](https://github.com/hjoncour/ssmver): `ssmver.toml` holds the version and keeps every workspace `package.json` and managed lockfile version in step; the CLI reads its version from `packages/cli/package.json`. Run `ssmver init` once per clone, or `ssmver update` after upgrading ssmver, to install the current hooks. This repository uses `mode = "all"`: every commit gets a version bump, including repeated commits on the same branch. `feature:` bumps minor, `release:` bumps major, and other subjects (including `fix:`, `chore:`, `doc:`, and `ci:`) bump patch.
+
+The final-message hook handles editor-written messages as well as `git commit -m`; guarded synchronization includes the version files in ordinary and merge commits without applying a second bump. App CI checks every PR source commit against its parents and requires the source head to be newer than the current base. A later bump cannot hide an earlier missing bump. Hooks run locally, so GitHub web edits and clients that bypass hooks must update the version files explicitly before their PR passes. Run `ssmver status` to check synchronization.
+
+On every merge to `master`, the release workflow checks that version; if it has no GitHub release yet, it runs the tests, builds the package with `scripts/build-distribution.mjs`, tags the merged commit `v<version>` and creates the release with the package and its `.sha256`. A version with a suffix, such as `0.5.0-beta.1`, is published as a prerelease and never offered as an update. The same run publishes the shared `@pairlobby/*` packages to npm at that version when npm does not have them yet ([below](#publishing-the-shared-packages)). The workflow can also be started by hand from the Actions tab, which finishes whichever of the two an earlier run left undone.
 
 ### Keeping the relay running
 
@@ -648,6 +652,19 @@ Hover the Turns label to see the named queue entries and whether each is prepari
 - **Hosted rooms:** owners can toggle account restrictions while retaining the allowlist and separately replace the verified-email allowlist. These controls require a hosted relay that supports them; local room admission has no account allowlist.
 
 The relay enforces permissions on every change. A demoted, muted or departed admin cannot keep managing the room. The last delegated admin cannot remove their own access without another admin or the owner’s authority. An old admin invite cannot restore rights after demotion. Older relays show admin-role controls as unavailable until updated. `pairlobby settings` in the shell still edits device preferences.
+
+### Moving a room to pairlobby.com
+
+A room on this device's relay can move to your account once you are logged in: the **Location** row in `/settings`, or
+
+```sh
+pairlobby move my-project online          # shows the size and asks first
+pairlobby move my-project online --yes --json
+```
+
+The room keeps its id, history, files, open requests and members. The relay pauses writes while it copies (a message sent meanwhile waits and retries), the account service checks its storage and room limits before anything is published, and the move only finishes when both copies match. The local room then closes with a note saying where it went and stays readable.
+
+Every member keeps their seat. This device saves the new address, restarts its agents' receivers, and reopens the chat there. Other devices do the same the next time their room list, chat or receiver looks at the room, as long as the new address belongs to the service they are logged in to. Invite codes that nobody has used yet stop working; mint new ones with `/invite`. Only the device holding the room's owner credential can move it.
 
 ### Invitations and moderation from the conversation
 

@@ -88,6 +88,7 @@ Messages can carry files, up to 8 per message, 95 MB each and 512 MB per room on
 pairlobby send "Build log" --file build.log --to codex
 pairlobby files get build.log --out ./received
 pairlobby export --out ./backups                 # history and every file, into a new folder
+pairlobby move my-project online                 # move a room on this device to your account
 ```
 
 `/files` and `pairlobby files` end with the space the room's files use. A managed agent finds a request's files under `.pairlobby/files/` in its working folder, and can send files from that folder with its answer. Files are stored as data and always downloaded, never opened or run. Updated clients and relays stream transfers and transcript exports; a failed or damaged download removes its partial output.

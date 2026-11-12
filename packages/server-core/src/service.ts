@@ -2,13 +2,14 @@
 //! the Node server both run this; only the store and the socket layer differ.
 
 import {sha256} from '@noble/hashes/sha2.js';
-import {ABSOLUTE_MAX_FILE_BYTES, CONTACT_INVITE_LIFETIME_MS, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_RETAINED_FILE_BYTES, DEFAULT_ROOM_POLICY, FILE_CHUNK_BYTES, PROTOCOL_VERSION, ProtocolError, UNATTACHED_FILE_LIFETIME_MS, canSee, formatFileSize, hashCredential, newId, newInviteCode, normalizeInviteCode, roomType, safeFileName} from '@pairlobby/protocol';
+import {ABSOLUTE_MAX_FILE_BYTES, CONTACT_INVITE_LIFETIME_MS, MOVE_LEASE_MS, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_RETAINED_FILE_BYTES, DEFAULT_ROOM_POLICY, FILE_CHUNK_BYTES, PROTOCOL_VERSION, ProtocolError, UNATTACHED_FILE_LIFETIME_MS, canSee, formatFileSize, hashCredential, newId, newInviteCode, normalizeInviteCode, roomType, safeFileName} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
     Attachment,
     AutoClosePolicy,
     ContactResponse,
     ListingRecord,
+    MovedTo,
     DefaultVisibility,
     FileRecord,
     MessageRequest,
@@ -49,6 +50,7 @@ import {
     assertController,
     assertPermitted,
     authenticate,
+    closeMovedRoom,
     closeRoom,
     createRoom,
     joinAsGuest,
@@ -86,7 +88,7 @@ import {TurnCoordinator, assertTurn} from './turns.js';
 import type {FileStore, RoomHead, RoomStore} from './store.js';
 import {AutoCloseStore} from './auto-close-store.js';
 import {retryRoomConflict} from './commit.js';
-import {exportResponse, retainedEvents} from './export.js';
+import {exportResponse, retainedEvents, transferResponse} from './export.js';
 import type {ExportFormat, ExportSource} from './export.js';
 
 type InviteDirectory = {
@@ -282,7 +284,7 @@ export class RoomService {
 
     /** What the room looks like, plus what this relay can do that depends on its store rather than on the room. */
     private snapshotOf(view: RoomView): RoomSnapshot {
-        return {...toSnapshot(view), filesSupported: this.store.files !== undefined, receiptMode: this.receiptMode};
+        return {...toSnapshot(view), filesSupported: this.store.files !== undefined, moveSupported: this.store.transferOut !== undefined, receiptMode: this.receiptMode};
     }
 
     /** Whether rooms here keep files, and the limits a new room gets: what `GET /v1/server` reports. */
@@ -1435,6 +1437,60 @@ export class RoomService {
         });
     }
 
+    /** Owner or admin: refuses writes for a while so the room can be copied to another relay. Asking again renews the lease. */
+    async prepareMove(roomId: string, credential: string): Promise<{until: number}> {
+        const store = this.movableStore();
+        const view = await this.view(roomId);
+        const now = this.now();
+        assertController(authenticate(view, await hashCredential(credential), now));
+        assertRoomWritable(view, now);
+        const until = now + MOVE_LEASE_MS;
+        store.setMoveLease(roomId, until);
+        return {until};
+    }
+
+    /** Owner or admin: the move did not happen, so the room takes writes again. */
+    async abortMove(roomId: string, credential: string): Promise<void> {
+        const store = this.movableStore();
+        const view = await this.view(roomId);
+        assertController(authenticate(view, await hashCredential(credential), this.now()));
+        store.setMoveLease(roomId, null);
+    }
+
+    /** Owner or admin, while the lease holds: every row of the room, as NDJSON. */
+    async moveTransfer(roomId: string, credential: string): Promise<Response> {
+        const store = this.movableStore();
+        const view = await this.view(roomId);
+        const now = this.now();
+        assertController(authenticate(view, await hashCredential(credential), now));
+        if (store.moveLease(roomId, now) === null) {
+            throw new ProtocolError('invalid_request', 'start the move first; the room is still taking writes');
+        }
+        return transferResponse(store.transferOut(roomId));
+    }
+
+    /** Owner or admin: the other relay has the room, so it closes here and says where it went. */
+    async commitMove(roomId: string, credential: string, movedTo: MovedTo): Promise<RoomEvent> {
+        const store = this.movableStore();
+        if (movedTo.roomId !== roomId) {
+            throw new ProtocolError('invalid_request', 'a moved room keeps its id');
+        }
+        if (store.moveLease(roomId, this.now()) === null) {
+            throw new ProtocolError('invalid_request', 'the move lease ended; start the move again');
+        }
+        const event = await this.applyOne(closeMovedRoom(await this.view(roomId), await hashCredential(credential), movedTo, this.ctx()));
+        store.setMoveLease(roomId, null);
+        return event;
+    }
+
+    private movableStore(): MovableStore {
+        const {transferOut, moveLease, setMoveLease} = this.store;
+        if (!transferOut || !moveLease || !setMoveLease) {
+            throw new ProtocolError('unsupported_capability', 'this relay cannot move rooms');
+        }
+        return {transferOut: transferOut.bind(this.store), moveLease: moveLease.bind(this.store), setMoveLease: setMoveLease.bind(this.store)};
+    }
+
     async read(roomId: string, credential: string, after: number, limit: number, receiptsAfter?: number, sync?: SyncReadOptions): Promise<ReadEventsResponse> {
         return retryRoomConflict(() => this.readAttempt(roomId, credential, after, limit, receiptsAfter, sync));
     }
@@ -1583,6 +1639,8 @@ export class RoomService {
 function hexDigest(bytes: Uint8Array): string {
     return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
+
+type MovableStore = {transferOut: NonNullable<RoomStore['transferOut']>; moveLease: NonNullable<RoomStore['moveLease']>; setMoveLease: NonNullable<RoomStore['setMoveLease']>};
 
 export type StreamDigest = {size: number; sha256: string};
 

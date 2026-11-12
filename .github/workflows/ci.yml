@@ -20,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -32,6 +34,14 @@ jobs:
             echo "::error::ssmver.toml is at '$version' but packages/cli/package.json is at '$cli'"
             exit 1
           fi
+      - name: Check every PR source commit bumps its version
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/check-commit-versions.mjs "$BASE_SHA" "$SOURCE_HEAD_SHA"
+      - name: Test version policy
+        run: node --test scripts/check-commit-versions.test.mjs
       - run: npm ci
       - run: npm test
       - name: Package the CLI

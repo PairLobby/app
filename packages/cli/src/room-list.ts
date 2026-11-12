@@ -5,6 +5,7 @@ import type {LocalStore, RoomEntry, SessionEntry} from '@pairlobby/client';
 import {ProtocolError, roomType} from '@pairlobby/protocol';
 import type {ParticipantView, RoomSnapshot} from '@pairlobby/protocol';
 import {lastMessage} from './find.js';
+import {followMovedRoom} from './move-room.js';
 import type {OnlineRoom} from './online.js';
 import type {RoomListEntry} from './render.js';
 import {receiverConfiguration, receiverStatus, stopReceiver} from './receiver.js';
@@ -39,27 +40,33 @@ export const SESSION_COLUMNS: ListColumn[] = [
 
 /** Only snapshots: listing never joins, acknowledges messages, or starts model work. */
 export async function loadRoomList(store: LocalStore, signal?: AbortSignal): Promise<RoomListEntry[]> {
-    return Promise.all(store.rooms().map(async (room): Promise<RoomListEntry> => {
-        const credentials = [...new Set([store.credential(room.roomId, 'controller'), ...room.sessions.map((session) => store.credential(room.roomId, session.sessionId))].filter((value): value is string => Boolean(value)))];
-        const client = new PairLobbyClient(room.serverUrl, undefined, signal);
-        let why = 'no_saved_credential';
-        try {
-            for (const credential of credentials) {
-                try {
-                    const snapshot = await client.snapshot(room.roomId, credential);
-                    return {room, reachable: true, snapshot, lastMessageAt: snapshot.lastMessageAt ?? await latestMessageAt(client, credential, snapshot)};
-                } catch (error) {
-                    why = error instanceof ProtocolError ? error.code : 'unreachable';
-                    if (!['unauthorized', 'participant_revoked', 'room_locked'].includes(why) || signal?.aborted) {
-                        break;
-                    }
+    return Promise.all(store.rooms().map((room) => loadRoomEntry(store, room, signal)));
+}
+
+async function loadRoomEntry(store: LocalStore, room: RoomEntry, signal?: AbortSignal, followed = false): Promise<RoomListEntry> {
+    const credentials = [...new Set([store.credential(room.roomId, 'controller'), ...room.sessions.map((session) => store.credential(room.roomId, session.sessionId))].filter((value): value is string => Boolean(value)))];
+    const client = new PairLobbyClient(room.serverUrl, undefined, signal);
+    let why = 'no_saved_credential';
+    try {
+        for (const credential of credentials) {
+            try {
+                const snapshot = await client.snapshot(room.roomId, credential);
+                // A room whose owner moved it is listed from its new address, once this device has saved it.
+                if (!followed && snapshot.movedTo && await followMovedRoom(store, room, snapshot).catch(() => null)) {
+                    return loadRoomEntry(store, store.room(room.roomId) ?? room, signal, true);
+                }
+                return {room, reachable: true, snapshot, lastMessageAt: snapshot.lastMessageAt ?? await latestMessageAt(client, credential, snapshot)};
+            } catch (error) {
+                why = error instanceof ProtocolError ? error.code : 'unreachable';
+                if (!['unauthorized', 'participant_revoked', 'room_locked'].includes(why) || signal?.aborted) {
+                    break;
                 }
             }
-            return {room, reachable: false, why};
-        } finally {
-            client.closeLive();
         }
-    }));
+        return {room, reachable: false, why};
+    } finally {
+        client.closeLive();
+    }
 }
 
 /** Where a room lives: on a hosted or cloud relay, on a relay other devices on the network reach, or on this device only. */

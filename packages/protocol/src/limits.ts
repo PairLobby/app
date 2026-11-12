@@ -25,7 +25,7 @@ export type InviteRole = 'member' | 'guest';
  */
 export type AutoClosePolicy = {mode: 'off'} | {mode: 'inactivity'; afterMs: number} | {mode: 'age'; afterMs: number} | {mode: 'agents_and_guests_left'};
 
-export type CloseReason = 'manual' | 'inactivity' | 'age' | 'agents_and_guests_left';
+export type CloseReason = 'manual' | 'inactivity' | 'age' | 'agents_and_guests_left' | 'moved';
 
 /** Shortest auto-close duration a relay accepts. */
 export const MIN_AUTO_CLOSE_MS = 1000;

@@ -7,6 +7,8 @@ import {AUTO_CLOSE_CHOICES, describeAutoClose, formatAutoClose, parseAutoClose} 
 import {PERMISSION_LABELS, authorityFor} from './permissions.js';
 import {loadRoomStatus, roomStatusRows} from './room-status.js';
 import {visibleTo} from './render.js';
+import {moveBlocker, moveRoomOnline} from './move-room.js';
+import {isLoopbackUrl} from './share.js';
 
 export type RoomSettingsContext = {client: PairLobbyClient; roomId: string; credential: string; participantId: string; controllerCredential?: string | undefined; store?: LocalStore};
 type SettingsAccess = {room: RoomSnapshot; authority: string | undefined};
@@ -54,6 +56,11 @@ export async function settingsPage(context: RoomSettingsContext): Promise<RoomPa
             await change(context, (owner) => context.client.rename(context.roomId, owner, name));
         }
     }});
+    const saved = context.store?.room(context.roomId);
+    const blocker = hosted ? null : !saved || !context.store ? 'This room is not saved on this device.' : moveBlocker(context.store, saved) ?? (room.moveSupported ? null : 'Update PairLobby on the device whose relay holds this room to move it online.');
+    rows.push({id: 'location', label: 'Location', value: hosted ? 'Online' : isLoopbackUrl(context.client.serverUrl) ? 'This device\'s relay' : new URL(context.client.serverUrl).host, section: 'Room', ...(hosted ? {hint: 'This room is online.'} : blocker ? {hint: blocker} : {action: {kind: 'command' as const, closeAfterSave: true, confirm: `Move ${room.name} online? Its history, files and members move with it, and everyone is reconnected there. Your account's storage and room limits are checked first. The local copy closes and stays readable; invite codes not yet used stop working.`, run: async () => {
+        await moveRoomOnline(context.store!, saved!);
+    }}})});
     edit('turns', 'Reply mode', room.turnMode ?? 'Unsupported', 'Turns', {kind: 'edit', initial: room.turnMode ?? 'sequential', choices: [{label: 'Sequential — one agent answers at a time', value: 'sequential'}, {label: 'Parallel — different agents can work together', value: 'parallel'}], hint: 'Parallel still processes one request at a time per agent; it does not interrupt current work.', save: (value) => change(context, (owner) => context.client.setTurnMode(context.roomId, owner, value === 'parallel' ? 'parallel' : 'sequential'))}, Boolean(room.groupTurnsSupported));
     edit('expiry', 'Expiry', room.expiresAt === null ? 'Never' : new Date(room.expiresAt).toISOString(), 'Room', {kind: 'edit', initial: room.expiresAt === null ? 'never' : `at ${new Date(room.expiresAt).toISOString()}`, choices: [{label: 'Never expire', value: 'never'}, {label: 'In 1 hour', value: 'in 1 hour'}, {label: 'In 24 hours', value: 'in 24 hours'}, {label: 'In 7 days', value: 'in 7 days'}, {label: 'Custom duration or date…', value: 'custom', custom: true}], hint: 'Examples: never, in 10 hours, at 2026-10-01 18:00. Custom dates use your local timezone unless specified.', save: async (value) => {
         const expiresAt = parseExpiry(value);
