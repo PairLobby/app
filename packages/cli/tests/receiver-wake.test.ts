@@ -55,7 +55,7 @@ test('test_sending_a_message_starts_a_dead_receiver_again_and_leaves_a_stopped_o
     const context = {cli: process.env['PAIRLOBBY_TEST_CLI'] ?? resolve('packages/cli/dist/main.js'), environment: {...process.env, PATH: `${directory}:${process.env['PATH']}`, PAIRLOBBY_DATA_DIR: dataDirectory, PAIRLOBBY_TEST_RECORD: join(directory, 'calls.txt'), PAIRLOBBY_NO_UPDATE_CHECK: '1', PAIRLOBBY_ROOM: '', PAIRLOBBY_SESSION: ''}};
     const agents: Joined[] = [];
     try {
-        const room = await json(context, ['create', '--name', 'wake', '--as', 'owner', '--human', '--server', relay.url, '--manual-receive', '--json']) as Created;
+        const room = await json(context, ['create', '--name', 'wake', '--as', 'owner', '--human', '--server', relay.url, '--json']) as Created;
         const second = (await json(context, ['invite', '--room', room.roomId, '--session', room.sessionId, '--json'])).code as string;
         agents.push(await json(context, ['join', room.invite.code, '--server', relay.url, '--runtime', 'codex', '--as', 'crashed', '--workdir', directory, '--json']) as Joined);
         agents.push(await json(context, ['join', second, '--server', relay.url, '--runtime', 'codex', '--as', 'stopped', '--workdir', directory, '--json']) as Joined);

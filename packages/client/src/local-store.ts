@@ -95,6 +95,8 @@ export interface SavedEndpoint {
 
 /** Behavioural preferences for this device. Distinct from the profile, which is identity. */
 export interface Settings {
+    /** A user may permit explicit --manual-receive on this device; automatic receiving remains the default. */
+    allowManualReceive: boolean;
     /** Ask before deleting a room. */
     confirmDelete: boolean;
     /** Deleting a room this device owns while someone else is still in it only removes it from this device. */
@@ -140,6 +142,7 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
+    allowManualReceive: false,
     confirmDelete: true,
     leaveOccupiedRooms: true,
     deleteEmptyRooms: true,
@@ -221,7 +224,8 @@ export class LocalStore {
     }
 
     settings(): Settings {
-        return {...DEFAULT_SETTINGS, ...readJson<Partial<Settings>>(this.settingsFile, {})};
+        const saved = readJson<Partial<Settings>>(this.settingsFile, {});
+        return {...DEFAULT_SETTINGS, ...saved, allowManualReceive: saved.allowManualReceive === true};
     }
 
     setSettings(update: Partial<Settings>): Settings {

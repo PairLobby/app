@@ -48,7 +48,7 @@ test('Codex, Claude and Qwen coordinate group turns, see prior replies, pass and
     }
     const starts = (runtime: string) => existsSync(join(directory, `${runtime}.calls`)) ? readFileSync(join(directory, `${runtime}.calls`), 'utf8').split('\n').filter((line) => line === 'turn/start').length : 0;
     try {
-        const owner = await command(['create', '--name', 'group', '--human', '--as', 'owner', '--manual-receive', '--server', relay.url]);
+        const owner = await command(['create', '--name', 'group', '--human', '--as', 'owner', '--server', relay.url]);
         const credential = store.credential(owner.roomId, owner.sessionId)!;
         const controller = store.credential(owner.roomId, 'controller')!;
         for (const runtime of ['codex', 'claude', 'qwen']) {

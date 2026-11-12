@@ -38,9 +38,9 @@ jobs:
         run: node scripts/build-distribution.mjs artifacts
 
   # The same relay checks against the Node relay and the Durable Object relay
-  # Pin the adapter that implements these store ports, then build it with this PR's
-  # packages. Update the adapter pin when changing its contract; master may still
-  # implement the previous release while coordinated PRs await publication.
+  # Build durable-runtime master with this PR's packages so changes that either
+  # adapter cannot follow fail here. Coordinated adapter changes may temporarily
+  # pin a companion commit, but restore master after that adapter change merges.
   parity:
     runs-on: ubuntu-latest
     steps:
@@ -48,7 +48,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: PairLobby/durable-runtime
-          ref: d6e597a6c4e723520e86710f840c643642f6e2da # atomic relay adapter / 0.5.0
+          ref: master
           path: .parity/durable-runtime
       - uses: actions/setup-node@v6
         with:
@@ -56,7 +56,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: node --test scripts/parity-dependencies.test.mjs
+      - run: node --test scripts/parity-dependencies.test.mjs scripts/check-candidates.test.mjs
       - run: node scripts/durable-parity.mjs .parity/durable-runtime --install --parity .parity/parity.md
         env:
           WRANGLER_SEND_METRICS: 'false'

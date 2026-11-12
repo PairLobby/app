@@ -17,6 +17,10 @@ import pyte
 cli = ['node', os.environ.get('PAIRLOBBY_TEST_CLI', 'packages/cli/dist/main.js')]
 with tempfile.TemporaryDirectory(prefix='pairlobby-reply-picker-') as directory:
     environment = {**os.environ, 'PAIRLOBBY_DATA_DIR': directory + '/device', 'TERM': 'xterm-256color'}
+    # This isolated fixture deliberately uses manual fake agents; model runtimes are not invoked.
+    os.makedirs(environment['PAIRLOBBY_DATA_DIR'], exist_ok=True)
+    with open(environment['PAIRLOBBY_DATA_DIR'] + '/settings.json', 'w') as settings:
+        json.dump({'allowManualReceive': True}, settings)
     relay = subprocess.Popen(cli + ['serve', '--port', '0', '--data-dir', directory + '/relay'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=environment)
     terminal = None
     master = None
@@ -27,7 +31,7 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-reply-picker-') as directory:
         def command(*arguments):
             return json.loads(subprocess.check_output(cli + list(arguments) + ['--json'], env=environment, text=True, timeout=15))
 
-        human = command('create', '--name', 'Reply picker', '--as', 'human', '--human', '--manual-receive', '--server', url)
+        human = command('create', '--name', 'Reply picker', '--as', 'human', '--human', '--server', url)
         room_id = human['roomId']
         scope = ['--room', room_id, '--session', human['sessionId']]
         codex = command('join', human['invite']['code'], '--as', 'codex', '--agent', '--manual-receive', '--server', url)

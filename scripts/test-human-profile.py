@@ -18,6 +18,10 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-profile-') as directory:
     environment = {**os.environ, 'PAIRLOBBY_DATA_DIR': directory + '/client', 'TERM': 'xterm-256color'}
     for variable in ['CLAUDE_CODE_SESSION_ID', 'CODEX_SESSION_ID', 'CODEX_THREAD_ID', 'CODEX_CONVERSATION_ID', 'PAIRLOBBY_SESSION']:
         environment.pop(variable, None)
+    # This isolated fixture deliberately uses manual fake agents; model runtimes are not invoked.
+    os.makedirs(environment['PAIRLOBBY_DATA_DIR'], exist_ok=True)
+    with open(environment['PAIRLOBBY_DATA_DIR'] + '/settings.json', 'w') as settings:
+        json.dump({'allowManualReceive': True}, settings)
     relay = subprocess.Popen(cli + ['serve', '--port', '0', '--data-dir', directory + '/relay'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=environment)
     terminal = None
     master = None
@@ -29,7 +33,7 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-profile-') as directory:
             return json.loads(subprocess.check_output(cli + list(arguments) + ['--json'], env=environment, text=True, timeout=15))
 
         command('profile', '--as', 'Default One', '--human')
-        human = command('create', '--name', 'Profile check', '--human', '--manual-receive', '--server', url)
+        human = command('create', '--name', 'Profile check', '--human', '--server', url)
         room_id = human['roomId']
         scope = ['--room', room_id, '--session', human['sessionId']]
         agent = command('join', human['invite']['code'], '--as', 'agent', '--agent', '--manual-receive', '--server', url)
@@ -113,7 +117,7 @@ with tempfile.TemporaryDirectory(prefix='pairlobby-profile-') as directory:
         quit_chat()
 
         invite = command('invite', '--room', room_id, '--session', agent['sessionId'])
-        second = command('join', invite['code'], '--human', '--manual-receive', '--server', url)
+        second = command('join', invite['code'], '--human', '--server', url)
         # A fixture with multiple humans and no previous choice must prompt once.
         registry_path = directory + '/client/rooms.json'
         with open(registry_path) as source:

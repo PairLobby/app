@@ -3,12 +3,13 @@ import {mkdtempSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {promisify} from 'node:util';
-import {afterEach, beforeEach, expect, test} from 'vitest';
+import {afterEach, beforeEach, expect, test, vi} from 'vitest';
 import {DEFAULT_SETTINGS, LocalStore, PairLobbyClient} from '@pairlobby/client';
 import {startServer} from '@pairlobby/local-server';
 import type {RunningServer} from '@pairlobby/local-server';
 import {SETTING_KEYS, describeSettingValue, deviceSettingsPage, parseSettingValue} from '../src/device-settings.js';
 import type {PanelEdit} from '../src/room-panel.js';
+import * as manualReceive from '../src/manual-receive.js';
 
 type CreatedJson = {roomId: string; sessionId: string};
 
@@ -22,6 +23,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+    vi.restoreAllMocks();
     await server.close();
     rmSync(directory, {recursive: true, force: true});
 });
@@ -77,6 +79,24 @@ test('test_the_menu_lists_every_setting_and_saves_edits_immediately', async () =
     await edit('profile-name').save('');
     expect(store.profile().displayName).toBeUndefined();
     expect(deviceSettingsPage(store).rows.find((row) => row.id === 'default-reply-mode')!.value).toBe('Parallel');
+});
+
+test('the manual-receive menu permission starts Off and only a user terminal can change it', async () => {
+    const store = new LocalStore(join(directory, 'manual-menu'));
+    const caller = vi.spyOn(manualReceive, 'manualReceiveCaller').mockReturnValue({interactive: true, agent: false});
+    const page = deviceSettingsPage(store);
+    const row = page.rows.find((entry) => entry.id === 'allow-manual-receive')!;
+    expect(row.value).toBe('Off');
+    const edit = row.action as PanelEdit;
+    await edit.save('on');
+    expect(store.settings().allowManualReceive).toBe(true);
+    caller.mockReturnValue({interactive: true, agent: true});
+    expect(deviceSettingsPage(store).rows.find((entry) => entry.id === 'allow-manual-receive')!.action).toBeUndefined();
+    await expect(edit.save('off')).rejects.toThrow('Agent sessions cannot enable');
+    expect(store.settings().allowManualReceive).toBe(true);
+    caller.mockReturnValue({interactive: true, agent: false});
+    await edit.save('off');
+    expect(store.settings().allowManualReceive).toBe(false);
 });
 
 test('test_new_rooms_start_with_this_devices_defaults', async () => {

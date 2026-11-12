@@ -9,10 +9,11 @@ import type {LocalStore} from '@pairlobby/client';
 import {deviceSettingsPage} from './device-settings.js';
 import {RoomPanel} from './room-panel.js';
 import {createTerminalProgram} from './terminal-program.js';
+import type {ManualReceiveCallerHints} from './manual-receive.js';
 
 type MenuKey = Key & {sequence?: string};
 
-export function runSettingsMenu(store: LocalStore): Promise<void> {
+export function runSettingsMenu(store: LocalStore, caller: ManualReceiveCallerHints = {}): Promise<void> {
     return new Promise((resolve) => {
         const screen = blessed.screen({program: createTerminalProgram(), smartCSR: true, fullUnicode: true, title: 'PairLobby settings', warnings: false});
         let closed = false;
@@ -34,6 +35,6 @@ export function runSettingsMenu(store: LocalStore): Promise<void> {
         });
         screen.on('resize', () => panel.render());
         screen.program.enableMouse();
-        panel.show(deviceSettingsPage(store));
+        panel.show(deviceSettingsPage(store, {note: ''}, caller));
     });
 }

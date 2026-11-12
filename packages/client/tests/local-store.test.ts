@@ -2,7 +2,7 @@
 //! the file that answers "which rooms have my agents joined" must never contain
 //! a credential, because that file is what the CLI prints.
 
-import {mkdtempSync, readFileSync, rmSync, statSync} from 'node:fs';
+import {mkdtempSync, readFileSync, rmSync, statSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
@@ -49,6 +49,20 @@ function session(overrides: Partial<SessionEntry> = {}): SessionEntry {
 }
 
 describe('local registry', () => {
+    test('manual receiving permission defaults off, requires a stored true boolean, and resets off', () => {
+        expect(store.settings().allowManualReceive).toBe(false);
+        writeFileSync(join(directory, 'settings.json'), JSON.stringify({showIds: true}));
+        expect(store.settings()).toMatchObject({showIds: true, allowManualReceive: false});
+        for (const value of ['true', 'on', 1, null, false]) {
+            writeFileSync(join(directory, 'settings.json'), JSON.stringify({allowManualReceive: value}));
+            expect(store.settings().allowManualReceive).toBe(false);
+        }
+        store.setSettings({allowManualReceive: true});
+        expect(store.settings().allowManualReceive).toBe(true);
+        expect(store.resetSettings().allowManualReceive).toBe(false);
+        expect(store.settings().allowManualReceive).toBe(false);
+    });
+
     test('test_the_registry_file_never_contains_a_credential', () => {
         store.upsertRoom(room());
         store.addSession(room().roomId, session());
