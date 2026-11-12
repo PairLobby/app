@@ -75,6 +75,7 @@ export function describeCloseReason(reason: CloseReason | undefined): string {
         case 'inactivity':             return 'closed automatically after inactivity';
         case 'age':                    return 'closed automatically at its age limit';
         case 'agents_and_guests_left': return 'closed automatically after all agents and visitors left';
+        case 'moved':                  return 'moved to another relay and closed here';
         default:                       return 'closed';
     }
 }

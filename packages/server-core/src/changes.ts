@@ -147,6 +147,18 @@ export class NotifyingStore implements RoomStore {
         return this.store.unreceivedRequests?.bind(this.store);
     }
 
+    get transferOut(): RoomStore['transferOut'] {
+        return this.store.transferOut?.bind(this.store);
+    }
+
+    get moveLease(): RoomStore['moveLease'] {
+        return this.store.moveLease?.bind(this.store);
+    }
+
+    get setMoveLease(): RoomStore['setMoveLease'] {
+        return this.store.setMoveLease?.bind(this.store);
+    }
+
     async createRoom(room: RoomRecord, participant: ParticipantRecord, event: RoomEvent): Promise<void> {
         await this.store.createRoom(room, participant, event);
         await this.publish(room.roomId);

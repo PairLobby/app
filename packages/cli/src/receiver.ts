@@ -28,6 +28,7 @@ import {VERSION} from './version.js';
 import {ProviderCooldownStore, ProviderUsageLimited, providerProfileKey, publicProviderLimit, reconcileProviderCooldown} from './provider-limits.js';
 import {providerRetryText} from './request-recovery.js';
 import {ListingHeartbeat} from './shared-listings.js';
+import {saveMovedAddress} from './move-room.js';
 
 export type ReceiverStatus = {pid: number; state: string; runtime: string; version?: string; entrypoint?: string; restartRequired?: boolean; threadId?: string; model?: string; eventId?: string; attempt?: number | null; attemptId?: string | null; detail?: string; receiptError?: string; usage?: unknown; providerWait?: ProviderWait | null; idleTimeoutMs?: number; absoluteTimeoutMs?: number; requestStartedAt?: number | null; lastActivityAt?: number | null; idleDeadlineAt?: number | null; absoluteDeadlineAt?: number | null; idleRemainingMs?: number | null; absoluteRemainingMs?: number | null};
 export type ReceiverStartOptions = {model?: string; workdir?: string; effort?: string; executable?: string; idleTimeoutMs?: number; absoluteTimeoutMs?: number};
@@ -415,6 +416,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         }
     };
     let stopped = false;
+    let moved = false;
     let receipts: ReceiptMonitor | undefined;
     let runtime: ReceiverRuntime | undefined;
     let wakeReceiver: (() => void) | undefined;
@@ -872,6 +874,11 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                 const version = live.version;
                 await flush();
                 const snapshot = await live.snapshot();
+                // The room's owner moved it: save the new address and start again there once this process has let go.
+                if (snapshot.lifecycle === 'closed' && snapshot.movedTo && saveMovedAddress(store, store.room(room.roomId) ?? room, snapshot)) {
+                    moved = true;
+                    break;
+                }
                 const member = snapshot.participants.find((participant) => participant.participantId === session.participantId);
                 if (!member || member.revoked || member.left) {
                     break;
@@ -990,6 +997,9 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
         cooldowns.close();
         database.close();
         unlinkSync(location.lock);
+        if (moved) {
+            await startReceiver(store, room.roomId, session.sessionId).catch(() => {});
+        }
     }
 }
 

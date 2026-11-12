@@ -1,6 +1,6 @@
-import {FILE_CHUNK_BYTES, ProtocolError, mergeMessageRequest} from '@pairlobby/protocol';
+import {FILE_CHUNK_BYTES, ProtocolError, TransferDigest, mergeMessageRequest} from '@pairlobby/protocol';
 
-import type {DefaultVisibility, FileRecord, HandoverRecord, InviteRecord, ListingRecord, LocalRoom, MessageRequest, ParticipantRecord, RequestPage, RoomEvent, RoomRecord} from '@pairlobby/protocol';
+import type {ControlRecord, DefaultVisibility, FileRecord, HandoverRecord, InviteRecord, ListingRecord, LocalRoom, MessageRequest, ParticipantRecord, RequestPage, RoomEvent, RoomRecord, RoomTransferRecord} from '@pairlobby/protocol';
 import type {Mutation, RoomView} from '@pairlobby/room-core';
 import {committedRoom, mutationChanges, eventPage, requestPage, receivedRequest, MAX_PAGE_RECORDS} from '@pairlobby/server-core';
 import type {CommittedChange, DirectoryStore, EventPage, FileStore, IdempotencyRecord, JsonRow, RoomHead, RoomLoadOptions, RoomStore} from '@pairlobby/server-core';
@@ -16,6 +16,8 @@ interface BodyRow {
 }
 
 type UploadRecord = FileRecord & {uploading: true; uploadedBytes: number; chunks: number};
+type RequestRow = {event_id: string; seq: number; received_at: number | null; response_event_id: string | null; requires_reply: number; body: string};
+export type TransferredRoom = {roomId: string; events: number; files: number};
 
 /** SQLite implementation shared by Node and Durable Objects; all platform APIs stay in their drivers. */
 export const VISIBLE_EVENT_SQL = 'seq >= (SELECT earliest_seq FROM rooms WHERE rooms.room_id = events.room_id)';
@@ -42,6 +44,7 @@ export class SqliteStore implements RoomStore {
     private pendingChanges: CommittedChange[] | null = null;
     readonly files: FileStore = {
         putFile: async (file, bytes, limitBytes, expectedStateRevision) => this.transaction(() => {
+            this.assertNotMoving(file.roomId);
             const held = this.db.prepare('SELECT coalesce(sum(size), 0) AS total FROM files WHERE room_id = ?').get(file.roomId) as {total: number};
             if (Number(held.total) + file.size > limitBytes) {
                 return false;
@@ -82,6 +85,7 @@ export class SqliteStore implements RoomStore {
             }
         }),
         createUpload: async (file, limitBytes, expectedStateRevision) => this.transaction(() => {
+            this.assertNotMoving(file.roomId);
             const held = this.db.prepare('SELECT coalesce(sum(size),0) AS total FROM files WHERE room_id=?').get(file.roomId) as {total: number};
             if (Number(held.total) + file.size > limitBytes) {
                 return false;
@@ -249,6 +253,10 @@ export class SqliteStore implements RoomStore {
 
     async apply(mutation: Mutation, idempotency: IdempotencyKey): Promise<void> {
         this.transaction(() => {
+            const {appendEvent} = mutation;
+            if (!(appendEvent.type === 'room.closed' && appendEvent.payload.reason === 'moved')) {
+                this.assertNotMoving(mutation.room.roomId);
+            }
             if (mutation.expectedTurnRevision !== undefined) {
                 this.checkTurnRevision(mutation.room, mutation.expectedTurnRevision);
             }
@@ -430,6 +438,7 @@ export class SqliteStore implements RoomStore {
 
     async updateTurns(room: RoomRecord, requests: MessageRequest[], expectedRevision: number): Promise<void> {
         this.transaction(() => {
+            this.assertNotMoving(room.roomId);
             this.checkTurnRevision(room, expectedRevision);
             const current = this.db.prepare('SELECT body FROM rooms WHERE room_id=?').get(room.roomId) as BodyRow | undefined;
             if (!current || JSON.parse(current.body).nextSeq !== room.nextSeq) {
@@ -582,6 +591,187 @@ export class SqliteStore implements RoomStore {
         });
     }
 
+    /** Until when writes to this room are refused because it is being moved to another relay; null when it is not. */
+    moveLease(roomId: string, now = Date.now()): number | null {
+        const row = this.db.prepare('SELECT value FROM meta WHERE key=?').get(`move_lease:${roomId}`) as {value: string} | undefined;
+        const until = row ? Number(row.value) : null;
+        return until !== null && until > now ? until : null;
+    }
+
+    setMoveLease(roomId: string, until: number | null): void {
+        if (until === null) {
+            this.db.prepare('DELETE FROM meta WHERE key=?').run(`move_lease:${roomId}`);
+            return;
+        }
+        this.db.prepare('INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(`move_lease:${roomId}`, String(until));
+    }
+
+    private assertNotMoving(roomId: string): void {
+        if (this.moveLease(roomId) !== null) {
+            throw new ProtocolError('room_moving', 'this room is moving to another relay; retry in a moment', {retryAfterMs: 2000});
+        }
+    }
+
+    /**
+     * Every row a move hands to the receiving relay, in the order `transferIn` expects:
+     * the room, its members with their credential hashes, handovers, controls, visible
+     * events, requests, receipt ranges, idempotency keys, then attached files and their bytes.
+     */
+    async *transferOut(roomId: string): AsyncGenerator<RoomTransferRecord> {
+        const head = this.db.prepare('SELECT earliest_seq, body FROM rooms WHERE room_id=?').get(roomId) as {earliest_seq: number; body: string} | undefined;
+        if (!head) {
+            throw new ProtocolError('room_not_found', 'no such room');
+        }
+        const room = JSON.parse(head.body) as RoomRecord;
+        yield {kind: 'room', room, earliestSeq: Number(head.earliest_seq)};
+        for (const participant of this.rows<ParticipantRecord>('SELECT body FROM participants WHERE room_id=? ORDER BY participant_id', roomId)) {
+            yield {kind: 'participant', participant};
+        }
+        for (const handover of this.rows<HandoverRecord>('SELECT body FROM handovers WHERE room_id=? ORDER BY handover_id', roomId)) {
+            yield {kind: 'handover', handover};
+        }
+        for (const control of this.rows<ControlRecord>('SELECT body FROM controls WHERE room_id=? ORDER BY target_participant_id', roomId)) {
+            yield {kind: 'control', control};
+        }
+        const digest = new TransferDigest();
+        for (let after = Number(head.earliest_seq) - 1; ;) {
+            const page = this.db.prepare('SELECT seq, body FROM events WHERE room_id=? AND seq>? ORDER BY seq LIMIT 500').all(roomId, after) as {seq: number; body: string}[];
+            if (page.length === 0) {
+                break;
+            }
+            for (const row of page) {
+                await digest.add(row.body);
+                yield {kind: 'event', event: JSON.parse(row.body) as RoomEvent};
+            }
+            after = Number(page.at(-1)!.seq);
+        }
+        for (const row of this.db.prepare('SELECT event_id,seq,received_at,response_event_id,requires_reply,body FROM message_requests WHERE room_id=? ORDER BY seq').all(roomId) as RequestRow[]) {
+            yield {kind: 'request', request: {eventId: row.event_id, seq: Number(row.seq), receivedAt: row.received_at === null ? null : Number(row.received_at), responseEventId: row.response_event_id, requiresReply: Number(row.requires_reply) === 1, body: JSON.parse(row.body) as Record<string, unknown>}};
+        }
+        for (const row of this.db.prepare('SELECT participant_id,through_seq,at FROM receipt_ranges WHERE room_id=? ORDER BY participant_id, through_seq').all(roomId) as {participant_id: string; through_seq: number; at: number}[]) {
+            yield {kind: 'receipt-range', participantId: row.participant_id, throughSeq: Number(row.through_seq), at: Number(row.at)};
+        }
+        for (const row of this.db.prepare('SELECT key,request_digest,seq FROM idempotency WHERE room_id=? ORDER BY seq').all(roomId) as {key: string; request_digest: string; seq: number}[]) {
+            yield {kind: 'idempotency', key: row.key, requestDigest: row.request_digest, seq: Number(row.seq)};
+        }
+        const files = this.rows<FileRecord>(`SELECT body FROM files WHERE room_id=? AND event_id IS NOT NULL AND coalesce(json_extract(body,'$.uploading'),0)=0 AND ${VISIBLE_FILE_SQL} ORDER BY created_at, file_id`, roomId);
+        for (const file of files) {
+            yield {kind: 'file', file};
+            for (const chunk of this.db.prepare('SELECT idx, bytes FROM file_chunks WHERE file_id=? ORDER BY idx').all(file.fileId) as {idx: number; bytes: Uint8Array | ArrayBuffer}[]) {
+                yield {kind: 'file-chunk', fileId: file.fileId, index: Number(chunk.idx), bytes: toBase64(chunk.bytes instanceof Uint8Array ? chunk.bytes : new Uint8Array(chunk.bytes))};
+            }
+        }
+        yield {kind: 'complete', events: digest.count, files: files.length, digest: digest.value};
+    }
+
+    /**
+     * Writes a room another relay handed over, all at once, keeping its ids, sequence
+     * numbers and credential hashes. `adapt` lets the receiving relay apply its own
+     * limits to the room record. Refused, with nothing written, when the room id is
+     * already here or the records do not make up one whole room.
+     */
+    transferIn(records: Iterable<RoomTransferRecord>, adapt: (room: RoomRecord) => RoomRecord = (room) => room): TransferredRoom {
+        return this.transaction(() => {
+            let room: RoomRecord | undefined;
+            let nextSeq = 0;
+            const participants = new Set<string>();
+            const fileSizes = new Map<string, {size: number; written: number; chunks: number}>();
+            let events = 0;
+            let complete: Extract<RoomTransferRecord, {kind: 'complete'}> | undefined;
+            const refuse = (why: string) => new ProtocolError('invalid_request', `the room cannot be moved here: ${why}`);
+            const ours = (roomId: string) => {
+                if (roomId !== room!.roomId) {
+                    throw refuse('a record belongs to another room');
+                }
+            };
+            for (const record of records) {
+                if (complete) {
+                    throw refuse('records follow the end of the transfer');
+                }
+                if (record.kind === 'room') {
+                    if (room) {
+                        throw refuse('it names two rooms');
+                    }
+                    if (this.db.prepare('SELECT 1 FROM rooms WHERE room_id=?').get(record.room.roomId)) {
+                        throw refuse('a room with this id already exists here');
+                    }
+                    room = adapt(record.room);
+                    nextSeq = record.earliestSeq;
+                    this.db.prepare('INSERT INTO rooms (room_id, earliest_seq, body) VALUES (?, ?, ?)').run(room.roomId, record.earliestSeq, JSON.stringify(room));
+                    continue;
+                }
+                if (!room) {
+                    throw refuse('it does not start with the room');
+                }
+                switch (record.kind) {
+                    case 'participant':
+                        ours(record.participant.roomId);
+                        participants.add(record.participant.participantId);
+                        this.db.prepare('INSERT INTO participants (participant_id, room_id, credential_hash, body) VALUES (?, ?, ?, ?)').run(record.participant.participantId, room.roomId, record.participant.credentialHash, JSON.stringify(record.participant));
+                        break;
+                    case 'handover':
+                        ours(record.handover.roomId);
+                        this.db.prepare('INSERT INTO handovers (handover_id, room_id, body) VALUES (?, ?, ?)').run(record.handover.handoverId, room.roomId, JSON.stringify(record.handover));
+                        break;
+                    case 'control':
+                        ours(record.control.roomId);
+                        this.db.prepare('INSERT INTO controls (room_id, target_participant_id, body) VALUES (?, ?, ?)').run(room.roomId, record.control.targetParticipantId, JSON.stringify(record.control));
+                        break;
+                    case 'event':
+                        ours(record.event.roomId);
+                        if (record.event.seq !== nextSeq) {
+                            throw refuse(`event ${record.event.seq} arrived where ${nextSeq} was expected`);
+                        }
+                        if (record.event.senderId !== null && !participants.has(record.event.senderId)) {
+                            throw refuse('an event comes from someone who is not in the room');
+                        }
+                        this.writeEvent(record.event);
+                        nextSeq++;
+                        events++;
+                        break;
+                    case 'request':
+                        this.db.prepare('INSERT INTO message_requests(event_id,room_id,seq,received_at,response_event_id,requires_reply,body) VALUES(?,?,?,?,?,?,?)').run(record.request.eventId, room.roomId, record.request.seq, record.request.receivedAt, record.request.responseEventId, record.request.requiresReply ? 1 : 0, JSON.stringify(record.request.body));
+                        break;
+                    case 'receipt-range':
+                        this.db.prepare('INSERT INTO receipt_ranges(room_id,participant_id,through_seq,at) VALUES(?,?,?,?)').run(room.roomId, record.participantId, record.throughSeq, record.at);
+                        break;
+                    case 'idempotency':
+                        this.db.prepare('INSERT INTO idempotency (room_id, key, request_digest, seq) VALUES (?, ?, ?, ?)').run(room.roomId, record.key, record.requestDigest, record.seq);
+                        break;
+                    case 'file':
+                        ours(record.file.roomId);
+                        fileSizes.set(record.file.fileId, {size: record.file.size, written: 0, chunks: 0});
+                        this.db.prepare('INSERT INTO files (file_id, room_id, size, created_at, event_id, body) VALUES (?, ?, ?, ?, ?, ?)').run(record.file.fileId, room.roomId, record.file.size, record.file.createdAt, record.file.eventId, JSON.stringify(record.file));
+                        break;
+                    case 'file-chunk': {
+                        const file = fileSizes.get(record.fileId);
+                        const bytes = fromBase64(record.bytes);
+                        if (!file || record.index !== file.chunks || file.written + bytes.byteLength > file.size) {
+                            throw refuse('file content arrived out of order');
+                        }
+                        this.db.prepare('INSERT INTO file_chunks (file_id, idx, bytes) VALUES (?, ?, ?)').run(record.fileId, record.index, bytes);
+                        file!.written += bytes.byteLength;
+                        file!.chunks++;
+                        break;
+                    }
+                    case 'complete':
+                        complete = record;
+                        break;
+                }
+            }
+            if (!room || !complete) {
+                throw refuse('the transfer did not finish');
+            }
+            if (nextSeq !== room.nextSeq || complete.events !== events || complete.files !== fileSizes.size) {
+                throw refuse('some events or files are missing');
+            }
+            if ([...fileSizes.values()].some((file) => file.written !== file.size)) {
+                throw refuse('a file arrived incomplete');
+            }
+            return {roomId: room.roomId, events, files: fileSizes.size};
+        });
+    }
+
     private writeParticipant(participant: ParticipantRecord): void {
         this.db
             .prepare(
@@ -597,4 +787,21 @@ export class SqliteStore implements RoomStore {
     private rows<T>(sql: string, roomId: string): T[] {
         return (this.db.prepare(sql).all(roomId) as unknown as BodyRow[]).map((row) => JSON.parse(row.body) as T);
     }
+}
+
+function toBase64(bytes: Uint8Array): string {
+    let binary = '';
+    for (let offset = 0; offset < bytes.byteLength; offset += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    }
+    return btoa(binary);
+}
+
+function fromBase64(text: string): Uint8Array {
+    const binary = atob(text);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index++) {
+        bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
 }

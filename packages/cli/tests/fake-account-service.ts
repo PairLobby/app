@@ -10,6 +10,7 @@ import type {AddressInfo} from 'node:net';
 
 import {PairLobbyClient} from '@pairlobby/client';
 import type {RunningServer} from '@pairlobby/local-server';
+import {RoomTransferRecord, TransferDigest} from '@pairlobby/protocol';
 
 export type FakeInvitation = {id: string; roomId: string; roomName: string; invitedBy: string; role: 'member' | 'guest'; agents: number; createdAt: number; expiresAt: number};
 
@@ -29,6 +30,12 @@ export type FakeAccountService = {
     handle: string | null;
     /** Every request as `METHOD path`, with whether it carried the account token. */
     calls: {request: string; token: boolean}[];
+    /** Where the hosted relay path forwards; a test that imports a room points it at the relay holding the copy. */
+    relayUrl: string;
+    /** Takes a moved room's records at commit; absent, imports are refused like an account without room. */
+    importInto?: (records: RoomTransferRecord[]) => Promise<void>;
+    /** Staged NDJSON per import id. */
+    imports: Map<string, string>;
     close: () => Promise<void>;
 };
 
@@ -43,7 +50,7 @@ async function read(request: IncomingMessage): Promise<string> {
 }
 
 export async function startFakeAccountService(relay: RunningServer, token = 'test-account-token'): Promise<FakeAccountService> {
-    const state: FakeAccountService = {origin: '', server: '', invitations: [], accepted: new Map(), roomInvitations: new Map(), handles: new Set(['maria', 'joe']), handle: null, calls: [], close: async () => {}};
+    const state: FakeAccountService = {origin: '', server: '', invitations: [], accepted: new Map(), roomInvitations: new Map(), handles: new Set(['maria', 'joe']), handle: null, calls: [], relayUrl: relay.url, imports: new Map(), close: async () => {}};
     const server: Server = createServer(async (request, response) => {
         const url = new URL(request.url ?? '/', state.origin);
         const body = await read(request);
@@ -83,6 +90,38 @@ export async function startFakeAccountService(relay: RunningServer, token = 'tes
                         shared.push({roomId, name: snapshot.name, createdAt: snapshot.createdAt, expiresAt: snapshot.expiresAt, lifecycle: snapshot.lifecycle, private: true, owner: false, participants: [], latestSeq: snapshot.latestSeq, server: state.server});
                     }
                     return send(200, {server: state.server, rooms: [], shared});
+                }
+                if (url.pathname === '/api/online/rooms/import/preflight' || url.pathname === '/api/online/rooms/import/begin') {
+                    if (!state.importInto) {
+                        return fail(429, 'This room needs 2.0 MB but your account has 0.0 MB free');
+                    }
+                    if (url.pathname.endsWith('/preflight')) {
+                        return send(200, {server: state.server, usedBytes: 0, limitBytes: 50 * 1024 * 1024, rooms: 0, roomLimit: 2, participantLimit: 16});
+                    }
+                    const importId = `import-${state.imports.size + 1}`;
+                    state.imports.set(importId, '');
+                    return send(200, {importId});
+                }
+                const staged = /^\/api\/online\/rooms\/import\/([^/]+)\/(records|commit|abort)$/.exec(url.pathname);
+                if (staged && request.method === 'POST' && state.imports.has(staged[1]!)) {
+                    if (staged[2] === 'records') {
+                        state.imports.set(staged[1]!, state.imports.get(staged[1]!)! + body);
+                        return send(200, {ok: true});
+                    }
+                    const lines = state.imports.get(staged[1]!)!.split('\n').filter(Boolean);
+                    state.imports.delete(staged[1]!);
+                    if (staged[2] === 'abort') {
+                        return send(200, {ok: true});
+                    }
+                    const digest = new TransferDigest();
+                    const records = lines.map((line) => JSON.parse(line) as {kind: string; event?: unknown});
+                    for (const record of records.filter((candidate) => candidate.kind === 'event')) {
+                        await digest.add(JSON.stringify(record.event));
+                    }
+                    const parsed = records.map((record) => RoomTransferRecord.parse(record));
+                    await state.importInto!(parsed);
+                    const room = parsed.find((record) => record.kind === 'room');
+                    return send(200, {server: state.server, roomId: room?.kind === 'room' ? room.room.roomId : '', events: digest.count, files: parsed.filter((record) => record.kind === 'file').length, digest: digest.value});
                 }
                 const decision = /^\/api\/online\/invitations\/([^/]+)\/(accept|decline)$/.exec(url.pathname);
                 if (decision && request.method === 'POST') {
@@ -139,7 +178,7 @@ export async function startFakeAccountService(relay: RunningServer, token = 'tes
                     headers.set(name, value);
                 }
             }
-            const forwarded = await fetch(`${relay.url}${path}${url.search}`, {method: request.method ?? 'GET', headers, ...(body ? {body} : {})});
+            const forwarded = await fetch(`${state.relayUrl}${path}${url.search}`, {method: request.method ?? 'GET', headers, ...(body ? {body} : {})});
             response.writeHead(forwarded.status, {'content-type': forwarded.headers.get('content-type') ?? 'application/json'});
             response.end(forwarded.status === 204 ? undefined : await forwarded.text());
         } catch (error) {
