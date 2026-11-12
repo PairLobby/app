@@ -26,8 +26,9 @@ import {WhenError, formatDuration, parseDuration, parseExpiry} from './when.js';
 import {pickExpiry} from './picker.js';
 import {DEFAULT_LOCAL_SERVER, DEFAULT_RELAY_PORT, UsageError, agentName, controllerCredential, hostedAccountToken, moderationCredential, osUserName, resolveRecipient, resolveRoom, resolveServer, resolveSession, select} from './context.js';
 import type {Selection} from './context.js';
-import {json, note, out, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
+import {json, note, out, renderAccountRooms, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
+import type {OnlineRoom} from './online.js';
 import {acceptInvitation, accountToken, accountTokenFor, createTokenFor, requireAccountApi, declineInvitation, isOnlineKey, loggedInLine, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
 import type {ReceivedInvitation} from './online.js';
 import {receiverAttempts, receiverConfiguration, receiverStatus, refreshReceivers, retryProviderNow, runReceiver, startReceiver, stopReceiver, waitAndRefreshReceiver, wakeOfflineReceivers} from './receiver.js';
@@ -734,7 +735,7 @@ async function listRooms(store: LocalStore, values: Values): Promise<number> {
         let selectedRoomId: string | undefined;
         let notice = '';
         while (true) {
-            const selection = await new RoomBrowser(store, {sort, roomId, sessionId, selectedRoomId, notice, discover: networkRoomSearch(store), invitations: listedInvitations(store)}).run();
+            const selection = await new RoomBrowser(store, {sort, roomId, sessionId, selectedRoomId, notice, discover: networkRoomSearch(store), account: accountRoomSearch(store), invitations: listedInvitations(store)}).run();
             if (!selection) {
                 return 0;
             }
@@ -749,7 +750,7 @@ async function listRooms(store: LocalStore, values: Values): Promise<number> {
                 let command: string[];
                 if ('joinAt' in selection) {
                     command = ['join', 'local', selection.roomId, '--server', selection.joinAt, '--human'];
-                } else if ('invitationId' in selection) {
+                } else if ('invitationId' in selection || 'joinOnline' in selection) {
                     command = ['join', 'online', selection.roomId, '--human'];
                 } else if ('openChat' in selection) {
                     const actor = await humanSessionForRoomList(store, resolveRoom(store, selection.roomId));
@@ -771,18 +772,37 @@ async function listRooms(store: LocalStore, values: Values): Promise<number> {
             }
         }
     }
-    const entries = await loadRoomList(store);
+    const search = accountRoomSearch(store);
+    const [entries, account] = await Promise.all([loadRoomList(store), search ? search().catch((error: unknown) => error instanceof Error ? error : new Error(String(error))) : []]);
     const advice = relayAdvice(entries);
     if (advice) {
         note(advice);
     }
+    const unjoined = account instanceof Error ? [] : account.filter((room) => !entries.some((entry) => entry.room.roomId === room.roomId));
     if (flag(values, 'json')) {
-        json(roomListJson(store, entries, sort));
-    } else {
-        const byId = new Map(entries.map((entry) => [entry.room.roomId, entry]));
-        renderRoomList(sortListRows(roomRows(entries), sort).map((row) => byId.get(row.id)!));
+        json({...roomListJson(store, entries, sort), account: account instanceof Error ? null : unjoined, accountError: account instanceof Error ? account.message : null});
+        return 0;
+    }
+    const byId = new Map(entries.map((entry) => [entry.room.roomId, entry]));
+    renderRoomList(sortListRows(roomRows(entries), sort).map((row) => byId.get(row.id)!), Date.now(), unjoined.length > 0);
+    if (account instanceof Error) {
+        note(`could not list your account's rooms: ${account.message}`);
+    } else if (unjoined.length) {
+        renderAccountRooms(unjoined);
     }
     return 0;
+}
+
+/** The logged-in account's rooms, from whichever device created them; absent when this device is not logged in. */
+function accountRoomSearch(store: LocalStore): ((signal?: AbortSignal) => Promise<OnlineRoom[]>) | undefined {
+    try {
+        if (activeEndpoint(store).loginMode !== 'browser' || !accountToken(store)) {
+            return undefined;
+        }
+    } catch {
+        return undefined;
+    }
+    return async () => (await onlineRooms(store)).rooms;
 }
 
 async function findCommand(store: LocalStore, values: Values): Promise<number> {
