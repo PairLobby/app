@@ -3,6 +3,8 @@
 
 import {z} from 'zod';
 
+import {RoomId} from './ids.js';
+
 const durationMs = z.number().int().min(1000).max(10 * 365 * 24 * 3600_000);
 
 export const AutoClosePolicySchema = z.discriminatedUnion('mode', [
@@ -12,4 +14,8 @@ export const AutoClosePolicySchema = z.discriminatedUnion('mode', [
     z.object({mode: z.literal('agents_and_guests_left')})
 ]);
 
-export const CloseReasonSchema = z.enum(['manual', 'inactivity', 'age', 'agents_and_guests_left']);
+export const CloseReasonSchema = z.enum(['manual', 'inactivity', 'age', 'agents_and_guests_left', 'moved']);
+
+/** Where a room went when its owner moved it to another relay. The room id does not change. */
+export const MovedToSchema = z.object({serverUrl: z.string().url().max(2048), roomId: RoomId});
+export type MovedTo = z.infer<typeof MovedToSchema>;

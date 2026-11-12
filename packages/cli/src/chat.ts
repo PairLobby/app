@@ -3,6 +3,7 @@
 //! This is where a human actually sits. Joining a room puts you here, not back
 //! at a shell prompt with a transcript printed behind you.
 
+import {spawn} from 'node:child_process';
 import type {Interface} from 'node:readline';
 import {ChatTerminal} from './chat-terminal.js';
 
@@ -26,6 +27,7 @@ import {settingsPage, statusPage} from './room-settings.js';
 import {describeAutoClose, describeCloseReason} from './auto-close.js';
 import {loadAgentRoster} from './agent-roster.js';
 import {offlineReceivers, wakeOfflineReceivers} from './receiver.js';
+import {followMovedRoom} from './move-room.js';
 import {invitationTerms, roleChange, visibleTo} from './render.js';
 import {closeRequest, recoverRequest} from './request-recovery.js';
 import {requestsPage} from './request-panel.js';
@@ -182,6 +184,7 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         const preselected = options.recipientId ? snapshot.participants.find((participant) => participant.participantId === options.recipientId) : undefined;
         let recipient: ParticipantMatch = preselected ? {id: preselected.participantId, name: preselected.displayName} : null;
         let closed = false;
+        let moved = false;
         let suspended = false;
         let statusLoading = false;
 
@@ -628,6 +631,17 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             const version = live.version;
             try {
                 snapshot = await live.snapshot();
+                if (snapshot.lifecycle === 'closed' && snapshot.movedTo) {
+                    const saved = store.room(roomId);
+                    if (saved) {
+                        await followMovedRoom(store, saved, snapshot);
+                    }
+                    if (store.room(roomId)?.serverUrl === snapshot.movedTo.serverUrl) {
+                        emit(`${DIM}  ${snapshot.name} moved to ${new URL(snapshot.movedTo.serverUrl).host}; reconnecting…${RESET}`);
+                        moved = true;
+                        break;
+                    }
+                }
                 const watermarkOnly = snapshot.receiptMode === 'watermark';
                 const page = await live.read(cursor, 200, watermarkOnly ? receiptRevision : 0);
                 if (page.receipts) {
@@ -731,6 +745,14 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         }
         process.stdin.pause();
 
+        const sessionFlag = options.useHumanProfile && member.kind === 'human' ? '' : ` --session ${sessionId}`;
+        if (moved) {
+            // The seat moved with the room; reopen chat against the address just saved, in this terminal.
+            const child = spawn(process.execPath, [process.argv[1]!, 'chat', '--room', roomId, ...(sessionFlag ? ['--session', sessionId] : [])], {stdio: 'inherit'});
+            await new Promise<void>((resolve) => child.once('close', (code) => process.exit(code ?? 0)).once('error', () => resolve()));
+            process.exit(1);
+        }
+
         // Tell the room you are gone. Membership is durable, so without this the room
         // shows you present indefinitely and your invite seat never reopens.
         try {
@@ -744,7 +766,6 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         // deliberately, once output is flushed.
         // Print after restoring the normal buffer and finishing leave, so the
         // command stays in shell scrollback and cannot race a pending departure.
-        const sessionFlag = options.useHumanProfile && member.kind === 'human' ? '' : ` --session ${sessionId}`;
         await new Promise<void>((resolve) => process.stdout.write(`\nTo rejoin this room:\n  pairlobby chat --room ${roomId}${sessionFlag}\n\n`, () => resolve()));
         process.exit(0);
     } finally {
@@ -924,7 +945,7 @@ function systemLine(event: RoomEvent, names: Map<string, string>, sender: string
         case 'participant.permissions_changed':
             return `${event.senderId ? sender : 'the owner'} changed permissions: ${describeParticipantPermissionChange(names.get(event.payload.participantId) ?? event.payload.participantId, event.payload.permissions, event.payload.previous)}`;
         case 'room.closed':
-            return `the room was ${describeCloseReason(event.payload.reason)}`;
+            return event.payload.movedTo ? `the room moved to ${new URL(event.payload.movedTo.serverUrl).host}` : `the room was ${describeCloseReason(event.payload.reason)}`;
         case 'room.auto_close_changed':
             return `${sender} set auto-close: ${describeAutoClose(event.payload.autoClose).toLowerCase()}`;
         case 'conversation.turn_changed': {

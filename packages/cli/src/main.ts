@@ -29,6 +29,8 @@ import type {Selection} from './context.js';
 import {json, note, out, renderAccountRooms, renderEvents, renderOpenRequests, renderRoomList, renderRooms, renderSnapshot, renderWatchHeader} from './render.js';
 
 import type {OnlineRoom} from './online.js';
+import {describePlan, moveRoomOnline} from './move-room.js';
+import type {MovePlan} from './move-room.js';
 import {acceptInvitation, accountToken, accountTokenFor, createTokenFor, requireAccountApi, declineInvitation, isOnlineKey, loggedInLine, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
 import type {ReceivedInvitation} from './online.js';
 import {receiverAttempts, receiverConfiguration, receiverStatus, refreshReceivers, retryProviderNow, runReceiver, startReceiver, stopReceiver, waitAndRefreshReceiver, wakeOfflineReceivers} from './receiver.js';
@@ -282,6 +284,7 @@ const HELP = `pairlobby
   pairlobby send "<text>" --file <path>  send files with a message (repeat --file, up to 8); reply takes --file too
   pairlobby files                    files sent in a room; files get <number|name|id> [--out <folder>] saves one
   pairlobby export [--out <folder>]  save a room's history and its files into a new folder
+  pairlobby move <room> online       move a room from this device's relay to your account (asks first; --yes skips)
   pairlobby permissions              which commands members may use in a room, and who differs
   pairlobby permissions allow|deny|reset <command …|all> [name]  for all members, or one (owner/admin)
   pairlobby interrupt <agent>        stop one agent's current task, hold its queue (owner/admin, or members the room allows)
@@ -445,6 +448,8 @@ async function main(argv: string[]): Promise<number> {
             return roomCommand(store, positionals[1], {words: positionals.slice(2), session: str(values, 'session'), json: flag(values, 'json')});
         case 'visibility':
             return visibilityCommand(store, {words: positionals.slice(1), asDefault: flag(values, 'default'), server: str(values, 'server'), session: str(values, 'session'), json: flag(values, 'json')});
+        case 'move':
+            return moveCommand(store, values, positionals[1], positionals[2]);
         case 'delete':
             return deleteRoom(store, values, positionals[1]);
         case 'setup':
@@ -2778,6 +2783,40 @@ async function closeRoom(store: LocalStore, values: Values): Promise<number> {
         return 0;
     }
     out(`Closed ${room.name}. History stays readable and exportable for 24 hours.`);
+    return 0;
+}
+
+/** `pairlobby move <room> online`: the room keeps its id, history, files and members, and closes here. */
+async function moveCommand(store: LocalStore, values: Values, reference: string | undefined, where: string | undefined): Promise<number> {
+    if (where !== 'online') {
+        throw new UsageError('Usage: pairlobby move <room> online [--yes] [--json]');
+    }
+    const room = resolveRoom(store, reference ?? str(values, 'room'));
+    const asJson = flag(values, 'json');
+    if (!flag(values, 'yes') && (asJson || !process.stdin.isTTY)) {
+        throw new UsageError('Moving a room asks for confirmation; run it in a terminal, or pass --yes after checking pairlobby status');
+    }
+    const confirm = flag(values, 'yes') ? undefined : async (plan: MovePlan) => {
+        const {createInterface} = await import('node:readline/promises');
+        out(`Move ${plan.name} to ${activeEndpoint(store).name}?`);
+        out(`  ${describePlan(plan)}`);
+        out('  Everyone keeps their seat and is reconnected online. The local copy closes and stays readable; unused invite codes stop working.');
+        const terminal = createInterface({input: process.stdin, output: process.stdout});
+        try {
+            return /^y(es)?$/i.test((await terminal.question('Move it? [y/N] ')).trim());
+        } finally {
+            terminal.close();
+        }
+    };
+    const moved = await moveRoomOnline(store, room, {...(confirm ? {confirm} : {}), ...(asJson ? {} : {onProgress: (step: string) => note(step)})});
+    if (asJson) {
+        json(moved);
+        return 0;
+    }
+    out(`Moved ${moved.name} to ${moved.serverUrl}: ${moved.events} events, ${moved.files} ${moved.files === 1 ? 'file' : 'files'}.`);
+    if (moved.receivers.length) {
+        out(`Restarted on the new address: ${moved.receivers.join(', ')}.`);
+    }
     return 0;
 }
 

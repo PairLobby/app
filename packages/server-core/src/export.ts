@@ -1,5 +1,5 @@
 import {PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError} from '@pairlobby/protocol';
-import type {ExportMetadata, RoomEvent} from '@pairlobby/protocol';
+import type {ExportMetadata, RoomEvent, RoomTransferRecord} from '@pairlobby/protocol';
 
 import type {RoomStore} from './store.js';
 
@@ -22,6 +22,29 @@ export async function* retainedEvents(store: RoomStore, roomId: string, earliest
             yield event;
         }
     }
+}
+
+/** A move's rows as NDJSON, one record per pull. */
+export function transferResponse(records: AsyncGenerator<RoomTransferRecord>): Response {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+            try {
+                const next = await records.next();
+                if (next.done) {
+                    controller.close();
+                    return;
+                }
+                controller.enqueue(encoder.encode(JSON.stringify(next.value) + '\n'));
+            } catch (error) {
+                controller.error(error);
+            }
+        },
+        async cancel() {
+            await records.return(undefined);
+        }
+    }, {highWaterMark: 0});
+    return new Response(stream, {headers: {'content-type': 'application/x-ndjson', 'cache-control': 'private, no-store', [PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)}});
 }
 
 /** One event per pull; backpressure and cancellation propagate to archived and live event sources alike. */

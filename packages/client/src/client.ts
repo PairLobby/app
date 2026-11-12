@@ -3,11 +3,13 @@
 //! failure came from local validation or from the server.
 
 import {sha256} from '@noble/hashes/sha2.js';
-import {ABSOLUTE_MAX_FILE_BYTES, ExportStreamRecord, FILE_SIZE_HEADER, MAX_EVENT_WAIT_MS, PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, ServerDescription, ServerFrame, newCredential, newId} from '@pairlobby/protocol';
+import {ABSOLUTE_MAX_FILE_BYTES, ExportStreamRecord, FILE_SIZE_HEADER, MAX_EVENT_WAIT_MS, PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, RoomTransferRecord, ServerDescription, ServerFrame, TransferDigest, newCredential, newId} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
     Attachment,
     AutoClosePolicy,
+    MovePrepareResponse,
+    MovedTo,
     MessageRequest,
     ProviderWait,
     MessageAction,
@@ -703,6 +705,52 @@ export class PairLobbyClient {
 
     close(roomId: string, credential: string): Promise<RoomEventResult> {
         return this.call('POST', `/v1/rooms/${roomId}/close`, credential, {});
+    }
+
+    /** Owner or admin: the relay refuses writes to the room until the lease ends, so it can be copied elsewhere. */
+    prepareMove(roomId: string, credential: string): Promise<MovePrepareResponse> {
+        return this.call('POST', `/v1/rooms/${roomId}/move/prepare`, credential, {});
+    }
+
+    async abortMove(roomId: string, credential: string): Promise<void> {
+        await this.call('POST', `/v1/rooms/${roomId}/move/abort`, credential, {});
+    }
+
+    commitMove(roomId: string, credential: string, movedTo: MovedTo): Promise<RoomEventResult> {
+        return this.call('POST', `/v1/rooms/${roomId}/move/commit`, credential, {movedTo});
+    }
+
+    /**
+     * Every row of a room being moved, as the NDJSON lines the relay sent, after checking
+     * each one. Throws when the stream ends early or its digest does not match its events.
+     */
+    async *moveTransfer(roomId: string, credential: string): AsyncGenerator<{line: string; record: RoomTransferRecord}> {
+        const response = await this.raw('GET', `/v1/rooms/${roomId}/move/transfer`, credential);
+        if (!response.body) {
+            throw new ProtocolError('server_unavailable', 'the transfer response has no body');
+        }
+        const digest = new TransferDigest();
+        let complete = false;
+        for await (const line of exportLines(response.body)) {
+            const raw = JSON.parse(line) as {kind?: string; event?: unknown};
+            const record = RoomTransferRecord.parse(raw);
+            if (complete) {
+                throw new ProtocolError('server_unavailable', 'the transfer continued after its end');
+            }
+            if (record.kind === 'event') {
+                await digest.add(JSON.stringify(raw.event));
+            }
+            if (record.kind === 'complete') {
+                if (record.events !== digest.count || record.digest !== digest.value) {
+                    throw new ProtocolError('server_unavailable', 'the transfer arrived damaged; try again');
+                }
+                complete = true;
+            }
+            yield {line, record};
+        }
+        if (!complete) {
+            throw new ProtocolError('server_unavailable', 'the transfer did not finish; try again');
+        }
     }
 
     export(roomId: string, credential: string): Promise<ExportResponse> {

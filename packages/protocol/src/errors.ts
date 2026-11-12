@@ -10,6 +10,7 @@ export const ERROR_CODES = [
     'room_expired',
     'room_closed',
     'room_locked',
+    'room_moving',
     'participant_muted',
     'turn_conflict',
     'turn_required',
@@ -51,6 +52,7 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
     room_expired: 410,
     room_closed: 409,
     room_locked: 403,
+    room_moving: 409,
     participant_muted: 403,
     turn_conflict: 409,
     turn_required: 409,
@@ -93,5 +95,5 @@ export function httpStatusFor(code: ErrorCode): number {
 
 /** True when the same request, unchanged, could succeed later. */
 export function isRetryable(code: ErrorCode): boolean {
-    return code === 'server_unavailable' || code === 'quota_exceeded' || code === 'rate_limited';
+    return code === 'server_unavailable' || code === 'quota_exceeded' || code === 'rate_limited' || code === 'room_moving';
 }
