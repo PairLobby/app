@@ -10,6 +10,7 @@ import {closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync}
 import {join, relative} from 'node:path';
 import {spawn} from 'node:child_process';
 import {parseArgs} from 'node:util';
+import {DOCS_HELP, documentation} from './docs.js';
 
 import {LocalStore, PairLobbyClient, openRequests, owedByMe, unreceipted} from '@pairlobby/client';
 import type {JoinedRoom, RoomEntry, RoomPreset, Settings} from '@pairlobby/client';
@@ -62,7 +63,7 @@ import type {LatestRelease, UpdateCheck, UpdateChoice} from './updater.js';
 import {findRooms, formatFoundRooms} from './find.js';
 import {doctorCommand, requireRelayFeature} from './doctor.js';
 import {chooseFromMenu} from './picker.js';
-import {attachmentLabel, attachmentText, expandPath, filesReport, findRoomFile, saveFile, uploadFiles} from './files.js';
+import {attachmentLabel, attachmentText, expandPath, filesReport, findRoomFile, parseFileRetention, saveFile, uploadFiles} from './files.js';
 import {runPermissionCommand} from './permissions.js';
 import {applyPresetChanges, presetChanges, runPresetCommand, runPresetLibraryCommand} from './presets.js';
 import {formatTurnQueue, runTurnCommand} from './turn-commands.js';
@@ -124,6 +125,8 @@ const OPTIONS = {
     force: {type: 'boolean'},
     preset: {type: 'string'},
     file: {type: 'string', multiple: true},
+    'file-retention': {type: 'string'},
+    search: {type: 'string'},
     out: {type: 'string'},
     reset: {type: 'boolean'},
     once: {type: 'boolean'},
@@ -234,6 +237,7 @@ const HELP = `pairlobby
                                     which endpoint is active; switch; forget one; back to pairlobby.com
   --endpoint <name|url>              one command against another endpoint, without saving it
   pairlobby doctor [--server <url>]  what the relay says it can do: version, transport, features, limits (--json)
+  pairlobby docs [topic]            full offline feature reference; --search <words>, --all or --json
   pairlobby login                    approve this terminal in the browser (--no-browser prints the link)
   pairlobby login --token            paste an account token from the website instead
   pairlobby logout                   revoke this terminal's login and forget it
@@ -242,6 +246,8 @@ const HELP = `pairlobby
   pairlobby chat                     re-enter a room you already joined
   pairlobby send <text> --to <who>   send a message to one participant
   pairlobby send <text> --to codex,claude   ask several agents; --to all asks all agents
+  pairlobby send --file <path> --file-retention forever|24h|until-received
+                                    keep forever (default), expire after a duration, or delete after every file receipt
   pairlobby turns [sequential|parallel|skip|cancel]   inspect/control speaking turns
   pairlobby turn claim|renew|pass <request>          cooperative agent turn tools
   pairlobby install-skill <agent>   install instructions for claude, codex, qwen, cursor, grok, muse, or all
@@ -323,12 +329,29 @@ should pass --session (or set PAIRLOBBY_SESSION) on every later command.
 `;
 
 async function main(argv: string[]): Promise<number> {
+    const {values, positionals, tokens} = parseArgs({args: argv, options: OPTIONS, allowPositionals: true, strict: true, tokens: true});
+    if (positionals[0] === 'docs') {
+        const unsupported = Object.keys(values).filter((key) => !['search', 'all', 'json', 'help', 'version'].includes(key));
+        if (unsupported.length) {
+            throw new UsageError(`pairlobby docs is offline and does not take ${unsupported.map((key) => `--${key}`).join(', ')}.\n${DOCS_HELP}`);
+        }
+        if (values.help) {
+            out(DOCS_HELP);
+        } else if (values.version) {
+            out(`PairLobby ${VERSION}`);
+        } else {
+            const topic = positionals.slice(1).join(' ');
+            const result = documentation({version: VERSION, ...(topic ? {topic} : {}), ...(str(values, 'search') ? {search: str(values, 'search')!} : {}), all: flag(values, 'all')});
+            const {markdown, ...data} = result;
+            flag(values, 'json') ? json(data) : out(markdown);
+        }
+        return 0;
+    }
     // Before any connection: also trust what the operating system trusts, as a browser does.
     const trust = trustLocalCertificates();
     if (trust.problem) {
         note(`certificates: ${trust.problem}`);
     }
-    const {values, positionals, tokens} = parseArgs({args: argv, options: OPTIONS, allowPositionals: true, strict: true, tokens: true});
     const manualStore = flag(values, 'manual-receive') ? new LocalStore() : undefined;
     if (manualStore) {
         // Refuse before discovery, account lookup, room creation, invite redemption or local membership writes.
@@ -1816,6 +1839,10 @@ async function finishJoin(store: LocalStore, values: Values, joined: JoinedRoom,
 
 async function sendMessage(store: LocalStore, values: Values, text: string): Promise<number> {
     const paths = list(values, 'file');
+    const retention = parseFileRetention(str(values, 'file-retention'));
+    if (retention && paths.length === 0) {
+        throw new UsageError('--file-retention requires --file');
+    }
     if (text.trim().length === 0 && paths.length === 0) {
         throw new UsageError('pairlobby send needs a message');
     }
@@ -1830,7 +1857,7 @@ async function sendMessage(store: LocalStore, values: Values, text: string): Pro
         return replyMessage(store, values, replyTo, text);
     }
     const snapshot = recipient || paths.length ? await client.snapshot(room.roomId, credential) : undefined;
-    const attachments = paths.length ? await uploadFiles({client, roomId: room.roomId, credential}, paths, snapshot!) : [];
+    const attachments = paths.length ? await uploadFiles({client, roomId: room.roomId, credential, ...(retention ? {retention} : {})}, paths, snapshot!) : [];
     text = text.trim().length === 0 ? attachmentText(attachments) : text;
     const references = recipient?.split(',').map((name) => name.trim().replace(/^@/, '')).filter(Boolean) ?? [];
     if (recipient && !references.length) {
@@ -2041,11 +2068,15 @@ async function receiptMessage(store: LocalStore, values: Values, eventId?: strin
 }
 async function replyMessage(store: LocalStore, values: Values, eventId: string | undefined, text: string): Promise<number> {
     const paths = list(values, 'file');
+    const retention = parseFileRetention(str(values, 'file-retention'));
+    if (retention && paths.length === 0) {
+        throw new UsageError('--file-retention requires --file');
+    }
     if (!eventId || (!text.trim() && paths.length === 0)) {
         throw new UsageError('reply needs an event id and a non-empty answer (a refusal or unknown answer is valid)');
     }
     const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
-    const attachments = paths.length ? await uploadFiles({client, roomId: room.roomId, credential}, paths, await client.snapshot(room.roomId, credential)) : [];
+    const attachments = paths.length ? await uploadFiles({client, roomId: room.roomId, credential, ...(retention ? {retention} : {})}, paths, await client.snapshot(room.roomId, credential)) : [];
     const result = await client.reply(room.roomId, credential, eventId, text.trim() ? text : attachmentText(attachments), flag(values, 'progress'), str(values, 'turn-token'), attachments);
     if (flag(values, 'json')) {
         json({eventId: result.event.eventId, replyTo: eventId, final: !flag(values, 'progress'), ...(attachments.length ? {attachments} : {})});

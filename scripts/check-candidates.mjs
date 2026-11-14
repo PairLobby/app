@@ -44,6 +44,9 @@ function replace(target) {
 
 async function discoverArtifacts() {
     for (const name of readdirSync(packs).filter((entry) => entry.endsWith('.tgz'))) {
+        if ([...artifacts.values()].some((artifact) => artifact.tarball === name)) {
+            continue;
+        }
         const folder = join(scratch, name.slice(0, -4));
         mkdirSync(folder);
         await run('tar', ['-xzf', join(packs, name), '-C', folder, '--strip-components=1'], root);
@@ -52,31 +55,36 @@ async function discoverArtifacts() {
     }
 }
 
-try {
-    await run(process.execPath, [join(root, 'scripts/publish-packages.mjs'), '--pack', packs], root);
-    await run('npm', ['run', 'build'], durable);
-    await run('npm', ['pack', '--ignore-scripts', '--pack-destination', packs], durable);
-    await discoverArtifacts();
-    for (const checkout of [durable, hosted]) {
-        const names = [...artifacts.keys()].filter((name) => name !== '@pairlobby/durable-runtime' || checkout === hosted);
-        for (const name of names) {
-            replace(join(checkout, 'node_modules', name));
-        }
-        for (const name of names) {
-            const target = join(checkout, 'node_modules', name);
-            mkdirSync(target, {recursive: true});
-            await run('tar', ['-xzf', join(packs, artifacts.get(name).tarball), '-C', target, '--strip-components=1'], root);
-            for (const dependency of Object.keys(artifacts.get(name).manifest.dependencies ?? {}).filter((entry) => !entry.startsWith('@pairlobby/'))) {
-                const source = join(root, 'node_modules', dependency);
-                if (existsSync(source)) {
-                    // Preserve each artifact's dependency major (notably Zod 3 beside the hosted app's Zod 4).
-                    const nested = join(target, 'node_modules', dependency);
-                    mkdirSync(dirname(nested), {recursive: true});
-                    symlinkSync(source, nested, 'dir');
-                }
+async function overlay(checkout) {
+    const names = [...artifacts.keys()].filter((name) => name !== '@pairlobby/durable-runtime' || checkout === hosted);
+    for (const name of names) {
+        replace(join(checkout, 'node_modules', name));
+    }
+    for (const name of names) {
+        const target = join(checkout, 'node_modules', name);
+        mkdirSync(target, {recursive: true});
+        await run('tar', ['-xzf', join(packs, artifacts.get(name).tarball), '-C', target, '--strip-components=1'], root);
+        for (const dependency of Object.keys(artifacts.get(name).manifest.dependencies ?? {}).filter((entry) => !entry.startsWith('@pairlobby/'))) {
+            const source = join(root, 'node_modules', dependency);
+            if (existsSync(source)) {
+                // Preserve each artifact's dependency major (notably Zod 3 beside the hosted app's Zod 4).
+                const nested = join(target, 'node_modules', dependency);
+                mkdirSync(dirname(nested), {recursive: true});
+                symlinkSync(source, nested, 'dir');
             }
         }
     }
+}
+
+try {
+    await run(process.execPath, [join(root, 'scripts/publish-packages.mjs'), '--pack', packs], root);
+    await discoverArtifacts();
+    // The companion adapter may require a new kernel API, so build it against these candidates too.
+    await overlay(durable);
+    await run('npm', ['run', 'build'], durable);
+    await run('npm', ['pack', '--ignore-scripts', '--pack-destination', packs], durable);
+    await discoverArtifacts();
+    await overlay(hosted);
     await run('npm', ['test', '--', '--maxWorkers=1'], durable);
     await run('npm', ['run', 'typecheck'], hosted);
     await run('npm', ['test', '--', '--maxWorkers=1'], hosted);

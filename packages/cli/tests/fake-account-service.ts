@@ -121,7 +121,7 @@ export async function startFakeAccountService(relay: RunningServer, token = 'tes
                     const parsed = records.map((record) => RoomTransferRecord.parse(record));
                     await state.importInto!(parsed);
                     const room = parsed.find((record) => record.kind === 'room');
-                    return send(200, {server: state.server, roomId: room?.kind === 'room' ? room.room.roomId : '', events: digest.count, files: parsed.filter((record) => record.kind === 'file').length, digest: digest.value});
+                    return send(200, {server: state.server, roomId: room?.kind === 'room' ? room.room.roomId : '', events: digest.count, files: parsed.filter((record) => record.kind === 'file' || record.kind === 'file-retention').length, digest: digest.value});
                 }
                 const decision = /^\/api\/online\/invitations\/([^/]+)\/(accept|decline)$/.exec(url.pathname);
                 if (decision && request.method === 'POST') {

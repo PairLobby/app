@@ -4,6 +4,7 @@ import type {Attachment, RoomPolicy} from '@pairlobby/protocol';
 import {RoomService} from '@pairlobby/server-core';
 import type {StoreFactory} from './contract.js';
 import type {TestableRoomStore} from './harness.js';
+import {runFileRetentionContract} from './file-retention-contract.js';
 
 /** Bytes that are not text and cross several storage chunks: 1 MiB chunks are the smallest any store uses. */
 function binary(size: number): Uint8Array {
@@ -16,6 +17,7 @@ function binary(size: number): Uint8Array {
 
 /** For a store that keeps files: what every relay must do with them, whatever holds the bytes. */
 export function runFileContract(label: string, makeStore: StoreFactory) {
+    runFileRetentionContract(label, makeStore);
     describe(`${label} / files`, () => {
         let store: TestableRoomStore, service: RoomService, now: number, roomId: string, alice: string, bob: string, controller: string;
         const create = async (policy?: RoomPolicy) => {

@@ -54,6 +54,7 @@ import {
     toListingView
 } from '@pairlobby/protocol';
 import type {ErrorCode, ListingRecord, LiveTransport, LocalRoom, ProviderWait, ReceiptMode, RelayLimits, ServerDescription} from '@pairlobby/protocol';
+import {FileReceiptRequest, FileRetentionRequest} from '@pairlobby/protocol';
 
 import type {Admission, RelayMember} from './admission.js';
 import type {RoomChangeNotifier} from './changes.js';
@@ -266,7 +267,9 @@ export function createRelay(options: RelayOptions): Relay {
         await executor.run(null, true, async () => {
             try {
                 const result = await service.closeDueRooms();
-                await scheduler?.plan(result.more ? Date.now() : result.nextAt);
+                const files = await service.expireFiles();
+                const deadlines = [result.nextAt, files.nextAt].filter((at): at is number => at !== null);
+                await scheduler?.plan(result.more || files.more ? Date.now() : deadlines.length ? Math.min(...deadlines) : null);
             } catch {
                 await scheduler?.plan(Date.now() + 60_000);
             }
@@ -603,6 +606,7 @@ export function describe(options: RelayOptions): ServerDescription {
     const profile = options.service.relayProfile();
     const features = [
         ...(profile.files ? ['files', 'stream-files'] : []),
+        ...(profile.fileRetention ? ['file-retention'] : []),
         // Joining by name needs rooms to list and a way to tell who may: the connection, or a personal token.
         ...(options.localRooms && ((options.peerIsLocal && (!options.behindProxy || options.proxyIsAccessGate)) || options.admission?.memberTokens) ? ['local-join'] : []),
         ...(options.inviteProbe ? ['invite-probe'] : []),
@@ -795,6 +799,12 @@ async function roomRoute(request: Request, roomId: string, context: RequestConte
             return json(await service.requests(roomId, credential, query.after, query.limit, url.searchParams.get('to') ?? undefined, url.searchParams.get('turns') === '1'));
         }
         case 'POST files': {
+            if (segments[4] && segments[5] === 'receipt' && segments.length === 6) {
+                return json(await service.confirmFileReceipt(roomId, credential, FileId.parse(segments[4]), FileReceiptRequest.parse(await request.json())));
+            }
+            if (segments.length !== 4) {
+                return errorResponse('invalid_request', 'unknown file operation', 404);
+            }
             const name = url.searchParams.get('name') ?? '';
             if (!name.trim() || name.length > 1024) {
                 return errorResponse('invalid_request', 'name the file with ?name=', 400);
@@ -803,7 +813,13 @@ async function roomRoute(request: Request, roomId: string, context: RequestConte
             if (!request.body || !declared || !/^\d+$/.test(declared)) {
                 return errorResponse('invalid_request', `declare the file's byte length with Content-Length or ${FILE_SIZE_HEADER}`, 400);
             }
-            return json({file: await service.uploadFileStream(roomId, credential, {name, mediaType: request.headers.get('content-type') ?? '', size: Number(declared), body: request.body, signal: request.signal}, (action) => (options.executor ?? directExecutor()).run(roomId, true, action))}, 201);
+            const retention = url.searchParams.has('retention') ? FileRetentionRequest.parse(JSON.parse(url.searchParams.get('retention')!)) : undefined;
+            const onReserved = async () => {
+                if (retention?.mode === 'temporary' && options.scheduler) {
+                    await (options.executor ?? directExecutor()).run(null, false, async () => options.scheduler!.plan(await service.nextWakeAt()));
+                }
+            };
+            return json({file: await service.uploadFileStream(roomId, credential, {name, mediaType: request.headers.get('content-type') ?? '', size: Number(declared), body: request.body, signal: request.signal, onReserved, ...(retention ? {retention} : {})}, (action) => (options.executor ?? directExecutor()).run(roomId, true, action))}, 201);
         }
         case 'GET files': {
             if (!segments[4]) {
@@ -811,7 +827,7 @@ async function roomRoute(request: Request, roomId: string, context: RequestConte
             }
             const {file, body} = await service.downloadFileStream(roomId, credential, FileId.parse(segments[4]));
             // Always a download, never something a browser would render or run: the name and type came from another participant.
-            return new Response(body, {status: 200, headers: {'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`, 'content-length': String(file.size), 'x-content-type-options': 'nosniff', 'cache-control': 'private, no-store', 'pairlobby-file-sha256': file.sha256, [PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)}});
+            return new Response(body, {status: 200, headers: {'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`, 'content-length': String(file.size), 'x-content-type-options': 'nosniff', 'cache-control': 'private, no-store', 'pairlobby-file-sha256': file.sha256, ...(file.retention?.mode === 'until-received' ? {'pairlobby-file-receipt': 'required'} : {}), [PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)}});
         }
         case 'GET events': {
             const query = ReadEventsQuery.parse(Object.fromEntries(new URL(request.url).searchParams));

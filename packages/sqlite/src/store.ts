@@ -43,6 +43,24 @@ export class SqliteStore implements RoomStore {
     private readonly transaction: SqlTransaction;
     private pendingChanges: CommittedChange[] | null = null;
     readonly files: FileStore = {
+        retention: {
+            update: async (file, expectedStateRevision) => this.transaction(() => {
+                this.assertNotMoving(file.roomId);
+                this.bumpRoom(file.roomId, expectedStateRevision);
+                const result = this.db.prepare('UPDATE files SET body=? WHERE room_id=? AND file_id=?').run(JSON.stringify(file), file.roomId, file.fileId);
+                if (Number(result.changes) !== 1) {
+                    throw new ProtocolError('turn_conflict', 'the file changed; retry');
+                }
+            }),
+            remove: async (roomId, fileId, expectedStateRevision) => this.transaction(() => {
+                this.assertNotMoving(roomId);
+                this.bumpRoom(roomId, expectedStateRevision);
+                this.db.prepare('DELETE FROM file_chunks WHERE file_id IN (SELECT file_id FROM files WHERE room_id=? AND file_id=?)').run(roomId, fileId);
+                this.db.prepare('DELETE FROM files WHERE room_id=? AND file_id=?').run(roomId, fileId);
+            }),
+            due: async (now, limit) => (this.db.prepare("SELECT body FROM files WHERE json_extract(body,'$.retention.mode')='temporary' AND json_extract(body,'$.retention.expiresAt')<=? ORDER BY json_extract(body,'$.retention.expiresAt'),file_id LIMIT ?").all(now, limit) as unknown as BodyRow[]).map((row) => JSON.parse(row.body) as FileRecord),
+            nextExpiryAt: async () => (this.db.prepare("SELECT min(json_extract(body,'$.retention.expiresAt')) AS at FROM files WHERE json_extract(body,'$.retention.mode')='temporary'").get() as {at: number | null}).at
+        },
         putFile: async (file, bytes, limitBytes, expectedStateRevision) => this.transaction(() => {
             this.assertNotMoving(file.roomId);
             const held = this.db.prepare('SELECT coalesce(sum(size), 0) AS total FROM files WHERE room_id = ?').get(file.roomId) as {total: number};
@@ -289,8 +307,12 @@ export class SqliteStore implements RoomStore {
                 if (!row) {
                     throw new ProtocolError('invalid_request', 'an attached file is no longer available; upload it again');
                 }
-                const file: FileRecord = {...(JSON.parse(row.body) as FileRecord), eventId: mutation.appendEvent.eventId};
+                const file: FileRecord = mutation.attachedFileRecords?.find((record) => record.fileId === fileId) ?? {...(JSON.parse(row.body) as FileRecord), eventId: mutation.appendEvent.eventId};
                 this.db.prepare('UPDATE files SET event_id = ?, body = ? WHERE file_id = ?').run(file.eventId, JSON.stringify(file), fileId);
+            }
+            for (const fileId of mutation.removeFiles ?? []) {
+                this.db.prepare('DELETE FROM file_chunks WHERE file_id IN (SELECT file_id FROM files WHERE room_id=? AND file_id=?)').run(mutation.room.roomId, fileId);
+                this.db.prepare('DELETE FROM files WHERE room_id=? AND file_id=?').run(mutation.room.roomId, fileId);
             }
             this.writeEvent(mutation.appendEvent);
             if (idempotency) {
@@ -580,7 +602,8 @@ export class SqliteStore implements RoomStore {
     protectedHistoryStart(roomId: string): number {
         const pending = this.db.prepare(`SELECT min(${REQUEST_MESSAGE_SEQ_SQL}) AS seq FROM message_requests r WHERE r.room_id=? AND r.requires_reply=1 AND r.response_event_id IS NULL`).get(roomId) as {seq: number | null};
         const newest = this.db.prepare("SELECT max(seq) AS seq FROM events WHERE room_id=? AND json_extract(body,'$.type')='message'").get(roomId) as {seq: number | null};
-        return Math.min(pending.seq ?? Infinity, newest.seq ?? Infinity);
+        const retainedFile = this.db.prepare("SELECT min(e.seq) AS seq FROM files f JOIN events e ON e.room_id=f.room_id AND json_extract(e.body,'$.eventId')=f.event_id WHERE f.room_id=? AND json_extract(f.body,'$.retention.mode') IN ('temporary','until-received')").get(roomId) as {seq: number | null};
+        return Math.min(pending.seq ?? Infinity, newest.seq ?? Infinity, retainedFile.seq ?? Infinity);
     }
 
     /** Simulates retention dropping the front of the log without touching room state. */
@@ -656,7 +679,7 @@ export class SqliteStore implements RoomStore {
         }
         const files = this.rows<FileRecord>(`SELECT body FROM files WHERE room_id=? AND event_id IS NOT NULL AND coalesce(json_extract(body,'$.uploading'),0)=0 AND ${VISIBLE_FILE_SQL} ORDER BY created_at, file_id`, roomId);
         for (const file of files) {
-            yield {kind: 'file', file};
+            yield {kind: file.retention?.mode === 'temporary' || file.retention?.mode === 'until-received' ? 'file-retention' : 'file', file};
             for (const chunk of this.db.prepare('SELECT idx, bytes FROM file_chunks WHERE file_id=? ORDER BY idx').all(file.fileId) as {idx: number; bytes: Uint8Array | ArrayBuffer}[]) {
                 yield {kind: 'file-chunk', fileId: file.fileId, index: Number(chunk.idx), bytes: toBase64(chunk.bytes instanceof Uint8Array ? chunk.bytes : new Uint8Array(chunk.bytes))};
             }
@@ -739,6 +762,7 @@ export class SqliteStore implements RoomStore {
                         this.db.prepare('INSERT INTO idempotency (room_id, key, request_digest, seq) VALUES (?, ?, ?, ?)').run(room.roomId, record.key, record.requestDigest, record.seq);
                         break;
                     case 'file':
+                    case 'file-retention':
                         ours(record.file.roomId);
                         fileSizes.set(record.file.fileId, {size: record.file.size, written: 0, chunks: 0});
                         this.db.prepare('INSERT INTO files (file_id, room_id, size, created_at, event_id, body) VALUES (?, ?, ?, ?, ?, ?)').run(record.file.fileId, room.roomId, record.file.size, record.file.createdAt, record.file.eventId, JSON.stringify(record.file));

@@ -9,7 +9,7 @@ import {ProtocolError, newId} from '@pairlobby/protocol';
 import type {Attachment, ListingPresenceRequest, MessageRequest, ProviderWait, ReportedAvailability} from '@pairlobby/protocol';
 import {select, UsageError} from './context.js';
 import {CodexReceiver} from './codex-receiver.js';
-import {clearAnswerFiles, stageAnswerFile, stagedAnswerFiles, uploadAnswerFiles} from './answer-files.js';
+import {clearAnswerFiles, stageAnswerFile, stagedAnswerFileEntries, uploadAnswerFiles} from './answer-files.js';
 import {attachmentLabel, saveForAgent} from './files.js';
 import type {FileContext} from './files.js';
 import {ClaudeReceiver} from './claude-receiver.js';
@@ -508,7 +508,7 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                     if (snapshot.messageStagesSupported && current.action !== 'reply_pending') {
                         await client.reportMessageStatus(room.roomId, credential, job.event_id, 'reply_pending', token ? {turnToken: token} : {});
                     }
-                    const {attachments, problems} = await uploadAnswerFiles({client, roomId: room.roomId, credential}, stagedAnswerFiles(database, job.event_id), config.cwd, snapshot.filesSupported === true);
+                    const {attachments, problems} = await uploadAnswerFiles({client, roomId: room.roomId, credential}, stagedAnswerFileEntries(database, job.event_id), config.cwd, snapshot.filesSupported === true);
                     const response = await client.reply(room.roomId, credential, job.event_id, problems.length ? `${job.answer!}\n\n${problems.join('\n')}` : job.answer!, false, token, attachments);
                     clearAnswerFiles(database, job.event_id);
                     if (job.attempt_id) {
@@ -742,11 +742,11 @@ export async function runReceiver(store: LocalStore, roomRef: string, sessionRef
                         saveValue(`decision:${request.eventId}`, JSON.stringify({state, reason}));
                     }
                 },
-                attach: async (path) => {
+                attach: async (path, retention) => {
                     if (!snapshot.filesSupported) {
                         throw new Error('This relay does not store files; describe the file in your answer instead.');
                     }
-                    return stageAnswerFile(database, request.eventId, config.cwd, path);
+                    return stageAnswerFile(database, request.eventId, config.cwd, path, retention);
                 },
                 pass: async () => {
                     if (!token) {

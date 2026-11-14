@@ -26,6 +26,8 @@ export const RoomTransferRecord = z.discriminatedUnion('kind', [
     z.object({kind: z.literal('receipt-range'), participantId: ParticipantId, throughSeq: z.number().int().nonnegative(), at: z.number().int().nonnegative()}),
     z.object({kind: z.literal('idempotency'), key: z.string().min(1).max(128), requestDigest: z.string().min(1).max(64 * 1024), seq: z.number().int().min(1)}),
     z.object({kind: z.literal('file'), file: FileRecord.passthrough()}),
+    // An older importer must refuse these records instead of silently dropping a file's lifetime policy.
+    z.object({kind: z.literal('file-retention'), file: FileRecord.passthrough()}),
     z.object({kind: z.literal('file-chunk'), fileId: z.string().min(1).max(64), index: z.number().int().nonnegative(), bytes: z.string().max(Math.ceil(FILE_CHUNK_BYTES / 3) * 4)}),
     z.object({kind: z.literal('complete'), events: z.number().int().nonnegative(), files: z.number().int().nonnegative(), digest: z.string().length(64)})
 ]);

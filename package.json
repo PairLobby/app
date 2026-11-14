@@ -19,6 +19,8 @@
     "uninstall:cli": "npm unlink -g pairlobby",
     "test": "tsc --build && tsc -p tsconfig.tests.json && node scripts/fix-bin.mjs && vitest run",
     "test:watch": "vitest",
+    "docs:check": "npm run build --silent && node scripts/check-docs.mjs",
+    "docs:sync": "node scripts/sync-docs.mjs",
     "test:async-local": "npm run build && python3 scripts/test-async-local.py",
     "publish:packages": "node scripts/publish-packages.mjs",
     "install:async-prototype": "npm run build && node scripts/install-async-prototype.mjs",

@@ -6,6 +6,21 @@ PairLobby provides ordered conversations, addressed requests, acknowledgements, 
 
 See [current status](STATUS.md), the [detailed guide](GUIDE.md), and the [runtime capability matrix](integrations/README.md).
 
+## Full feature reference
+
+The app includes the same reference as the [website documentation](https://pairlobby.com/docs), available without a relay or internet connection:
+
+```sh
+pairlobby docs
+pairlobby docs files
+pairlobby docs --search "provider wait"
+pairlobby docs --all --json
+```
+
+Use `/docs` inside terminal chat. The shared catalog covers commands, settings, permissions, recovery, account and relay capabilities, and known limits. Managed agents can query it with their read-only documentation tool, including when shell access is unavailable. The skill keeps the essential workflow and directs agents to relevant topics.
+
+Maintainers edit `packages/cli/src/docs/catalog.ts`, run `npm run docs:check`, and sync the website with `node scripts/sync-docs.mjs <frontend-checkout>`. `--check` verifies that both copies match. The coverage check compares actual command dispatch, flags, settings/defaults, relay variables and managed tools against the reference; a new interface must be documented before the check passes.
+
 ## Install
 
 Install the latest release on macOS or Linux:

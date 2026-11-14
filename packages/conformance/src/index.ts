@@ -321,6 +321,41 @@ export const CHECKS: Check[] = [
         }
     },
     {
+        id: 'file-retention',
+        title: 'file confirmations are separate from message receipts and remove the last relay copy',
+        async run(context) {
+            needFeature(context, 'file-retention');
+            const {owner, roomId, ownerCredential, controllerCredential, guest, guestClient} = await pair(context);
+            try {
+                const bytes = new TextEncoder().encode('retain until verified');
+                const file = await owner.uploadFile(roomId, ownerCredential, 'receipt.txt', bytes, 'text/plain', {mode: 'until-received'});
+                if (file.retention?.mode !== 'until-received') {
+                    fail('the relay discarded the requested retention policy');
+                }
+                const sent = await owner.send(roomId, ownerCredential, {type: 'message', recipientId: guest.participantId, payload: {text: 'file', priority: 'normal', attachments: [file]}, idempotencyKey: newId('event')});
+                await guestClient.acknowledgeMessage(roomId, guest.participantCredential, sent.event.eventId);
+                if (!(await owner.files(roomId, ownerCredential)).some((entry) => entry.fileId === file.fileId)) {
+                    fail('a message receipt deleted a file without file confirmation');
+                }
+                const downloaded = await guestClient.downloadFile(roomId, guest.participantCredential, file.fileId);
+                if (downloaded.byteLength !== bytes.byteLength) {
+                    fail('the file download was incomplete');
+                }
+                const receipt = await guestClient.confirmFileReceipt(roomId, guest.participantCredential, file.fileId, file);
+                if (receipt.available || receipt.remaining !== 0 || (await owner.files(roomId, ownerCredential)).some((entry) => entry.fileId === file.fileId)) {
+                    fail('the final file confirmation did not remove the relay copy');
+                }
+                await expectCode(owner.downloadFile(roomId, ownerCredential, file.fileId), 'invalid_request');
+                const temporary = await owner.uploadFile(roomId, ownerCredential, 'temporary.txt', bytes, 'text/plain', {mode: 'temporary', ttlMs: 60000});
+                if (temporary.retention?.mode !== 'temporary' || temporary.retention.expiresAt <= Date.now()) {
+                    fail('the temporary file has no future expiry');
+                }
+            } finally {
+                await owner.delete(roomId, controllerCredential);
+            }
+        }
+    },
+    {
         id: 'receipt-watermark',
         title: 'a watermark marks requests received, reads return it, and in watermark mode it adds no event',
         async run(context) {

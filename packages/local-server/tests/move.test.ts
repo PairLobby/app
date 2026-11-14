@@ -81,6 +81,37 @@ test('test_a_moved_room_keeps_its_history_files_open_requests_and_credentials', 
     expect((await there.snapshot(owner.roomId, owner.controllerCredential)).lifecycle).toBe('open');
 });
 
+test('a move preserves file deadlines and confirmations and removes ephemeral source copies', async () => {
+    const client = new PairLobbyClient(source.url);
+    const owner = await client.createRoom('retained move', {displayName: 'owner', kind: 'human'});
+    const first = await client.redeemInvite(owner.invite.code, {displayName: 'first', kind: 'agent'});
+    const second = await client.redeemInvite((await client.mintInvite(owner.roomId, owner.controllerCredential)).code, {displayName: 'second', kind: 'agent'});
+    const receiptFile = await client.uploadFile(owner.roomId, owner.participantCredential, 'receipt.txt', new TextEncoder().encode('keep locally'), 'text/plain', {mode: 'until-received'});
+    const temporary = await client.uploadFile(owner.roomId, owner.participantCredential, 'temporary.txt', new TextEncoder().encode('deadline'), 'text/plain', {mode: 'temporary', ttlMs: 60000});
+    await client.send(owner.roomId, owner.participantCredential, {type: 'message', payload: {text: 'files', priority: 'normal', attachments: [receiptFile, temporary]}, idempotencyKey: newId('event')});
+    await client.confirmFileReceipt(owner.roomId, first.participantCredential, receiptFile.fileId, receiptFile);
+    await client.prepareMove(owner.roomId, owner.controllerCredential);
+    const records: RoomTransferRecord[] = [];
+    for await (const {record} of client.moveTransfer(owner.roomId, owner.controllerCredential)) {
+        records.push(record);
+    }
+    const path = join(directory, 'retained-target.sqlite');
+    expect(records.filter((record) => record.kind === 'file-retention')).toHaveLength(2);
+    const target = new SqliteRoomStore(path);
+    target.transferIn(records);
+    target.close();
+    const moved = await startServer({port: 0, dataFile: path});
+    running.push(moved);
+    await client.commitMove(owner.roomId, owner.controllerCredential, {serverUrl: moved.url, roomId: owner.roomId});
+    expect((await client.fileList(owner.roomId, owner.participantCredential)).usage?.usedBytes).toBe(0);
+    const destination = new PairLobbyClient(moved.url);
+    const files = await destination.files(owner.roomId, owner.participantCredential);
+    expect(files.find((file) => file.fileId === temporary.fileId)?.retention).toEqual(temporary.retention);
+    expect(files.find((file) => file.fileId === receiptFile.fileId)?.receivedBy).toEqual([first.participantId]);
+    expect(await destination.confirmFileReceipt(owner.roomId, second.participantCredential, receiptFile.fileId, receiptFile)).toMatchObject({available: false});
+    expect((await destination.fileList(owner.roomId, owner.participantCredential)).usage?.usedBytes).toBe(temporary.size);
+});
+
 test('test_an_aborted_move_takes_writes_again_and_a_transfer_needs_the_lease', async () => {
     const {client, owner, agent} = await roomWithWork();
     expect(await failure((async () => {

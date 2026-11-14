@@ -3,10 +3,13 @@
 //! failure came from local validation or from the server.
 
 import {sha256} from '@noble/hashes/sha2.js';
+import {FileRetentionRequest} from '@pairlobby/protocol';
 import {ABSOLUTE_MAX_FILE_BYTES, ExportStreamRecord, FILE_SIZE_HEADER, MAX_EVENT_WAIT_MS, PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, RoomTransferRecord, ServerDescription, ServerFrame, TransferDigest, newCredential, newId} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
     Attachment,
+    FileReceiptRequest,
+    FileReceiptResponse,
     AutoClosePolicy,
     MovePrepareResponse,
     MovedTo,
@@ -48,7 +51,7 @@ import type {
 
 type RawUpload = {body: Uint8Array<ArrayBuffer> | ReadableStream<Uint8Array>; contentType: string; size: number};
 type StreamingRequestInit = RequestInit & {duplex?: 'half'};
-export type StreamUpload = {name: string; body: ReadableStream<Uint8Array>; size: number; mediaType?: string};
+export type StreamUpload = {name: string; body: ReadableStream<Uint8Array>; size: number; mediaType?: string; retention?: FileRetentionRequest};
 type RoomAccountAccess = {private: boolean; allowedAccounts: string[]};
 export type RoomAccountRestrictions = {private: boolean; accounts: string[]; preserveAllowlistSupported?: boolean};
 
@@ -275,12 +278,14 @@ export class PairLobbyClient {
     }
 
     /** Stores a file on the relay and returns what to put in a message's `attachments`. It is not in the room until a message carries it. */
-    async uploadFile(roomId: string, credential: string, name: string, bytes: Uint8Array, mediaType = 'application/octet-stream'): Promise<Attachment> {
-        const response = await this.raw('POST', `/v1/rooms/${roomId}/files?name=${encodeURIComponent(name)}`, credential, {body: bytes as Uint8Array<ArrayBuffer>, contentType: mediaType, size: bytes.byteLength});
+    async uploadFile(roomId: string, credential: string, name: string, bytes: Uint8Array, mediaType = 'application/octet-stream', retention?: FileRetentionRequest): Promise<Attachment> {
+        const path = await this.fileUploadPath(roomId, name, retention);
+        const response = await this.raw('POST', path, credential, {body: bytes as Uint8Array<ArrayBuffer>, contentType: mediaType, size: bytes.byteLength});
         return (JSON.parse(await response.text()) as {file: Attachment}).file;
     }
 
     async uploadFileStream(roomId: string, credential: string, upload: StreamUpload): Promise<Attachment> {
+        const path = await this.fileUploadPath(roomId, upload.name, upload.retention);
         if (!(await this.describe(true))?.features?.includes('stream-files')) {
             // Older hosted relays require a transport Content-Length. Fetch supplies it for the legacy byte-body API.
             if (!Number.isSafeInteger(upload.size) || upload.size <= 0 || upload.size > ABSOLUTE_MAX_FILE_BYTES) {
@@ -308,10 +313,25 @@ export class PairLobbyClient {
                 await reader.cancel().catch(() => {});
                 reader.releaseLock();
             }
-            return this.uploadFile(roomId, credential, upload.name, bytes, upload.mediaType);
+            return this.uploadFile(roomId, credential, upload.name, bytes, upload.mediaType, upload.retention);
         }
-        const response = await this.raw('POST', `/v1/rooms/${roomId}/files?name=${encodeURIComponent(upload.name)}`, credential, {body: upload.body, contentType: upload.mediaType ?? 'application/octet-stream', size: upload.size});
+        const response = await this.raw('POST', path, credential, {body: upload.body, contentType: upload.mediaType ?? 'application/octet-stream', size: upload.size});
         return (await response.json() as {file: Attachment}).file;
+    }
+
+    private async fileUploadPath(roomId: string, name: string, retention?: FileRetentionRequest): Promise<string> {
+        if (retention) {
+            FileRetentionRequest.parse(retention);
+            if (retention.mode !== 'forever' && !(await this.describe(true))?.features?.includes('file-retention')) {
+                throw new ProtocolError('unsupported_capability', 'This relay does not support file retention. Update it before sending a temporary or delete-on-receipt file.');
+            }
+        }
+        return `/v1/rooms/${roomId}/files?name=${encodeURIComponent(name)}${retention ? `&retention=${encodeURIComponent(JSON.stringify(retention))}` : ''}`;
+    }
+
+    /** Confirm only after the complete file has been verified and kept. Reading its message is not a file receipt. */
+    confirmFileReceipt(roomId: string, credential: string, fileId: string, receipt: FileReceiptRequest): Promise<FileReceiptResponse> {
+        return this.call<FileReceiptResponse>('POST', `/v1/rooms/${roomId}/files/${fileId}/receipt`, credential, {sha256: receipt.sha256, size: receipt.size});
     }
 
     async files(roomId: string, credential: string): Promise<RoomFile[]> {
@@ -329,7 +349,7 @@ export class PairLobbyClient {
     }
 
     /** Integrity is checked at EOF. Consumers must discard partial output when the stream fails. */
-    async downloadFileStream(roomId: string, credential: string, fileId: string): Promise<ReadableStream<Uint8Array>> {
+    async downloadFileStream(roomId: string, credential: string, fileId: string, metadata?: FileReceiptRequest): Promise<ReadableStream<Uint8Array>> {
         const response = await this.raw('GET', `/v1/rooms/${roomId}/files/${fileId}`, credential);
         if (!response.body) {
             throw new ProtocolError('server_unavailable', 'the file response has no body');
@@ -349,7 +369,7 @@ export class PairLobbyClient {
             },
             flush() {
                 const digest = Array.from(hash.digest(), (byte) => byte.toString(16).padStart(2, '0')).join('');
-                if ((expected && expected !== digest) || (length !== null && received !== Number(length))) {
+                if ((expected && expected !== digest) || (length !== null && received !== Number(length)) || (metadata && (metadata.sha256 !== digest || metadata.size !== received))) {
                     throw new ProtocolError('server_unavailable', 'the file arrived damaged; try again');
                 }
             }

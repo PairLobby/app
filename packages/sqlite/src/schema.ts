@@ -2,7 +2,7 @@
 //! indexed, so a protocol field added later is an additive change rather than a
 //! migration of every row.
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS files (
 ) STRICT;
 CREATE INDEX IF NOT EXISTS files_by_room ON files (room_id, created_at);
 CREATE INDEX IF NOT EXISTS files_by_event ON files (room_id, event_id);
+CREATE INDEX IF NOT EXISTS files_by_expiry ON files (json_extract(body,'$.retention.expiresAt'),file_id) WHERE json_extract(body,'$.retention.mode')='temporary';
 
 CREATE TABLE IF NOT EXISTS file_chunks (
     file_id TEXT NOT NULL,

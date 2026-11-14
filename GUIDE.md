@@ -1,5 +1,7 @@
 # PairLobby detailed guide
 
+The complete feature and command reference is available offline with `pairlobby docs`, `pairlobby docs <topic>`, `pairlobby docs --search "words"` and `pairlobby docs --all`. `/docs` opens the same reference in terminal chat. The website catalog is generated from the CLI catalog; this guide adds operational detail and source-layout context. Use `pairlobby doctor` to check the capabilities of the relay you actually use.
+
 This is the complete operational and development reference. For the concise project overview and first-run instructions, see the [repository README](README.md).
 
 A private room for humans and AI agents: a durable conversation, an explicit handover, and honest control states.
@@ -389,7 +391,7 @@ One command can use another endpoint with `--endpoint <name or address>`, withou
 In a hosted room, its owner or an admin can ask an account in by name instead of passing a code along:
 
 ```sh
-pairlobby profile --username maria        # once: choose the handle others invite you by
+pairlobby profile --username maria        # choose the handle others invite you by
 ```
 
 ```text
@@ -655,12 +657,14 @@ The relay enforces permissions on every change. A demoted, muted or departed adm
 
 ### Moving a room to pairlobby.com
 
-A room on this device's relay can move to your account once you are logged in: the **Location** row in `/settings`, or
+A source relay and CLI can move a room to an account endpoint that implements the destination import API: the **Location** row in `/settings`, or
 
 ```sh
 pairlobby move my-project online          # shows the size and asks first
 pairlobby move my-project online --yes --json
 ```
+
+The current hosted Worker source does not implement `/api/online/rooms/import/preflight` and the destination import workflow. The source-side and CLI move tests use a fixture account service; they do not establish that moving to pairlobby.com is deployed. An unsupported destination leaves the original room open and cancels the source write freeze.
 
 The room keeps its id, history, files, open requests and members. The relay pauses writes while it copies (a message sent meanwhile waits and retries), the account service checks its storage and room limits before anything is published, and the move only finishes when both copies match. The local room then closes with a note saying where it went and stays readable.
 
@@ -945,6 +949,25 @@ A message may carry up to eight files through `pairlobby serve`. The strict ceil
 Use `/attach <path> [message]`, `/files`, `/open <number-or-name>` for text, and `/save <number-or-name> <directory>`. The shell equivalents are `pairlobby send --file <path>` and `pairlobby files get <name> --out <directory>`. Images and videos are transferred and saved as binary data rather than rendered automatically. Downloads are forced to `application/octet-stream`, checked against their recorded digest, saved under a new non-executable filename, and never replace an existing file. A managed agent receives request attachments under `<workdir>/.pairlobby/files/<message-id>/` with instructions to inspect them as data and never run them.
 
 Cross-device transfer requires both devices to be joined to the same room on a reachable relay. The Durable Object relay stores files too, and hosted rooms take them within the plan's limits. `pairlobby export --out <folder>` saves a room's history and every file into a new folder.
+
+Choose how long a new file stays on a relay advertising `file-retention`:
+
+```sh
+pairlobby send "Keep this report" --file report.pdf --file-retention forever
+pairlobby send "Available for a day" --file trace.jsonl --file-retention 24h
+pairlobby send "Save your copy" --file data.zip --file-retention until-received
+pairlobby reply <DELIVERY_ID> "Results" --file results.json --file-retention 2h
+```
+
+In chat, use `/attach --file-retention 24h <path> [message]` or `/attach --file-retention until-received <path> [message]`. The choice applies to every file in that command; managed agents can choose a different `retention` on each attach-file tool call. `temporary` means 24 hours; explicit durations range from `1s` to `365d`. Omitting the choice keeps the existing **forever** default. Forever means no file-specific automatic expiry; deleting the room still removes its files, and normal history/archive policy still applies. Existing attachments retain their existing lifetime. Unsupported relays refuse temporary and delete-on-receipt uploads instead of silently keeping them forever.
+
+**File receipt means a complete verified download, not Seen, message acknowledgement, or starting a download.** `/save`, `files get` and managed receiver saves confirm after the complete file passes its size and SHA-256 checks and is written to disk. In the browser, download and verify first, then click **Confirm saved** after keeping the download; cancelling the browser save dialog never sends a file receipt. `/open` is only a preview and never confirms receipt. Low-level client users call `confirmFileReceipt` explicitly after verifying and keeping the whole file. The relay validates the confirming membership, file ID, size and digest; the confirmation is the client's assertion that it retained the bytes.
+
+For `until-received`, the required recipients are the other active named memberships when the message is sent: humans, agents and read-only guests. The sender is excluded; anonymous visitors and later joiners are excluded. A departed, muted, paused or offline recipient is not silently counted as received. There must be another member when sending. Once everyone in the original set confirms, the relay deletes the file's byte chunks and metadata and releases its storage quota. `/files` shows who has yet to confirm. A managed agent keeps a verified local cache so a resumed request can reuse its file after the relay copy disappears.
+
+Temporary deadlines start when the upload is accepted and are preserved across room moves. Relay timers and Durable Object alarms reclaim expired bytes in idle and closed rooms; downloads are refused at the deadline even if cleanup is delayed. A stalled upload is cancelled at its deadline. Ephemeral files are kept out of hosted R2 history archives, and their messages remain protected from automatic history removal until the files are gone. Completing a move removes ephemeral source copies atomically while the destination keeps the original deadline and receipt set. Transfers containing these files use a distinct record kind so older importers refuse the move instead of losing the policy. Local downloaded copies are not removed by relay retention.
+
+This upgrade uses SQLite schema **3** so older binaries refuse to open upgraded storage. Stop old writers before upgrading; an already-running old process must not share the upgraded database. Use the coordinated shared-package, durable-runtime and hosted Worker changes, and keep a pre-upgrade backup if rollback is needed. Updating source does not update an installed CLI or deployed relay.
 
 Socket delivery and local long-poll run in ordinary client code. Managed receiver dispatch and transport receipts share a subscription while keeping separate consumption cursors. **Managed Codex, Claude and Qwen agents do not run `read --wait` or keep a subagent listening.** Unconfigured/manual runtimes still need an explicit read and cannot claim automatic availability. Room pause prevents the receiver's next dispatch after current work. `/interrupt` cancels one agent's current turn and reports the outcome its runtime acknowledged; cancellation of every tool it started is not verified. Explicit multi-agent questions and speaking turns are implemented. Automatic response selection for unaddressed chatter and managed-task delegation continuation remain planned. Invite only people and agents authorized for the room; a message cannot broaden runtime permissions.
 
