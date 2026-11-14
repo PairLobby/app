@@ -31,6 +31,30 @@ export class MemoryStore implements RoomStore {
     private uploads = new Map<string, StagedFile>();
     private receiptRanges = new Map<string, ReceiptRange[]>();
     readonly files: FileStore = {
+        retention: {
+            update: async (file, expectedStateRevision) => {
+                const entry = this.inRoom(file.roomId, file.fileId);
+                if (!entry) {
+                    throw new ProtocolError('turn_conflict', 'the file changed; retry');
+                }
+                this.bumpFileState(file.roomId, expectedStateRevision);
+                entry.file = file;
+            },
+            remove: async (roomId, fileId, expectedStateRevision) => {
+                this.bumpFileState(roomId, expectedStateRevision);
+                if (this.stored.get(fileId)?.file.roomId === roomId) {
+                    this.stored.delete(fileId);
+                }
+                if (this.uploads.get(fileId)?.file.roomId === roomId) {
+                    this.uploads.delete(fileId);
+                }
+            },
+            due: async (now, limit) => [...this.stored.values(), ...this.uploads.values()].map((entry) => entry.file).filter((file) => file.retention?.mode === 'temporary' && file.retention.expiresAt <= now).sort((a, b) => (a.retention?.mode === 'temporary' ? a.retention.expiresAt : 0) - (b.retention?.mode === 'temporary' ? b.retention.expiresAt : 0)).slice(0, limit),
+            nextExpiryAt: async () => {
+                const deadlines = [...this.stored.values(), ...this.uploads.values()].flatMap((entry) => entry.file.retention?.mode === 'temporary' ? [entry.file.retention.expiresAt] : []);
+                return deadlines.length ? Math.min(...deadlines) : null;
+            }
+        },
         putFile: async (file, bytes, limitBytes, expectedStateRevision) => {
             const held = this.fileUsage(file.roomId);
             if (held + file.size > limitBytes) {
@@ -161,7 +185,12 @@ export class MemoryStore implements RoomStore {
             throw new ProtocolError('invalid_request', 'an attached file is no longer available; upload it again');
         }
         for (const entry of attaching) {
-            entry!.file = {...entry!.file, eventId: mutation.appendEvent.eventId};
+            entry!.file = mutation.attachedFileRecords?.find((file) => file.fileId === entry!.file.fileId) ?? {...entry!.file, eventId: mutation.appendEvent.eventId};
+        }
+        for (const fileId of mutation.removeFiles ?? []) {
+            if (this.stored.get(fileId)?.file.roomId === mutation.room.roomId) {
+                this.stored.delete(fileId);
+            }
         }
         this.writeReceipts(table.room, room);
         table.room = room;

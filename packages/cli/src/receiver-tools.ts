@@ -6,6 +6,8 @@ import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
 import {CallToolRequestSchema, ListToolsRequestSchema} from '@modelcontextprotocol/sdk/types.js';
 import type {LocalStore} from '@pairlobby/client';
 import {stageAnswerFile} from './answer-files.js';
+import {FILE_RETENTION_TOOL_DESCRIPTION} from './file-retention-instructions.js';
+import {DOCUMENTATION_TOOL_DESCRIPTION, DOCUMENTATION_TOOL_SCHEMA, documentationTool} from './documentation-tool.js';
 import {select, UsageError} from './context.js';
 import {receiverConfiguration} from './receiver.js';
 
@@ -20,6 +22,11 @@ export async function runReceiverTools(store: LocalStore, roomRef: string, sessi
     database.exec('PRAGMA busy_timeout=5000');
     const server = new Server({name: 'pairlobby-receiver', version: '0.2.0'}, {capabilities: {tools: {}}});
     server.setRequestHandler(ListToolsRequestSchema, async () => ({tools: [{
+        name: 'documentation',
+        description: DOCUMENTATION_TOOL_DESCRIPTION,
+        inputSchema: DOCUMENTATION_TOOL_SCHEMA,
+        annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false}
+    }, {
         name: 'acknowledge_message',
         description: 'Explicitly confirm you have read the current PairLobby request. Automatic transport receipt is separate. The final answer is sent by the receiver.',
         inputSchema: {type: 'object', properties: {}, additionalProperties: false}
@@ -34,7 +41,7 @@ export async function runReceiverTools(store: LocalStore, roomRef: string, sessi
     }, {
         name: 'attach_file',
         description: 'Send a file from the working directory with your final answer. Call once per file, at most 8; only files inside the working directory can be attached.',
-        inputSchema: {type: 'object', properties: {path: {type: 'string', minLength: 1, maxLength: 4096}}, required: ['path'], additionalProperties: false}
+        inputSchema: {type: 'object', properties: {path: {type: 'string', minLength: 1, maxLength: 4096}, retention: {type: 'string', minLength: 1, maxLength: 100, description: FILE_RETENTION_TOOL_DESCRIPTION}}, required: ['path'], additionalProperties: false}
     }, {
         name: 'pass_message',
         description: 'Pass the current speaking turn when you have nothing to add. End your turn after this; no public answer is posted.',
@@ -42,6 +49,9 @@ export async function runReceiverTools(store: LocalStore, roomRef: string, sessi
     }]}));
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
         try {
+            if (request.params.name === 'documentation') {
+                return {content: [{type: 'text', text: documentationTool(request.params.arguments ?? {})}]};
+            }
             if (!['acknowledge_message', 'working_message', 'pass_message', 'message_status', 'attach_file'].includes(request.params.name) || (!['message_status', 'attach_file'].includes(request.params.name) && Object.keys(request.params.arguments ?? {}).length)) {
                 throw new Error('Only the current request can be acknowledged');
             }
@@ -58,10 +68,10 @@ export async function runReceiverTools(store: LocalStore, roomRef: string, sessi
             const input = request.params.arguments ?? {};
             if (request.params.name === 'attach_file') {
                 const workdir = receiverConfiguration(store, session.sessionId)?.cwd;
-                if (!snapshot.filesSupported || !workdir || typeof input.path !== 'string') {
+                if (!snapshot.filesSupported || !workdir || typeof input.path !== 'string' || (input.retention !== undefined && typeof input.retention !== 'string')) {
                     throw new Error('Attaching files is not available here; describe the file in your answer instead.');
                 }
-                return {content: [{type: 'text', text: stageAnswerFile(database, eventId, workdir, input.path)}]};
+                return {content: [{type: 'text', text: stageAnswerFile(database, eventId, workdir, input.path, input.retention as string | undefined)}]};
             }
             if (request.params.name === 'message_status' && (!['waiting', 'no_action', 'declined'].includes(String(input.state)) || typeof input.reason !== 'string' || !input.reason.trim() || input.reason.length > 1024 || !snapshot.messageStagesSupported)) {
                 throw new Error('Choose waiting, no_action or declined with a reason; update the relay if necessary.');

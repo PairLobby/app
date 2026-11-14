@@ -1,8 +1,10 @@
 # Where PairLobby is
 
-Updated 2026-11-08, for release **0.32.0**. `pairlobby --version` says what a device runs, and [the releases page](https://github.com/PairLobby/app/releases) what is published. This describes the current checkout; the hosted service may run an older release.
+This describes the current checkout. `pairlobby --version` says what a device runs, and [the releases page](https://github.com/PairLobby/app/releases) what is published; a hosted service may run an older release. `pairlobby docs` and the generated website catalog provide the complete feature reference, while `pairlobby doctor` reports an actual relay's capabilities.
 
 ## What works
+
+- Complete offline documentation through `pairlobby docs`, searchable topics/JSON, `/docs` in chat, and read-only reference tools for managed Codex, Claude and Qwen. The website uses the same catalog; automated checks cover command, setting, relay-variable and tool inventory.
 
 - Rooms, reusable/single-use invitations, read-only visitors, expiry, handovers, and explicit control state.
 - Deleting a room you own while others are still in it only leaves it, so it carries on for them; `leave-occupied-rooms` and `delete-empty-rooms` change that per device.
@@ -12,7 +14,7 @@ Updated 2026-11-08, for release **0.32.0**. `pairlobby --version` says what a de
 - Room types (public, protected, private, personal) and whether members may invite, enforced by the relay; `pairlobby room <room> type|invite-policy|member|admin` and `/settings`; an owner makes a visitor a member in place.
 - Joining public and protected rooms by name on a relay behind a proxy: by personal token, or for everyone with `PAIRLOBBY_PROXY_IS_ACCESS_GATE=1`; `join <name>` and the room list also ask the saved endpoint's relay, or on pairlobby.com the logged-in account's relay.
 - An agent's receiver starts in a public room as anywhere else, with a warning that every member can instruct it.
-- Moving a room from this device's relay to the logged-in account: `pairlobby move <room> online` or the Location row in `/settings`. History, files, open requests and seats move; the local room closes saying where it went, and devices that know the room follow it. Needs the hosted service's matching release.
+- Source-side room transfer and CLI orchestration through `pairlobby move <room> online` or Location in `/settings`. A destination must implement the account import API; the current hosted Worker source does not. Source/CLI fixture tests verify matching-copy checks and session repointing, not production account moves.
 - Messages carry up to eight inert file attachments, with a strict 95 MB single-file ceiling and 512 MB retained per room on local relays; the Durable Object relay stores them too, and hosted rooms apply the plan's limits. Managed agents can attach workspace files to their answers, `/files` shows space used, and `pairlobby export` saves history plus files. Inline media previews are not implemented.
 - Managed Codex, Claude, and Qwen receivers: detached Node code waits; addressed requests run in separate managed conversations, without listening models or polling subagents.
 - Managed Claude usage exhaustion is a durable `provider_wait`, not a failed task: the turn is released, same-profile queues are fenced, one receiver atomically probes restored capacity, repeated limits use bounded backoff then manual-only recovery, and every recovery is a new audited attempt that inspects prior side effects.
@@ -85,7 +87,8 @@ These tracked guides are the published references. `.docs/` (papercuts) and work
 - Invitations by email, contacts, organizations, and the website's handle and invitation pages are not built. Inviting by handle is for hosted rooms only.
 - Upload progress, resumable transfer, uploads from the website and iPhone app, and inline image/video previews remain follow-ups; current clients and relays stream transfers below the enforced 95 MB ceiling. Uploads reserve quota before bytes arrive and remain unavailable until verified; a legacy relay can still require a buffered client upload.
 - Sharing a relay with `network-sharing lan` is plain HTTP; `tailscale` relies on Tailscale's encryption. Finding relays on the local network needs the macOS Local Network permission for the terminal app, and tailnet discovery only tries port 8790. None of this has been exercised across more than two real devices.
-- The Durable Object relay speaks HTTP only and is not qualified on a multi-node Celld fleet.
+- The standalone Durable Object relay provides HTTP APIs and hibernating WebSockets. It is not qualified on a multi-node Celld fleet.
+- Room move has source-relay and CLI support, but the configured account endpoint must implement the destination import API. That API is not present in the current hosted Worker source; source-side fixtures do not verify production account moves.
 - Native graphics in actual iTerm2/Ghostty windows and broader Windows/Warp terminal support still need validation; portable character output and protocol/PTY paths have tests.
 - Receiver descendants, approval forwarding, native Claude channel acceptance, hosted receiver end-to-end/reconnect/load checks, and overnight idle need additional testing.
 - Managed-request recovery now has activity-aware deadlines, append-only local attempts, retry/reassign/dismiss/cancel, an interactive `/requests` details/attempts/action panel, receiver-confirmed workspace context, remaining-time/attempt status, and fresh-thread recovery after unsafe termination. Automatic replay remains disabled for ambiguous failures; typed provider usage exhaustion alone uses a guarded deferred retry.

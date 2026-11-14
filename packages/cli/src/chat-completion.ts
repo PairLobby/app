@@ -1,8 +1,10 @@
 import {completeAgentCommand} from './spawn-options.js';
 import {commonPrefix, renderSuggestions} from './mentions.js';
+import {SECTIONS} from './docs/catalog.js';
 
-export const CHAT_COMMANDS = ['/claude', '/codex', '/qwen', '/spawn', '/agents', '/agent', '/status', '/settings', '/turns', '/to', '/seen', '/collapse', '/expand', '/working', '/select', '/requests', '/reply', '/who', '/name', '/invite', '/invites', '/lock', '/unlock', '/kick', '/mute', '/unmute', '/attach', '/files', '/open', '/save', '/permissions', '/preset', '/expiry', '/interrupt', '/pause', '/resume', '/help', '/quit', '/exit'];
+export const CHAT_COMMANDS = ['/claude', '/codex', '/qwen', '/spawn', '/agents', '/agent', '/status', '/settings', '/turns', '/to', '/seen', '/collapse', '/expand', '/working', '/select', '/requests', '/reply', '/who', '/name', '/invite', '/invites', '/lock', '/unlock', '/kick', '/mute', '/unmute', '/attach', '/files', '/open', '/save', '/permissions', '/preset', '/expiry', '/interrupt', '/pause', '/resume', '/help', '/docs', '/quit', '/exit'];
 const SUBCOMMANDS: Record<string, string[]> = {
+    '/docs': [...SECTIONS.map((section) => section.id), 'files', '--search', '--all'],
     '/agent': ['start', 'stop'],
     '/turns': ['sequential', 'parallel', 'skip', 'cancel'],
     '/requests': ['retry', 'reassign', 'dismiss', 'cancel'],

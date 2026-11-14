@@ -92,7 +92,7 @@ export async function moveRoomOnline(store: LocalStore, room: RoomEntry, options
             if (record.kind === 'event') {
                 events++;
                 bytes += new TextEncoder().encode(JSON.stringify(record.event.payload)).byteLength;
-            } else if (record.kind === 'file') {
+            } else if (record.kind === 'file' || record.kind === 'file-retention') {
                 files++;
                 bytes += record.file.size;
             } else if (record.kind === 'participant' && record.participant.leftAt === null && record.participant.revokedAt === null) {

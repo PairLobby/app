@@ -322,7 +322,12 @@ async function respond(relay: Relay, incoming: IncomingMessage, outgoing: Server
     const requestId = requestIdFor(typeof incoming.headers[REQUEST_ID_HEADER] === 'string' ? incoming.headers[REQUEST_ID_HEADER] : null);
     const bodyLimit = requestBodyLimit(incoming);
     const disconnected = new AbortController();
-    incoming.once('aborted', () => disconnected.abort());
+    incoming.once('aborted', () => {
+        disconnected.abort();
+        // Expiring a streaming upload can cancel its input before a response exists.
+        // Close the response side as well so the uploader does not wait for its HTTP timeout.
+        outgoing.destroy();
+    });
     outgoing.once('close', () => {
         if (!outgoing.writableEnded) {
             disconnected.abort();

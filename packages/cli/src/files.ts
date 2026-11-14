@@ -2,20 +2,49 @@
 //! arrived, and showing them. A received file is only ever written as plain data
 //! under a new name; nothing here opens, runs or overwrites one.
 
-import {closeSync, createReadStream, fstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync, writeSync} from 'node:fs';
+import {closeSync, createReadStream, fsyncSync, fstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {Readable} from 'node:stream';
 import {homedir} from 'node:os';
 import {basename, extname, join, resolve} from 'node:path';
 
-import {MAX_ATTACHMENTS_PER_MESSAGE, ProtocolError, formatFileSize, safeFileName} from '@pairlobby/protocol';
+import {DEFAULT_TEMPORARY_FILE_TTL_MS, FileRetentionRequest, MAX_ATTACHMENTS_PER_MESSAGE, ProtocolError, formatFileSize, safeFileName} from '@pairlobby/protocol';
 import type {Attachment, FileUsage, RoomFile, RoomSnapshot} from '@pairlobby/protocol';
 import type {PairLobbyClient} from '@pairlobby/client';
+import {parseDuration} from './when.js';
 
-export type FileContext = {client: PairLobbyClient; roomId: string; credential: string};
+export type FileContext = {client: PairLobbyClient; roomId: string; credential: string; retention?: FileRetentionRequest};
 export type OutgoingFile = {name: string; bytes: Uint8Array; mediaType: string};
 export type OutgoingFileInfo = {name: string; path: string; size: number; mediaType: string};
 type ReceivedFileHandle = {path: string; handle: number};
 export type SavedFile = {file: Attachment; path: string};
+type SaveFileOptions = {beforeReceipt?: (path: string) => void};
+
+export function parseFileRetention(value?: string): FileRetentionRequest | undefined {
+    if (value === undefined) {
+        return undefined;
+    }
+    const choice = value.trim().toLowerCase();
+    if (choice === 'forever' || choice === 'until-received') {
+        return {mode: choice};
+    }
+    const ttlMs = choice === 'temporary' ? DEFAULT_TEMPORARY_FILE_TTL_MS : parseDuration(choice);
+    const parsed = FileRetentionRequest.safeParse({mode: 'temporary', ttlMs});
+    if (!parsed.success) {
+        throw new Error('File retention must be forever, until-received, temporary (24h), or a duration from 1s to 365d.');
+    }
+    return parsed.data;
+}
+
+export function fileRetentionLabel(file: Attachment): string {
+    if (file.retention?.mode === 'until-received') {
+        return 'delete after every recipient saves it';
+    }
+    if (file.retention?.mode === 'temporary') {
+        return `expires ${new Date(file.retention.expiresAt).toLocaleString()}`;
+    }
+    return 'keep forever';
+}
 
 /** The most text `/open` draws in the transcript; a longer file is cut and says so. */
 const PREVIEW_BYTES = 64 * 1024;
@@ -77,7 +106,7 @@ export async function uploadOutgoingFile(context: FileContext, file: OutgoingFil
     }
     const stream = createReadStream(file.path, {fd, highWaterMark: 64 * 1024, autoClose: true});
     try {
-        return await context.client.uploadFileStream(context.roomId, context.credential, {name: file.name, size: file.size, mediaType: file.mediaType, body: Readable.toWeb(stream) as ReadableStream<Uint8Array>});
+        return await context.client.uploadFileStream(context.roomId, context.credential, {name: file.name, size: file.size, mediaType: file.mediaType, body: Readable.toWeb(stream) as ReadableStream<Uint8Array>, ...(context.retention ? {retention: context.retention} : {})});
     } finally {
         stream.destroy();
     }
@@ -100,7 +129,7 @@ export async function uploadFiles(context: FileContext, paths: string[], snapsho
 }
 
 export function attachmentLabel(file: Attachment): string {
-    return `${file.name} · ${formatFileSize(file.size)}`;
+    return `${file.name} · ${formatFileSize(file.size)}${file.retention ? ` · ${fileRetentionLabel(file)}` : ''}`;
 }
 
 /** What to say when a message is only files. */
@@ -133,7 +162,11 @@ export function filesReport(files: RoomFile[], names: Map<string, string>, usage
         return `No files have been sent in this room. Send one with /attach <path>.${footer}`;
     }
     const width = String(files.length).length;
-    return files.map((file, index) => `${String(index + 1).padStart(width)}  ${attachmentLabel(file)} · from ${names.get(file.uploaderId) ?? file.uploaderId} · ${new Date(file.createdAt).toLocaleString()}`).join('\n') + footer;
+    return files.map((file, index) => {
+        const pending = file.receiptRecipients?.filter((id) => !file.receivedBy?.includes(id));
+        const receipts = pending?.length ? ` · awaiting file receipt from ${pending.map((id) => names.get(id) ?? id).join(', ')}` : '';
+        return `${String(index + 1).padStart(width)}  ${attachmentLabel(file)} · from ${names.get(file.uploaderId) ?? file.uploaderId} · ${new Date(file.createdAt).toLocaleString()}${receipts}`;
+    }).join('\n') + footer;
 }
 
 /**
@@ -185,8 +218,8 @@ function openReceivedFile(directory: string, name: string): ReceivedFileHandle {
     throw new Error(`Too many files named ${safe} in ${directory}.`);
 }
 
-export async function saveFile(context: FileContext, file: Attachment, directory: string): Promise<string> {
-    const stream = await context.client.downloadFileStream(context.roomId, context.credential, file.fileId);
+export async function saveFile(context: FileContext, file: Attachment, directory: string, options: SaveFileOptions = {}): Promise<string> {
+    const stream = await context.client.downloadFileStream(context.roomId, context.credential, file.fileId, file);
     const reader = stream.getReader();
     let output: ReceivedFileHandle | undefined;
     try {
@@ -198,7 +231,7 @@ export async function saveFile(context: FileContext, file: Attachment, directory
             }
             writeAll(output.handle, value);
         }
-        return output.path;
+        fsyncSync(output.handle);
     } catch (error) {
         await reader.cancel(error).catch(() => {});
         if (output) {
@@ -211,11 +244,26 @@ export async function saveFile(context: FileContext, file: Attachment, directory
             closeSync(output.handle);
         }
     }
+    // Persist a receiver's cache record before acknowledgement can remove the relay's last copy.
+    options.beforeReceipt?.(output!.path);
+    await confirmSavedFile(context, file, output!.path);
+    return output!.path;
+}
+
+async function confirmSavedFile(context: FileContext, file: Attachment, path: string): Promise<void> {
+    if (file.retention?.mode !== 'until-received') {
+        return;
+    }
+    try {
+        await context.client.confirmFileReceipt(context.roomId, context.credential, file.fileId, {size: file.size, sha256: file.sha256});
+    } catch {
+        throw new Error(`Saved ${file.name} to ${path}, but the relay could not confirm its receipt. The local file was kept; retry the save to confirm.`);
+    }
 }
 
 /** Drain and verify the whole download, retaining just enough text for its preview. */
 export async function downloadPreview(context: FileContext, file: Attachment): Promise<string> {
-    const reader = (await context.client.downloadFileStream(context.roomId, context.credential, file.fileId)).getReader();
+    const reader = (await context.client.downloadFileStream(context.roomId, context.credential, file.fileId, file)).getReader();
     const preview = new Uint8Array(Math.min(PREVIEW_BYTES, file.size));
     let used = 0;
     try {
@@ -250,7 +298,38 @@ export async function saveForAgent(context: FileContext, files: Attachment[], wo
     }
     const saved: SavedFile[] = [];
     for (const file of files) {
-        saved.push({file, path: await saveFile(context, file, directory)});
+        const receiptDirectory = join(directory, '.receipts');
+        const receiptPath = join(receiptDirectory, `${safeFileName(file.fileId)}.json`);
+        let cached: string | undefined;
+        try {
+            const name: unknown = JSON.parse(readFileSync(receiptPath, 'utf8')).name;
+            if (typeof name === 'string' && name === basename(name)) {
+                const path = join(directory, name);
+                if (statSync(path).size === file.size) {
+                    const digest = createHash('sha256');
+                    for await (const chunk of createReadStream(path)) {
+                        digest.update(chunk);
+                    }
+                    if (digest.digest('hex') === file.sha256) {
+                        cached = path;
+                    }
+                }
+            }
+        } catch {
+            // A missing or changed cached file is downloaded and verified again.
+        }
+        if (cached) {
+            await confirmSavedFile(context, file, cached);
+            saved.push({file, path: cached});
+            continue;
+        }
+        const path = await saveFile(context, file, directory, {beforeReceipt: (location) => {
+            mkdirSync(receiptDirectory, {recursive: true});
+            const temporary = `${receiptPath}.${process.pid}.tmp`;
+            writeFileSync(temporary, JSON.stringify({name: basename(location)}), {mode: 0o600});
+            renameSync(temporary, receiptPath);
+        }});
+        saved.push({file, path});
     }
     return saved;
 }
@@ -285,7 +364,7 @@ export function previewFile(file: Attachment, bytes: Uint8Array, totalBytes = by
     return `**${file.name}** · ${formatFileSize(file.size)}\n${fence}${language}\n${text.replace(/\n$/, '')}\n${fence}${cut}`;
 }
 
-export type AttachCommand = {paths: string[]; text: string};
+export type AttachCommand = {paths: string[]; text: string; retention?: FileRetentionRequest};
 
 /**
  * `/attach notes.txt "my file.json" here they are`: the leading words that name
@@ -295,6 +374,15 @@ export type AttachCommand = {paths: string[]; text: string};
 export function splitAttachCommand(argument: string, cwd = process.cwd()): AttachCommand {
     const paths: string[] = [];
     let rest = argument.trim();
+    let retention: FileRetentionRequest | undefined;
+    if (rest.startsWith('--file-retention')) {
+        const option = /^--file-retention(?:=|\s+)(\S+)\s*/.exec(rest);
+        if (!option) {
+            throw new Error('Use /attach --file-retention forever|24h|until-received <path>.');
+        }
+        retention = parseFileRetention(option[1]);
+        rest = rest.slice(option[0].length);
+    }
     while (rest) {
         const token = /^(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|((?:\\.|\S)+))\s*/.exec(rest);
         if (!token) {
@@ -317,5 +405,5 @@ export function splitAttachCommand(argument: string, cwd = process.cwd()): Attac
             break;
         }
     }
-    return {paths, text: rest.trim()};
+    return {paths, text: rest.trim(), ...(retention ? {retention} : {})};
 }

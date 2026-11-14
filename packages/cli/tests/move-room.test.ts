@@ -1,5 +1,5 @@
 import {execFile} from 'node:child_process';
-import {mkdtempSync, rmSync} from 'node:fs';
+import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {promisify} from 'node:util';
@@ -85,6 +85,21 @@ test('test_a_room_the_account_cannot_take_stays_open_here', async () => {
     expect(store.room(created.roomId)?.serverUrl).toBe(device.url);
     await cli(['send', 'still here', '--room', created.roomId]);
     expect((await new PairLobbyClient(device.url).snapshot(created.roomId, store.credential(created.roomId, 'controller')!)).lifecycle).toBe('open');
+});
+
+test('the CLI counts retained-file transfer records and preserves their original expiry', async () => {
+    acceptImports();
+    const created = JSON.parse((await cli(['create', '--name', 'temporary-move', '--human', '--as', 'ana', '--json'])).stdout) as {roomId: string};
+    const path = join(directory, 'temporary.txt');
+    writeFileSync(path, 'temporary transfer');
+    await cli(['send', '--file', path, '--file-retention', '1h', '--room', created.roomId]);
+    const local = new LocalStore(join(directory, 'cli'));
+    const credential = local.credential(created.roomId, local.room(created.roomId)!.sessions[0]!.sessionId)!;
+    const original = (await new PairLobbyClient(device.url).files(created.roomId, credential))[0]!;
+    const moved = JSON.parse((await cli(['move', 'temporary-move', 'online', '--yes', '--json'])).stdout) as {files: number; serverUrl: string};
+    expect(moved.files).toBe(1);
+    expect((await new PairLobbyClient(moved.serverUrl).files(created.roomId, credential))[0]!.retention).toEqual(original.retention);
+    expect(await new PairLobbyClient(device.url).files(created.roomId, credential)).toEqual([]);
 });
 
 test('test_another_device_follows_the_room_when_it_lists_its_rooms', async () => {

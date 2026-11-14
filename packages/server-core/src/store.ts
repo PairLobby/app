@@ -20,11 +20,21 @@ export interface EventPage {
 export type RoomHead = {room: RoomRecord; earliestSeq: number};
 export type RoomLoadOptions = {handovers?: boolean};
 
+/** Durable file lifetime operations. Updates and deletion compare the room revision and notify only after commit. */
+export interface FileRetentionStore {
+    update(file: FileRecord, expectedStateRevision: number): Promise<void>;
+    remove(roomId: string, fileId: string, expectedStateRevision: number): Promise<void>;
+    /** Indexed, bounded expiry candidates across the adapter's rooms, including staged uploads. */
+    due(now: number, limit: number): Promise<FileRecord[]>;
+    nextExpiryAt(): Promise<number | null>;
+}
+
 /**
  * Where a relay keeps attached files. Optional: a store without one makes a relay
  * that refuses attachments and says so in its snapshot.
  */
 export interface FileStore {
+    retention?: FileRetentionStore;
     /**
      * Stores a new upload, record and bytes together. Returns false, storing nothing,
      * when the room would then hold more than `limitBytes` across all its files.

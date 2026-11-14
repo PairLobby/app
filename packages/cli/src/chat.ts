@@ -14,6 +14,8 @@ import {LocalStore, PairLobbyClient, ReceiptCoalescer, RoomSubscription} from '@
 import {pickExpiry} from './picker.js';
 import {isRoomCommand, runRoomCommand} from './chat-commands.js';
 import {attachmentLabel, attachmentText, downloadPreview, expandPath, filesReport, findRoomFile, saveFile, splitAttachCommand, uploadFiles} from './files.js';
+import {chatDocumentation} from './docs.js';
+import {VERSION} from './version.js';
 import {isPresetCommand, runPresetCommand} from './presets.js';
 import {authorityFor, describeParticipantPermissionChange, describeRoomPermissionChange, notPermitted} from './permissions.js';
 import {applyMention, commonPrefix, currentMention, hasAgentsToAsk, matchNames, renderSuggestions, routeChatMessage, routeForRoom} from './mentions.js';
@@ -243,12 +245,12 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         /** `/attach <path …> [message]`: stores the files on the relay, then sends one message that carries them. */
         async function attach(argument: string): Promise<void> {
             try {
-                const {paths, text} = splitAttachCommand(argument);
+                const {paths, text, retention} = splitAttachCommand(argument);
                 if (paths.length === 0) {
                     emit('Usage: /attach <path> [more paths] [message]');
                     return;
                 }
-                const attachments = await uploadFiles({client, roomId, credential}, paths, snapshot);
+                const attachments = await uploadFiles({client, roomId, credential, ...(retention ? {retention} : {})}, paths, snapshot);
                 await send(routeForRoom(routeChatMessage(text || attachmentText(attachments), snapshot.participants, recipient?.id ?? null), snapshot.participants, participantId), attachments);
             } catch (error) {
                 emit(`${DIM}  not sent — ${error instanceof Error ? error.message : String(error)}${RESET}`);
@@ -471,7 +473,15 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
                 return;
             }
             if (line === '/help') {
-                emit(HELP);
+                emit(`${HELP}\nFull offline reference: /docs · /docs files · /docs --search <words>`);
+                return;
+            }
+            if (line === '/docs' || line.startsWith('/docs ')) {
+                try {
+                    emit(chatDocumentation(line.slice('/docs'.length), VERSION));
+                } catch (error) {
+                    emit(error instanceof Error ? error.message : String(error));
+                }
                 return;
             }
             if (line === '/collapse' || line.startsWith('/collapse ') || line === '/expand' || line.startsWith('/expand ')) {

@@ -2,7 +2,7 @@
 //! produces. Events are appended, never materialized in full: a room may retain
 //! twenty thousand of them.
 
-import type {ControlRecord, MessageRequest, HandoverRecord, ParticipantRecord, ParticipantView, RoomEvent, RoomRecord, RoomSnapshot} from '@pairlobby/protocol';
+import type {ControlRecord, FileRecord, MessageRequest, HandoverRecord, ParticipantRecord, ParticipantView, RoomEvent, RoomRecord, RoomSnapshot} from '@pairlobby/protocol';
 
 export interface RoomView {
     room: RoomRecord;
@@ -23,6 +23,10 @@ export interface Mutation {
     expectedTurnRevision?: number;
     /** Uploaded files this event carries. A store marks them attached in the same write, or fails the whole mutation. */
     attachFiles?: string[];
+    /** Kernel-decided retention and recipient snapshot, committed with the message. */
+    attachedFileRecords?: FileRecord[];
+    /** Source copies discarded atomically when a room finishes moving to another relay. */
+    removeFiles?: string[];
 }
 
 export interface CoreContext {

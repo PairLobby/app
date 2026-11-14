@@ -44,6 +44,10 @@ jobs:
         run: node --test scripts/check-commit-versions.test.mjs
       - run: npm ci
       - run: npm test
+      - name: Check feature documentation coverage
+        run: npm run docs:check
+      - name: Test documentation synchronization
+        run: node --test scripts/docs-sync.test.mjs
       - name: Package the CLI
         run: node scripts/build-distribution.mjs artifacts
 

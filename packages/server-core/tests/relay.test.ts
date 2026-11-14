@@ -5,9 +5,9 @@ import {CREATE_TOKEN_HEADER, createAdmission, memoryRateLimiter} from '../src/ad
 import {queueExecutor, timerScheduler} from '../src/ports.js';
 import {MEMBER_HEADER, createRelay} from '../src/relay.js';
 import type {RelayOptions, RoomRoute} from '../src/relay.js';
-import type {AutoCloseSweep, RoomService} from '../src/service.js';
+import type {AutoCloseSweep, FileExpirySweep, RoomService} from '../src/service.js';
 
-type StubState = {invites: Map<string, string>; sweep: AutoCloseSweep; sweeps: number};
+type StubState = {invites: Map<string, string>; sweep: AutoCloseSweep; fileSweep: FileExpirySweep; sweeps: number};
 
 /** Only what `edge` and `tick` touch: anything in a room would need a real store, which the Node relay's tests use. */
 function stubService(state: StubState): RoomService {
@@ -17,12 +17,13 @@ function stubService(state: StubState): RoomService {
         closeDueRooms: async () => {
             state.sweeps++;
             return state.sweep;
-        }
+        },
+        expireFiles: async () => state.fileSweep
     } as unknown as RoomService;
 }
 
 function stub(): StubState {
-    return {invites: new Map(), sweep: {closed: 0, more: false, nextAt: null}, sweeps: 0};
+    return {invites: new Map(), sweep: {closed: 0, more: false, nextAt: null}, fileSweep: {removed: 0, more: false, nextAt: null}, sweeps: 0};
 }
 
 function relayWith(state: StubState, options: Partial<RelayOptions> = {}) {
@@ -134,6 +135,24 @@ describe('relay kernel edge', () => {
 });
 
 describe('relay kernel tick', () => {
+    test('file deadlines share the scheduler with room deadlines and an expiry backlog wakes promptly', async () => {
+        const state = stub();
+        const planned: Array<number | null> = [];
+        const relay = relayWith(state, {scheduler: {plan: (at) => { planned.push(at); }}});
+        state.sweep.nextAt = 5000;
+        state.fileSweep.nextAt = 3000;
+        await relay.tick('auto-close');
+        expect(planned.at(-1)).toBe(3000);
+        state.fileSweep.nextAt = null;
+        await relay.tick('auto-close');
+        expect(planned.at(-1)).toBe(5000);
+        state.fileSweep.more = true;
+        const before = Date.now();
+        await relay.tick('auto-close');
+        expect(planned.at(-1)).toBeGreaterThanOrEqual(before);
+        expect(planned.at(-1)).toBeLessThanOrEqual(Date.now());
+    });
+
     test('test_a_tick_closes_due_rooms_and_plans_the_next_wake_up', async () => {
         const state = stub();
         const planned: Array<number | null> = [];

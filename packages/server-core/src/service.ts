@@ -2,6 +2,8 @@
 //! the Node server both run this; only the store and the socket layer differ.
 
 import {sha256} from '@noble/hashes/sha2.js';
+import {FileRetentionRequest} from '@pairlobby/protocol';
+import {attachFile, fileExpired, receiveFile, resolveFileRetention} from '@pairlobby/room-core';
 import {ABSOLUTE_MAX_FILE_BYTES, CONTACT_INVITE_LIFETIME_MS, MOVE_LEASE_MS, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_RETAINED_FILE_BYTES, DEFAULT_ROOM_POLICY, FILE_CHUNK_BYTES, PROTOCOL_VERSION, ProtocolError, UNATTACHED_FILE_LIFETIME_MS, canSee, formatFileSize, hashCredential, newId, newInviteCode, normalizeInviteCode, roomType, safeFileName} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
@@ -12,6 +14,8 @@ import type {
     MovedTo,
     DefaultVisibility,
     FileRecord,
+    FileReceiptRequest,
+    FileReceiptResponse,
     MessageRequest,
     RequestPage,
     ExportResponse,
@@ -177,16 +181,17 @@ export interface RedeemResult {
     snapshot: RoomSnapshot;
 }
 
-export type FileUpload = {name: string; mediaType: string; bytes: Uint8Array};
+export type FileUpload = {name: string; mediaType: string; bytes: Uint8Array; retention?: FileRetentionRequest};
 export type FileDownload = {file: FileRecord; bytes: Uint8Array};
-export type FileStreamUpload = {name: string; mediaType: string; size: number; body: ReadableStream<Uint8Array>; signal?: AbortSignal};
+export type FileStreamUpload = {name: string; mediaType: string; size: number; body: ReadableStream<Uint8Array>; signal?: AbortSignal; retention?: FileRetentionRequest; onReserved?: () => Promise<void>};
 export type FileStreamDownload = {file: FileRecord; body: ReadableStream<Uint8Array>};
 export type RoomOperation = <T>(action: () => Promise<T>) => Promise<T>;
+export type FileExpirySweep = {removed: number; more: boolean; nextAt: number | null};
 type UploadPermission = {view: RoomView; uploaderId: string; retained: number};
 
 export type Clock = () => number;
 
-export type RelayProfile = {files: boolean; limits: RelayLimits; receiptMode: ReceiptMode};
+export type RelayProfile = {files: boolean; fileRetention: boolean; limits: RelayLimits; receiptMode: ReceiptMode};
 
 /** The agent a listing shares, with the names readers see, as of `at`. */
 export type ListingSubject = {participantId: string; agentName: string; roomName: string; at: number};
@@ -290,7 +295,7 @@ export class RoomService {
     /** Whether rooms here keep files, and the limits a new room gets: what `GET /v1/server` reports. */
     relayProfile(): RelayProfile {
         const files = this.store.files !== undefined;
-        return {files, limits: relayLimits(this.roomPolicy, files), receiptMode: this.receiptMode};
+        return {files, fileRetention: this.store.files?.retention !== undefined, limits: relayLimits(this.roomPolicy, files), receiptMode: this.receiptMode};
     }
 
     private fileStore(): FileStore {
@@ -304,17 +309,20 @@ export class RoomService {
      * Stores a file so a later message can carry it. Nothing is in the room until
      * that message is sent; an upload nobody sends is removed after an hour.
      */
-    async uploadFile(roomId: string, credential: string, upload: FileUpload): Promise<Attachment> {
+    async uploadFile(roomId: string, credential: string, upload: FileUpload, startedAt = this.now()): Promise<Attachment> {
         const files = this.fileStore();
         const credentialHash = await hashCredential(credential);
         const size = upload.bytes.byteLength;
         const {uploaderId} = await this.uploadPermission(roomId, credentialHash, size);
-        const now = this.now();
-        await files.deleteUnattachedFiles(roomId, now - UNATTACHED_FILE_LIFETIME_MS);
+        const now = startedAt;
+        await files.deleteUnattachedFiles(roomId, this.now() - UNATTACHED_FILE_LIFETIME_MS);
         const digest = hexDigest(sha256(upload.bytes));
-        const file = this.uploadRecord(roomId, uploaderId, upload.name, upload.mediaType, size, digest, now);
+        const file = this.uploadRecord(roomId, uploaderId, upload.name, upload.mediaType, size, digest, now, upload.retention);
         await retryRoomConflict(async () => {
             const {view, retained} = await this.uploadPermission(roomId, credentialHash, size);
+            if (fileExpired(file, this.now())) {
+                throw new ProtocolError('invalid_request', 'this temporary file expired before its upload completed');
+            }
             if (!(await files.putFile(file, upload.bytes, retained, view.room.stateRevision ?? 0))) {
                 throw new ProtocolError('quota_exceeded', `this room has reached its file storage limit of ${formatFileSize(retained)}`);
             }
@@ -345,10 +353,13 @@ export class RoomService {
         return {view, uploaderId: sender.participantId, retained: view.room.policy.maxRetainedFileBytes ?? DEFAULT_MAX_RETAINED_FILE_BYTES};
     }
 
-    private uploadRecord(roomId: string, uploaderId: string, name: string, claimedType: string, size: number, digest: string, now: number): FileRecord {
+    private uploadRecord(roomId: string, uploaderId: string, name: string, claimedType: string, size: number, digest: string, now: number, retention?: FileRetentionRequest): FileRecord {
+        if (retention && FileRetentionRequest.parse(retention).mode !== 'forever' && !this.fileStore().retention) {
+            throw new ProtocolError('unsupported_capability', 'this relay does not support file retention policies');
+        }
         const baseType = claimedType.split(';')[0]!.trim();
         const mediaType = /^[\w.+-]{1,60}\/[\w.+-]{1,60}$/.test(baseType) ? baseType.toLowerCase() : 'application/octet-stream';
-        return {fileId: newId('file'), roomId, uploaderId, name: safeFileName(name), size, mediaType, sha256: digest, createdAt: now, eventId: null};
+        return {fileId: newId('file'), roomId, uploaderId, name: safeFileName(name), size, mediaType, sha256: digest, createdAt: now, eventId: null, ...(retention ? {retention: resolveFileRetention(retention, now)} : {})};
     }
 
     /** Reserve quota, stream bounded chunks, and make the upload visible only after validation and fresh authorization. */
@@ -358,13 +369,13 @@ export class RoomService {
         const {uploaderId} = await run(() => this.uploadPermission(roomId, credentialHash, upload.size));
         const now = this.now();
         await run(() => files.deleteUnattachedFiles(roomId, now - UNATTACHED_FILE_LIFETIME_MS));
-        const file = this.uploadRecord(roomId, uploaderId, upload.name, upload.mediaType, upload.size, '', now);
+        const file = this.uploadRecord(roomId, uploaderId, upload.name, upload.mediaType, upload.size, '', now, upload.retention);
         if (!files.createUpload || !files.writeChunk || !files.completeUpload || !files.cancelUpload) {
             // Compatibility for older in-process adapters. The production SQLite adapters implement staging.
             const bytes = new Uint8Array(upload.size);
             let offset = 0;
-            await consumeUpload(upload, async (chunk) => { bytes.set(chunk, offset); offset += chunk.byteLength; });
-            return run(() => this.uploadFile(roomId, credential, {name: upload.name, mediaType: upload.mediaType, bytes}));
+            await consumeUpload(upload, async (chunk) => { bytes.set(chunk, offset); offset += chunk.byteLength; }, file.retention?.mode === 'temporary' ? file.retention.expiresAt : undefined, this.now);
+            return run(() => this.uploadFile(roomId, credential, {name: upload.name, mediaType: upload.mediaType, bytes, ...(upload.retention ? {retention: upload.retention} : {})}, now));
         }
         await retryRoomConflict(() => run(async () => {
             const {view, retained} = await this.uploadPermission(roomId, credentialHash, upload.size);
@@ -373,16 +384,20 @@ export class RoomService {
             }
         }));
         try {
+            await upload.onReserved?.();
             let index = 0;
             const digest = sha256.create();
             await consumeUpload(upload, async (chunk) => {
                 digest.update(chunk);
                 await run(() => files.writeChunk!(roomId, file.fileId, index++, chunk));
-            });
+            }, file.retention?.mode === 'temporary' ? file.retention.expiresAt : undefined, this.now);
             file.sha256 = hexDigest(digest.digest());
             await retryRoomConflict(() => run(async () => {
                 upload.signal?.throwIfAborted();
                 const {view} = await this.uploadPermission(roomId, credentialHash, upload.size);
+                if (fileExpired(file, this.now())) {
+                    throw new ProtocolError('invalid_request', 'this temporary file expired before its upload completed');
+                }
                 await files.completeUpload!(file, view.room.stateRevision ?? 0);
             }));
         } catch (error) {
@@ -403,7 +418,7 @@ export class RoomService {
     }
 
     private async roomFiles(files: FileStore, roomId: string): Promise<RoomFile[]> {
-        return (await files.attachedFiles(roomId)).map((file) => ({...toAttachment(file), uploaderId: file.uploaderId, createdAt: file.createdAt, eventId: file.eventId!}));
+        return (await files.attachedFiles(roomId)).filter((file) => !fileExpired(file, this.now())).map((file) => ({...toAttachment(file), uploaderId: file.uploaderId, createdAt: file.createdAt, eventId: file.eventId!, ...(file.receiptRecipients ? {receiptRecipients: file.receiptRecipients, receivedBy: file.receivedBy ?? []} : {})}));
     }
 
     async downloadFile(roomId: string, credential: string, fileId: string): Promise<FileDownload> {
@@ -416,7 +431,7 @@ export class RoomService {
         const actor = authenticate(await this.view(roomId), await hashCredential(credential), this.now());
         const file = await files.file(roomId, fileId);
         // An upload not yet sent is visible to its uploader only, and says no more than a missing file does.
-        const visible = file && (file.eventId !== null || (actor.kind === 'participant' && actor.participant.participantId === file.uploaderId));
+        const visible = file && !fileExpired(file, this.now()) && (file.eventId !== null || (actor.kind === 'participant' && actor.participant.participantId === file.uploaderId));
         let body = visible && files.fileStream ? await files.fileStream(roomId, fileId) : null;
         if (visible && !files.fileStream) {
             const bytes = await files.fileBytes(roomId, fileId);
@@ -429,14 +444,14 @@ export class RoomService {
     }
 
     /** Replaces what the client said about each file with the relay's own record of it. */
-    private async attachments(view: RoomView, actor: ReturnType<typeof authenticate>, claimed: Attachment[]): Promise<Attachment[]> {
+    private async attachments(view: RoomView, actor: ReturnType<typeof authenticate>, claimed: Attachment[]): Promise<FileRecord[]> {
         const files = this.fileStore();
         const sender = assertCanWrite(actor);
         assertPermitted(view, actor, 'attach');
         if (new Set(claimed.map((file) => file.fileId)).size !== claimed.length) {
             throw new ProtocolError('invalid_request', 'the same file is attached twice');
         }
-        const carried: Attachment[] = [];
+        const carried: FileRecord[] = [];
         for (const {fileId} of claimed) {
             const file = await files.file(view.room.roomId, fileId);
             if (!file || file.uploaderId !== sender.participantId) {
@@ -445,9 +460,63 @@ export class RoomService {
             if (file.eventId !== null) {
                 throw new ProtocolError('invalid_request', `${file.name} was already sent with another message; upload it again to send it again`);
             }
-            carried.push(toAttachment(file));
+            carried.push(file);
         }
         return carried;
+    }
+
+    async confirmFileReceipt(roomId: string, credential: string, fileId: string, receipt: FileReceiptRequest): Promise<FileReceiptResponse> {
+        const files = this.fileStore();
+        if (!files.retention) {
+            throw new ProtocolError('unsupported_capability', 'this relay does not support file receipts');
+        }
+        return retryRoomConflict(async () => {
+            const view = await this.view(roomId);
+            const actor = authenticate(view, await hashCredential(credential), this.now());
+            // Read-only guest memberships can confirm their own file download; anonymous visitors have no seat to count.
+            const participant = assertActiveMember(actor);
+            const file = await files.file(roomId, fileId);
+            // Idempotent confirmation after the final recipient's response was lost, or after expiry.
+            if (!file || fileExpired(file, this.now())) {
+                return {fileId, available: false, remaining: 0};
+            }
+            const decision = receiveFile(file, participant.participantId, receipt);
+            if (decision.remove) {
+                await files.retention!.remove(roomId, fileId, view.room.stateRevision ?? 0);
+            } else if (decision.file.receivedBy?.length !== (file.receivedBy?.length ?? 0)) {
+                await files.retention!.update(decision.file, view.room.stateRevision ?? 0);
+            }
+            return {fileId, available: !decision.remove, remaining: decision.remaining};
+        });
+    }
+
+    /** Expiry uses an index and bounded batches; even staged, closed-room and otherwise idle files are reclaimed. */
+    async expireFiles(limit = 50): Promise<FileExpirySweep> {
+        const retention = this.store.files?.retention;
+        if (!retention) {
+            return {removed: 0, more: false, nextAt: null};
+        }
+        const due = await retention.due(this.now(), limit);
+        let removed = 0;
+        for (const file of due) {
+            await retryRoomConflict(async () => {
+                const head = await this.store.roomHead(file.roomId);
+                if (head && fileExpired(file, this.now())) {
+                    await retention.remove(file.roomId, file.fileId, head.room.stateRevision ?? 0);
+                    removed++;
+                }
+            });
+        }
+        return {removed, more: due.length === limit, nextAt: await retention.nextExpiryAt()};
+    }
+
+    nextFileExpiryAt(): Promise<number | null> {
+        return this.store.files?.retention?.nextExpiryAt() ?? Promise.resolve(null);
+    }
+
+    async nextWakeAt(): Promise<number | null> {
+        const deadlines = [await this.store.nextAutoCloseAt(this.now()), await this.nextFileExpiryAt()].filter((at): at is number => at !== null);
+        return deadlines.length ? Math.min(...deadlines) : null;
     }
 
     async createRoom(input: CreateRoomInput): Promise<CreatedRoom> {
@@ -915,11 +984,11 @@ export class RoomService {
                 throw new ProtocolError('quota_exceeded', 'answer or resolve pending requests before creating more');
             }
         }
-        let attached: string[] = [];
+        let attached: FileRecord[] = [];
         if (request.type === 'message' && request.payload.attachments) {
             const carried = await this.attachments(view, actor, request.payload.attachments);
-            request = {...request, payload: {...request.payload, attachments: carried}};
-            attached = carried.map((file) => file.fileId);
+            request = {...request, payload: {...request.payload, attachments: carried.map(toAttachment)}};
+            attached = carried;
         }
         const outgoing = replyTarget?.conversationId ? {...request, replyTo: replyTarget.conversationId} : request;
         const mutation = sendEvent(view, await hashCredential(credential), outgoing, {now, newEventId: () => newId('event')});
@@ -927,7 +996,8 @@ export class RoomService {
             mutation.room = withReceipt(mutation.room, participantId, watermarkSeq, now);
         }
         if (attached.length) {
-            mutation.attachFiles = attached;
+            mutation.attachFiles = attached.map((file) => file.fileId);
+            mutation.attachedFileRecords = attached.map((file) => attachFile(file, view, mutation.appendEvent.eventId, now));
         }
         if (group) {
             mutation.appendEvent.recipientIds = recipients;
@@ -1478,7 +1548,9 @@ export class RoomService {
         if (store.moveLease(roomId, this.now()) === null) {
             throw new ProtocolError('invalid_request', 'the move lease ended; start the move again');
         }
-        const event = await this.applyOne(closeMovedRoom(await this.view(roomId), await hashCredential(credential), movedTo, this.ctx()));
+        const mutation = closeMovedRoom(await this.view(roomId), await hashCredential(credential), movedTo, this.ctx());
+        mutation.removeFiles = (await this.store.files?.attachedFiles(roomId) ?? []).filter((file) => file.retention?.mode === 'temporary' || file.retention?.mode === 'until-received').map((file) => file.fileId);
+        const event = await this.applyOne(mutation);
         store.setMoveLease(roomId, null);
         return event;
     }
@@ -1665,18 +1737,34 @@ export async function sha256Stream(body: ReadableStream<Uint8Array>): Promise<St
 }
 
 /** Never retain more than one storage chunk in addition to the transport's current input chunk. */
-async function consumeUpload(upload: FileStreamUpload, write: (chunk: Uint8Array) => Promise<void>): Promise<void> {
+async function consumeUpload(upload: FileStreamUpload, write: (chunk: Uint8Array) => Promise<void>, expiresAt?: number, now: Clock = Date.now): Promise<void> {
+    const expiry = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const scheduleExpiry = () => {
+        if (expiresAt === undefined) {
+            return;
+        }
+        const remaining = expiresAt - now();
+        if (remaining <= 0) {
+            expiry.abort(new ProtocolError('invalid_request', 'this temporary file expired before its upload completed'));
+        } else {
+            timer = setTimeout(scheduleExpiry, Math.min(remaining, 2 ** 31 - 1));
+            (timer as {unref?: () => void}).unref?.();
+        }
+    };
+    scheduleExpiry();
+    const signal = upload.signal ? AbortSignal.any([upload.signal, expiry.signal]) : expiry.signal;
     const reader = upload.body.getReader();
-    const abort = () => { void reader.cancel(upload.signal?.reason).catch(() => {}); };
-    upload.signal?.addEventListener('abort', abort, {once: true});
+    const abort = () => { void reader.cancel(signal.reason).catch(() => {}); };
+    signal.addEventListener('abort', abort, {once: true});
     let total = 0;
     let used = 0;
     let buffer = new Uint8Array(Math.min(FILE_CHUNK_BYTES, upload.size));
     try {
         for (;;) {
-            upload.signal?.throwIfAborted();
+            signal.throwIfAborted();
             const {done, value} = await reader.read();
-            upload.signal?.throwIfAborted();
+            signal.throwIfAborted();
             if (done) {
                 break;
             }
@@ -1706,13 +1794,14 @@ async function consumeUpload(upload: FileStreamUpload, write: (chunk: Uint8Array
         await reader.cancel(error).catch(() => {});
         throw error;
     } finally {
-        upload.signal?.removeEventListener('abort', abort);
+        clearTimeout(timer);
+        signal.removeEventListener('abort', abort);
         reader.releaseLock();
     }
 }
 
 function toAttachment(file: FileRecord): Attachment {
-    return {fileId: file.fileId, name: file.name, size: file.size, mediaType: file.mediaType, sha256: file.sha256};
+    return {fileId: file.fileId, name: file.name, size: file.size, mediaType: file.mediaType, sha256: file.sha256, ...(file.retention ? {retention: file.retention} : {})};
 }
 
 function refusedPermissions(permissions: PermissionSet | undefined): PermissionSet | null {

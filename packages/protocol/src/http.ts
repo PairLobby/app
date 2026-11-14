@@ -44,6 +44,7 @@ export const ROUTES = {
     uploadFile: {method: 'POST', path: '/v1/rooms/:roomId/files'},
     listFiles: {method: 'GET', path: '/v1/rooms/:roomId/files'},
     downloadFile: {method: 'GET', path: '/v1/rooms/:roomId/files/:fileId'},
+    confirmFileReceipt: {method: 'POST', path: '/v1/rooms/:roomId/files/:fileId/receipt'},
     setRole: {method: 'POST', path: '/v1/rooms/:roomId/participants/:participantId/role'},
     setRoomPermissions: {method: 'POST', path: '/v1/rooms/:roomId/permissions'},
     setParticipantPermissions: {method: 'POST', path: '/v1/rooms/:roomId/participants/:participantId/permissions'},
@@ -170,7 +171,7 @@ export type LiveTransport = (typeof LIVE_TRANSPORTS)[number];
  * Names a relay lists in `features`. A client checks for one before relying on it;
  * a relay that does not describe itself is assumed to have whatever was usual before descriptions existed.
  */
-export const RELAY_FEATURES = ['message-stages', 'files', 'local-join', 'invite-probe', 'create-token', 'token-login', 'receipt-watermark', 'member-tokens', 'directory', 'room-types', 'room-visibility', 'directory-contact', 'room-sync'] as const;
+export const RELAY_FEATURES = ['message-stages', 'files', 'file-retention', 'local-join', 'invite-probe', 'create-token', 'token-login', 'receipt-watermark', 'member-tokens', 'directory', 'room-types', 'room-visibility', 'directory-contact', 'room-sync'] as const;
 export type RelayFeature = (typeof RELAY_FEATURES)[number];
 
 /**
