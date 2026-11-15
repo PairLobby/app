@@ -2,8 +2,21 @@ import {ProtocolError} from '@pairlobby/protocol';
 import type {FileReceiptRequest, FileRecord, FileRetention, FileRetentionRequest} from '@pairlobby/protocol';
 
 import type {RoomView} from './state.js';
+import {assertCanWrite} from './authorize.js';
+import type {Actor} from './authorize.js';
 
 export type FileReceiptDecision = {file: FileRecord; remove: boolean; remaining: number};
+
+/** Deleting bytes preserves the transcript. A member may remove their own uploads; admins may remove any. */
+export function assertFileRemoval(actor: Actor, file: FileRecord): void {
+    if (actor.kind === 'controller') {
+        return;
+    }
+    const participant = assertCanWrite(actor);
+    if (participant.role !== 'controller' && participant.participantId !== file.uploaderId) {
+        throw new ProtocolError('unauthorized', 'Only the file sender or a room admin may delete this file');
+    }
+}
 
 export function resolveFileRetention(request: FileRetentionRequest, now: number): FileRetention {
     return request.mode === 'temporary' ? {mode: 'temporary', expiresAt: now + request.ttlMs} : {mode: request.mode};

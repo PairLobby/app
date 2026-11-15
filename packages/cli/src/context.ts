@@ -11,6 +11,8 @@ import {LocalStore, PairLobbyClient} from '@pairlobby/client';
 import type {RoomEntry, SessionEntry} from '@pairlobby/client';
 
 import {accountTokenFor} from './online.js';
+import {UsageError} from './errors.js';
+export {UsageError} from './errors.js';
 
 /** `fallback` is the active login endpoint's relay, used only when nothing else names one. */
 type ServerOptions = {server?: string | undefined; local?: boolean | undefined; fallback?: string | undefined};
@@ -33,14 +35,6 @@ export function osUserName(): string {
 /** An agent's default room name says whose it is: `ana-claude`, not `claude`. */
 export function agentName(runtime: string): string {
     return `${osUserName()}-${runtime.replace(/-cli$/, '')}`;
-}
-
-/** A mistake the person can fix. `exitCode` is 2 unless a command documents another. */
-export class UsageError extends Error {
-    constructor(message: string, readonly exitCode = 2) {
-        super(message);
-        this.name = 'UsageError';
-    }
 }
 
 export interface Selection {

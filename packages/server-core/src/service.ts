@@ -3,7 +3,7 @@
 
 import {sha256} from '@noble/hashes/sha2.js';
 import {FileRetentionRequest} from '@pairlobby/protocol';
-import {attachFile, fileExpired, receiveFile, resolveFileRetention} from '@pairlobby/room-core';
+import {assertFileRemoval, attachFile, fileExpired, receiveFile, resolveFileRetention} from '@pairlobby/room-core';
 import {ABSOLUTE_MAX_FILE_BYTES, CONTACT_INVITE_LIFETIME_MS, MOVE_LEASE_MS, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_RETAINED_FILE_BYTES, DEFAULT_ROOM_POLICY, FILE_CHUNK_BYTES, PROTOCOL_VERSION, ProtocolError, UNATTACHED_FILE_LIFETIME_MS, canSee, formatFileSize, hashCredential, newId, newInviteCode, normalizeInviteCode, roomType, safeFileName} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
@@ -16,6 +16,7 @@ import type {
     FileRecord,
     FileReceiptRequest,
     FileReceiptResponse,
+    DeleteFileResponse,
     MessageRequest,
     RequestPage,
     ExportResponse,
@@ -289,7 +290,7 @@ export class RoomService {
 
     /** What the room looks like, plus what this relay can do that depends on its store rather than on the room. */
     private snapshotOf(view: RoomView): RoomSnapshot {
-        return {...toSnapshot(view), filesSupported: this.store.files !== undefined, moveSupported: this.store.transferOut !== undefined, receiptMode: this.receiptMode};
+        return {...toSnapshot(view), filesSupported: this.store.files !== undefined, fileDeletionSupported: this.store.files?.retention !== undefined, moveSupported: this.store.transferOut !== undefined, receiptMode: this.receiptMode};
     }
 
     /** Whether rooms here keep files, and the limits a new room gets: what `GET /v1/server` reports. */
@@ -487,6 +488,45 @@ export class RoomService {
                 await files.retention!.update(decision.file, view.room.stateRevision ?? 0);
             }
             return {fileId, available: !decision.remove, remaining: decision.remaining};
+        });
+    }
+
+    /** Removes file bytes and quota atomically; original messages and attachment descriptions remain. */
+    async deleteFile(roomId: string, credential: string, fileId: string): Promise<DeleteFileResponse> {
+        const files = this.fileStore();
+        if (!files.retention) {
+            throw new ProtocolError('unsupported_capability', 'Update this relay to delete stored files');
+        }
+        return retryRoomConflict(async () => {
+            const view = await this.view(roomId);
+            const actor = authenticate(view, await hashCredential(credential), this.now());
+            const file = files.retention!.record ? await files.retention!.record(roomId, fileId) : await files.file(roomId, fileId);
+            if (!file) {
+                return {fileId, removed: false, freedBytes: 0};
+            }
+            assertFileRemoval(actor, file);
+            await files.retention!.remove(roomId, fileId, view.room.stateRevision ?? 0);
+            return {fileId, removed: true, freedBytes: file.size};
+        });
+    }
+
+    /** Trusted workspace-owner cleanup, including expired rooms. The account adapter must authorize the owner first. */
+    async deleteAuthorizedFile(roomId: string, fileId: string): Promise<DeleteFileResponse> {
+        const files = this.fileStore();
+        if (!files.retention) {
+            throw new ProtocolError('unsupported_capability', 'Update this relay to delete stored files');
+        }
+        return retryRoomConflict(async () => {
+            const head = await this.store.roomHead(roomId);
+            const file = files.retention!.record ? await files.retention!.record(roomId, fileId) : await files.file(roomId, fileId);
+            if (!file) {
+                return {fileId, removed: false, freedBytes: 0};
+            }
+            if (!head) {
+                throw new ProtocolError('server_unavailable', 'The stored file has no room metadata; administrator repair is needed');
+            }
+            await files.retention!.remove(roomId, fileId, head.room.stateRevision ?? 0);
+            return {fileId, removed: true, freedBytes: file.size};
         });
     }
 
@@ -1567,8 +1607,27 @@ export class RoomService {
         return retryRoomConflict(() => this.readAttempt(roomId, credential, after, limit, receiptsAfter, sync));
     }
 
-    private async readAttempt(roomId: string, credential: string, after: number, limit: number, receiptsAfter?: number, sync?: SyncReadOptions): Promise<ReadEventsResponse> {
-        const {head: view} = await this.reader(roomId, credential);
+    /**
+     * Read-only account/transport projection. The caller must independently authorize
+     * this account for this room before AND after awaiting it. No admission, credential,
+     * receipt or new participant is created; lifecycle and retention still use the kernel.
+     * Never expose this method on an unauthenticated relay route.
+     */
+    async readAuthorizedHistory(roomId: string, after: number, limit: number): Promise<ReadEventsResponse> {
+        return retryRoomConflict(() => this.readAttempt(roomId, null, after, limit, undefined, {stateAfter: 0}));
+    }
+
+    private async authorizedHistoryHead(roomId: string): Promise<RoomHead> {
+        const head = await this.store.roomHead(roomId);
+        if (!head) {
+            throw new ProtocolError('room_not_found', 'no such room');
+        }
+        assertRoomReadable({...head, participants: [], controls: [], handovers: []}, this.now());
+        return head;
+    }
+
+    private async readAttempt(roomId: string, credential: string | null, after: number, limit: number, receiptsAfter?: number, sync?: SyncReadOptions): Promise<ReadEventsResponse> {
+        const view = credential === null ? await this.authorizedHistoryHead(roomId) : (await this.reader(roomId, credential)).head;
         if (after > 0 && after < view.earliestSeq - 1) {
             throw new ProtocolError('cursor_gap', 'history before this cursor is no longer retained', {earliestAvailableSeq: view.earliestSeq});
         }

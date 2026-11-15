@@ -32,6 +32,10 @@ export class MemoryStore implements RoomStore {
     private receiptRanges = new Map<string, ReceiptRange[]>();
     readonly files: FileStore = {
         retention: {
+            record: async (roomId, fileId) => {
+                const file = this.stored.get(fileId)?.file ?? this.uploads.get(fileId)?.file;
+                return file?.roomId === roomId ? file : null;
+            },
             update: async (file, expectedStateRevision) => {
                 const entry = this.inRoom(file.roomId, file.fileId);
                 if (!entry) {

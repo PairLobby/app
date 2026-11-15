@@ -34,6 +34,10 @@ import {invitationTerms, roleChange, visibleTo} from './render.js';
 import {closeRequest, recoverRequest} from './request-recovery.js';
 import {requestsPage} from './request-panel.js';
 import {collapseMessage, formatMessageText} from './message-format.js';
+import {onlineUsage} from './online.js';
+import {usageReport} from './usage.js';
+import {deleteRoomFile, onlineRoomCleanup} from './file-cleanup.js';
+import {detectRuntime} from './runtime-detect.js';
 
 type ParticipantMatch = {id: string; name: string} | null;
 
@@ -107,6 +111,9 @@ const HELP = `  <message>          address all eligible agents (same as @all)
   /unmute <name>     allow them to write again
   /attach <path> [message]  send one or more files with a message; quote a path that has spaces
   /files             files sent in this room, numbered
+  /files delete <file> preview deletion; confirm the exact file ID with --yes
+  /files cleanup     owner-only inventory of this room's online and archived files
+  /usage             your PairLobby allowance used, remaining and reset date
   /open <file>       show a text or JSON file here (number, name or id from /files)
   /save <file> [folder]  save a file to a folder (this one by default); never replaces a file
   /permissions       which commands members may use, and who differs
@@ -260,11 +267,31 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
         /** `/files`, `/open <file>` and `/save <file> [folder]`; a file is named by its number in `/files`, its name or its id. */
         async function fileCommand(command: string, argument: string): Promise<void> {
             try {
+                if (command === '/files' && /^cleanup(?:\s|$)/.test(argument)) {
+                    const words = argument.slice('cleanup'.length).trim().split(/\s+/).filter(Boolean);
+                    const afterIndex = words.indexOf('--after');
+                    const cursor = afterIndex >= 0 ? words.splice(afterIndex, 2)[1] : undefined;
+                    const confirmed = words.includes('--yes');
+                    const human = snapshot.participants.find((person) => person.participantId === participantId)?.kind === 'human' && detectRuntime().runtime === undefined;
+                    emit((await onlineRoomCleanup({store, roomId, reference: words.filter((word) => word !== '--yes').join(' '), confirmed, allowAccountCleanup: human, command: '/files cleanup', ...(cursor ? {cursor} : {})})).text);
+                    return;
+                }
                 if (!snapshot.filesSupported) {
                     throw new Error('This relay does not store files.');
                 }
                 const {files, usage} = await client.fileList(roomId, credential);
                 if (command === '/files') {
+                    if (/^delete(?:\s|$)/.test(argument)) {
+                        if (!(await client.snapshot(roomId, credential)).fileDeletionSupported) {
+                            throw new Error('Update this relay before deleting stored files.');
+                        }
+                        const confirmed = /\s--yes$/.test(argument);
+                        const reference = argument.slice('delete'.length).replace(/\s--yes$/, '').trim();
+                        const human = snapshot.participants.find((person) => person.participantId === participantId)?.kind === 'human';
+                        const authority = human ? options.controllerCredential ?? credential : credential;
+                        emit((await deleteRoomFile(reference, confirmed, {client, roomId, credential: authority, files, command: '/files delete'})).text);
+                        return;
+                    }
                     emit(filesReport(files, names, usage));
                     return;
                 }
@@ -474,6 +501,10 @@ export async function runChatRoom(options: ChatOptions): Promise<number> {
             }
             if (line === '/help') {
                 emit(`${HELP}\nFull offline reference: /docs · /docs files · /docs --search <words>`);
+                return;
+            }
+            if (line === '/usage') {
+                void onlineUsage(store).then((report) => emit(usageReport(report))).catch((error) => emit(`Usage unavailable: ${error instanceof Error ? error.message : String(error)}`));
                 return;
             }
             if (line === '/docs' || line.startsWith('/docs ')) {

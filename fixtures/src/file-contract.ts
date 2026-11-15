@@ -43,6 +43,55 @@ export function runFileContract(label: string, makeStore: StoreFactory) {
             expect((await service.snapshot(roomId, alice)).filesSupported).toBe(true);
         });
 
+        test('file cleanup is restricted to its sender or an admin and keeps the conversation', async () => {
+            const file = await upload('keep-the-message.txt', new TextEncoder().encode('payload'));
+            const sent = await sendWith([file]);
+            const before = await service.snapshot(roomId, alice);
+            expect(before.fileDeletionSupported).toBe(true);
+            await expect(service.deleteFile(roomId, bob, file.fileId)).rejects.toMatchObject({code: 'unauthorized'});
+            expect((await service.downloadFile(roomId, alice, file.fileId)).bytes.byteLength).toBe(7);
+            expect(await service.deleteFile(roomId, alice, file.fileId)).toEqual({fileId: file.fileId, removed: true, freedBytes: 7});
+            expect(await service.deleteFile(roomId, alice, file.fileId)).toEqual({fileId: file.fileId, removed: false, freedBytes: 0});
+            expect((await service.snapshot(roomId, alice)).latestSeq).toBe(before.latestSeq);
+            const page = await service.read(roomId, alice, 0, 200);
+            expect(page.events.find((event) => event.eventId === sent.event.eventId)?.payload).toMatchObject({text: 'files', attachments: [{fileId: file.fileId}]});
+            expect((await service.listFiles(roomId, alice)).files).toEqual([]);
+            expect(await store.files!.usedBytes(roomId)).toBe(0);
+            await expect(service.downloadFile(roomId, bob, file.fileId)).rejects.toThrow('no such file');
+        });
+
+        test('an admin removes another sender\'s file and retrying its old ID cannot delete a new upload with the same name', async () => {
+            const file = await upload('same-name.txt', new Uint8Array([1, 2, 3]), bob);
+            await sendWith([file], bob);
+            expect((await service.deleteFile(roomId, controller, file.fileId)).removed).toBe(true);
+            const replacement = await upload('same-name.txt', new Uint8Array([4, 5, 6]), bob);
+            await sendWith([replacement], bob);
+            expect((await service.deleteFile(roomId, controller, file.fileId)).removed).toBe(false);
+            expect((await service.downloadFile(roomId, alice, replacement.fileId)).bytes).toEqual(new Uint8Array([4, 5, 6]));
+        });
+
+        test('concurrent manual and final-receipt removal reclaim the bytes only once', async () => {
+            const file = await service.uploadFile(roomId, alice, {name: 'receipt.txt', mediaType: 'text/plain', bytes: new Uint8Array([1, 2, 3]), retention: {mode: 'until-received'}});
+            await sendWith([file]);
+            const outcomes = await Promise.allSettled([
+                service.deleteFile(roomId, alice, file.fileId),
+                service.confirmFileReceipt(roomId, bob, file.fileId, {sha256: file.sha256, size: file.size})
+            ]);
+            expect(outcomes.map((result) => result.status)).toEqual(['fulfilled', 'fulfilled']);
+            expect(await store.files!.usedBytes(roomId)).toBe(0);
+            expect(await store.files!.file(roomId, file.fileId)).toBeNull();
+        });
+
+        test('workspace-owner cleanup can reclaim expired files without granting read access', async () => {
+            const file = await upload('old.txt', new Uint8Array([1, 2, 3]));
+            await sendWith([file]);
+            await service.close(roomId, controller);
+            now += DEFAULT_ROOM_POLICY.exportWindowMs + 1;
+            await expect(service.deleteFile(roomId, alice, file.fileId)).rejects.toMatchObject({code: 'room_expired'});
+            expect(await service.deleteAuthorizedFile(roomId, file.fileId)).toEqual({fileId: file.fileId, removed: true, freedBytes: 3});
+            expect(await store.files!.retention!.record!(roomId, file.fileId)).toBeNull();
+        });
+
         test('an upload is the uploader\'s alone until a message carries it, then anyone in the room can list and fetch it', async () => {
             const file = await upload('notes.txt', new TextEncoder().encode('hello'));
             expect((await service.listFiles(roomId, alice)).files).toEqual([]);

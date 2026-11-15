@@ -3,13 +3,14 @@
 //! failure came from local validation or from the server.
 
 import {sha256} from '@noble/hashes/sha2.js';
-import {FileRetentionRequest} from '@pairlobby/protocol';
+import {FileId, FileRetentionRequest} from '@pairlobby/protocol';
 import {ABSOLUTE_MAX_FILE_BYTES, ExportStreamRecord, FILE_SIZE_HEADER, MAX_EVENT_WAIT_MS, PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER, ProtocolError, RoomTransferRecord, ServerDescription, ServerFrame, TransferDigest, newCredential, newId} from '@pairlobby/protocol';
 import type {
     AdapterCapabilities,
     Attachment,
     FileReceiptRequest,
     FileReceiptResponse,
+    DeleteFileResponse,
     AutoClosePolicy,
     MovePrepareResponse,
     MovedTo,
@@ -332,6 +333,10 @@ export class PairLobbyClient {
     /** Confirm only after the complete file has been verified and kept. Reading its message is not a file receipt. */
     confirmFileReceipt(roomId: string, credential: string, fileId: string, receipt: FileReceiptRequest): Promise<FileReceiptResponse> {
         return this.call<FileReceiptResponse>('POST', `/v1/rooms/${roomId}/files/${fileId}/receipt`, credential, {sha256: receipt.sha256, size: receipt.size});
+    }
+
+    deleteFile(roomId: string, credential: string, fileId: string): Promise<DeleteFileResponse> {
+        return this.call('DELETE', `/v1/rooms/${roomId}/files/${FileId.parse(fileId)}`, credential);
     }
 
     async files(roomId: string, credential: string): Promise<RoomFile[]> {
