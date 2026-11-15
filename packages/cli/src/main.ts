@@ -32,7 +32,9 @@ import {json, note, out, renderAccountRooms, renderEvents, renderOpenRequests, r
 import type {OnlineRoom} from './online.js';
 import {describePlan, moveRoomOnline} from './move-room.js';
 import type {MovePlan} from './move-room.js';
-import {acceptInvitation, accountToken, accountTokenFor, createTokenFor, requireAccountApi, declineInvitation, isOnlineKey, loggedInLine, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineRooms, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
+import {acceptInvitation, accountToken, accountTokenFor, createTokenFor, requireAccountApi, declineInvitation, isOnlineKey, loggedInLine, loginOnline, logoutOnline, matchInvitation, matchOnlineRoom, onlineAccount, onlineRooms, onlineUsage, receivedInvitations, resolveOnlineKey, setHandle} from './online.js';
+import {usageReport} from './usage.js';
+import {deleteRoomFile, onlineRoomCleanup} from './file-cleanup.js';
 import type {ReceivedInvitation} from './online.js';
 import {receiverAttempts, receiverConfiguration, receiverStatus, refreshReceivers, retryProviderNow, runReceiver, startReceiver, stopReceiver, waitAndRefreshReceiver, wakeOfflineReceivers} from './receiver.js';
 import type {ReceiverStartOptions, ReceiverStatus} from './receiver.js';
@@ -204,6 +206,7 @@ const HELP = `pairlobby
   pairlobby close --room <room>      end a room for everyone; history stays readable for 24 hours (owner/admin)
   pairlobby forget <room>            drop the local record, leave the server alone
   pairlobby settings                 interactive menu for this device's preferences and new-room defaults
+  pairlobby usage [--json]           account allowance used, remaining and reset date
   pairlobby create --name <name>     start a room and print an invite
   pairlobby create --name <name> --type <type>  public, protected, private (default) or personal
   pairlobby create --name <name> --preset <name|none>  start it from a saved preset, or from the built-in defaults
@@ -610,6 +613,15 @@ async function main(argv: string[]): Promise<number> {
             return sessionInfo(store, values);
         case 'profile':
             return profileCommand(store, values);
+        case 'usage': {
+            const report = await onlineUsage(store);
+            if (flag(values, 'json')) {
+                json(report);
+            } else {
+                out(usageReport(report));
+            }
+            return 0;
+        }
         case 'invitations':
             announceEndpoint(store);
             requireAccountApi(store, 'invitations');
@@ -2640,13 +2652,35 @@ async function setPaused(store: LocalStore, values: Values, target: string | und
 
 /** `pairlobby files` lists what was sent in a room; `files get <file>` saves one, into this folder unless `--out` names another. */
 async function roomFiles(store: LocalStore, values: Values, words: string[]): Promise<number> {
-    const {room, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    const {room, session, credential, client} = select(store, str(values, 'room'), str(values, 'session'));
+    if (words[0] === 'cleanup') {
+        const report = await onlineRoomCleanup({store, roomId: room.roomId, reference: words.slice(1).join(' '), confirmed: flag(values, 'yes'), allowAccountCleanup: session.kind === 'human' && detectRuntime().runtime === undefined, command: `pairlobby files cleanup --room ${room.roomId} --session ${session.sessionId}`, ...(str(values, 'after') ? {cursor: str(values, 'after')!} : {})});
+        if (flag(values, 'json')) {
+            json(report);
+        } else {
+            out(report.text);
+        }
+        return 0;
+    }
     const snapshot = await client.snapshot(room.roomId, credential);
     if (!snapshot.filesSupported) {
         throw new UsageError('this relay does not store files');
     }
     const {files, usage} = await client.fileList(room.roomId, credential);
     const [action, ...reference] = words;
+    if (action === 'delete') {
+        if (!snapshot.fileDeletionSupported) {
+            throw new UsageError('Update this relay before deleting stored files.');
+        }
+        const authority = session.kind === 'human' ? store.credential(room.roomId, 'controller') ?? credential : credential;
+        const removed = await deleteRoomFile(reference.join(' '), flag(values, 'yes'), {client, roomId: room.roomId, credential: authority, files, command: `pairlobby files delete --room ${room.roomId} --session ${session.sessionId}`});
+        if (flag(values, 'json')) {
+            json(removed);
+        } else {
+            out(removed.text);
+        }
+        return 0;
+    }
     if (action === undefined || action === 'list') {
         if (flag(values, 'json')) {
             json({files, ...(usage ? {usage} : {})});

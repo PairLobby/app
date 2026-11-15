@@ -244,6 +244,7 @@ export const RoomSnapshot = z.object({
     permissionsSupported: z.boolean().optional(),
     /** The relay stores files, so messages may carry attachments. */
     filesSupported: z.boolean().optional(),
+    fileDeletionSupported: z.boolean().optional(),
     /** The relay can hand the room over to another relay (`/move/*`). */
     moveSupported: z.boolean().optional(),
     inviteRoleSupported: z.boolean().optional(),

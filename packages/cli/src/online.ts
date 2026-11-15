@@ -1,7 +1,8 @@
 import {emitKeypressEvents} from 'node:readline';
 import {LocalStore} from '@pairlobby/client';
-import {normalizeInviteCode} from '@pairlobby/protocol';
-import {UsageError} from './context.js';
+import {AccountUsage, FileCleanupRequest, StoredFilesPage, normalizeInviteCode} from '@pairlobby/protocol';
+import type {FileCleanupResponse} from '@pairlobby/protocol';
+import {UsageError} from './errors.js';
 import {DeviceLoginUnavailable, loginInBrowser, revokeToken} from './device-login.js';
 import {DEFAULT_VERIFY, readDiscovery} from './discovery.js';
 import type {ProbeResult} from './discovery.js';
@@ -57,6 +58,12 @@ export function createTokenFor(store: LocalStore, serverUrl: string): string | u
 }
 type RequestBody = {method: 'POST' | 'PUT'; body: unknown};
 
+class AccountServiceError extends UsageError {
+    constructor(readonly status: number, message: string) {
+        super(message);
+    }
+}
+
 /** Rereads a saved endpoint's discovery document and keeps what it now says. Null when there is none to read. */
 export async function refreshEndpoint(store: LocalStore, endpoint: Endpoint): Promise<{endpoint: Endpoint; discovery: ProbeResult} | null> {
     if (!isSaved(store, endpoint)) {
@@ -88,7 +95,7 @@ async function request<T>(endpoint: Endpoint, path: string, token?: string, send
     }
     const data = (await response.json().catch(() => ({}))) as {error?: {message?: string}};
     if (!response.ok) {
-        throw new UsageError(data.error?.message ?? 'Online service unavailable');
+        throw new AccountServiceError(response.status, data.error?.message ?? 'Online service unavailable');
     }
     return data as T;
 }
@@ -105,6 +112,42 @@ function requireToken(store: LocalStore, purpose: string): string {
         throw new UsageError(`Run pairlobby login first to ${purpose}`);
     }
     return token;
+}
+
+/** Current effective plan and period, including overrides and purchased usage blocks. */
+export async function onlineUsage(store: LocalStore): Promise<AccountUsage> {
+    requireAccountApi(store, 'account usage');
+    let result: unknown;
+    try {
+        result = await request<unknown>(activeEndpoint(store), '/api/online/usage', requireToken(store, 'see account usage'), undefined, store);
+    } catch (error) {
+        if (error instanceof AccountServiceError && error.status === 404) {
+            throw new UsageError('This account service does not support usage reports yet. Update it before using /usage.');
+        }
+        throw error;
+    }
+    const parsed = AccountUsage.safeParse(result);
+    if (!parsed.success) {
+        throw new UsageError('The account service returned an unreadable usage report. Update the service and CLI.');
+    }
+    return parsed.data;
+}
+
+export async function onlineStoredFiles(store: LocalStore, roomId: string, cursor?: string): Promise<StoredFilesPage> {
+    requireAccountApi(store, 'stored files');
+    const query = new URLSearchParams({room: roomId, limit: '100', ...(cursor ? {cursor} : {})});
+    const result = await request<unknown>(activeEndpoint(store), `/api/online/files?${query}`, requireToken(store, 'manage stored files'), undefined, store);
+    const page = StoredFilesPage.parse(result);
+    if (page.files.some((file) => file.roomId !== roomId)) {
+        throw new UsageError('The account service returned files from another room. Cleanup was refused.');
+    }
+    return page;
+}
+
+export async function cleanupOnlineFiles(store: LocalStore, files: FileCleanupRequest['files']): Promise<FileCleanupResponse> {
+    requireAccountApi(store, 'stored files');
+    const input = FileCleanupRequest.parse({files});
+    return request<FileCleanupResponse>(activeEndpoint(store), '/api/online/files/cleanup', requireToken(store, 'manage stored files'), {method: 'POST', body: input}, store);
 }
 
 /** Sets this account's handle, the name others invite it by. The service enforces the rules and answers with the stored form. */

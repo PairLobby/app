@@ -22,6 +22,8 @@ export type RoomLoadOptions = {handovers?: boolean};
 
 /** Durable file lifetime operations. Updates and deletion compare the room revision and notify only after commit. */
 export interface FileRetentionStore {
+    /** Metadata for authorized cleanup, including hidden history and staged uploads. Never use this to serve bytes. */
+    record?(roomId: string, fileId: string): Promise<FileRecord | null>;
     update(file: FileRecord, expectedStateRevision: number): Promise<void>;
     remove(roomId: string, fileId: string, expectedStateRevision: number): Promise<void>;
     /** Indexed, bounded expiry candidates across the adapter's rooms, including staged uploads. */

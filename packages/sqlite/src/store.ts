@@ -44,6 +44,10 @@ export class SqliteStore implements RoomStore {
     private pendingChanges: CommittedChange[] | null = null;
     readonly files: FileStore = {
         retention: {
+            record: async (roomId, fileId) => {
+                const row = this.db.prepare('SELECT body FROM files WHERE room_id=? AND file_id=?').get(roomId, fileId) as BodyRow | undefined;
+                return row ? JSON.parse(row.body) as FileRecord : null;
+            },
             update: async (file, expectedStateRevision) => this.transaction(() => {
                 this.assertNotMoving(file.roomId);
                 this.bumpRoom(file.roomId, expectedStateRevision);

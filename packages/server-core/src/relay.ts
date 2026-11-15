@@ -606,7 +606,7 @@ export function describe(options: RelayOptions): ServerDescription {
     const profile = options.service.relayProfile();
     const features = [
         ...(profile.files ? ['files', 'stream-files'] : []),
-        ...(profile.fileRetention ? ['file-retention'] : []),
+        ...(profile.fileRetention ? ['file-retention', 'file-cleanup'] : []),
         // Joining by name needs rooms to list and a way to tell who may: the connection, or a personal token.
         ...(options.localRooms && ((options.peerIsLocal && (!options.behindProxy || options.proxyIsAccessGate)) || options.admission?.memberTokens) ? ['local-join'] : []),
         ...(options.inviteProbe ? ['invite-probe'] : []),
@@ -828,6 +828,12 @@ async function roomRoute(request: Request, roomId: string, context: RequestConte
             const {file, body} = await service.downloadFileStream(roomId, credential, FileId.parse(segments[4]));
             // Always a download, never something a browser would render or run: the name and type came from another participant.
             return new Response(body, {status: 200, headers: {'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`, 'content-length': String(file.size), 'x-content-type-options': 'nosniff', 'cache-control': 'private, no-store', 'pairlobby-file-sha256': file.sha256, ...(file.retention?.mode === 'until-received' ? {'pairlobby-file-receipt': 'required'} : {}), [PROTOCOL_VERSION_HEADER]: String(PROTOCOL_VERSION)}});
+        }
+        case 'DELETE files': {
+            if (segments.length !== 5) {
+                return errorResponse('invalid_request', 'Name the file to delete', 400);
+            }
+            return json(await service.deleteFile(roomId, credential, FileId.parse(segments[4])));
         }
         case 'GET events': {
             const query = ReadEventsQuery.parse(Object.fromEntries(new URL(request.url).searchParams));

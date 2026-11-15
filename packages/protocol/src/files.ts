@@ -44,6 +44,9 @@ export type FileReceiptRequest = z.infer<typeof FileReceiptRequest>;
 export const FileReceiptResponse = z.object({fileId: FileId, available: z.boolean(), remaining: z.number().int().nonnegative()});
 export type FileReceiptResponse = z.infer<typeof FileReceiptResponse>;
 
+export const DeleteFileResponse = z.object({fileId: FileId, removed: z.boolean(), freedBytes: z.number().int().nonnegative()});
+export type DeleteFileResponse = z.infer<typeof DeleteFileResponse>;
+
 /** What a message says about a file. The relay fills every field from its own record; a client's claims are ignored. */
 export const Attachment = z.object({
     fileId: FileId,
@@ -81,6 +84,26 @@ export type FileUsage = z.infer<typeof FileUsage>;
 
 export const ListFilesResponse = z.object({files: z.array(RoomFile), usage: FileUsage.optional()});
 export type ListFilesResponse = z.infer<typeof ListFilesResponse>;
+
+/** Workspace-owner storage inventory. Original filenames stay in transcripts after bytes are deleted. */
+export const StoredFile = z.object({
+    roomId: RoomId,
+    roomName: z.string(),
+    fileId: FileId,
+    name: z.string(),
+    size: z.number().int().nonnegative(),
+    storedBytes: z.number().int().nonnegative(),
+    storedAt: z.number().int().nonnegative(),
+    location: z.enum(['room', 'hidden', 'upload', 'archive', 'multiple']),
+    retention: FileRetention.optional()
+});
+export type StoredFile = z.infer<typeof StoredFile>;
+export const StoredFilesPage = z.object({files: z.array(StoredFile), nextCursor: z.string().nullable()});
+export type StoredFilesPage = z.infer<typeof StoredFilesPage>;
+export const FileCleanupRequest = z.object({files: z.array(z.object({roomId: RoomId, fileId: FileId}).strict()).min(1).max(100)}).strict();
+export type FileCleanupRequest = z.infer<typeof FileCleanupRequest>;
+export type FileCleanupItem = {roomId: string; fileId: string; removed: boolean; freedBytes: number; error?: string};
+export type FileCleanupResponse = {results: FileCleanupItem[]};
 
 /**
  * A name safe to show and to save under: the last path segment only, no control

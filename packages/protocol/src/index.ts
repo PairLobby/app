@@ -17,3 +17,4 @@ export * from './wire.js';
 
 export * from './requests.js';
 export * from './transfer.js';
+export * from './usage.js';
