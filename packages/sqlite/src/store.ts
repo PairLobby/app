@@ -21,7 +21,10 @@ export type TransferredRoom = {roomId: string; events: number; files: number};
 
 /** SQLite implementation shared by Node and Durable Objects; all platform APIs stay in their drivers. */
 export const VISIBLE_EVENT_SQL = 'seq >= (SELECT earliest_seq FROM rooms WHERE rooms.room_id = events.room_id)';
-export const VISIBLE_FILE_SQL = "(event_id IS NULL OR NOT EXISTS (SELECT 1 FROM events JOIN rooms ON rooms.room_id = events.room_id WHERE events.room_id = files.room_id AND json_extract(events.body, '$.eventId') = files.event_id AND events.seq < rooms.earliest_seq))";
+// Event IDs are validated strings. Unary + removes the outer TEXT affinity so the JSON
+// expression index can seek the ID, and keeps the retention range from choosing a
+// room/sequence scan per file. It does not change either stored value. See the query-plan test.
+export const VISIBLE_FILE_SQL = "(event_id IS NULL OR NOT EXISTS (SELECT 1 FROM events JOIN rooms ON rooms.room_id = events.room_id WHERE events.room_id = files.room_id AND json_extract(events.body, '$.eventId') = +files.event_id AND +events.seq < rooms.earliest_seq))";
 export type ListedRoom = LocalRoom & {expiresAt: number | null};
 
 /** Requests have their own sequence space; legacy records resolve their transcript sequence through the indexed event ID. */
