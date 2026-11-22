@@ -14,8 +14,8 @@ type AttemptSummary = {attemptId: string; ordinal: number; recoverySourceAttempt
 type AttemptsResponse = {attempts: AttemptSummary[]};
 type RetryProviderResponse = {scheduled: string[]};
 
-function currentTorontoResetText(): string {
-    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {timeZone: 'America/Toronto', hour: 'numeric', minute: '2-digit', hour12: true}).formatToParts(new Date()).map((part) => [part.type, part.value]));
+function torontoResetText(at = Date.now()): string {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {timeZone: 'America/Toronto', hour: 'numeric', minute: '2-digit', hour12: true}).formatToParts(new Date(at)).map((part) => [part.type, part.value]));
     return `You've hit your session limit · resets ${parts['hour']}:${parts['minute']}${parts['dayPeriod']!.toLowerCase()} (America/Toronto)`;
 }
 
@@ -34,7 +34,9 @@ test('Claude usage exhaustion defers once, fences its queue, and safely retries 
         PATH: `${directory}:${process.env['PATH']}`,
         PAIRLOBBY_DATA_DIR: join(directory, 'device'),
         PAIRLOBBY_TEST_RECORD: record,
-        PAIRLOBBY_TEST_USAGE_LIMIT_ONCE: marker
+        PAIRLOBBY_TEST_USAGE_LIMIT_ONCE: marker,
+        // Keep manual-retry scenarios waiting at every wall-clock time, including 6:20pm.
+        PAIRLOBBY_TEST_USAGE_LIMIT_TEXT: torontoResetText(Date.now() + 2 * 3600_000)
     };
     const cli = process.env['PAIRLOBBY_TEST_CLI'] ?? resolve('packages/cli/dist/main.js');
     let joined: Joined | undefined;
@@ -132,10 +134,11 @@ test('a receiver restart restores a due cooldown and automatically creates one r
         PAIRLOBBY_TEST_RECORD: record,
         PAIRLOBBY_TEST_USAGE_LIMIT_ONCE: join(directory, 'usage-limit-reported'),
         PAIRLOBBY_TEST_USAGE_LIMIT_COUNT: '2',
-        PAIRLOBBY_TEST_USAGE_LIMIT_TEXT: currentTorontoResetText(),
+        PAIRLOBBY_TEST_USAGE_LIMIT_TEXT: torontoResetText(),
         // Long enough that a slow runner still sees the second attempt waiting before the third starts.
         PAIRLOBBY_TEST_PROVIDER_BACKOFF_MS: '4000',
-        PAIRLOBBY_TEST_PROVIDER_GRACE_MS: '60000'
+        // The reset text has minute precision; leave a full minute of headroom even at :59.
+        PAIRLOBBY_TEST_PROVIDER_GRACE_MS: '120000'
     };
     const cli = process.env['PAIRLOBBY_TEST_CLI'] ?? resolve('packages/cli/dist/main.js');
     let joined: Joined | undefined;
@@ -222,7 +225,8 @@ test('two Claude receivers sharing one profile fence together and only the targe
         PATH: `${directory}:${process.env['PATH']}`,
         PAIRLOBBY_DATA_DIR: join(directory, 'device'),
         PAIRLOBBY_TEST_RECORD: record,
-        PAIRLOBBY_TEST_USAGE_LIMIT_ONCE: join(directory, 'usage-limit-reported')
+        PAIRLOBBY_TEST_USAGE_LIMIT_ONCE: join(directory, 'usage-limit-reported'),
+        PAIRLOBBY_TEST_USAGE_LIMIT_TEXT: torontoResetText(Date.now() + 2 * 3600_000)
     };
     const cli = process.env['PAIRLOBBY_TEST_CLI'] ?? resolve('packages/cli/dist/main.js');
     const joined: Joined[] = [];
