@@ -13,6 +13,7 @@ import {detectRuntime} from './runtime-detect.js';
 import {AGENT_REFUSAL} from './setup.js';
 import {assertManualReceiveSettingChange, manualReceiveCaller} from './manual-receive.js';
 import type {ManualReceiveCallerHints} from './manual-receive.js';
+import {disableSync, enableSync, pushSettingsNote, syncStatus} from './settings-sync.js';
 
 type SettingKind = 'boolean' | 'number' | 'duration' | 'managed-duration' | 'choice' | 'auto-close';
 
@@ -165,6 +166,7 @@ export function deviceSettingsPage(store: LocalStore, state: MenuState = {note: 
             }
             // setProfile merges and drops undefined fields, so a blank name clears it.
             store.setProfile({displayName: name || undefined} as Profile);
+            await pushSettingsNote(store);
         }}},
     ];
     for (const [key, definition] of Object.entries(SETTING_KEYS)) {
@@ -186,17 +188,38 @@ export function deviceSettingsPage(store: LocalStore, state: MenuState = {note: 
             const next = {...store.settings(), [definition.field]: parsed};
             validateManagedSettings(next);
             store.setSettings({[definition.field]: parsed} as Partial<Settings>);
+            await pushSettingsNote(store);
         }}});
     }
     const autoClose = parseAutoClose(settings.defaultAutoClose);
     rows.push({id: 'apply-auto-close', label: 'Apply auto-close to my rooms', value: state.note || 'Existing rooms you administer on this device', section: 'New rooms', action: {kind: 'command', confirm: `Set auto-close to "${describeAutoClose(autoClose).toLowerCase()}" on every room this device administers? Rooms already past that limit close immediately. Rooms it cannot reach or change are listed, not changed.`, run: async () => {
         state.note = summarizeBulk(await applyAutoCloseToRooms(store, autoClose));
     }}});
+    rows.push(syncRow(store));
     rows.push(endpointRow(store));
     rows.push({id: 'reset', label: 'Reset all settings', value: 'Back to the built-in defaults', section: 'Reset', action: {kind: 'command', confirm: 'Reset every device setting to its default? Your profile name and saved service endpoints are kept.', run: async () => {
         store.resetSettings();
+        await pushSettingsNote(store);
     }}});
     return {id: 'device-settings', title: 'PairLobby settings — this device', rows, note: 'Enter edits a setting and saves it immediately. Room-specific settings live in /settings inside a room.', reload: async () => deviceSettingsPage(store, state, callerHints)};
+}
+
+const SYNC_CHOICES: PanelChoice[] = [{label: 'On, taking the account\'s settings where they differ', value: 'account'}, {label: 'On, sending this device\'s settings to the account', value: 'device'}, {label: 'Off', value: 'off'}];
+
+/** Newest wins once it is on; the choice only decides which side wins the first time. */
+function syncRow(store: LocalStore): RoomPanelRow {
+    const status = syncStatus(store);
+    if (!status.loggedIn) {
+        return {id: 'settings-sync', label: 'Sync with account', value: `Off · log in first: pairlobby login`, section: 'Network'};
+    }
+    const value = status.enabled ? `On · ${status.endpoint}${status.pending.length > 0 ? ` · ${status.pending.length} waiting to send` : ''}` : 'Off';
+    return {id: 'settings-sync', label: 'Sync with account', value, section: 'Network', action: {kind: 'edit', initial: status.enabled ? 'account' : 'off', choices: SYNC_CHOICES, hint: 'Keeps these preferences the same on every device logged in to your account, and on the website\'s settings page. Device-only settings (network sharing, icons, updates, manual receiving) stay here. · shell: pairlobby settings sync on|off', save: async (choice) => {
+        if (choice === 'off') {
+            disableSync(store);
+            return;
+        }
+        await enableSync(store, choice === 'device' ? 'device' : 'account');
+    }}};
 }
 
 /** Read-only here: switching or forgetting an endpoint opens a page, and adding one needs `pairlobby setup <url>`, which checks the address first. */

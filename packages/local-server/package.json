@@ -1,6 +1,6 @@
 {
   "name": "@pairlobby/local-server",
-  "version": "0.36.4",
+  "version": "0.37.0",
   "license": "Elastic-2.0",
   "private": true,
   "type": "module",

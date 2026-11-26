@@ -57,6 +57,7 @@ import {VERSION} from './version.js';
 import {formatServiceStatus, installService, refreshService, requireServicePlatform, restartService, serviceLog, serviceProgram, serviceStatus, uninstallService} from './relay-service.js';
 import type {ServiceStatus} from './relay-service.js';
 import {NETWORK_SHARING_RESTART, SETTING_KEYS, describeSettingValue, parseLifetime, parseManagedDuration, parseSettingValue, validateManagedSettings} from './device-settings.js';
+import {SettingsSyncUnavailable, disableSync, enableSync, fetchAccountSettings, offerSettingsSync, pushSettingsNote, settingDifferences, syncSettings, syncStatus, syncedLabels} from './settings-sync.js';
 import {assertManualReceiveAllowed, assertManualReceiveSettingChange, manualReceiveCaller} from './manual-receive.js';
 import {applyAutoCloseToRooms, parseAutoClose, summarizeBulk} from './auto-close.js';
 import {runSettingsMenu} from './settings-menu.js';
@@ -98,6 +99,7 @@ const OPTIONS = {
     'task-timeout': {type: 'string'},
     resume: {type: 'string'},
     'manual-receive': {type: 'boolean'},
+    from: {type: 'string'},
     private: {type: 'boolean'},
     allow: {type: 'string'},
     'skills-dir': {type: 'string'},
@@ -206,6 +208,7 @@ const HELP = `pairlobby
   pairlobby close --room <room>      end a room for everyone; history stays readable for 24 hours (owner/admin)
   pairlobby forget <room>            drop the local record, leave the server alone
   pairlobby settings                 interactive menu for this device's preferences and new-room defaults
+  pairlobby settings sync on|off     keep preferences in step with your account (--from account|device)
   pairlobby usage [--json]           account allowance used, remaining and reset date
   pairlobby create --name <name>     start a room and print an invite
   pairlobby create --name <name> --type <type>  public, protected, private (default) or personal
@@ -450,6 +453,7 @@ async function main(argv: string[]): Promise<number> {
             if (await offerUpdate(store, values)) {
                 return 0;
             }
+            await syncAtLaunch(store, values);
             return listRooms(store, values);
         case 'find':
             if (positionals[1] === 'online') {
@@ -496,10 +500,12 @@ async function main(argv: string[]): Promise<number> {
             announceEndpoint(store);
             const who = await loginOnline(store, {paste: flag(values, 'token'), ...(flag(values, 'no-browser') ? {openBrowser: false} : {})});
             out(loggedInLine(activeEndpoint(store).name, who));
+            await afterLogin(store);
             return 0;
         }
         case 'logout': {
             announceEndpoint(store);
+            disableSync(store);
             const result = await logoutOnline(store);
             if (!result.removed) {
                 out('No saved account login on this device.');
@@ -606,6 +612,7 @@ async function main(argv: string[]): Promise<number> {
             if (await offerUpdate(store, values)) {
                 return 0;
             }
+            await syncAtLaunch(store, values);
             return chatRoom(store, values);
         case 'update':
             return updateCommand(store, values);
@@ -1203,11 +1210,122 @@ function identityFrom(store: LocalStore, values: Values, fallbackName: string): 
 }
 
 
+async function noteSettingsPush(store: LocalStore): Promise<void> {
+    const line = await pushSettingsNote(store);
+    if (line) {
+        note(line);
+    }
+}
+
+async function askLine(question: string): Promise<string> {
+    const {createInterface} = await import('node:readline/promises');
+    const terminal = createInterface({input: process.stdin, output: process.stdout});
+    try {
+        return await terminal.question(question);
+    } finally {
+        terminal.close();
+    }
+}
+
+/** A person logging in at a terminal is asked about settings sync; agents and scripts are not, and sync stays off for them. */
+async function afterLogin(store: LocalStore): Promise<void> {
+    if (activeEndpoint(store).loginMode !== 'browser' || detectRuntime().runtime !== undefined) {
+        return;
+    }
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        note('Settings sync is off on this device; pairlobby settings sync on keeps your preferences with your account.');
+        return;
+    }
+    const outcome = await offerSettingsSync(store, {ask: askLine, say: out});
+    if (outcome) {
+        out(`Settings sync is on.${outcome.applied.length > 0 ? ` Took from your account: ${syncedLabels(outcome.applied)}.` : ''}`);
+    }
+}
+
+/** Interactive launches take the account's newer settings first. Offline or slow, the launch goes on with what this device has. */
+async function syncAtLaunch(store: LocalStore, values: Values): Promise<void> {
+    if (flag(values, 'json') || !process.stdin.isTTY || !process.stdout.isTTY) {
+        return;
+    }
+    try {
+        const outcome = await syncSettings(store);
+        if (outcome && outcome.applied.length > 0) {
+            note(`Updated from your account: ${syncedLabels(outcome.applied)}.`);
+        }
+    } catch {
+        // The next launch or change tries again; nothing local is lost.
+    }
+}
+
+async function settingsSyncCommand(store: LocalStore, values: Values, action = 'status'): Promise<number> {
+    if (action === 'status') {
+        const status = syncStatus(store);
+        if (flag(values, 'json')) {
+            json(status);
+            return 0;
+        }
+        out(!status.loggedIn ? `Settings sync: off (not logged in to ${status.endpoint}; pairlobby login)` : status.enabled ? `Settings sync: on with your ${status.endpoint} account${status.pending.length > 0 ? `; waiting to send ${syncedLabels(status.pending)}` : ''}` : 'Settings sync: off (pairlobby settings sync on)');
+        return 0;
+    }
+    if (action === 'off') {
+        const removed = disableSync(store);
+        flag(values, 'json') ? json({enabled: false}) : out(removed ? 'Settings sync is off. This device keeps its current settings.' : 'Settings sync was already off.');
+        return 0;
+    }
+    if (action !== 'on') {
+        throw new UsageError('pairlobby settings sync on|off|status [--from account|device]');
+    }
+    const from = str(values, 'from');
+    if (from !== undefined && from !== 'account' && from !== 'device') {
+        throw new UsageError('--from takes account or device');
+    }
+    let document;
+    try {
+        document = await fetchAccountSettings(store);
+    } catch (error) {
+        if (error instanceof SettingsSyncUnavailable) {
+            throw new UsageError(error.message);
+        }
+        throw error;
+    }
+    const differences = settingDifferences(store, document);
+    let source = from as 'account' | 'device' | undefined;
+    if (!source && (differences.length === 0 || Object.keys(document.settings).length === 0)) {
+        source = 'device';
+    }
+    if (!source) {
+        if (flag(values, 'json') || !process.stdin.isTTY) {
+            throw new UsageError(`This device and your account differ on ${differences.map((difference) => difference.label).join(', ')}; pass --from account or --from device`);
+        }
+        out('Your account has its own settings. Where they differ:');
+        for (const difference of differences) {
+            out(`  ${difference.label}: this device ${difference.device}, account ${difference.account}`);
+        }
+        const answer = (await askLine('[a] use the account\'s settings, [d] keep this device\'s and send them: ')).trim().toLowerCase();
+        source = answer === 'a' || answer === 'account' ? 'account' : answer === 'd' || answer === 'device' ? 'device' : undefined;
+        if (!source) {
+            out('Nothing changed; settings sync is still off.');
+            return 0;
+        }
+    }
+    const outcome = await enableSync(store, source, document);
+    if (flag(values, 'json')) {
+        json({enabled: true, ...outcome});
+        return 0;
+    }
+    out(`Settings sync is on.${outcome.applied.length > 0 ? ` Took from your account: ${syncedLabels(outcome.applied)}.` : ''}`);
+    return 0;
+}
+
 async function settingsCommand(store: LocalStore, values: Values, key?: string, value?: string): Promise<number> {
     const caller = {agent: flag(values, 'agent'), runtime: str(values, 'runtime'), sessionId: str(values, 'session')};
+    if (key === 'sync') {
+        return settingsSyncCommand(store, values, value);
+    }
     if (flag(values, 'reset')) {
         store.resetSettings();
         note('settings reset to defaults');
+        await noteSettingsPush(store);
         return 0;
     }
     if (key !== undefined) {
@@ -1225,6 +1343,7 @@ async function settingsCommand(store: LocalStore, values: Values, key?: string, 
         validateManagedSettings({...store.settings(), [definition.field]: parsed});
         store.setSettings({[definition.field]: parsed} as Partial<Settings>);
         note(`${key} is now ${describeSettingValue(definition, parsed)}`);
+        await noteSettingsPush(store);
         if (key === 'network-sharing') {
             note(NETWORK_SHARING_RESTART);
         }
@@ -1381,6 +1500,7 @@ async function profileCommand(store: LocalStore, values: Values): Promise<number
     if (flag(values, 'clear')) {
         store.clearProfile();
         note('profile cleared');
+        await noteSettingsPush(store);
         return 0;
     }
     const update = {
@@ -1390,6 +1510,9 @@ async function profileCommand(store: LocalStore, values: Values): Promise<number
         ...(str(values, 'server') !== undefined ? {server: str(values, 'server')!} : {})
     };
     const profile = Object.keys(update).length > 0 ? store.setProfile(update) : store.profile();
+    if (update.displayName !== undefined) {
+        await noteSettingsPush(store);
+    }
 
     if (flag(values, 'json')) {
         json(profile);
