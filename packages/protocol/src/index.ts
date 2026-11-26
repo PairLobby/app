@@ -1,3 +1,4 @@
+export * from './account-settings.js';
 export * from './auto-close.js';
 export * from './credentials.js';
 export * from './directory.js';

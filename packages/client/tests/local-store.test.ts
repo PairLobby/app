@@ -203,3 +203,34 @@ describe('local registry', () => {
         expect(store.rooms()).toEqual([]);
     });
 });
+
+describe('settings change times', () => {
+    test('test_only_synced_settings_that_change_are_stamped', () => {
+        store.setSettings({showIds: false, pollIntervalMs: 900});
+        expect(store.settingsSync().changedAt).toEqual({});
+        store.setSettings({showIds: true}, 1234);
+        expect(store.settingsSync().changedAt).toEqual({showIds: 1234});
+    });
+
+    test('test_linked_settings_are_stamped_together', () => {
+        store.setSettings({managedTaskIdleMs: 120_000}, 50);
+        expect(store.settingsSync().changedAt).toEqual({managedTaskIdleMs: 50, managedTaskTimeoutMs: 50});
+    });
+
+    test('test_profile_name_and_reset_are_stamped', () => {
+        store.setProfile({displayName: 'alex'}, 7);
+        expect(store.accountSettingValues().displayName).toBe('alex');
+        expect(store.settingsSync().changedAt.displayName).toBe(7);
+        store.setSettings({defaultTurnMode: 'parallel'}, 8);
+        store.resetSettings();
+        expect(store.settingsSync().changedAt.defaultTurnMode).toBeGreaterThan(8);
+        expect(store.accountSettingValues().defaultTurnMode).toBe('sequential');
+    });
+
+    test('test_change_times_follow_the_measured_service_clock', () => {
+        store.setSettingsSync({...store.settingsSync(), clockOffsetMs: 60_000});
+        const before = Date.now();
+        store.setSettings({showIds: true});
+        expect(store.settingsSync().changedAt.showIds).toBeGreaterThanOrEqual(before + 60_000);
+    });
+});

@@ -8,7 +8,8 @@ import {chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync} from 'nod
 import {homedir, platform} from 'node:os';
 import {join} from 'node:path';
 
-import type {AutoClosePolicy, PermissionSet} from '@pairlobby/protocol';
+import {ACCOUNT_SETTING_FIELDS, linkedAccountSettings} from '@pairlobby/protocol';
+import type {AccountSettingField, AccountSettingValues, AutoClosePolicy, PermissionSet} from '@pairlobby/protocol';
 
 type RoomResolution = {room: RoomEntry} | {ambiguous: RoomEntry[]} | {missing: true};
 
@@ -141,6 +142,12 @@ export interface Settings {
     activeEndpoint?: string | undefined;
 }
 
+/** One account's sync on this device: whether it is on, and the change time of each setting the service is known to hold. */
+export type AccountSyncState = {enabled: boolean; held: Partial<Record<AccountSettingField, number>>};
+
+/** When each synced setting last changed on this device, on the service's clock, and each account's sync state by endpoint origin. */
+export type SettingsSyncState = {changedAt: Partial<Record<AccountSettingField, number>>; clockOffsetMs: number; accounts: Record<string, AccountSyncState>};
+
 export const DEFAULT_SETTINGS: Settings = {
     allowManualReceive: false,
     confirmDelete: true,
@@ -204,7 +211,8 @@ export class LocalStore {
         return readJson<Profile>(this.profileFile, {});
     }
 
-    setProfile(profile: Profile): Profile {
+    setProfile(profile: Profile, changedAt?: number): Profile {
+        const before = this.accountSettingValues();
         const merged = {...this.profile(), ...profile};
         for (const key of Object.keys(merged) as (keyof Profile)[]) {
             if (merged[key] === undefined) {
@@ -212,11 +220,14 @@ export class LocalStore {
             }
         }
         writeJsonPrivate(this.profileFile, merged);
+        this.stampSettingChanges(before, changedAt);
         return merged;
     }
 
     clearProfile(): void {
+        const before = this.accountSettingValues();
         writeJsonPrivate(this.profileFile, {});
+        this.stampSettingChanges(before);
     }
 
     private get settingsFile(): string {
@@ -228,18 +239,67 @@ export class LocalStore {
         return {...DEFAULT_SETTINGS, ...saved, allowManualReceive: saved.allowManualReceive === true};
     }
 
-    setSettings(update: Partial<Settings>): Settings {
+    /** `changedAt` is for settings that came from the account, which keep the account's time; local edits are stamped now. */
+    setSettings(update: Partial<Settings>, changedAt?: number): Settings {
+        const before = this.accountSettingValues();
         const merged = {...this.settings(), ...update};
         writeJsonPrivate(this.settingsFile, merged);
+        this.stampSettingChanges(before, changedAt);
         return merged;
     }
 
     /** Preferences go back to the defaults; saved login endpoints and the active one are kept, like the profile. */
     resetSettings(): Settings {
+        const before = this.accountSettingValues();
         const {endpoints, activeEndpoint} = this.settings();
         const kept = {...(endpoints ? {endpoints} : {}), ...(activeEndpoint ? {activeEndpoint} : {})};
         writeJsonPrivate(this.settingsFile, kept);
+        this.stampSettingChanges(before);
         return {...DEFAULT_SETTINGS, ...kept};
+    }
+
+    /** This device's values for the settings an account can keep. */
+    accountSettingValues(): AccountSettingValues {
+        const settings = this.settings();
+        const values = {displayName: this.profile().displayName ?? null} as Record<AccountSettingField, unknown>;
+        for (const field of ACCOUNT_SETTING_FIELDS) {
+            if (field !== 'displayName') {
+                values[field] = settings[field];
+            }
+        }
+        return values as AccountSettingValues;
+    }
+
+    private get settingsSyncFile(): string {
+        return join(this.directory, 'settings-sync.json');
+    }
+
+    settingsSync(): SettingsSyncState {
+        const saved = readJson<Partial<SettingsSyncState>>(this.settingsSyncFile, {});
+        return {changedAt: saved.changedAt ?? {}, clockOffsetMs: typeof saved.clockOffsetMs === 'number' ? saved.clockOffsetMs : 0, accounts: saved.accounts ?? {}};
+    }
+
+    setSettingsSync(state: SettingsSyncState): void {
+        writeJsonPrivate(this.settingsSyncFile, state);
+    }
+
+    /** Now, on the service's clock as last measured, so two devices with different clocks still order their changes. */
+    syncNow(): number {
+        return Math.max(0, Math.round(Date.now() + this.settingsSync().clockOffsetMs));
+    }
+
+    /** Settings that change together are stamped together, so they always travel as one. */
+    private stampSettingChanges(before: AccountSettingValues, changedAt = this.syncNow()): void {
+        const after = this.accountSettingValues();
+        const changed = ACCOUNT_SETTING_FIELDS.filter((field) => before[field] !== after[field]);
+        if (changed.length === 0) {
+            return;
+        }
+        const state = this.settingsSync();
+        for (const field of changed.flatMap(linkedAccountSettings)) {
+            state.changedAt[field] = changedAt;
+        }
+        this.setSettingsSync(state);
     }
 
     rooms(): RoomEntry[] {

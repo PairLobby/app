@@ -33,6 +33,7 @@ This describes the current checkout. `pairlobby --version` says what a device ru
 - Auto-close per room (idle, age, or once agents and visitors have left), with a device default and `/settings` row.
 - Browser-approved terminal login with per-terminal revocable tokens; update checks and installs from GitHub releases (`pairlobby update` installs at once); automatic releases on merge, which also publish the shared `@pairlobby/*` packages to npm.
 - Interactive `pairlobby settings` for this device and `/settings` for a room.
+- Settings sync with the account: offered at `pairlobby login`, `pairlobby settings sync on|off`, newest change wins per setting, fetched at interactive launches and sent on every change. Needs the account service's `/api/online/settings`; device-only settings never leave the device.
 - `pairlobby setup` saves a private login endpoint, switches between it and pairlobby.com, and keeps one login per endpoint.
 - A self-hosted relay can offer token-mode login (`PAIRLOBBY_LOGIN_MODE=token`): people log in once with the team token and use `create online`; it describes itself at `/.well-known/pairlobby.json`.
 - A self-hosted relay can give each person their own token (`PAIRLOBBY_MEMBERS_FILE`, `pairlobby-relay member-token`): `login` names them, and rooms and participants record the member who created or joined them.

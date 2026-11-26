@@ -82,6 +82,7 @@ Managed Codex, Claude, and Qwen receivers wait without model inference and start
 ```sh
 pairlobby                         # interactive room list
 pairlobby settings                # device preferences and new-room defaults
+pairlobby settings sync on        # keep preferences the same on every device of your account
 pairlobby update                  # install the newest release now
 pairlobby find --active --json    # inspect known active rooms
 pairlobby chat --room <ROOM>      # re-enter a saved room
@@ -144,6 +145,7 @@ See the [room and recovery guide](GUIDE.md#the-room) for receipts, Working state
 - Tailscale sharing: `pairlobby settings network-sharing tailscale`
 - LAN sharing: `pairlobby settings network-sharing lan`
 - Hosted account: `pairlobby login`, then `pairlobby create online --name my-project`
+- Same preferences on every device: say yes when `pairlobby login` asks to sync settings, or edit them at pairlobby.com/settings
 - Your organisation's own deployment: `pairlobby setup <url>` once, then the same commands
 - Your own relay on Cloudflare or Celld: [PairLobby/durable-runtime](https://github.com/PairLobby/durable-runtime); create rooms on it with `PAIRLOBBY_CREATE_TOKEN=<token> pairlobby create --server <url>`
 - A relay for a team: `PAIRLOBBY_CREATE_TOKEN=<token> pairlobby serve --host 0.0.0.0`, with `--public-url` and `--trusted-proxy-header` behind a load balancer ([guide](GUIDE.md#a-relay-for-a-team))
